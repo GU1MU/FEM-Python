@@ -136,10 +136,14 @@ def test_scope_creation_starts_from_the_meshed_model() -> None:
     _wait_for_task(window)
     before_nodes = tuple(window.document.model.mesh.nodes)
     before_elements = tuple(window.document.model.mesh.elements)
+    window._set_selection_filter("body")
 
     window._request_analysis_geometry_selection("scope", "edge")
     assert window._pending_analysis_selection == "scope"
     assert window._scope_selection_overlay_active
+    assert window._temporary_selection_owner == "analysis_scope"
+    assert window._selection_context.space == "geometry"
+    assert window._selection_context.active_filter == "edge"
     topology = window._scope_selection_topology()
     selected_geometry_edge = next(
         reference
@@ -167,6 +171,10 @@ def test_scope_creation_starts_from_the_meshed_model() -> None:
     assert [region.name for region in edge_regions] == ["Support"]
     assert face_regions == []
     assert not window._scope_selection_overlay_active
+    assert window._temporary_selection_context is None
+    assert window._selection_context.space == "mesh"
+    assert window._selection_context.active_filter == "body"
+    assert window.viewport._selection_mode == "mesh_body"
 
     support = window.document.named_regions["Support"]
     assert support.references == tuple(
@@ -1106,6 +1114,11 @@ def test_local_mesh_command_enters_viewport_edge_selection_first() -> None:
 
     assert window._pending_local_mesh_selection
     assert window.viewport._selection_mode == "geometry_edge"
+    assert window._temporary_selection_owner == "local_mesh"
+    window._cancel_guided_selection()
+    assert window._temporary_selection_context is None
+    assert window._selection_context.space == "mesh"
+    assert window.viewport._selection_mode == "mesh_node"
     window.close()
 
 

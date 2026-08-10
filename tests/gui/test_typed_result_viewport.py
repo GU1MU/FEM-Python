@@ -12,6 +12,7 @@ import pyvista
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.application import MeshEntityRef
 from fem.application.results import (
     FieldAssociation,
     FieldLocation,
@@ -26,6 +27,7 @@ from fem.application.results import (
     ResultVariable,
     ScalarFieldSelection,
 )
+from fem.core.model import FEMModel
 from fem_gui.visualization.result_renderer import (
     RESULT_SCALAR_NAME,
     build_result_render_payload,
@@ -36,9 +38,11 @@ from fem_gui.visualization.contour_rendering import (
     CONTOUR_RENDER_FILLED,
 )
 from fem_gui.visualization.scene import DisplayState
+from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.viewport_background import ViewportBackgroundSettings
 import fem_gui.widgets.viewport as viewport_module
 from fem_gui.widgets.viewport import FEMViewport, PickHit
+from tests.helpers.mesh_builders import make_selection_hex_mesh
 
 
 def _application() -> QApplication:
@@ -155,6 +159,30 @@ def _point_payload():
         value_layout=ResultValueLayout.POINT,
         point_locations=locations,
         cell_locations=(None,),
+    )
+    return build_result_render_payload(topology)
+
+
+def _translated_hex_payload(points: np.ndarray):
+    values = np.asarray(points, dtype=float)
+    topology = ResultFieldTopology(
+        source=_source(),
+        materialization_generation=8,
+        selection=_selection(FieldPosition.ELEMENT_NODAL, "Mises"),
+        deformation_scale=3.0,
+        points=values,
+        cells=((0, 1, 2, 3, 4, 5, 6, 7),),
+        cell_kinds=(ResultCellKind.FEM_ELEMENT,),
+        canonical_element_types=("Hex8",),
+        values=np.arange(8, dtype=float),
+        value_layout=ResultValueLayout.POINT,
+        point_locations=tuple(
+            _node_location(node_id, tuple(values[node_id - 1]))
+            for node_id in range(1, 9)
+        ),
+        cell_locations=(
+            _element_location(1, tuple(np.mean(values, axis=0))),
+        ),
     )
     return build_result_render_payload(topology)
 
@@ -785,6 +813,225 @@ def test_typed_picking_exposes_location_ids_through_existing_pick_indexes(
         payload.dataset.cell_data["element_id"],
         (9201,),
     )
+    viewport.close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_id"),
+    (
+        ("mesh_node", 10),
+        ("mesh_element", 201),
+        ("mesh_edge", 201),
+        ("mesh_face", 201),
+        ("mesh_body", 201),
+    ),
+)
+def test_contextual_mesh_picking_uses_rendered_result_coordinates_and_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    expected_id: int,
+) -> None:
+    _application()
+    payload = _point_payload()
+    viewport = FEMViewport()
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    viewport._pick_grid = _model_grid(
+        points=np.asarray(payload.dataset.points) + 100.0,
+        cells=((0, 1, 2),),
+        cell_types=(5,),
+        node_ids=(110, 120, 130),
+        element_ids=(1201,),
+    )
+    displayed_points: list[np.ndarray] = []
+
+    def project(points):
+        displayed_points.append(np.asarray(points).copy())
+        return np.asarray(
+            (
+                (1.0, 2.0, 0.5),
+                (100.0, 100.0, 0.5),
+                (200.0, 200.0, 0.5),
+            )
+        )
+
+    monkeypatch.setattr(viewport, "_world_points_to_display", project)
+    monkeypatch.setattr(
+        viewport,
+        "_display_candidate_is_visible",
+        lambda *_args: True,
+    )
+    intersected = []
+
+    def intersect(_x, _y, dataset):
+        intersected.append(dataset)
+        return 0, np.asarray((0.25, 0.25, 0.0))
+
+    monkeypatch.setattr(viewport, "_intersect_dataset", intersect)
+    viewport._selection_mode = mode
+
+    hit = viewport._resolve_pick(1, 2)
+
+    assert hit is not None
+    assert hit.kind == mode
+    assert hit.pick_id == expected_id
+    assert hit.dataset_name == "typed_result_grid"
+    if mode == "mesh_node":
+        np.testing.assert_array_equal(
+            displayed_points[-1],
+            payload.dataset.points,
+        )
+    else:
+        assert intersected[-1] is payload.dataset
+    viewport.close()
+
+
+def test_contextual_mesh_highlight_pipeline_uses_rendered_result_dataset() -> None:
+    _application()
+    viewport_module._pyvista = pyvista
+    payload = _point_payload()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._geometry = _geometry(
+        points=np.asarray(payload.dataset.points) + 100.0,
+        cells=((0, 1, 2),),
+        node_ids=(10, 20, 40),
+        element_ids=(201,),
+    )
+    viewport._pick_grid = _model_grid(
+        points=np.asarray(payload.dataset.points) + 100.0,
+        cells=((0, 1, 2),),
+        cell_types=(5,),
+        node_ids=(10, 20, 30),
+        element_ids=(201,),
+    )
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    viewport._install_mesh_scope_highlight_pipelines()
+
+    viewport.highlight_mesh_entities({MeshEntityRef.node(10)})
+    node_pipeline = viewport._mesh_scope_highlight_pipelines["node"]
+    np.testing.assert_array_equal(
+        node_pipeline.dataset.points,
+        payload.dataset.points,
+    )
+    assert viewport._mesh_scope_highlight_reference_indices(
+        MeshEntityRef.node(40)
+    ) == ()
+
+    viewport.highlight_mesh_entities({MeshEntityRef.element(201)})
+    element_pipeline = viewport._mesh_scope_highlight_pipelines["element"]
+    np.testing.assert_array_equal(
+        element_pipeline.dataset.points,
+        payload.dataset.points,
+    )
+    viewport._mesh_scope_render_timer.stop()
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_contextual_result_face_preselection_uses_typed_element_cells() -> None:
+    _application()
+    viewport_module._pyvista = pyvista
+    payload = _point_payload()
+    viewport = FEMViewport()
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    plotter = _Plotter()
+    viewport._plotter = plotter
+
+    viewport._show_preselection(
+        PickHit(
+            "mesh_face",
+            201,
+            "typed_result_grid",
+            (1.0, 2.0),
+            (0.0, 0.0, 0.0),
+        )
+    )
+
+    assert plotter.mesh_calls
+    assert plotter.mesh_calls[-1][0].n_cells == 1
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_result_edge_and_face_pick_data_follow_displayed_node_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    viewport_module._pyvista = pyvista
+    model = FEMModel(make_selection_hex_mesh())
+    geometry = build_model_geometry(model)
+    displayed_points = np.asarray(geometry.points) + np.asarray((4.0, -2.0, 1.5))
+    payload = _translated_hex_payload(displayed_points)
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._model = model
+    viewport._geometry = geometry
+    viewport._pick_grid = viewport._make_grid(geometry.points)
+    viewport._install_mesh_scope_pick_bindings()
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+
+    viewport._project_mesh_scope_datasets_to_result(payload)
+    viewport._install_mesh_scope_highlight_pipelines()
+
+    assert viewport._mesh_scope_edges is not None
+    assert viewport._mesh_scope_faces is not None
+    np.testing.assert_array_equal(
+        viewport._mesh_scope_edges.points,
+        displayed_points,
+    )
+    np.testing.assert_array_equal(
+        viewport._mesh_scope_faces.points,
+        displayed_points,
+    )
+    for kind in ("edge", "face"):
+        reference = next(
+            reference
+            for reference in viewport._mesh_scope_ref_to_pick_id
+            if reference.kind == kind
+        )
+        viewport.highlight_mesh_entities(
+            {reference},
+            entity_kind=kind,
+        )
+        np.testing.assert_array_equal(
+            viewport._mesh_scope_highlight_pipelines[kind].dataset.points,
+            displayed_points,
+        )
+        viewport._selection_mode = f"mesh_{kind}"
+        monkeypatch.setattr(
+            viewport,
+            "_world_points_to_display",
+            lambda points: np.column_stack(
+                (
+                    np.asarray(points)[:, :2],
+                    np.full(len(points), 0.5),
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            viewport,
+            "_vtk_rectangle",
+            lambda *_args: ((-100.0, 100.0, -100.0, 100.0), True),
+        )
+        monkeypatch.setattr(
+            viewport,
+            "_display_candidate_is_visible",
+            lambda *_args: True,
+        )
+        boxed = viewport._mesh_entities_in_qt_rectangle(
+            (0.0, 0.0),
+            (1.0, 1.0),
+        )
+        assert boxed
+        assert {reference.kind for reference in boxed} == {kind}
+    viewport._mesh_scope_render_timer.stop()
+    viewport._plotter = None
     viewport.close()
 
 

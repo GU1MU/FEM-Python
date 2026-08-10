@@ -327,6 +327,8 @@ def _mesh_edge_polydata(
     pyvista,
     geometry: ModelGeometry,
     rows: tuple[tuple[int, int, tuple[int, ...]], ...],
+    *,
+    points: np.ndarray | None = None,
 ):
     """Build one pickable display cell for every boundary element edge."""
 
@@ -341,7 +343,7 @@ def _mesh_edge_polydata(
         [np.asarray((len(cell), *cell), dtype=np.int64) for cell in cells]
     )
     dataset = pyvista.PolyData()
-    dataset.points = geometry.points
+    dataset.points = geometry.points if points is None else points
     dataset.lines = line_cells
     dataset.cell_data["mesh_scope_pick_id"] = np.arange(
         1,
@@ -366,6 +368,8 @@ def _mesh_face_polydata(
     pyvista,
     geometry: ModelGeometry,
     rows: tuple[tuple[int, int, tuple[int, ...]], ...],
+    *,
+    points: np.ndarray | None = None,
 ):
     """Build boundary-face polygons while retaining element-local identity."""
 
@@ -383,7 +387,10 @@ def _mesh_face_polydata(
     face_cells = np.hstack(
         [np.asarray((len(cell), *cell), dtype=np.int64) for cell in cells]
     )
-    dataset = pyvista.PolyData(geometry.points, faces=face_cells)
+    dataset = pyvista.PolyData(
+        geometry.points if points is None else points,
+        faces=face_cells,
+    )
     dataset.cell_data["mesh_scope_pick_id"] = np.arange(
         1,
         len(rows) + 1,
@@ -1227,6 +1234,12 @@ class FEMViewport(QWidget):
         self._geometry_point_body_pick_ids: tuple[int, ...] = ()
         self._mesh_scope_edges = None
         self._mesh_scope_faces = None
+        self._mesh_scope_edge_rows: tuple[
+            tuple[int, int, tuple[int, ...]], ...
+        ] = ()
+        self._mesh_scope_face_rows: tuple[
+            tuple[int, int, tuple[int, ...]], ...
+        ] = ()
         self._mesh_scope_edge_cells: tuple[tuple[int, ...], ...] = ()
         self._mesh_scope_pick_to_ref: dict[
             tuple[str, int],
@@ -1242,6 +1255,11 @@ class FEMViewport(QWidget):
             str,
             _MeshScopeHighlightPipeline,
         ] = {}
+        self._mesh_scope_highlight_indices: dict[
+            tuple[str, tuple[int, int]],
+            tuple[int, ...],
+        ] = {}
+        self._mesh_scope_selected_references: set[MeshEntityRef] = set()
         self._mesh_scope_highlight_kind: str | None = None
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
@@ -1843,6 +1861,7 @@ class FEMViewport(QWidget):
         self._geometry_face_body_pick_ids = ()
         self._geometry_edge_body_pick_ids = ()
         self._geometry_point_body_pick_ids = ()
+        self._mesh_scope_selected_references.clear()
         self._reset_mesh_scope_highlight_pipelines()
         self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
@@ -1931,6 +1950,7 @@ class FEMViewport(QWidget):
         self._geometry_face_body_pick_ids = ()
         self._geometry_edge_body_pick_ids = ()
         self._geometry_point_body_pick_ids = ()
+        self._mesh_scope_selected_references.clear()
         self._reset_mesh_scope_highlight_pipelines()
         self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
@@ -4283,6 +4303,8 @@ class FEMViewport(QWidget):
             )
             for reference in face_references
         )
+        self._mesh_scope_edge_rows = edge_rows
+        self._mesh_scope_face_rows = face_rows
         if edge_rows:
             (
                 self._mesh_scope_edges,
@@ -4320,6 +4342,8 @@ class FEMViewport(QWidget):
     def _clear_mesh_scope_pick_bindings(self) -> None:
         self._mesh_scope_edges = None
         self._mesh_scope_faces = None
+        self._mesh_scope_edge_rows = ()
+        self._mesh_scope_face_rows = ()
         self._mesh_scope_edge_cells = ()
         self._mesh_scope_pick_to_ref.clear()
         self._mesh_scope_ref_to_pick_id.clear()
@@ -4328,14 +4352,16 @@ class FEMViewport(QWidget):
 
     def _reset_mesh_scope_highlight_pipelines(self) -> None:
         self._mesh_scope_render_timer.stop()
+        for kind in ("node", "element", "edge", "face"):
+            self._remove_actor(f"mesh_scope_selection_{kind}")
         self._mesh_scope_highlight_pipelines.clear()
+        self._mesh_scope_highlight_indices.clear()
         self._mesh_scope_highlight_kind = None
 
     def _install_mesh_scope_highlight_pipelines(self) -> None:
         """Create all four empty selection pipelines once for the installed mesh."""
 
-        self._mesh_scope_highlight_pipelines.clear()
-        self._mesh_scope_highlight_kind = None
+        self._reset_mesh_scope_highlight_pipelines()
         if (
             self._plotter is None
             or _pyvista is None
@@ -4345,11 +4371,62 @@ class FEMViewport(QWidget):
             return
         import vtk
 
-        node_dataset = _pyvista.PolyData(np.asarray(self._geometry.points, dtype=float))
+        payload = self._rendered_result_payload()
+        if payload is None:
+            node_dataset = _pyvista.PolyData(
+                np.asarray(self._geometry.points, dtype=float)
+            )
+            element_dataset = self._pick_grid
+            self._mesh_scope_highlight_indices.update(
+                {
+                    ("node", (int(node_id), -1)): (int(point_index),)
+                    for node_id, point_index in (
+                        self._geometry.node_id_to_point_index.items()
+                    )
+                }
+            )
+            self._mesh_scope_highlight_indices.update(
+                {
+                    ("element", (int(element_id), -1)): (int(cell_index),)
+                    for element_id, cell_index in (
+                        self._geometry.element_id_to_cell_index.items()
+                    )
+                }
+            )
+        else:
+            result_dataset = payload.dataset
+            node_ids = self._typed_result_point_ids(result_dataset)
+            cell_ids = self._typed_result_cell_ids(result_dataset)
+            node_dataset = (
+                _pyvista.PolyData(
+                    np.asarray(result_dataset.points, dtype=float)
+                )
+                if bool(np.any(node_ids > 0))
+                else None
+            )
+            element_dataset = (
+                result_dataset.copy(deep=True)
+                if bool(np.any(cell_ids > 0))
+                else None
+            )
+            for node_id in np.unique(node_ids[node_ids > 0]):
+                self._mesh_scope_highlight_indices[
+                    ("node", (int(node_id), -1))
+                ] = tuple(
+                    int(index)
+                    for index in np.flatnonzero(node_ids == node_id)
+                )
+            for element_id in np.unique(cell_ids[cell_ids > 0]):
+                self._mesh_scope_highlight_indices[
+                    ("element", (int(element_id), -1))
+                ] = tuple(
+                    int(index)
+                    for index in np.flatnonzero(cell_ids == element_id)
+                )
         sources = {
             "node": (node_dataset, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS),
             "element": (
-                self._pick_grid,
+                element_dataset,
                 vtk.vtkDataObject.FIELD_ASSOCIATION_CELLS,
             ),
             "edge": (
@@ -4373,6 +4450,16 @@ class FEMViewport(QWidget):
         for kind, (dataset, association) in sources.items():
             if dataset is None:
                 continue
+            if kind in {"edge", "face"}:
+                source = (
+                    self._mesh_scope_edge_rows
+                    if kind == "edge"
+                    else self._mesh_scope_face_rows
+                )
+                for index, row in enumerate(source):
+                    self._mesh_scope_highlight_indices[
+                        (kind, (int(row[0]), int(row[1])))
+                    ] = (index,)
             mask = np.zeros(
                 dataset.n_points
                 if association == vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS
@@ -4429,18 +4516,39 @@ class FEMViewport(QWidget):
             )
 
     def _mesh_scope_highlight_index(self, reference: MeshEntityRef) -> int | None:
-        if self._geometry is None:
-            return None
+        indices = self._mesh_scope_highlight_reference_indices(
+            reference
+        )
+        return None if not indices else int(indices[0])
+
+    def _mesh_scope_highlight_reference_indices(
+        self,
+        reference: MeshEntityRef,
+    ) -> tuple[int, ...]:
+        indices = self._mesh_scope_highlight_indices.get(
+            (reference.kind, reference.identity),
+            (),
+        )
+        if (
+            indices
+            or self._rendered_result_payload() is not None
+            or self._geometry is None
+        ):
+            return indices
         if reference.kind == "node":
-            return self._geometry.node_id_to_point_index.get(int(reference.node_id))
-        if reference.kind == "element":
-            return self._geometry.element_id_to_cell_index.get(
+            index = self._geometry.node_id_to_point_index.get(
+                int(reference.node_id)
+            )
+        elif reference.kind == "element":
+            index = self._geometry.element_id_to_cell_index.get(
                 int(reference.element_id)
             )
-        pick_id = self._mesh_scope_identity_to_pick_id.get(
-            (reference.kind, reference.identity)
-        )
-        return None if pick_id is None else int(pick_id) - 1
+        else:
+            pick_id = self._mesh_scope_identity_to_pick_id.get(
+                (reference.kind, reference.identity)
+            )
+            index = None if pick_id is None else int(pick_id) - 1
+        return () if index is None else (int(index),)
 
     def _schedule_mesh_scope_render(self) -> None:
         if self._plotter is not None and not self._mesh_scope_render_timer.isActive():
@@ -4664,6 +4772,65 @@ class FEMViewport(QWidget):
             return None
         return payload.dataset.extract_cells(indices)
 
+    def _project_mesh_scope_datasets_to_result(
+        self,
+        payload: ResultRenderPayload,
+    ) -> None:
+        """Place mesh topology pick data on the currently rendered result."""
+
+        if self._geometry is None or _pyvista is None:
+            self._mesh_scope_edges = None
+            self._mesh_scope_faces = None
+            self._mesh_scope_edge_cells = ()
+            return
+        coordinates: dict[int, np.ndarray] = {}
+        for index, location in enumerate(payload.topology.point_locations):
+            if location is None or location.node_id is None:
+                continue
+            coordinates.setdefault(
+                int(location.node_id),
+                np.asarray(payload.dataset.points[index], dtype=float),
+            )
+        projected_points = np.asarray(self._geometry.points, dtype=float).copy()
+        for node_id, point_index in self._geometry.node_id_to_point_index.items():
+            point = coordinates.get(int(node_id))
+            if point is not None:
+                projected_points[int(point_index)] = point
+        edge_node_ids = {
+            int(node_id)
+            for _element_id, _local_index, node_ids in self._mesh_scope_edge_rows
+            for node_id in node_ids
+        }
+        face_node_ids = {
+            int(node_id)
+            for _element_id, _local_index, node_ids in self._mesh_scope_face_rows
+            for node_id in _face_display_node_ids(node_ids)
+        }
+        if self._mesh_scope_edge_rows and edge_node_ids.issubset(coordinates):
+            (
+                self._mesh_scope_edges,
+                self._mesh_scope_edge_cells,
+            ) = _mesh_edge_polydata(
+                _pyvista,
+                self._geometry,
+                self._mesh_scope_edge_rows,
+                points=projected_points,
+            )
+        else:
+            self._mesh_scope_edges = None
+            self._mesh_scope_edge_cells = ()
+        self._mesh_scope_faces = (
+            _mesh_face_polydata(
+                _pyvista,
+                self._geometry,
+                self._mesh_scope_face_rows,
+                points=projected_points,
+            )
+            if self._mesh_scope_face_rows
+            and face_node_ids.issubset(coordinates)
+            else None
+        )
+
     def set_selection_mode(self, mode: str) -> None:
         previous = self._selection_mode
         had_preselection = (
@@ -4731,6 +4898,7 @@ class FEMViewport(QWidget):
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
+        self._mesh_scope_selected_references.clear()
         self._remove_actor("selection")
         self._remove_actor("geometry_selection")
         self._clear_mesh_scope_highlight(schedule_render=False)
@@ -4980,6 +5148,7 @@ class FEMViewport(QWidget):
 
         selected = references if isinstance(references, set) else set(references)
         if not selected:
+            self._mesh_scope_selected_references.clear()
             self._clear_mesh_scope_highlight(schedule_render=True)
             return
         if entity_kind is None:
@@ -4991,6 +5160,7 @@ class FEMViewport(QWidget):
             kind = str(entity_kind)
             if kind not in {"node", "element", "edge", "face"}:
                 raise ValueError("unsupported mesh scope highlight kind")
+        self._mesh_scope_selected_references = set(selected)
         pipeline = self._mesh_scope_highlight_pipelines.get(kind)
         if pipeline is None:
             return
@@ -5003,15 +5173,17 @@ class FEMViewport(QWidget):
         if changed_references is not None and not visibility_changed:
             changes = {}
             for reference in changed_references:
-                index = self._mesh_scope_highlight_index(reference)
-                if index is None:
-                    continue
-                changes[index] = reference in selected
+                for index in self._mesh_scope_highlight_reference_indices(
+                    reference
+                ):
+                    changes[index] = reference in selected
         else:
             target = {
                 index
                 for reference in selected
-                if (index := self._mesh_scope_highlight_index(reference)) is not None
+                for index in self._mesh_scope_highlight_reference_indices(
+                    reference
+                )
             }
         updated = (
             pipeline.update_changes(changes)
@@ -6638,6 +6810,7 @@ class FEMViewport(QWidget):
         self._result_grid = dataset
         self._pick_locators.clear()
         self._clear_preselection(render=False)
+        self._project_mesh_scope_datasets_to_result(checked)
         self._remove_actor("set_highlight")
         self._remove_actor("selection")
         base = self._actors.get("mesh_surface")
@@ -6706,6 +6879,16 @@ class FEMViewport(QWidget):
             self._add_result_render_payload_extrema_labels(
                 checked,
                 payload_validated=True,
+            )
+        selected_mesh_references = set(
+            self._mesh_scope_selected_references
+        )
+        self._install_mesh_scope_highlight_pipelines()
+        if selected_mesh_references:
+            selected_kind = next(iter(selected_mesh_references)).kind
+            self.highlight_mesh_entities(
+                selected_mesh_references,
+                entity_kind=selected_kind,
             )
         self._refresh_undeformed_overlay()
         self._restore_selection()
@@ -7216,7 +7399,10 @@ class FEMViewport(QWidget):
                 reference = self._mesh_scope_pick_to_ref.get(
                     (kind, hit.pick_id)
                 )
-                if reference is None and hit.dataset_name == "model_pick_grid":
+                if reference is None and hit.dataset_name in {
+                    "model_pick_grid",
+                    _TYPED_RESULT_GRID_NAME,
+                }:
                     reference = MeshEntityRef.element(hit.pick_id)
                 if reference is None:
                     self.selectionMissed.emit(self._selection_mode)
@@ -7259,28 +7445,38 @@ class FEMViewport(QWidget):
         start: tuple[float, float],
         end: tuple[float, float],
     ) -> tuple[MeshEntityRef, ...]:
-        if self._geometry is None:
+        payload = self._rendered_result_payload()
+        if payload is not None:
+            points = np.asarray(payload.dataset.points, dtype=float)
+            node_ids = self._typed_result_point_ids(payload.dataset)
+            occluder = payload.dataset
+        elif self._geometry is not None:
+            points = self._model_display_points()
+            node_ids = np.asarray(
+                self._geometry.point_index_to_node_id,
+                dtype=np.int64,
+            )
+            occluder = self._pick_grid
+        else:
             return ()
-        display = self._world_points_to_display(
-            self._model_display_points()
-        )
+        display = self._world_points_to_display(points)
         if display is None:
             return ()
         bounds, _containment = self._vtk_rectangle(start, end)
-        selected: list[MeshEntityRef] = []
+        selected: dict[int, MeshEntityRef] = {}
         for point_index, candidate in enumerate(display):
+            node_id = int(node_ids[point_index])
+            if node_id <= 0:
+                continue
             if not self._rectangle_contains_point(bounds, candidate):
                 continue
             if not self._display_candidate_is_visible(
                 candidate,
-                self._pick_grid,
+                occluder,
             ):
                 continue
-            node_id = int(
-                self._geometry.point_index_to_node_id[point_index]
-            )
-            selected.append(MeshEntityRef.node(node_id))
-        return tuple(selected)
+            selected.setdefault(node_id, MeshEntityRef.node(node_id))
+        return tuple(selected.values())
 
     def _mesh_entities_in_qt_rectangle(
         self,
@@ -7288,6 +7484,20 @@ class FEMViewport(QWidget):
         end: tuple[float, float],
     ) -> tuple[MeshEntityRef, ...]:
         mode = self._selection_mode
+        payload = self._rendered_result_payload()
+        if payload is not None and (
+            (
+                mode == "mesh_edge"
+                and self._mesh_scope_edge_rows
+                and self._mesh_scope_edges is None
+            )
+            or (
+                mode == "mesh_face"
+                and self._mesh_scope_face_rows
+                and self._mesh_scope_faces is None
+            )
+        ):
+            return ()
         if mode == "mesh_edge" and self._mesh_scope_edges is not None:
             dataset = self._mesh_scope_edges
             scalar_name = "mesh_scope_pick_id"
@@ -7297,10 +7507,10 @@ class FEMViewport(QWidget):
             scalar_name = "mesh_scope_pick_id"
             reference_kind = "face"
         else:
-            dataset = self._pick_grid
+            dataset = self._pick_grid if payload is None else payload.dataset
             scalar_name = "element_id"
             reference_kind = "element"
-        if dataset is None or scalar_name not in dataset.cell_data:
+        if dataset is None:
             return ()
         display = self._world_points_to_display(
             np.asarray(dataset.points, dtype=float)
@@ -7308,8 +7518,21 @@ class FEMViewport(QWidget):
         if display is None:
             return ()
         bounds, containment = self._vtk_rectangle(start, end)
-        pick_ids = np.asarray(dataset.cell_data[scalar_name], dtype=np.int64)
-        selected: list[MeshEntityRef] = []
+        if reference_kind == "element" and payload is not None:
+            pick_ids = self._typed_result_cell_ids(dataset)
+        elif scalar_name in dataset.cell_data:
+            pick_ids = np.asarray(
+                dataset.cell_data[scalar_name],
+                dtype=np.int64,
+            )
+        else:
+            return ()
+        occluder = (
+            payload.dataset
+            if payload is not None
+            else self._pick_grid
+        )
+        selected: dict[tuple[str, tuple[int, int]], MeshEntityRef] = {}
         for cell_index, pick_id in enumerate(pick_ids):
             if int(pick_id) <= 0:
                 continue
@@ -7327,7 +7550,7 @@ class FEMViewport(QWidget):
             )
             if not matches or not self._display_candidate_is_visible(
                 np.mean(points, axis=0),
-                self._pick_grid,
+                occluder,
             ):
                 continue
             if reference_kind == "element":
@@ -7338,8 +7561,11 @@ class FEMViewport(QWidget):
                 )
                 if reference is None:
                     continue
-            selected.append(reference)
-        return tuple(selected)
+            selected.setdefault(
+                (reference.kind, reference.identity),
+                reference,
+            )
+        return tuple(selected.values())
 
     def _geometry_points_in_qt_rectangle(
         self,
@@ -7562,6 +7788,21 @@ class FEMViewport(QWidget):
                 return None
             return hit
         if mode == "mesh_node":
+            payload = self._rendered_result_payload()
+            if payload is not None:
+                ids = self._typed_result_point_ids(payload.dataset)
+                if not bool(np.any(ids > 0)):
+                    return None
+                return self._pick_screen_point(
+                    x,
+                    y,
+                    payload.dataset,
+                    "node_id",
+                    _TYPED_RESULT_GRID_NAME,
+                    payload.dataset,
+                    8.0,
+                    provenance_ids=ids,
+                )
             return self._pick_screen_point(
                 x,
                 y,
@@ -7575,6 +7816,12 @@ class FEMViewport(QWidget):
             hit = self._pick_mesh_scope_edge(x, y, 6.0)
             if hit is not None or self._mesh_scope_edges is not None:
                 return hit
+            if self._rendered_result_payload() is not None:
+                return (
+                    None
+                    if self._mesh_scope_edge_rows
+                    else self._pick_mesh_element_or_body(x, y, mode)
+                )
             return self._pick_cell(
                 x,
                 y,
@@ -7593,6 +7840,12 @@ class FEMViewport(QWidget):
                     "mesh_scope_faces",
                     mode,
                 )
+            if self._rendered_result_payload() is not None:
+                return (
+                    None
+                    if self._mesh_scope_face_rows
+                    else self._pick_mesh_element_or_body(x, y, mode)
+                )
             return self._pick_cell(
                 x,
                 y,
@@ -7602,23 +7855,9 @@ class FEMViewport(QWidget):
                 mode,
             )
         if mode == "mesh_element":
-            return self._pick_cell(
-                x,
-                y,
-                self._pick_grid,
-                "element_id",
-                "model_pick_grid",
-                mode,
-            )
+            return self._pick_mesh_element_or_body(x, y, mode)
         if mode == "mesh_body":
-            return self._pick_cell(
-                x,
-                y,
-                self._pick_grid,
-                "element_id",
-                "model_pick_grid",
-                mode,
-            )
+            return self._pick_mesh_element_or_body(x, y, mode)
         if mode == "node":
             payload = self._rendered_result_payload()
             if payload is not None:
@@ -7689,6 +7928,54 @@ class FEMViewport(QWidget):
                 mode,
             )
         return None
+
+    def _pick_mesh_element_or_body(
+        self,
+        x: int,
+        y: int,
+        mode: str,
+    ) -> PickHit | None:
+        payload = self._rendered_result_payload()
+        if payload is not None:
+            cell_ids = self._typed_result_cell_ids(payload.dataset)
+            if not bool(np.any(cell_ids > 0)):
+                return None
+            if all(
+                kind is ResultCellKind.SAMPLE_VERTEX
+                for kind in payload.topology.cell_kinds
+            ):
+                point_ids = self._typed_result_point_element_ids(
+                    payload.dataset
+                )
+                hit = self._pick_screen_point(
+                    x,
+                    y,
+                    payload.dataset,
+                    "element_id",
+                    _TYPED_RESULT_GRID_NAME,
+                    payload.dataset,
+                    8.0,
+                    provenance_ids=point_ids,
+                )
+                if hit is not None:
+                    return replace(hit, kind=mode)
+            return self._pick_cell(
+                x,
+                y,
+                payload.dataset,
+                "element_id",
+                _TYPED_RESULT_GRID_NAME,
+                mode,
+                provenance_ids=cell_ids,
+            )
+        return self._pick_cell(
+            x,
+            y,
+            self._pick_grid,
+            "element_id",
+            "model_pick_grid",
+            mode,
+        )
 
     def _pick_screen_point(
         self,
@@ -7890,7 +8177,11 @@ class FEMViewport(QWidget):
                     and 0.0 <= closest[2] <= 1.0
                     and self._display_candidate_is_visible(
                         closest,
-                        self._pick_grid,
+                        (
+                            self._result_grid
+                            if self._rendered_result_payload() is not None
+                            else self._pick_grid
+                        ),
                     )
                 ):
                     world = (
@@ -8155,7 +8446,10 @@ class FEMViewport(QWidget):
                 kwargs = {"line_width": 5}
         elif (
             hit.kind in {"mesh_edge", "mesh_face"}
-            and hit.dataset_name != "model_pick_grid"
+            and hit.dataset_name in {
+                "mesh_scope_edges",
+                "mesh_scope_faces",
+            }
         ):
             dataset = (
                 self._mesh_scope_edges

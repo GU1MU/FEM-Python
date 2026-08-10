@@ -269,3 +269,63 @@ def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(monkeypatch) -> No
     window._on_mesh_entities_box_selected(whole_edge)
     assert not window._selected_mesh_scope_refs
     window.close()
+
+
+def test_guided_scope_cancel_restores_module_selection_context() -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("temporary-scope-context.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._set_selection_filter("body")
+
+    window._request_analysis_geometry_selection("scope", "edge")
+
+    assert window._temporary_selection_owner == "analysis_scope"
+    assert window._selection_context.space == "geometry"
+    assert window._selection_context.active_filter == "edge"
+    assert window.viewport._selection_mode == "geometry_edge"
+
+    window._cancel_guided_selection()
+
+    assert window._temporary_selection_context is None
+    assert window._selection_context.space == "mesh"
+    assert window._selection_context.active_filter == "body"
+    assert window.viewport._selection_mode == "mesh_body"
+    assert not window._selected_geometry_refs
+    assert not window._selected_mesh_scope_refs
+
+    window._request_analysis_geometry_selection("scope", "edge")
+    window._finish_scope_creation_from_bar("CreatedEdge")
+
+    assert window._temporary_selection_context is None
+    assert window._selection_context.space == "mesh"
+    assert window._selection_context.active_filter == "body"
+    assert window.viewport._selection_mode == "mesh_body"
+    window.close()
+
+
+def test_close_model_clears_contextual_selection_and_viewport_pick_state() -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("close-selection-state.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._set_selection_filter("body")
+    window._on_mesh_scope_entity_pick(MeshEntityRef.element(10))
+    assert window._selected_mesh_scope_refs
+
+    assert window.close_model(confirm=False)
+
+    assert not window._selected_geometry_refs
+    assert not window._selected_mesh_scope_refs
+    assert window.viewport._hover_hit is None
+    assert window.viewport._result_render_payload is None
+    assert not window.viewport._mesh_scope_highlight_pipelines
+    assert "selection" not in window.viewport._actors
+    assert "preselection" not in window.viewport._actors
+    window.close()
