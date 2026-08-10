@@ -173,8 +173,12 @@ def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay():
 
     assert window.viewport.size() == viewport_size
     assert bar.isVisible()
-    assert "切除" in bar.prompt_label.text()
-    assert "目标面" in bar.prompt_label.text()
+    assert bar.prompt_label.text() == "请选择目标面"
+    assert bar.cancel_button.text() == "取消"
+    assert bar.confirm_button.text() == "确定"
+    assert not bar.confirm_button.isEnabled()
+    bar.set_selection_ready(True)
+    assert bar.confirm_button.isEnabled()
     host_origin = host.mapToGlobal(QPoint(0, 0))
     assert bar.geometry().left() == host_origin.x()
     assert bar.geometry().bottom() == host_origin.y() + host.height() - 1
@@ -318,20 +322,23 @@ def test_geometry_and_model_pages_reuse_five_semantic_selection_actions():
         for button in geometry_page.findChildren(QToolButton)
         if button.defaultAction() is not None
     }
+    geometry_group_titles = [
+        label.text()
+        for label in geometry_page.findChildren(QLabel)
+        if label.objectName() == "ribbonGroupTitle"
+    ]
+    assert geometry_group_titles == ["创建", "特征", "布尔", "选择"]
     assert geometry_actions == {
         window.actions[name]
         for name in (
-                "geometry_create",
-                "geometry_face_sketch",
-                "geometry_extrude",
+            "geometry_create",
+            "geometry_face_sketch",
+            "geometry_extrude",
             "geometry_sweep",
             "geometry_move",
             "geometry_rotate",
             "geometry_fuse",
             "geometry_cut",
-            "geometry_manager",
-            "geometry_undo",
-            "geometry_delete",
             "select_point",
             "select_element",
             "select_edge",

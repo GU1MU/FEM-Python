@@ -1802,10 +1802,18 @@ _APPLY_DEFINITION = _tool(
                                         "height": {
                                             "type": "number",
                                             "exclusiveMinimum": 0,
+                                            "description": (
+                                                "矩形截面沿梁局部 z（Abaqus n2）"
+                                                "方向的高度"
+                                            ),
                                         },
                                         "width": {
                                             "type": "number",
                                             "exclusiveMinimum": 0,
+                                            "description": (
+                                                "矩形截面沿梁局部 y（Abaqus n1）"
+                                                "方向的宽度"
+                                            ),
                                         },
                                     }
                                 ),

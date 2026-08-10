@@ -15,7 +15,7 @@ from fem.core.model import (
     NodalLoad,
 )
 from fem.solvers import static_linear
-from fem.geometry import RectangleGeometry
+from fem.geometry import BooleanGeometry, DiskGeometry, RectangleGeometry
 import fem_gui.main_window as main_window_module
 from fem_gui.analysis_definition_dialogs import (
     DisplacementDialog,
@@ -133,6 +133,49 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
     assert window.document.parts[0].name == "Mount"
     assert window.model_tree.topLevelItem(0).text(0) == "Bracket"
     assert window.model_tree.topLevelItem(0).child(0).text(0) == "Mount"
+    window.close()
+
+
+def test_native_feature_information_uses_tree_labels_without_summary(
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    window._apply_session_delta(
+        window.session.new_native_project("模型-1")
+    )
+    recipe = BooleanGeometry(
+        "Cut",
+        "cut",
+        RectangleGeometry("Plate", 4.0, 2.0),
+        DiskGeometry("Hole", 0.25),
+    )
+    window._apply_session_delta(
+        window.session.replace_native_geometry_inputs(
+            (NativePart(geometry_recipe=recipe),),
+            recipe,
+        )
+    )
+
+    part = window.model_tree.topLevelItem(0).child(0)
+    feature = part.child(part.childCount() - 2)
+    assert feature.text(0) == "切除-1"
+    assert feature.toolTip(0) == ""
+
+    information = []
+    monkeypatch.setattr(
+        window,
+        "_show_information",
+        lambda title, rows: information.append((title, rows)),
+    )
+    window._show_entry_information(
+        "feature",
+        feature.data(0, ROLE_KEY),
+    )
+
+    assert information == [
+        ("特征信息", [("名称", "切除-1"), ("类型", "切除")])
+    ]
     window.close()
 
 

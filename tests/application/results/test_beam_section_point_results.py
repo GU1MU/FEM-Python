@@ -137,10 +137,10 @@ def test_four_point_keys_query_same_beam_end_without_crossing_points() -> None:
         )
 
     assert [row[:3] for row in queried] == [
-        (1, 1.0, 0.5),
-        (2, -1.0, 0.5),
-        (3, -1.0, -0.5),
-        (4, 1.0, -0.5),
+        (1, 0.5, 1.0),
+        (2, -0.5, 1.0),
+        (3, -0.5, -1.0),
+        (4, 0.5, -1.0),
     ]
     assert len({row[3] for row in queried}) > 1
 

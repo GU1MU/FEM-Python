@@ -328,8 +328,8 @@ def _direct_two_span_model() -> FEMModel:
                 "STEEL",
                 "rectangle",
                 {
-                    "height": 0.20,
-                    "width": 0.10,
+                    "height": 0.10,
+                    "width": 0.20,
                     BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 1.0),
                 },
             )

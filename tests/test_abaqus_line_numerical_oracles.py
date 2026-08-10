@@ -65,15 +65,15 @@ def test_rect_a_b_axes_match_timoshenko_tip_deflection_oracle(
     p1_result = solve(p1_model, "LOAD")
     p2_result = solve(p2_model, "LOAD")
 
-    height = 0.20
-    width = 0.10
+    width = 0.20
+    height = 0.10
     length = 2.0
     modulus = 210.0e9
     poisson_ratio = 0.3
     load = 120.0
     area = height * width
-    i_yy = height * width**3 / 12.0
-    i_zz = width * height**3 / 12.0
+    i_yy = width * height**3 / 12.0
+    i_zz = height * width**3 / 12.0
     shear_modulus = modulus / (2.0 * (1.0 + poisson_ratio))
     shear_factor = 10.0 * (1.0 + poisson_ratio) / (
         12.0 + 11.0 * poisson_ratio

@@ -755,7 +755,7 @@ def test_beam_lazy_recovery_uses_owned_load_context_after_caller_mutation() -> N
     ).field(section_key)
 
     assert [row[2] for row in section.values] == pytest.approx(
-        [24.0, 24.0]
+        [48.0, 48.0]
     )
 
 

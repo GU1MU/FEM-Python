@@ -8,7 +8,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
 
-from fem_gui.icons import _ICON_DIR, _PNG_FILES, icon
+from fem_gui.icons import _ICON_DIR, _PNG_FILES, _VECTOR_VIEW_ICONS, icon
 
 
 FIRST_BATCH = (
@@ -118,6 +118,18 @@ def test_view_actions_map_to_coordinate_plane_pngs():
     assert _PNG_FILES["left"] == "view_yz.png"
     assert _PNG_FILES["right"] == "view_zy.png"
     assert _PNG_FILES["iso"] == "view_xyz.png"
+
+
+def test_orthographic_view_actions_prefer_directionally_exact_vector_icons():
+    assert _VECTOR_VIEW_ICONS == {
+        "front",
+        "back",
+        "left",
+        "right",
+        "top",
+        "bottom",
+    }
+    assert "iso" not in _VECTOR_VIEW_ICONS
 
 
 def test_png_sources_have_real_transparent_corners():

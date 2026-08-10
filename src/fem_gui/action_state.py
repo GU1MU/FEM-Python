@@ -472,12 +472,13 @@ def derive_action_availability(
                 GuiActionKey.GEOMETRY_CUT,
             }
             enabled = (
-                len(recipe.bodies) >= 2
-                if is_boolean
-                else selected_body_count == 1
-            ) and not busy and not editor_active
+                has_native_geometry
+                and (is_boolean or selected_body_count == 1)
+                and not busy
+                and not editor_active
+            )
             reason = (
-                "实体布尔需要至少两个实体"
+                "请先完成当前几何编辑"
                 if is_boolean
                 else "请先选择一个实体"
             )
@@ -489,23 +490,7 @@ def derive_action_availability(
             and (
                 key
                 not in {GuiActionKey.GEOMETRY_FUSE, GuiActionKey.GEOMETRY_CUT}
-                or (
-                    geometry_dimension(recipe) == 2
-                    or (
-                        geometry_dimension(recipe) == 3
-                        and len(
-                            tuple(
-                                part
-                                for part in snapshot.parts
-                                if (
-                                    not part.suppressed
-                                    and part.dimension == 3
-                                )
-                            )
-                        )
-                        >= 2
-                    )
-                )
+                or geometry_dimension(recipe) in {2, 3}
             )
             and (
                 key
@@ -516,7 +501,7 @@ def derive_action_availability(
             (
                 "请先完成当前几何编辑"
                 if editor_active
-                else "请选择一个未抑制部件；实体布尔需要两个三维部件"
+                else "合并和切除需要二维面或三维实体"
             ),
         )
     extrude_enabled = False

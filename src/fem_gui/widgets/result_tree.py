@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
 
@@ -44,6 +46,7 @@ class ResultTree(QTreeWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.itemDoubleClicked.connect(self._activate_item)
         self._catalog: ResultCatalog | None = None
+        self._section_point_labels: dict[int, str] = {}
         self.clear_result()
 
     @property
@@ -54,11 +57,18 @@ class ResultTree(QTreeWidget):
 
     def clear_result(self) -> None:
         self._catalog = None
+        self._section_point_labels = {}
         self.clear()
         item = QTreeWidgetItem(["尚无分析结果"])
         self.addTopLevelItem(item)
 
-    def set_catalog(self, step_name: str, catalog: ResultCatalog) -> None:
+    def set_catalog(
+        self,
+        step_name: str,
+        catalog: ResultCatalog,
+        *,
+        section_point_labels: Mapping[int, str] | None = None,
+    ) -> None:
         """Populate the tree from one immutable application catalog."""
 
         if type(step_name) is not str:
@@ -72,6 +82,7 @@ class ResultTree(QTreeWidget):
         expanded_paths = self._expanded_item_paths() if preserve_expansion else None
         self.clear()
         self._catalog = None
+        self._section_point_labels = dict(section_point_labels or {})
         root = QTreeWidgetItem(["分析结果"])
         step = QTreeWidgetItem([step_name or "当前分析步"])
         root.addChild(step)
@@ -87,7 +98,8 @@ class ResultTree(QTreeWidget):
                     availability,
                     catalog.default_selection,
                     field_label=result_field_position_label(
-                        availability.descriptor.field_id
+                        availability.descriptor.field_id,
+                        section_point_labels=self._section_point_labels,
                     ),
                 )
                 beam_stress_item.addChild(field_item)

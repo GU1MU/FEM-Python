@@ -68,6 +68,11 @@ class PlanarBooleanController:
     def request_target_selection(self) -> None:
         self.selecting_target = True
 
+    def confirm_target_selection(self) -> None:
+        if self.target_face_id is None:
+            raise ValueError("请先选择目标面")
+        self.selecting_target = False
+
     def clear_target(self) -> None:
         """Clear the detached target selection without changing the Session."""
 

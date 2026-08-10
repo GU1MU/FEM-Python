@@ -192,6 +192,43 @@ def test_empty_sketch_shows_xy_axes_origin_and_cursor_coordinates(
     viewport.close()
 
 
+def test_entering_xy_sketch_places_positive_x_right_and_positive_y_up(
+    monkeypatch,
+) -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._ensure_plotter = lambda: True
+    viewport._sketch_grid_spacing = 1.0
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+    )
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport_module, "is_offscreen_environment", lambda: False)
+
+    viewport._show_sketch_draft(render=True, reset_camera=True)
+
+    display = viewport._world_points_to_display(
+        np.asarray(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+        )
+    )
+    assert display is not None
+    origin, positive_x, positive_y = display
+    assert positive_x[0] > origin[0]
+    assert positive_y[1] > origin[1]
+    plotter.close()
+    viewport.close()
+
+
 def test_sketch_constraint_state_selection_and_hover_have_distinct_colors(
     monkeypatch,
 ) -> None:

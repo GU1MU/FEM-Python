@@ -69,11 +69,12 @@ class FaceSketchBooleanDialog(QDialog):
         validator.setNotation(QDoubleValidator.Notation.StandardNotation)
         self.distance_edit.setValidator(validator)
         self.distance_edit.setAccessibleName("拉伸距离")
+        self.distance_label = QLabel("距离：", self)
 
         form = QFormLayout()
         form.addRow("操作：", self.operation_combo)
         form.addRow("方向：", self.direction_combo)
-        form.addRow("距离：", self.distance_edit)
+        form.addRow(self.distance_label, self.distance_edit)
 
         self.profile_tree = QTreeWidget(self)
         self.profile_tree.setObjectName("faceSketchBooleanProfiles")
@@ -177,6 +178,30 @@ class FaceSketchBooleanDialog(QDialog):
                 else Qt.CheckState.Unchecked,
             )
         self._parameters_changed()
+
+    def fix_operation(self, operation: FaceSketchBooleanOperation) -> None:
+        if type(operation) is not FaceSketchBooleanOperation:
+            raise TypeError("operation must be a FaceSketchBooleanOperation")
+        index = self.operation_combo.findData(operation.value)
+        if index < 0:
+            raise ValueError("拉伸布尔操作不可用")
+        self.operation_combo.setCurrentIndex(index)
+        self.operation_combo.setEnabled(False)
+        self.distance_label.setText(
+            "合并高度："
+            if operation is FaceSketchBooleanOperation.FUSE
+            else "切除深度："
+        )
+        self.distance_edit.setAccessibleName(
+            "合并高度"
+            if operation is FaceSketchBooleanOperation.FUSE
+            else "切除深度"
+        )
+        self.setWindowTitle(
+            "拉伸合并"
+            if operation is FaceSketchBooleanOperation.FUSE
+            else "拉伸切除"
+        )
 
     def parameters(self) -> FaceSketchBooleanParameters | None:
         text = self.distance_edit.text().strip()

@@ -20,7 +20,11 @@ from fem.geometry import (
     WireMember,
     WirePoint,
 )
-from fem_gui.geometry_preview import build_geometry_preview
+from fem_gui.geometry_preview import (
+    GeometryPreview,
+    build_geometry_preview,
+    namespace_part_geometry_preview,
+)
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.planar_boolean import PlanarBooleanController
@@ -187,14 +191,21 @@ def test_planar_boolean_target_pick_is_persistently_highlighted(
     window.cut_geometry()
     bar = window.viewport_panel.planar_boolean_face_bar
     assert window.viewport_panel._active_bottom_overlay is bar
-    assert "切除" in bar.prompt_label.text()
+    assert bar.prompt_label.text() == "请选择目标面"
+    assert not bar.confirm_button.isEnabled()
     target = LogicalEntityRef("face:domain")
 
     assert window._assign_planar_boolean_reference(target)
 
     assert window._selected_geometry_refs == {target}
     assert highlighted[-1] == (target,)
-    assert window.viewport_panel.planar_boolean_face_bar.isHidden()
+    assert window.viewport_panel._active_bottom_overlay is bar
+    assert bar.confirm_button.isEnabled()
+    assert window._sketch_editor_controller is None
+
+    bar.confirm_button.click()
+
+    assert bar.isHidden()
     assert window.viewport_panel._active_bottom_overlay is None
     assert window._sketch_editor_controller is not None
     window.cancel_planar_boolean()
@@ -217,7 +228,7 @@ def test_planar_boolean_face_prompt_cancel_restores_original_state() -> None:
     window.close()
 
 
-def test_2d_boolean_with_preselected_face_enters_tool_sketch_without_panel(
+def test_2d_boolean_with_preselected_face_waits_for_confirmation(
     monkeypatch,
 ) -> None:
     _application()
@@ -241,7 +252,14 @@ def test_2d_boolean_with_preselected_face_enters_tool_sketch_without_panel(
     assert controller.target_face_id == "face:domain"
     assert highlighted[-1] == (target,)
     assert window.planar_boolean_panel.isHidden()
-    assert window.viewport_panel.planar_boolean_face_bar.isHidden()
+    bar = window.viewport_panel.planar_boolean_face_bar
+    assert window.viewport_panel._active_bottom_overlay is bar
+    assert bar.confirm_button.isEnabled()
+    assert window._sketch_editor_controller is None
+
+    bar.confirm_button.click()
+
+    assert bar.isHidden()
     assert window._sketch_editor_controller is not None
     assert window.document.geometry_recipe == source
     assert not window.actions["geometry_cut"].isEnabled()
@@ -307,6 +325,7 @@ def test_tool_sketch_finish_requests_automatic_boolean_commit(
     )
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
 
     draft = window._sketch_editor_controller
     assert draft is not None
@@ -336,6 +355,7 @@ def test_successful_automatic_preview_immediately_requests_commit(
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
     controller = window._planar_boolean_controller
     assert controller is not None
     controller.set_tool_recipe(_tool_sketch())
@@ -352,7 +372,7 @@ def test_successful_automatic_preview_immediately_requests_commit(
     monkeypatch.setattr(
         window,
         "finish_planar_boolean",
-        lambda: commit_calls.append(True),
+        lambda **kwargs: commit_calls.append(kwargs),
     )
 
     def complete_start(
@@ -371,7 +391,8 @@ def test_successful_automatic_preview_immediately_requests_commit(
     window._refresh_planar_boolean_preview(auto_commit=True)
 
     assert window._planar_boolean_preview_result is payload
-    assert commit_calls == [True]
+    assert len(commit_calls) == 1
+    assert type(commit_calls[0]["preview"]) is GeometryPreview
     window.cancel_planar_boolean()
     window.close()
 
@@ -411,18 +432,74 @@ def test_automatic_finish_commits_without_reopening_a_panel(monkeypatch) -> None
 
     window.finish_planar_boolean()
 
-    assert commits == [
-        (
-            source,
-            "二维布尔后的",
-            {
-                "base_session_revision": controller.base_session_revision,
-                "preserve_editor": True,
-            },
-        )
-    ]
+    assert len(commits) == 1
+    recipe, label, kwargs = commits[0]
+    assert recipe == source
+    assert label == "二维布尔后的"
+    assert kwargs["base_session_revision"] == controller.base_session_revision
+    assert kwargs["preserve_editor"] is True
+    assert kwargs["geometry_preview"].face_logical_ids == ("face:P1/domain",)
     assert window._planar_boolean_controller is None
     assert window.planar_boolean_panel.isHidden()
+    window.close()
+
+
+def test_committed_exact_preview_survives_full_projection_rebuild(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        RectangleGeometry("Initial", 3.0, 2.0),
+        "测试",
+    )
+    updated = RectangleGeometry("Updated", 4.0, 2.0)
+    part_id = str(window.document.active_part_id)
+    exact = namespace_part_geometry_preview(
+        part_id,
+        build_geometry_preview(updated),
+    )
+    shown = []
+    monkeypatch.setattr(
+        window.viewport,
+        "show_geometry_preview",
+        lambda preview, **_kwargs: shown.append(preview),
+    )
+
+    assert window._set_native_geometry(
+        updated,
+        "精确预览测试",
+        geometry_preview=exact,
+    )
+    cache = window._geometry_preview_cache
+    assert cache is not None
+    assert cache[1] == window._native_part_preview_cache_key(window.document)
+    assert cache[2] is exact
+
+    def reject_fallback(_parts):
+        raise AssertionError("当前精确预览不应回退到配方重建")
+
+    monkeypatch.setattr(
+        main_window_module,
+        "build_multi_part_geometry_preview",
+        reject_fallback,
+    )
+    exact_rebuilds = []
+    monkeypatch.setattr(
+        window,
+        "_recipe_contains_strict_boolean",
+        lambda _recipe: True,
+    )
+    monkeypatch.setattr(
+        window,
+        "_schedule_exact_boolean_preview",
+        lambda *_args: exact_rebuilds.append(True),
+    )
+
+    window._rebuild_full_projection()
+
+    assert shown == [exact, exact]
+    assert exact_rebuilds == []
     window.close()
 
 
@@ -435,6 +512,7 @@ def test_fuse_tool_accepts_arc_closed_by_target_edge_and_tangent_rectangle(
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.fuse_geometry()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
     monkeypatch.setattr(
         window,
         "_refresh_planar_boolean_preview",
@@ -482,6 +560,7 @@ def test_tool_sketch_cancel_aborts_the_guided_boolean_workflow() -> None:
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
 
     assert window._sketch_editor_controller is not None
     window.cancel_sketch_geometry()
@@ -569,6 +648,7 @@ def test_automatic_preview_failure_reopens_the_tool_sketch(monkeypatch) -> None:
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
     controller = window._planar_boolean_controller
     assert controller is not None
     controller.set_tool_recipe(_tool_sketch())
@@ -605,7 +685,7 @@ def test_tool_sketch_revision_conflict_keeps_latest_committed_geometry(
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
-    window._edit_planar_boolean_tool()
+    window.viewport_panel.planar_boolean_face_bar.confirm_button.click()
     draft = window._sketch_editor_controller
     assert draft is not None
     draft.add_rectangle(0.5, 0.5, 1.5, 1.5)

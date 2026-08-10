@@ -253,8 +253,8 @@ def test_literal_standard_b31_main_window_open_check_solve_result(
         section = window.document.sections[0]
         assert section.section_type == "rectangle"
         assert section.properties == {
-            "height": pytest.approx(0.20),
-            "width": pytest.approx(0.10),
+            "height": pytest.approx(0.10),
+            "width": pytest.approx(0.20),
         }
         assignment = window.document.assignments[0]
         assert assignment.region_name == "BEAM"

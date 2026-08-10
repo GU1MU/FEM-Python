@@ -22,7 +22,11 @@ _SECTION_FIELDS = {
 
 @dataclass(frozen=True)
 class Beam2Section:
-    """Validated Beam2 section properties and source dimensions."""
+    """Validated Beam2 section properties and source dimensions.
+
+    For rectangular sections, ``width`` spans local ``y`` and ``height``
+    spans local ``z``.
+    """
 
     section_type: str
     area: float
@@ -255,8 +259,8 @@ def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
     return Beam2Section(
         section_type=section_type,
         area=height * width,
-        Iyy=height * width**3 / 12.0,
-        Izz=width * height**3 / 12.0,
+        Iyy=width * height**3 / 12.0,
+        Izz=height * width**3 / 12.0,
         J=_rectangle_torsion_constant(height, width),
         height=height,
         width=width,
@@ -288,8 +292,8 @@ def axial_stress_extrema(
     else:
         assert section.height is not None and section.width is not None
         increment = (
-            abs(forces[1] / section.Iyy) * section.width / 2.0
-            + abs(forces[2] / section.Izz) * section.height / 2.0
+            abs(forces[1] / section.Iyy) * section.height / 2.0
+            + abs(forces[2] / section.Izz) * section.width / 2.0
         )
     maximum = axial + increment
     minimum = axial - increment
@@ -302,16 +306,17 @@ def default_section_points(
     """Return the four canonical Beam2 section points in ring order.
 
     Rectangles start at ``(+y, +z)`` and proceed from local ``+y`` toward
-    local ``+z``.  Circular sections start at ``+y`` and follow the same
-    sense through ``+z``.  Circular points always lie on the outer radius.
+    local ``+z``, with ``y = +/-width/2`` and ``z = +/-height/2``.  Circular
+    sections start at ``+y`` and follow the same sense through ``+z``.
+    Circular points always lie on the outer radius.
     """
 
     if not isinstance(section, Beam2Section):
         raise TypeError("section must be Beam2Section")
     if section.section_type == "rectangle":
         assert section.height is not None and section.width is not None
-        half_y = section.height / 2.0
-        half_z = section.width / 2.0
+        half_y = section.width / 2.0
+        half_z = section.height / 2.0
         coordinates = (
             (half_y, half_z),
             (-half_y, half_z),

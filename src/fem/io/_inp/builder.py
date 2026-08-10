@@ -1544,7 +1544,9 @@ def _map_beam_section(
             2,
             location=geometry_location,
         )
-        height, width = dimensions
+        # Abaqus RECT dimensions are ``a`` along n1 and ``b`` along n2.
+        # Beam2 maps n1 to local y (width) and n2 to local z (height).
+        width, height = dimensions
         properties: dict[str, Any] = {
             "height": height,
             "width": width,

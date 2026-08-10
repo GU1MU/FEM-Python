@@ -412,8 +412,8 @@ def test_beam_section_and_line_load_use_the_common_inspection_service():
         service.inspect("element", 10).pages[1].tables[1].rows
     )
     assert element_properties["截面类型"] == "rectangle"
-    assert element_properties["矩形高度（局部 y）"] == "0.1"
-    assert element_properties["矩形宽度（局部 z）"] == "0.02"
+    assert element_properties["矩形高度（局部 z）"] == "0.1"
+    assert element_properties["矩形宽度（局部 y）"] == "0.02"
     load_fields = _fields(service.inspect("line_load", (0, 0)).pages[0])
     assert (
         load_fields["坐标系"]
@@ -505,8 +505,8 @@ def test_assignment_and_element_inspection_use_effective_frame_query(
     assert assignment["有效元素数量"] == "1"
     assert assignment["无效元素数量"] == "0"
     assert assignment["validity"] == "valid"
-    assert assignment["矩形高度（local y）"] == "0.1"
-    assert assignment["矩形宽度（local z）"] == "0.02"
+    assert assignment["矩形高度（local z）"] == "0.1"
+    assert assignment["矩形宽度（local y）"] == "0.02"
     assert service.selection_for("assignment", 0).element_ids == (10,)
 
     frame = _fields(

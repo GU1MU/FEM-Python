@@ -21,10 +21,15 @@ from fem.application.results import (
     project_scalar_field_topology,
 )
 from fem.core.model import OutputRequest
+from fem.elements.beam_section import BeamSectionPoint
 from fem_gui.inspection_service import InspectionService
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
 from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
+from fem_gui.result_presentation import (
+    result_provider_section_point_labels,
+    section_point_relative_position_label,
+)
 from fem_gui.visualization.result_renderer import build_result_render_payload
 from fem_gui.widgets.result_tree import ResultTree
 from fem_gui.widgets.viewport import FEMViewport
@@ -48,10 +53,10 @@ _SECTION_COMPONENTS = (
     "S12AbsMax",
 )
 _POSITION_LABELS = (
-    "截面点 1",
-    "截面点 2",
-    "截面点 3",
-    "截面点 4",
+    "右上",
+    "左上",
+    "左下",
+    "右下",
     "截面",
 )
 
@@ -108,12 +113,48 @@ def _combo_texts(combo) -> tuple[str, ...]:
     return tuple(combo.itemText(index) for index in range(combo.count()))
 
 
+def test_circle_sections_keep_numbered_section_point_names() -> None:
+    for section_type, dimensions in (
+        ("solid_circle", {"radius": 1.0}),
+        ("hollow_circle", {"outer_radius": 1.0, "inner_radius": 0.5}),
+    ):
+        result = make_beam_field_characterization_result()
+        result.model.mesh.elements[0].props = {
+            "E": 100.0,
+            "nu": 0.25,
+            "section_type": section_type,
+            **dimensions,
+        }
+        provider = build_result_provider(
+            ResultSourceKey(
+                f"{section_type}-gui-result",
+                f"{section_type}-gui-session",
+                f"{section_type}-gui-artifact",
+                1,
+                "Step-1",
+                f"{section_type}-gui-run",
+            ),
+            result,
+        )
+
+        assert result_provider_section_point_labels(provider) == {}
+
+    assert section_point_relative_position_label(
+        BeamSectionPoint(1, 1.0, 0.0)
+    ) == "截面点 1"
+
+
 def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     _application()
     _result, provider = _provider()
     catalog = provider.catalog()
     tree = ResultTree()
-    tree.set_catalog("Step-1", catalog)
+    section_point_labels = result_provider_section_point_labels(provider)
+    tree.set_catalog(
+        "Step-1",
+        catalog,
+        section_point_labels=section_point_labels,
+    )
     step = tree.topLevelItem(0).child(0)
     stress = next(
         step.child(index)
@@ -155,7 +196,11 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     stress.setExpanded(True)
     position_items[0].setExpanded(True)
     position_items[1].setExpanded(False)
-    tree.set_catalog("Step-1", catalog)
+    tree.set_catalog(
+        "Step-1",
+        catalog,
+        section_point_labels=section_point_labels,
+    )
     refreshed_step = tree.topLevelItem(0).child(0)
     refreshed_stress = next(
         refreshed_step.child(index)
@@ -258,6 +303,7 @@ def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
     dialog = ResultCsvExportDialog(
         provider.catalog(),
         current_selection=selected,
+        section_point_labels=result_provider_section_point_labels(provider),
     )
     stress_index = dialog.variable_combo.findData(ResultVariable.S)
     dialog.variable_combo.setCurrentIndex(stress_index)
@@ -303,12 +349,12 @@ def test_probe_and_inspection_expose_section_point_location_identity() -> None:
     assert tuple(
         dialog.table.horizontalHeaderItem(index).text()
         for index in range(dialog.table.columnCount())
-    )[5:8] == ("截面点", "截面局部 Y", "截面局部 Z")
+    )[5:8] == ("截面位置", "截面局部 Y", "截面局部 Z")
     for row, record in enumerate(query_result.records):
         section_point = record.location.section_point
         assert section_point is not None
         assert dialog.record_at(row) == record
-        assert dialog.table.item(row, 5).text() == "2"
+        assert dialog.table.item(row, 5).text() == "左上"
         assert float(dialog.table.item(row, 6).text()) == section_point.local_y
         assert float(dialog.table.item(row, 7).text()) == section_point.local_z
 
@@ -321,15 +367,15 @@ def test_probe_and_inspection_expose_section_point_location_identity() -> None:
     table = next(
         table
         for table in result_page.tables
-        if table.title == "应力 S（截面点 2）（就绪）"
+        if table.title == "应力 S（左上）（就绪）"
     )
     assert inspected.fields
     assert table.columns[7:10] == (
-        "截面点",
+        "截面位置",
         "截面局部 Y",
         "截面局部 Z",
     )
-    assert {row[7] for row in table.rows} == {"2"}
+    assert {row[7] for row in table.rows} == {"左上"}
     dialog.close()
 
 
@@ -368,10 +414,10 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
 
     viewport = FEMViewport()
     assert viewport._contour_bar_args(payloads[0])["title"] == (
-        "S, Mises（截面点 2）"
+        "S, Mises（左上）"
     )
     assert viewport._contour_bar_args(payloads[1])["title"] == (
-        "S, Mises（截面点 3）"
+        "S, Mises（左下）"
     )
     location = next(
         location
@@ -379,6 +425,6 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
         if location is not None and location.section_point is not None
     )
     identity = viewport._result_location_identity(location)
-    assert "截面点 2" in identity
+    assert "截面位置 左上" in identity
     assert "截面坐标" in identity
     viewport.close()

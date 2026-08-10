@@ -8,9 +8,16 @@ from PySide6.QtWidgets import QApplication
 import pytest
 
 from fem.application import NativePart
-from fem.geometry import BoxGeometry, LogicalEntityRef, MovedGeometry
+from fem.geometry import (
+    BoxGeometry,
+    FaceSketchBooleanOperation,
+    LogicalEntityRef,
+    MovedGeometry,
+)
+from fem_gui.face_sketch_boolean_dialog import FaceSketchBooleanDialog
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.part_boolean import PartBooleanController
+from fem_gui.sketch_editor import SketchDraftController
 from fem_gui.widgets.boolean_feature_panel import BooleanFeaturePanel
 
 
@@ -80,7 +87,7 @@ def test_panel_uses_part_terminology_and_result_name() -> None:
     panel.close()
 
 
-def test_viewport_operand_pick_does_not_change_session_revision(
+def test_3d_boolean_target_face_pick_does_not_change_session_revision(
     monkeypatch,
 ) -> None:
     _application()
@@ -90,29 +97,85 @@ def test_viewport_operand_pick_does_not_change_session_revision(
         BoxGeometry("目标", 2.0, 1.0, 1.0),
         "测试",
     )
-    window._apply_session_delta(
-        window.session.add_native_part(
-            MovedGeometry(
-                BoxGeometry("工具", 1.0, 1.0, 1.0),
-                1.5,
-                0.0,
-                0.0,
-            ),
-            name="工具部件",
-        )
+    monkeypatch.setattr(
+        window,
+        "_face_sketch_selection_is_valid",
+        lambda: bool(window._selected_geometry_refs),
     )
+    assert window.actions["geometry_cut"].isEnabled()
     window.cut_geometry()
-    controller = window._body_boolean_controller
-    assert controller is not None
+    bar = window.viewport_panel.planar_boolean_face_bar
+    assert window._body_boolean_controller is None
+    assert window._solid_face_boolean_operation is (
+        FaceSketchBooleanOperation.CUT
+    )
+    assert window.viewport_panel._active_bottom_overlay is bar
+    assert not bar.confirm_button.isEnabled()
     base_revision = window.document.session_revision
-    monkeypatch.setattr(window, "_refresh_body_boolean_preview", lambda: None)
 
-    window._request_body_boolean_selection("tool")
     window._on_geometry_entity_pick(
-        LogicalEntityRef("body:P1/domain")
+        LogicalEntityRef("face:P1/top")
     )
 
-    assert controller.tool_part_id == "P1"
+    assert window._selected_geometry_refs == {
+        LogicalEntityRef("face:P1/top")
+    }
+    assert bar.confirm_button.isEnabled()
     assert window.document.session_revision == base_revision
-    window.cancel_body_boolean()
+    launches = []
+    monkeypatch.setattr(
+        window,
+        "start_face_sketch_boolean",
+        lambda: launches.append(True),
+    )
+
+    bar.confirm_button.click()
+
+    assert launches == [True]
+    assert bar.isHidden()
+    window._cancel_solid_face_boolean()
+    window.close()
+
+
+def test_3d_boolean_parameter_dialog_locks_requested_operation() -> None:
+    _application()
+    dialog = FaceSketchBooleanDialog()
+
+    dialog.fix_operation(FaceSketchBooleanOperation.CUT)
+
+    assert dialog.operation_combo.currentData() == "cut"
+    assert not dialog.operation_combo.isEnabled()
+    assert dialog.windowTitle() == "拉伸切除"
+    assert dialog.distance_label.text() == "切除深度："
+    dialog.close()
+
+
+def test_3d_cut_parameters_default_toward_the_solid(monkeypatch) -> None:
+    _application()
+    window = FEMMainWindow()
+    draft = SketchDraftController("工具草图")
+    draft.add_rectangle(0.0, 0.0, 1.0, 1.0)
+    window._face_sketch_controller = object()
+    window._solid_face_boolean_operation = FaceSketchBooleanOperation.CUT
+    changed = []
+    monkeypatch.setattr(
+        window,
+        "_face_sketch_boolean_parameters_changed",
+        lambda parameters: changed.append(parameters),
+    )
+
+    window._open_face_sketch_boolean_dialog(draft.to_sketch_geometry())
+
+    dialog = window._face_sketch_dialog
+    assert dialog is not None
+    parameters = dialog.parameters()
+    assert parameters is not None
+    assert parameters.operation is FaceSketchBooleanOperation.CUT
+    assert parameters.direction.value == "inward"
+    assert not dialog.operation_combo.isEnabled()
+    assert changed == [parameters]
+    dialog.close_for_workflow()
+    window._face_sketch_dialog = None
+    window._face_sketch_controller = None
+    window._solid_face_boolean_operation = None
     window.close()

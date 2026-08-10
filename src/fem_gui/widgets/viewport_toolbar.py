@@ -147,8 +147,9 @@ class ScopeCreationBar(QWidget):
 
 
 class PlanarBooleanFaceBar(QWidget):
-    """One-step target-Face prompt for a planar Boolean workflow."""
+    """One-step target-Face prompt shared by 2D and 3D Boolean workflows."""
 
+    confirmRequested = Signal()
     cancelRequested = Signal()
     activeChanged = Signal(bool)
 
@@ -158,6 +159,10 @@ class PlanarBooleanFaceBar(QWidget):
         self.setAutoFillBackground(True)
         self.prompt_label = QLabel(self)
         self.prompt_label.setObjectName("planarBooleanFacePrompt")
+        self.confirm_button = QPushButton("确定", self)
+        self.confirm_button.setObjectName("planarBooleanFaceConfirm")
+        self.confirm_button.setEnabled(False)
+        self.confirm_button.clicked.connect(self.confirmRequested)
         self.cancel_button = QPushButton("取消", self)
         self.cancel_button.setObjectName("planarBooleanFaceCancel")
         self.cancel_button.clicked.connect(self.cancelRequested)
@@ -166,18 +171,21 @@ class PlanarBooleanFaceBar(QWidget):
         layout.setSpacing(8)
         layout.addWidget(self.prompt_label, 1)
         layout.addWidget(self.cancel_button)
+        layout.addWidget(self.confirm_button)
         self.hide()
 
     def begin(self, operation: str) -> None:
-        operation_label = {"fuse": "合并", "cut": "切除"}.get(str(operation))
-        if operation_label is None:
-            raise ValueError("二维布尔操作必须是合并或切除")
-        self.prompt_label.setText(
-            f"请选择用于{operation_label}的一个目标面；选择后将进入工具草图"
-        )
+        if str(operation) not in {"fuse", "cut"}:
+            raise ValueError("布尔操作必须是合并或切除")
+        self.prompt_label.setText("请选择目标面")
+        self.confirm_button.setEnabled(False)
         self.activeChanged.emit(True)
 
+    def set_selection_ready(self, ready: bool) -> None:
+        self.confirm_button.setEnabled(bool(ready))
+
     def finish(self) -> None:
+        self.confirm_button.setEnabled(False)
         self.hide()
         self.activeChanged.emit(False)
 

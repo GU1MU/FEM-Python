@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from numbers import Real
@@ -30,6 +30,8 @@ from .result_presentation import (
     result_field_has_section_points,
     result_field_position_label,
     result_field_is_visible,
+    result_provider_section_point_labels,
+    section_point_relative_position_label,
 )
 
 
@@ -70,7 +72,7 @@ _RESULT_COLUMNS = (
 )
 _SECTION_POINT_RESULT_COLUMNS = (
     *_RESULT_COLUMNS[:7],
-    "截面点",
+    "截面位置",
     "截面局部 Y",
     "截面局部 Z",
     *_RESULT_COLUMNS[7:],
@@ -570,10 +572,14 @@ class InspectionService:
         )
         if not fields:
             return None
+        section_point_labels = result_provider_section_point_labels(provider)
         return InspectionPage(
             "结果",
             tables=tuple(
-                _provider_result_table(field_entry)
+                _provider_result_table(
+                    field_entry,
+                    section_point_labels=section_point_labels,
+                )
                 for field_entry in fields
             ),
         )
@@ -778,11 +784,11 @@ class InspectionService:
         ):
             fields.extend(
                 (
-                    ("矩形高度（local y）", format_number(properties.get("height"))),
-                    ("矩形宽度（local z）", format_number(properties.get("width"))),
+                    ("矩形高度（local z）", format_number(properties.get("height"))),
+                    ("矩形宽度（local y）", format_number(properties.get("width"))),
                     (
                         "截面轴映射",
-                        "height → local y；width → local z",
+                        "width → local y；height → local z",
                     ),
                 )
             )
@@ -1075,6 +1081,8 @@ def _require_result_provider(
 
 def _provider_result_table(
     field_entry: ResultInspectionField,
+    *,
+    section_point_labels: Mapping[int, str] | None = None,
 ) -> InspectionTable:
     if type(field_entry) is not ResultInspectionField:
         raise TypeError(
@@ -1091,7 +1099,10 @@ def _provider_result_table(
         else _RESULT_COLUMNS
     )
     state_label = _RESULT_STATE_LABELS[availability.state]
-    field_label = _localized_result_field(descriptor)
+    field_label = _localized_result_field(
+        descriptor,
+        section_point_labels=section_point_labels,
+    )
     if descriptor.unit_label is not None:
         field_label = f"{field_label} [{descriptor.unit_label}]"
     title = f"{field_label}（{state_label}）"
@@ -1137,10 +1148,12 @@ def _provider_result_table(
             location = record.location
             section_values = (
                 (
-                    format_number(
-                        None
+                    (
+                        "—"
                         if location.section_point is None
-                        else location.section_point.number
+                        else section_point_relative_position_label(
+                            location.section_point
+                        )
                     ),
                     format_number(
                         None
@@ -1193,7 +1206,11 @@ def _localized_result_component(component: str, variable: str) -> str:
     return _RESULT_COMPONENT_LABELS.get(component, component)
 
 
-def _localized_result_field(descriptor: Any) -> str:
+def _localized_result_field(
+    descriptor: Any,
+    *,
+    section_point_labels: Mapping[int, str] | None = None,
+) -> str:
     field_id = descriptor.field_id
     base = _RESULT_VARIABLE_LABELS.get(
         field_id.variable.value,
@@ -1201,7 +1218,10 @@ def _localized_result_field(descriptor: Any) -> str:
     )
     if field_id.position is FieldPosition.NODE:
         return base
-    position = result_field_position_label(field_id)
+    position = result_field_position_label(
+        field_id,
+        section_point_labels=section_point_labels,
+    )
     return f"{base}（{position}）"
 
 
@@ -1272,7 +1292,7 @@ def _property_label(name: str) -> str:
         "density": "密度 ρ", "area": "截面积", "A": "截面积",
         "I": "惯性矩", "Iyy": "惯性矩 Iyy", "Izz": "惯性矩 Izz",
         "J": "扭转常数 J", "section_type": "截面类型",
-        "height": "矩形高度（局部 y）", "width": "矩形宽度（局部 z）",
+        "height": "矩形高度（局部 z）", "width": "矩形宽度（局部 y）",
         "radius": "半径", "inner_radius": "内半径", "outer_radius": "外半径",
     }.get(name, name)
 

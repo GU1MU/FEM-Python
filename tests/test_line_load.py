@@ -270,8 +270,8 @@ def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     moment_y = -qz * length**2 / 12.0
     moment_z = qy * length**2 / 12.0
     increment = (
-        abs(moment_y / section.Iyy) * section.width / 2.0
-        + abs(moment_z / section.Izz) * section.height / 2.0
+        abs(moment_y / section.Iyy) * section.height / 2.0
+        + abs(moment_z / section.Izz) * section.width / 2.0
     )
     expected = [
         (axial + increment, axial - increment, axial + increment),
@@ -379,8 +379,8 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
     section = parse_beam2_section(elem.props)
     axial_stress = axial_force / section.area
     increment = (
-        abs(moment_y / section.Iyy) * section.width / 2.0
-        + abs(moment_z / section.Izz) * section.height / 2.0
+        abs(moment_y / section.Iyy) * section.height / 2.0
+        + abs(moment_z / section.Izz) * section.width / 2.0
     )
     rows = beam_stress.nodal_envelope(result)
     recovered = [
@@ -459,7 +459,7 @@ def test_fixed_beam_uniform_line_load_recovers_bending_stress_with_zero_displace
 
     section = parse_beam2_section(model.mesh.elements[0].props)
     moment = q * 4.0**2 / 12.0
-    increment = abs(moment / section.Izz) * section.height / 2.0
+    increment = abs(moment / section.Izz) * section.width / 2.0
     assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
         [(increment, -increment, increment), (increment, -increment, increment)]
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from fem.application.results import (
@@ -158,6 +159,7 @@ class ResultCsvExportDialog(QDialog):
         catalog: ResultCatalog,
         *,
         current_selection: ScalarFieldSelection,
+        section_point_labels: Mapping[int, str] | None = None,
         parent=None,
     ) -> None:
         if type(catalog) is not ResultCatalog:
@@ -179,6 +181,7 @@ class ResultCsvExportDialog(QDialog):
         self.setMinimumWidth(520)
         self._catalog = catalog
         self._fields = fields
+        self._section_point_labels = dict(section_point_labels or {})
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -353,7 +356,10 @@ class ResultCsvExportDialog(QDialog):
             ):
                 field_ids.append(field_id)
                 self.position_combo.addItem(
-                    result_field_position_label(field_id),
+                    result_field_position_label(
+                        field_id,
+                        section_point_labels=self._section_point_labels,
+                    ),
                     field_id,
                 )
         preferred_field_id = (

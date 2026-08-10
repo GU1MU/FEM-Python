@@ -136,14 +136,24 @@ _NATIVE_FEATURE_NAMES = {
     "Rotate": "旋转",
     "Extrude": "拉伸",
     "Sweep": "扫掠",
+    "PathSweep": "路径扫掠",
     "Fuse": "合并",
     "Cut": "切除",
     "Partition": "分割",
     "Base": "基础体",
 }
 
+_NATIVE_FEATURE_KIND_NAMES = {
+    source.casefold(): translated
+    for source, translated in _NATIVE_FEATURE_NAMES.items()
+}
+_NATIVE_FEATURE_KIND_NAMES.update({
+    "face_sketch_boolean_fuse": "拉伸合并",
+    "face_sketch_boolean_cut": "拉伸切除",
+})
 
-def _native_feature_label(value: object) -> str:
+
+def native_feature_label(value: object) -> str:
     """Translate canonical native-feature names for display only."""
 
     text = str(value)
@@ -159,6 +169,13 @@ def _native_feature_label(value: object) -> str:
         ):
             return f"{prefix}{translated}{suffix}"
     return text
+
+
+def native_feature_kind_label(value: object) -> str:
+    """Translate a canonical native-feature kind for display only."""
+
+    text = str(value)
+    return _NATIVE_FEATURE_KIND_NAMES.get(text.casefold(), text)
 
 
 def _native_part_label(native_part: Any) -> str:
@@ -304,13 +321,10 @@ class ModelTree(QTreeWidget):
                 )
                 for record in native_part.feature_history:
                     feature_item = self._item(
-                        _native_feature_label(record.name),
+                        native_feature_label(record.name),
                         "feature",
                         str(record.name),
                     )
-                    summary = record.payload.get("summary")
-                    if summary:
-                        feature_item.setToolTip(0, str(summary))
                     native_item.addChild(feature_item)
                 native_item.addChild(
                     self._item(
@@ -337,7 +351,7 @@ class ModelTree(QTreeWidget):
             for row in feature_rows:
                 part.addChild(
                     self._item(
-                        _native_feature_label(row),
+                        native_feature_label(row),
                         "feature",
                         str(row),
                     )
@@ -633,13 +647,10 @@ class ModelTree(QTreeWidget):
                 )
                 for row in native_part.feature_history:
                     feature_item = self._item(
-                        _native_feature_label(row.name),
+                        native_feature_label(row.name),
                         "feature",
                         str(row.name),
                     )
-                    summary = row.payload.get("summary")
-                    if summary:
-                        feature_item.setToolTip(0, str(summary))
                     part.addChild(feature_item)
                 provenance = native_part.provenance
                 if provenance is not None:
@@ -687,7 +698,7 @@ class ModelTree(QTreeWidget):
                 for row in rows:
                     body.addChild(
                         self._item(
-                            _native_feature_label(row),
+                            native_feature_label(row),
                             "feature",
                             str(row),
                         )
@@ -698,7 +709,7 @@ class ModelTree(QTreeWidget):
             for row in feature_rows:
                 part.addChild(
                     self._item(
-                        _native_feature_label(row),
+                        native_feature_label(row),
                         "feature",
                         str(row),
                     )

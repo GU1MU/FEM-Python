@@ -24,6 +24,7 @@ from fem.application.results import (
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
+    build_archived_result_provider,
     build_result_provider,
     execute_output_requests,
     prepare_result_export_snapshot,
@@ -49,6 +50,7 @@ from fem.io import load_result_archive, save_result_archive
 from fem.io.result_csv import dumps_result_csv
 from fem.post.stress.beam import recover_section_stress
 from fem.solvers import static_linear
+from fem_gui.result_presentation import result_provider_section_point_labels
 from fem_gui.widgets.result_tree import ResultTree
 
 
@@ -194,14 +196,14 @@ def _independent_root_oracle(
         height = dimensions["height"]
         width = dimensions["width"]
         area = height * width
-        iyy = height * width**3 / 12.0
-        izz = width * height**3 / 12.0
+        iyy = width * height**3 / 12.0
+        izz = height * width**3 / 12.0
         torsion_constant = _rectangle_torsion_constant(height, width)
         points = (
-            (height / 2.0, width / 2.0),
-            (-height / 2.0, width / 2.0),
-            (-height / 2.0, -width / 2.0),
-            (height / 2.0, -width / 2.0),
+            (width / 2.0, height / 2.0),
+            (-width / 2.0, height / 2.0),
+            (-width / 2.0, -height / 2.0),
+            (width / 2.0, -height / 2.0),
         )
         point_shear = 0.0
         section_shear = _rectangle_torsion_shear(
@@ -395,6 +397,7 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
         _archive_snapshot(provider, outcome, section_type),
     )
     loaded = load_result_archive(archive_path).snapshot
+    archived_provider = build_archived_result_provider(loaded)
     loaded_points = tuple(
         field
         for field in loaded.fields
@@ -410,22 +413,38 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
         for field in loaded_points
         for location in field.locations
     )
+    expected_position_labels = (
+        {1: "右上", 2: "左上", 3: "左下", 4: "右下"}
+        if section_type == "rectangle"
+        else {}
+    )
+    assert (
+        result_provider_section_point_labels(archived_provider)
+        == expected_position_labels
+    )
 
     tree = ResultTree()
-    tree.set_catalog("Load", provider.catalog())
+    tree.set_catalog(
+        "Load",
+        provider.catalog(),
+        section_point_labels=result_provider_section_point_labels(provider),
+    )
     step_item = tree.topLevelItem(0).child(0)
-    gui_stress_labels = tuple(
-        step_item.child(index).text(0)
+    stress_item = next(
+        step_item.child(index)
         for index in range(step_item.childCount())
-        if step_item.child(index).text(0).startswith("应力 S（截面")
+        if step_item.child(index).text(0) == "应力 S"
     )
-    assert gui_stress_labels == (
-        "应力 S（截面点 1）",
-        "应力 S（截面点 2）",
-        "应力 S（截面点 3）",
-        "应力 S（截面点 4）",
-        "应力 S（截面）",
+    gui_stress_labels = tuple(
+        stress_item.child(index).text(0)
+        for index in range(stress_item.childCount())
     )
+    expected_point_labels = (
+        ("右上", "左上", "左下", "右下")
+        if section_type == "rectangle"
+        else ("截面点 1", "截面点 2", "截面点 3", "截面点 4")
+    )
+    assert gui_stress_labels == (*expected_point_labels, "截面")
     tree.close()
 
 

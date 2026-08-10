@@ -230,12 +230,12 @@ def test_standard_t3d2_tension_has_analytical_displacement_strain_and_stress():
         (
             "b31_rect_explicit_n1_loads.inp",
             "rectangle",
-            {"height": 0.20, "width": 0.10},
+            {"height": 0.10, "width": 0.20},
         ),
         (
             "b31_rect_default_n1.inp",
             "rectangle",
-            {"height": 0.30, "width": 0.10},
+            {"height": 0.10, "width": 0.30},
         ),
         (
             "b31_circ.inp",

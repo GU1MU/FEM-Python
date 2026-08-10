@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from math import floor, isfinite, log10
 import re
@@ -56,6 +57,8 @@ from .result_presentation import (
     result_field_is_beam_section,
     result_field_position_label,
     result_field_is_visible,
+    result_provider_section_point_labels,
+    section_point_relative_position_label,
     visible_result_fields,
 )
 from .theme import COLORS
@@ -115,6 +118,7 @@ class TypedResultDisplayDialog(QDialog):
         catalog: ResultCatalog,
         *,
         current_selection: ScalarFieldSelection,
+        section_point_labels: Mapping[int, str] | None = None,
         shape_mode: str,
         contour_enabled: bool,
         scale_mode: str,
@@ -140,6 +144,7 @@ class TypedResultDisplayDialog(QDialog):
         self.setWindowTitle("结果显示")
         self.setMinimumWidth(420)
         self._catalog = catalog
+        self._section_point_labels = dict(section_point_labels or {})
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -160,7 +165,10 @@ class TypedResultDisplayDialog(QDialog):
         self.availability_label.setWordWrap(True)
         for availability in visible_result_fields(catalog.fields):
             self.field_combo.addItem(
-                _typed_result_display_field_label(availability),
+                _typed_result_display_field_label(
+                    availability,
+                    self._section_point_labels,
+                ),
                 availability.key,
             )
         self.field_combo.setCurrentIndex(
@@ -910,6 +918,9 @@ class TypedResultQueryDialog(QDialog):
         self.resize(900, 520)
         self._catalog = catalog
         self._source = provider.source
+        self._section_point_labels = result_provider_section_point_labels(
+            provider
+        )
         self._initial_generation = provider.snapshot.generation
         self._node_ids = provider.snapshot.topology.node_ids
         self._element_ids = provider.snapshot.topology.element_ids
@@ -1130,10 +1141,12 @@ class TypedResultQueryDialog(QDialog):
             location = record.location
             section_values = (
                 (
-                    _optional_identity_text(
-                        None
+                    (
+                        ""
                         if location.section_point is None
-                        else location.section_point.number
+                        else section_point_relative_position_label(
+                            location.section_point
+                        )
                     ),
                     _optional_number_text(
                         None
@@ -1249,7 +1262,10 @@ class TypedResultQueryDialog(QDialog):
                     availability.descriptor.association,
                 ):
                     self.field_combo.addItem(
-                        _typed_field_label(availability),
+                        _typed_field_label(
+                            availability,
+                            self._section_point_labels,
+                        ),
                         availability.key,
                     )
         selected_index = self.field_combo.findData(preferred_key)
@@ -1321,7 +1337,7 @@ class TypedResultQueryDialog(QDialog):
 
     def _prepare_table(self, *, include_section_points: bool) -> None:
         section_headers = (
-            ("截面点", "截面局部 Y", "截面局部 Z")
+            ("截面位置", "截面局部 Y", "截面局部 Z")
             if include_section_points
             else ()
         )
@@ -1436,19 +1452,26 @@ def _parse_typed_query_ids(
     return tuple(parsed)
 
 
-def _typed_field_label(availability: FieldAvailability) -> str:
+def _typed_field_label(
+    availability: FieldAvailability,
+    section_point_labels: Mapping[int, str] | None = None,
+) -> str:
     if availability.state is FieldState.READY:
         descriptor = availability.descriptor
         if result_field_is_beam_section(descriptor.field_id):
-            return (
-                "应力 S（"
-                f"{result_field_position_label(descriptor.field_id)}）"
+            position = result_field_position_label(
+                descriptor.field_id,
+                section_point_labels=section_point_labels,
             )
+            return f"应力 S（{position}）"
         return _TYPED_RESULT_FIELD_LABELS.get(
             descriptor.label_key,
             descriptor.label_key,
         )
-    return _typed_result_display_field_label(availability)
+    return _typed_result_display_field_label(
+        availability,
+        section_point_labels,
+    )
 
 
 _TYPED_RESULT_FIELD_LABELS = {
@@ -1468,13 +1491,15 @@ _TYPED_RESULT_FIELD_STATE_LABELS = {
 
 def _typed_result_display_field_label(
     availability: FieldAvailability,
+    section_point_labels: Mapping[int, str] | None = None,
 ) -> str:
     descriptor = availability.descriptor
     if result_field_is_beam_section(descriptor.field_id):
-        label = (
-            "应力 S（"
-            f"{result_field_position_label(descriptor.field_id)}）"
+        position = result_field_position_label(
+            descriptor.field_id,
+            section_point_labels=section_point_labels,
         )
+        label = f"应力 S（{position}）"
     else:
         label = _TYPED_RESULT_FIELD_LABELS.get(
             descriptor.label_key,

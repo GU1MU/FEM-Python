@@ -28,7 +28,7 @@ def _section(section_type: str):
     [
         (
             "rectangle",
-            ((1, 2.0, 1.0), (2, -2.0, 1.0), (3, -2.0, -1.0), (4, 2.0, -1.0)),
+            ((1, 1.0, 2.0), (2, -1.0, 2.0), (3, -1.0, -2.0), (4, 1.0, -2.0)),
         ),
         (
             "solid_circle",
@@ -94,14 +94,14 @@ def test_rectangle_pure_bending_signs_follow_local_y_and_z_axes() -> None:
     )
 
     assert [row.s11 for row in about_y.point_stresses] == pytest.approx(
-        [-2.0, -2.0, 2.0, 2.0]
+        [-4.0, -4.0, 4.0, 4.0]
     )
     assert [row.s11 for row in about_z.point_stresses] == pytest.approx(
-        [6.0, -6.0, -6.0, 6.0]
+        [3.0, -3.0, -3.0, 3.0]
     )
-    assert about_y.s11_max == pytest.approx(2.0)
-    assert about_y.s11_min == pytest.approx(-2.0)
-    assert about_z.s11_abs_max == pytest.approx(6.0)
+    assert about_y.s11_max == pytest.approx(4.0)
+    assert about_y.s11_min == pytest.approx(-4.0)
+    assert about_z.s11_abs_max == pytest.approx(3.0)
 
 
 @pytest.mark.parametrize("section_type", ("solid_circle", "hollow_circle"))

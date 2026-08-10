@@ -146,7 +146,7 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
         ),
         (
             {"section_type": "rectangle", "height": 4.0, "width": 1.0},
-            (4.0, 1.0 / 3.0, 16.0 / 3.0, 1.1232518332307355),
+            (4.0, 16.0 / 3.0, 1.0 / 3.0, 1.1232518332307355),
         ),
     ],
 )
@@ -164,19 +164,19 @@ def test_beam2_rectangle_uses_height_and_width_dimensions():
     assert section.height == 4.0
     assert section.width == 1.0
     assert (section.area, section.Iyy, section.Izz) == pytest.approx(
-        (4.0, 1.0 / 3.0, 16.0 / 3.0)
+        (4.0, 16.0 / 3.0, 1.0 / 3.0)
     )
 
 
-def test_beam2_automatic_frame_maps_rectangle_height_to_local_y():
+def test_beam2_automatic_frame_maps_rectangle_width_to_local_y():
     mesh = _beam_mesh(props={"height": 4.0, "width": 1.0})
     frame = resolve_beam_frame(mesh, mesh.elements[0])
     section = parse_beam2_section(mesh.elements[0].props)
 
     assert frame.local_y == pytest.approx((0.0, 1.0, 0.0))
     assert frame.local_z == pytest.approx((0.0, 0.0, 1.0))
-    assert section.Iyy == pytest.approx(4.0 * 1.0**3 / 12.0)
-    assert section.Izz == pytest.approx(1.0 * 4.0**3 / 12.0)
+    assert section.Iyy == pytest.approx(1.0 * 4.0**3 / 12.0)
+    assert section.Izz == pytest.approx(4.0 * 1.0**3 / 12.0)
 
 
 def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
@@ -247,7 +247,7 @@ def test_beam2_standard_sections_reject_invalid_contracts(props, message):
         ),
         (
             {"section_type": "rectangle", "height": 4.0, "width": 2.0},
-            (16.0, 8.0 / 3.0, 32.0 / 3.0),
+            (16.0, 32.0 / 3.0, 8.0 / 3.0),
             (5.0, -1.0, 5.0),
         ),
     ],
@@ -309,7 +309,7 @@ def test_beam2_pure_bending_recovers_same_extrema_at_both_ends():
     rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
 
     moment = 210.0 * section.Izz * curvature
-    increment = abs(moment / section.Izz) * section.height / 2.0
+    increment = abs(moment / section.Izz) * section.width / 2.0
     assert np.allclose(
         [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
         [(increment, -increment, increment), (increment, -increment, increment)],
@@ -328,7 +328,7 @@ def test_beam2_pure_bending_about_local_y_recovers_section_extrema():
     rows = beam_stress.nodal_envelope(_beam_result(mesh, U))
 
     moment = 210.0 * section.Iyy * curvature
-    increment = abs(moment / section.Iyy) * section.width / 2.0
+    increment = abs(moment / section.Iyy) * section.height / 2.0
     assert np.allclose(
         [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
         [(increment, -increment, increment), (increment, -increment, increment)],
@@ -469,7 +469,7 @@ def test_beam2_rectangle_dimension_swap_exchanges_cantilever_bending_response():
 
     assert tall_compliance[1, 1] == pytest.approx(wide_compliance[2, 2])
     assert tall_compliance[2, 2] == pytest.approx(wide_compliance[1, 1])
-    assert tall_compliance[1, 1] < tall_compliance[2, 2]
+    assert tall_compliance[1, 1] > tall_compliance[2, 2]
 
 
 def test_beam2_explicit_orientation_rotates_rectangle_bending_axes() -> None:
@@ -496,8 +496,8 @@ def test_beam2_explicit_orientation_rotates_rectangle_bending_axes() -> None:
 
     assert first[1, 1] == pytest.approx(rotated[2, 2])
     assert first[2, 2] == pytest.approx(rotated[1, 1])
-    assert first[1, 1] < first[2, 2]
-    assert rotated[2, 2] < rotated[1, 1]
+    assert first[1, 1] > first[2, 2]
+    assert rotated[2, 2] > rotated[1, 1]
 
 
 def test_beam2_explicit_orientation_removes_near_global_z_axis_swap() -> None:

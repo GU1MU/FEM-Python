@@ -123,6 +123,7 @@ from fem.geometry import (
     ExtrudedGeometry,
     ExtrusionSourceResolutionError,
     LogicalEntityRef,
+    FaceSketchBooleanDirection,
     FaceSketchBooleanGeometry,
     FaceSketchBooleanOperation,
     FaceWorkplaneResolutionError,
@@ -257,6 +258,7 @@ from .postprocessing_dialogs import (
 from .result_presentation import (
     result_field_is_beam_section,
     result_field_position_label,
+    result_provider_section_point_labels,
     result_variable_label,
     visible_result_fields,
 )
@@ -318,6 +320,10 @@ from .visualization.selection import SelectionContextState, SelectionState
 from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
+from .widgets.model_tree import (
+    native_feature_kind_label,
+    native_feature_label,
+)
 from .widgets.boolean_feature_panel import BooleanFeaturePanel
 from .widgets.planar_boolean_panel import PlanarBooleanPanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
@@ -686,6 +692,12 @@ class FEMMainWindow(QMainWindow):
         self._face_sketch_preview_generation = 0
         self._face_sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
         self._face_sketch_original_selection: set[LogicalEntityRef] = set()
+        self._solid_face_boolean_operation: (
+            FaceSketchBooleanOperation | None
+        ) = None
+        self._solid_face_boolean_original_selection: set[
+            LogicalEntityRef
+        ] = set()
         self._face_sketch_selection_cache: dict[
             tuple[str, str, int, str], bool
         ] = {}
@@ -954,6 +966,7 @@ class FEMMainWindow(QMainWindow):
             or self._sketch_editor_controller is not None
             or self._body_boolean_controller is not None
             or self._planar_boolean_controller is not None
+            or self._solid_face_boolean_operation is not None
         ):
             return self._rejected_command(
                 command_id,
@@ -2647,6 +2660,7 @@ class FEMMainWindow(QMainWindow):
         *,
         model_geometry: ModelGeometry | None = None,
         result_model_view: ArchiveModelView | None = None,
+        geometry_preview: GeometryPreview | None = None,
         timings: dict[str, float] | None = None,
         source_label: str | None = None,
     ) -> bool:
@@ -2654,6 +2668,7 @@ class FEMMainWindow(QMainWindow):
         if not bool(getattr(delta, "accepted", True)):
             return False
         revision = int(getattr(delta, "session_revision"))
+        requested_revision = revision
         if revision <= self._applied_session_revision:
             return False
 
@@ -2664,6 +2679,21 @@ class FEMMainWindow(QMainWindow):
             # A newer transition was already accepted.  Project only the newest
             # state and let the older delta become an ordered no-op.
             revision = snapshot.session_revision
+
+        if geometry_preview is not None:
+            if type(geometry_preview) is not GeometryPreview:
+                raise TypeError("geometry_preview must be a GeometryPreview")
+            if (
+                snapshot.session_revision == requested_revision
+                and snapshot.source_kind == "native"
+                and snapshot.artifact is None
+                and snapshot.active_part_id is not None
+            ):
+                self._geometry_preview_cache = (
+                    snapshot.session_id,
+                    self._native_part_preview_cache_key(snapshot),
+                    geometry_preview,
+                )
 
         previous_artifact_id = (
             self.document.artifact.artifact_id
@@ -3133,6 +3163,9 @@ class FEMMainWindow(QMainWindow):
                 or self.session.default_step_name()
                 or "",
                 catalog,
+                section_point_labels=result_provider_section_point_labels(
+                    provider
+                ),
             )
             if inspection is not None:
                 inspection.update_result_provider(provider)
@@ -3165,7 +3198,13 @@ class FEMMainWindow(QMainWindow):
             None if inspection is None else inspection.result_provider
         )
         try:
-            self.result_tree.set_catalog(step_name or "", catalog)
+            self.result_tree.set_catalog(
+                step_name or "",
+                catalog,
+                section_point_labels=result_provider_section_point_labels(
+                    provider
+                ),
+            )
             if not self.result_tree.select_selection(selection):
                 raise RuntimeError(
                     "installed selection is missing from the result tree"
@@ -3185,6 +3224,13 @@ class FEMMainWindow(QMainWindow):
                     self.result_tree.set_catalog(
                         previous_catalog.source.step_name,
                         previous_catalog,
+                        section_point_labels=(
+                            result_provider_section_point_labels(
+                                previous_provider
+                            )
+                            if type(previous_provider) is ResultProvider
+                            else None
+                        ),
                     )
                     if type(previous_selection) is ScalarFieldSelection:
                         self.result_tree.select_selection(
@@ -3333,11 +3379,6 @@ class FEMMainWindow(QMainWindow):
                     "select_point", "select_element", "select_edge",
                     "select_face", "select_body",
                 ),
-                (),
-            ),
-            (
-                "编辑",
-                ("geometry_manager", "geometry_undo", "geometry_delete"),
                 (),
             ),
         ))
@@ -3610,7 +3651,10 @@ class FEMMainWindow(QMainWindow):
             self._cancel_guided_selection
         )
         self.viewport_panel.planar_boolean_face_bar.cancelRequested.connect(
-            self.cancel_planar_boolean
+            self._cancel_boolean_face_prompt
+        )
+        self.viewport_panel.planar_boolean_face_bar.confirmRequested.connect(
+            self._confirm_boolean_face_prompt
         )
         self.wire_editor_panel = WireEditorPanel(parent=self)
         self.wire_editor_panel.hide()
@@ -3881,6 +3925,7 @@ class FEMMainWindow(QMainWindow):
             return
 
         field_ids: list[ResultFieldId] = []
+        section_point_labels = result_provider_section_point_labels(provider)
         for availability in visible_result_fields(
             provider.catalog().fields
         ):
@@ -3893,7 +3938,10 @@ class FEMMainWindow(QMainWindow):
             ):
                 field_ids.append(field_id)
                 self.result_position_combo.addItem(
-                    result_field_position_label(field_id),
+                    result_field_position_label(
+                        field_id,
+                        section_point_labels=section_point_labels,
+                    ),
                     field_id,
                 )
         preferred_field_id = None
@@ -4189,6 +4237,7 @@ class FEMMainWindow(QMainWindow):
                 self._body_boolean_controller is not None
                 or self._planar_boolean_controller is not None
                 or self._face_sketch_controller is not None
+                or self._solid_face_boolean_operation is not None
             ),
             planar_solid_face_selected=(
                 self._face_sketch_selection_is_valid()
@@ -4564,13 +4613,36 @@ class FEMMainWindow(QMainWindow):
             self._face_sketch_preview_result = None
             self._begin_face_sketch_editor()
 
-        self._start_task(
+        def restore_face_prompt(message: str) -> None:
+            operation = self._solid_face_boolean_operation
+            if operation is None:
+                self._show_error("在面上创建草图", message)
+                return
+            face_bar = self.viewport_panel.planar_boolean_face_bar
+            face_bar.begin(operation.value)
+            face_bar.set_selection_ready(
+                self._face_sketch_selection_is_valid()
+            )
+            self.status_panel.set_state(
+                f"目标面解析失败，请重新选择：{message}",
+                5000,
+            )
+
+        started = self._start_task(
             workload,
             on_success,
             "在面上创建草图",
+            restore_face_prompt,
             task_name="解析面草图工作面",
+            on_cancelled=(
+                self._cancel_solid_face_boolean
+                if self._solid_face_boolean_operation is not None
+                else None
+            ),
             apply_result=apply_result,
         )
+        if not started and self._solid_face_boolean_operation is not None:
+            restore_face_prompt("当前有其他后台任务正在运行")
 
     def _begin_face_sketch_editor(self) -> None:
         controller = self._face_sketch_controller
@@ -4629,15 +4701,34 @@ class FEMMainWindow(QMainWindow):
             selected_ids = material_ids
         dialog = FaceSketchBooleanDialog(self)
         dialog.set_profiles(material_ids, selected_ids=selected_ids)
-        if previous is not None:
-            dialog.set_parameters(
-                FaceSketchBooleanParameters(
-                    previous.operation,
-                    previous.direction,
-                    previous.distance,
-                    selected_ids,
+        operation = self._solid_face_boolean_operation
+        if previous is not None or operation is not None:
+            defaults = dialog.parameters()
+            if defaults is not None:
+                dialog.set_parameters(
+                    FaceSketchBooleanParameters(
+                        (
+                            operation
+                            if operation is not None
+                            else previous.operation
+                        ),
+                        (
+                            previous.direction
+                            if previous is not None
+                            else FaceSketchBooleanDirection.INWARD
+                            if operation is FaceSketchBooleanOperation.CUT
+                            else defaults.direction
+                        ),
+                        (
+                            previous.distance
+                            if previous is not None
+                            else defaults.distance
+                        ),
+                        selected_ids,
+                    )
                 )
-            )
+        if operation is not None:
+            dialog.fix_operation(operation)
         dialog.parametersChanged.connect(
             self._face_sketch_boolean_parameters_changed
         )
@@ -4930,6 +5021,8 @@ class FEMMainWindow(QMainWindow):
         self._face_sketch_preview_result = None
         self._face_sketch_reference_points = ()
         self._face_sketch_original_selection = set()
+        self._solid_face_boolean_operation = None
+        self._solid_face_boolean_original_selection = set()
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         self.status_panel.set_state(
@@ -4971,6 +5064,8 @@ class FEMMainWindow(QMainWindow):
             self._face_sketch_preview_result = None
             self._face_sketch_reference_points = ()
             self._face_sketch_original_selection = set()
+            self._solid_face_boolean_operation = None
+            self._solid_face_boolean_original_selection = set()
             self._rebuild_full_projection()
             self._selected_geometry_refs = original_selection
             if original_selection:
@@ -5634,7 +5729,49 @@ class FEMMainWindow(QMainWindow):
             self._begin_planar_boolean(operation)
             return
         if geometry_dimension(current) == 3:
-            self._begin_body_boolean(operation)
+            self._begin_solid_face_boolean(operation)
+
+    def _begin_solid_face_boolean(self, operation: str) -> None:
+        current = self.document.geometry_recipe
+        if (
+            not isinstance(current, NATIVE_GEOMETRY_TYPES)
+            or geometry_dimension(current) != 3
+        ):
+            return
+        try:
+            requested_operation = FaceSketchBooleanOperation(operation)
+        except ValueError:
+            self.status_panel.set_state("三维布尔操作必须是合并或切除", 5000)
+            return
+        if (
+            self._wire_editor_controller is not None
+            or self._sketch_editor_controller is not None
+            or self._planar_boolean_controller is not None
+            or self._body_boolean_controller is not None
+            or self._face_sketch_controller is not None
+            or self._solid_face_boolean_operation is not None
+        ):
+            self.status_panel.set_state("请先完成或取消当前几何编辑", 5000)
+            return
+        original_selection = set(self._selected_geometry_refs)
+        self._solid_face_boolean_operation = requested_operation
+        self._solid_face_boolean_original_selection = original_selection
+        self._set_geometry_selection_mode("face")
+        face_bar = self.viewport_panel.planar_boolean_face_bar
+        face_bar.begin(operation)
+        selected_face_is_valid = self._face_sketch_selection_is_valid()
+        face_bar.set_selection_ready(selected_face_is_valid)
+        if selected_face_is_valid:
+            self.viewport.highlight_geometry_entities(
+                self._canonical_geometry_selection()
+            )
+            self.status_panel.set_state(
+                "目标面已选择，请点击“确定”继续",
+                0,
+            )
+        else:
+            self.status_panel.set_state("请选择目标面", 0)
+        self._update_action_states()
 
     def _begin_planar_boolean(self, operation: str) -> None:
         current = self.document.geometry_recipe
@@ -5688,16 +5825,13 @@ class FEMMainWindow(QMainWindow):
             self._selected_geometry_refs
         )
         self._set_geometry_selection_mode("face")
+        controller.request_target_selection()
+        face_bar = self.viewport_panel.planar_boolean_face_bar
+        face_bar.begin(operation)
         if initial_target is not None:
             self.viewport.highlight_geometry_entities(selected)
-            self._edit_planar_boolean_tool()
-        else:
-            controller.request_target_selection()
-            self.viewport_panel.planar_boolean_face_bar.begin(operation)
-            self.status_panel.set_state(
-                "请选择一个目标材料面；选择后将自动进入工具草图",
-                0,
-            )
+            face_bar.set_selection_ready(True)
+        self.status_panel.set_state("请选择目标面", 0)
         self._update_action_states()
 
     def _request_planar_boolean_target(self) -> None:
@@ -5709,8 +5843,10 @@ class FEMMainWindow(QMainWindow):
         self._planar_boolean_preview_generation += 1
         self.planar_boolean_panel.set_preview_valid(False)
         self._set_geometry_selection_mode("face")
-        self.viewport_panel.planar_boolean_face_bar.begin(controller.operation)
-        self.status_panel.set_state("请在视口中选择一个目标材料面", 0)
+        face_bar = self.viewport_panel.planar_boolean_face_bar
+        face_bar.begin(controller.operation)
+        face_bar.set_selection_ready(controller.target_face_id is not None)
+        self.status_panel.set_state("请选择目标面", 0)
 
     def _clear_planar_boolean_target(self) -> None:
         controller = self._planar_boolean_controller
@@ -5724,6 +5860,7 @@ class FEMMainWindow(QMainWindow):
         self._rebuild_full_projection()
         self.viewport.clear_selection()
         self._set_geometry_selection_mode("face")
+        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(False)
         self.planar_boolean_panel.refresh()
         self.planar_boolean_panel.show_status("已取消目标面选择")
 
@@ -5759,10 +5896,122 @@ class FEMMainWindow(QMainWindow):
         self.planar_boolean_panel.set_preview_valid(False)
         self._selected_geometry_refs = {reference}
         self.viewport.highlight_geometry_entities((reference,))
-        self.viewport_panel.planar_boolean_face_bar.finish()
-        self.status_panel.set_state("目标面已设置，正在进入工具草图", 0)
-        self._edit_planar_boolean_tool()
+        controller.request_target_selection()
+        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(True)
+        self.status_panel.set_state("目标面已选择，请点击“确定”继续", 0)
         return True
+
+    def _assign_solid_face_boolean_reference(
+        self,
+        reference: LogicalEntityRef,
+    ) -> bool:
+        if self._solid_face_boolean_operation is None:
+            return False
+        face_bar = self.viewport_panel.planar_boolean_face_bar
+        if reference.kind != "face":
+            face_bar.set_selection_ready(False)
+            self.status_panel.set_state("请选择一个实体平面面", 3000)
+            return True
+        owner = part_id_from_logical_id(reference.logical_id)
+        if (
+            owner is not None
+            and owner != self.document.active_part_id
+            and any(part.id == owner for part in self.document.parts)
+        ):
+            try:
+                self._apply_session_delta(
+                    self.session.set_active_native_part(
+                        owner,
+                        expected_session_revision=(
+                            self.document.session_revision
+                        ),
+                    )
+                )
+            except (RuntimeError, TypeError, ValueError, KeyError) as error:
+                face_bar.set_selection_ready(False)
+                self.status_panel.set_state(str(error), 5000)
+                return True
+        self._selected_geometry_refs = {reference}
+        self.viewport.highlight_geometry_entities((reference,))
+        valid = self._face_sketch_selection_is_valid()
+        face_bar.set_selection_ready(valid)
+        self.status_panel.set_state(
+            "目标面已选择，请点击“确定”继续"
+            if valid
+            else "所选面不是有效的实体平面面，请重新选择",
+            0 if valid else 4000,
+        )
+        self._update_action_states()
+        return True
+
+    def _confirm_boolean_face_prompt(self) -> None:
+        if self._planar_boolean_controller is not None:
+            self._confirm_planar_boolean_target()
+            return
+        if self._solid_face_boolean_operation is not None:
+            self._confirm_solid_face_boolean_target()
+
+    def _cancel_boolean_face_prompt(self) -> None:
+        if self._planar_boolean_controller is not None:
+            self.cancel_planar_boolean()
+            return
+        if self._solid_face_boolean_operation is not None:
+            self._cancel_solid_face_boolean()
+
+    def _confirm_planar_boolean_target(self) -> None:
+        controller = self._planar_boolean_controller
+        if controller is None:
+            return
+        try:
+            controller.confirm_target_selection()
+        except ValueError as error:
+            self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
+                False
+            )
+            self.status_panel.set_state(str(error), 3000)
+            return
+        self.viewport_panel.planar_boolean_face_bar.finish()
+        self.status_panel.set_state("目标面已确认，正在进入工具草图", 0)
+        self._edit_planar_boolean_tool()
+
+    def _confirm_solid_face_boolean_target(self) -> None:
+        operation = self._solid_face_boolean_operation
+        if operation is None:
+            return
+        if not self._face_sketch_selection_is_valid():
+            self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
+                False
+            )
+            self.status_panel.set_state("请先选择一个有效的实体平面面", 3000)
+            return
+        self.viewport_panel.planar_boolean_face_bar.finish()
+        self.status_panel.set_state(
+            "目标面已确认，正在解析三维草图工作面",
+            0,
+        )
+        self.start_face_sketch_boolean()
+
+    def _cancel_solid_face_boolean(self) -> None:
+        if self._solid_face_boolean_operation is None:
+            return
+        original_selection = set(self._solid_face_boolean_original_selection)
+        self.viewport_panel.planar_boolean_face_bar.finish()
+        self._solid_face_boolean_operation = None
+        self._solid_face_boolean_original_selection = set()
+        self._selected_geometry_refs = original_selection
+        self._set_geometry_selection_mode(
+            next(iter(original_selection)).kind
+            if original_selection
+            else "body"
+        )
+        if original_selection:
+            self.viewport.highlight_geometry_entities(
+                tuple(sorted(original_selection, key=logical_ref_sort_key))
+            )
+        else:
+            self.viewport.clear_selection()
+        self.status_panel.set_state("已取消布尔操作", 3000)
+        self._update_action_states()
 
     def _edit_planar_boolean_tool(self) -> None:
         controller = self._planar_boolean_controller
@@ -5770,12 +6019,20 @@ class FEMMainWindow(QMainWindow):
             return
         if self._sketch_editor_controller is not None:
             return
-        if controller.target_face_id is None:
-            controller.request_target_selection()
-            self.viewport_panel.planar_boolean_face_bar.begin(
-                controller.operation
+        if controller.target_face_id is None or controller.selecting_target:
+            if controller.target_face_id is None:
+                controller.request_target_selection()
+            face_bar = self.viewport_panel.planar_boolean_face_bar
+            face_bar.begin(controller.operation)
+            face_bar.set_selection_ready(
+                controller.target_face_id is not None
             )
-            self.status_panel.set_state("请先选择一个目标材料面", 0)
+            message = (
+                "目标面已选择，请点击“确定”继续"
+                if controller.target_face_id is not None
+                else "请选择目标面"
+            )
+            self.status_panel.set_state(message, 0)
             return
         if self.document.session_revision != controller.base_session_revision:
             self.status_panel.set_state(
@@ -5985,7 +6242,6 @@ class FEMMainWindow(QMainWindow):
                     preview,
                 )
             self._planar_boolean_preview_result = payload
-            self.viewport.show_geometry_preview(preview)
             self.planar_boolean_panel.set_preview_running(False)
             self.planar_boolean_panel.set_preview_valid(True)
             if auto_commit:
@@ -5993,8 +6249,9 @@ class FEMMainWindow(QMainWindow):
                     "精确预览和拓扑验证已通过，正在提交二维布尔",
                     0,
                 )
-                self.finish_planar_boolean()
+                self.finish_planar_boolean(preview=preview)
             else:
+                self.viewport.show_geometry_preview(preview)
                 self.planar_boolean_panel.show_status(
                     "精确预览和拓扑验证已通过，可以完成"
                 )
@@ -6035,7 +6292,11 @@ class FEMMainWindow(QMainWindow):
             if auto_commit:
                 self._defer_ui(self._edit_planar_boolean_tool)
 
-    def finish_planar_boolean(self) -> None:
+    def finish_planar_boolean(
+        self,
+        *,
+        preview: GeometryPreview | None = None,
+    ) -> None:
         controller = self._planar_boolean_controller
         result = self._planar_boolean_preview_result
         if controller is None or not controller.ready:
@@ -6043,26 +6304,24 @@ class FEMMainWindow(QMainWindow):
         if result is None:
             self._refresh_planar_boolean_preview()
             return
-        preview = build_strict_planar_boolean_preview(
-            result.geometry,
-            result.preview,
-        )
         active_id = self.document.active_part_id
         if active_id is None:
             return
-        preview = namespace_part_geometry_preview(active_id, preview)
-        self._geometry_preview_cache = (
-            self.document.session_id,
-            self._native_part_preview_cache_key(self.document),
-            preview,
-        )
+        if preview is None:
+            preview = namespace_part_geometry_preview(
+                active_id,
+                build_strict_planar_boolean_preview(
+                    result.geometry,
+                    result.preview,
+                ),
+            )
         if not self._set_native_geometry(
             result.geometry,
             "二维布尔后的",
             base_session_revision=controller.base_session_revision,
             preserve_editor=True,
+            geometry_preview=preview,
         ):
-            self._geometry_preview_cache = None
             self.status_panel.set_state(
                 "提交未完成；已提交几何保持不变，已返回工具草图",
                 5000,
@@ -6080,7 +6339,6 @@ class FEMMainWindow(QMainWindow):
             if entity.kind == "face"
         }
         self._exit_planar_boolean()
-        self.viewport.show_geometry_preview(preview)
         self._selected_geometry_refs = face_references
         if face_references:
             self.viewport.highlight_geometry_entities(
@@ -6398,14 +6656,16 @@ class FEMMainWindow(QMainWindow):
                 expected_tool_revision=self.document.part_revision(tool_id),
                 expected_session_revision=controller.base_session_revision,
             )
-            self._apply_session_delta(delta)
+            self._apply_session_delta(
+                delta,
+                geometry_preview=preview,
+            )
         except (RuntimeError, TypeError, ValueError, KeyError) as error:
             self.boolean_feature_panel.show_status(
                 f"提交失败；已提交部件保持不变：{error}"
             )
             return
         self._exit_body_boolean()
-        self.viewport.show_geometry_preview(preview)
         result_id = result.context.result_part_id
         target_reference = LogicalEntityRef(f"body:{result_id}/domain")
         self._selected_geometry_refs = {target_reference}
@@ -6605,7 +6865,7 @@ class FEMMainWindow(QMainWindow):
                 self._pending_exact_boolean_preview_key = None
                 self._geometry_preview_cache = (
                     key[0],
-                    recipe,
+                    self._native_part_preview_cache_key(self.document),
                     payload,
                 )
                 if (
@@ -7135,9 +7395,14 @@ class FEMMainWindow(QMainWindow):
         *,
         base_session_revision: int | None = None,
         preserve_editor: bool = False,
+        geometry_preview: GeometryPreview | None = None,
     ) -> bool:
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
             raise TypeError(f"不支持的几何定义：{type(recipe).__name__}")
+        if geometry_preview is not None and type(
+            geometry_preview
+        ) is not GeometryPreview:
+            raise TypeError("geometry_preview must be a GeometryPreview")
         if not self._confirm_result_invalidation(
             preserve_editor=preserve_editor
         ):
@@ -7148,11 +7413,7 @@ class FEMMainWindow(QMainWindow):
                 "新项目不能创建多实体几何；请使用独立部件和实体布尔。",
             )
             return False
-        if (
-            self._geometry_preview_cache is not None
-            and self._geometry_preview_cache[1] != recipe
-        ):
-            self._geometry_preview_cache = None
+        self._geometry_preview_cache = None
         if self.document.source_kind != "native":
             new_receipt = self.new_native_project(NewNativeProjectCommand())
             if new_receipt.diagnostic is not None:
@@ -7183,7 +7444,10 @@ class FEMMainWindow(QMainWindow):
                     ),
                     expected_session_revision=expected_session_revision,
                 )
-            if not self._apply_session_delta(delta):
+            if not self._apply_session_delta(
+                delta,
+                geometry_preview=geometry_preview,
+            ):
                 return False
         except (RuntimeError, TypeError, ValueError, KeyError) as error:
             self._show_error("编辑几何", str(error))
@@ -8772,7 +9036,7 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
 
     def _active_editor(self) -> bool:
-        return any(
+        return self._solid_face_boolean_operation is not None or any(
             controller is not None
             for controller in (
                 self._wire_editor_controller,
@@ -8813,12 +9077,18 @@ class FEMMainWindow(QMainWindow):
         face_sketch_active = (
             not preserve_editor and self._face_sketch_controller is not None
         )
+        solid_face_boolean_active = (
+            not preserve_editor
+            and self._solid_face_boolean_operation is not None
+            and self._face_sketch_controller is None
+        )
         editor_active = (
             wire_editor_active
             or sketch_editor_active
             or body_boolean_active
             or planar_boolean_active
             or face_sketch_active
+            or solid_face_boolean_active
         )
         if wire_editor_active and self._wire_editor_controller.dirty:
             if not self._confirm_wire_editor_discard():
@@ -8838,6 +9108,8 @@ class FEMMainWindow(QMainWindow):
                 self._exit_body_boolean()
             if planar_boolean_active:
                 self._exit_planar_boolean()
+            if solid_face_boolean_active:
+                self._cancel_solid_face_boolean()
             if editor_active:
                 self._rebuild_full_projection()
             return True
@@ -8891,6 +9163,8 @@ class FEMMainWindow(QMainWindow):
         if accepted and planar_boolean_active:
             self._exit_planar_boolean()
             self._rebuild_full_projection()
+        if accepted and solid_face_boolean_active:
+            self._cancel_solid_face_boolean()
         return accepted
 
     def close_model(self, *, confirm: bool = True) -> bool:
@@ -8898,6 +9172,8 @@ class FEMMainWindow(QMainWindow):
             return False
         if confirm and not self._confirm_discard_changes():
             return False
+        if self._solid_face_boolean_operation is not None:
+            self._cancel_solid_face_boolean()
         receipt = self.close_session(
             CloseSessionCommand(self.document.session_revision)
         )
@@ -10766,6 +11042,7 @@ class FEMMainWindow(QMainWindow):
         self.result_tree.set_catalog(
             f"{job.name} · {job.step_name}",
             provider.catalog(),
+            section_point_labels=result_provider_section_point_labels(provider),
         )
         if not self.result_tree.select_selection(selection):
             raise RuntimeError(
@@ -11497,6 +11774,8 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "geometryEntityPicked 必须携带 LogicalEntityRef"
             )
+        if self._assign_solid_face_boolean_reference(reference):
+            return
         if self._assign_planar_boolean_reference(reference):
             return
         if self._assign_body_boolean_reference(reference):
@@ -11553,6 +11832,15 @@ class FEMMainWindow(QMainWindow):
                 )
                 return
             self._assign_planar_boolean_reference(selected[0])
+            return
+        if self._solid_face_boolean_operation is not None:
+            if len(selected) != 1 or selected[0].kind != "face":
+                self.status_panel.set_state(
+                    "布尔操作一次只能选择一个目标面",
+                    4000,
+                )
+                return
+            self._assign_solid_face_boolean_reference(selected[0])
             return
         kind = selected[0].kind
         if any(reference.kind != kind for reference in selected):
@@ -11816,6 +12104,11 @@ class FEMMainWindow(QMainWindow):
             self.selection.clear()
         self.viewport.clear_selection()
         self.viewport_panel.scope_creation_bar.set_selection_ready(False)
+        if self._solid_face_boolean_operation is not None:
+            self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
+                False
+            )
+            self.status_panel.set_state("请选择目标面", 0)
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
         self._update_action_states()
@@ -11842,6 +12135,9 @@ class FEMMainWindow(QMainWindow):
         planar = self._planar_boolean_controller
         if planar is not None and planar.selecting_target:
             self.cancel_planar_boolean()
+            return
+        if self._solid_face_boolean_operation is not None:
+            self._cancel_solid_face_boolean()
             return
         if not self._pending_local_mesh_selection and self._pending_analysis_selection is None:
             return
@@ -11871,6 +12167,9 @@ class FEMMainWindow(QMainWindow):
 
     def _highlight_tree_entry(self, kind: str, key: object) -> None:
         if kind == "part" and type(key) is str:
+            if self._solid_face_boolean_operation is not None:
+                self.status_panel.set_state("请在视口中选择目标面", 3000)
+                return
             part_reference = LogicalEntityRef(f"part:{key}")
             if self._assign_body_boolean_reference(part_reference):
                 return
@@ -11908,6 +12207,8 @@ class FEMMainWindow(QMainWindow):
             return
         if kind == "geometry_body" and type(key) is str:
             reference = LogicalEntityRef(key)
+            if self._assign_solid_face_boolean_reference(reference):
+                return
             if self._assign_planar_boolean_reference(reference):
                 return
             if self._assign_body_boolean_reference(reference):
@@ -12554,9 +12855,13 @@ class FEMMainWindow(QMainWindow):
         except (KeyError, TypeError, ValueError):
             return f"{shape} / 云图"
         field_id = availability.descriptor.field_id
+        position_label = result_field_position_label(
+            field_id,
+            section_point_labels=result_provider_section_point_labels(provider),
+        )
         result_name = (
             f"{field_id.variable.value} {selection.component}"
-            f"（{result_field_position_label(field_id)}）"
+            f"（{position_label}）"
         )
         return f"{shape} / {result_name}"
 
@@ -12571,6 +12876,7 @@ class FEMMainWindow(QMainWindow):
         dialog = TypedResultDisplayDialog(
             provider.catalog(),
             current_selection=selection,
+            section_point_labels=result_provider_section_point_labels(provider),
             shape_mode=self._display.shape_mode,
             contour_enabled=self._display.contour_enabled,
             scale_mode=self._scale_mode,
@@ -12953,6 +13259,9 @@ class FEMMainWindow(QMainWindow):
             dialog = ResultCsvExportDialog(
                 provider.catalog(),
                 current_selection=selection,
+                section_point_labels=result_provider_section_point_labels(
+                    provider
+                ),
                 parent=self,
             )
         except (TypeError, ValueError) as error:
@@ -13195,12 +13504,11 @@ class FEMMainWindow(QMainWindow):
                 ),
                 None,
             )
-            rows: list[tuple[str, object]] = [("名称", str(key))]
+            rows: list[tuple[str, object]] = [
+                ("名称", native_feature_label(key))
+            ]
             if record is not None:
-                rows.append(("类型", record.kind))
-                summary = record.payload.get("summary")
-                if summary:
-                    rows.append(("摘要", summary))
+                rows.append(("类型", native_feature_kind_label(record.kind)))
                 body_name = record.payload.get("body_name")
                 if body_name:
                     rows.append(("实体", body_name))

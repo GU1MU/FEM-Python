@@ -1,4 +1,4 @@
-"""PNG 优先、内嵌 SVG 后备的图标管理。"""
+"""PNG 优先、坐标视图矢量优先、内嵌 SVG 后备的图标管理。"""
 
 from __future__ import annotations
 
@@ -111,6 +111,11 @@ _PNG_FILES = {
 }
 
 
+_VECTOR_VIEW_ICONS = frozenset(
+    {"front", "back", "left", "right", "top", "bottom"}
+)
+
+
 _PATHS = {
     "open": "<path d='M3 7h6l2 2h10l-3 10H4z'/><path d='M3 7V4h7l2 3'/>",
     "reload": "<path d='M19 8a8 8 0 1 0 1 7'/><path d='M19 3v5h-5'/>",
@@ -124,11 +129,11 @@ _PATHS = {
     "inspect": "<circle cx='10' cy='10' r='6'/><path d='M14.5 14.5L21 21M10 7v6M10 6v.1'/>",
     "fit": "<path d='M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5'/>",
     "front": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#d84a3a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#e3a21a' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text>",
-    "back": "<path d='M19 19H4M19 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M4 19l4-2.5v5z' fill='#d84a3a' stroke='none'/><path d='M19 4l-2.5 4h5z' fill='#e3a21a' stroke='none'/><circle cx='19' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='3' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text><text x='12.5' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text>",
+    "back": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#e3a21a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#d84a3a' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text>",
     "left": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#3a9d5d' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#e3a21a' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text>",
-    "right": "<path d='M19 19H4M19 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M4 19l4-2.5v5z' fill='#3a9d5d' stroke='none'/><path d='M19 4l-2.5 4h5z' fill='#e3a21a' stroke='none'/><circle cx='19' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='3' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text><text x='12.5' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text>",
+    "right": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#e3a21a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#3a9d5d' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text>",
     "top": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#d84a3a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#3a9d5d' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text>",
-    "bottom": "<path d='M19 19H4M19 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M4 19l4-2.5v5z' fill='#d84a3a' stroke='none'/><path d='M19 4l-2.5 4h5z' fill='#3a9d5d' stroke='none'/><circle cx='19' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='3' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text><text x='12.5' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text>",
+    "bottom": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#3a9d5d' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#d84a3a' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text>",
     "iso": "<path d='M12 13l9 5M12 13l-9 5M12 13V3' stroke='#455a64' stroke-width='2.1'/><path d='M21 18l-4.6.1 2.2-4z' fill='#d84a3a' stroke='none'/><path d='M3 18l2.4-4 2.2 4z' fill='#3a9d5d' stroke='none'/><path d='M12 3L9.5 7h5z' fill='#e3a21a' stroke='none'/><circle cx='12' cy='13' r='1.6' fill='#455a64' stroke='none'/><text x='18.2' y='14.4' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>X</text><text x='2' y='14.4' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>Y</text><text x='15' y='6.2' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>Z</text>",
     "view_more": "<path d='M5 8l7-4 7 4-7 4z'/><circle cx='7' cy='18' r='1'/><circle cx='12' cy='18' r='1'/><circle cx='17' cy='18' r='1'/>",
     "orthographic": "<rect x='4' y='5' width='16' height='14'/><path d='M8 9h8v6H8'/>",
@@ -160,8 +165,8 @@ _PATHS = {
 
 @lru_cache(maxsize=None)
 def icon(name: str) -> QIcon:
-    """优先加载受控 PNG 资源，缺失时使用内嵌 SVG。"""
-    png_name = _PNG_FILES.get(name)
+    """坐标视图使用精确矢量，其余图标优先加载受控 PNG。"""
+    png_name = None if name in _VECTOR_VIEW_ICONS else _PNG_FILES.get(name)
     if png_name is not None:
         source = QPixmap(str(_ICON_DIR / png_name))
         if not source.isNull():
@@ -202,7 +207,7 @@ def icon(name: str) -> QIcon:
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='#455a64' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>{body}</svg>"
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
     result = QIcon()
-    for size in (18, 24, 32):
+    for size in (18, 20, 24, 32, 40, 48, 64, 80, 96):
         pixmap = QPixmap(size, size)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)

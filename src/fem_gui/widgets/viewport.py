@@ -51,7 +51,11 @@ from fem.geometry import (
     sketch_intersections,
 )
 from ..geometry_preview import FaceSketchBooleanDisplay, GeometryPreview
-from ..result_presentation import result_field_position_label
+from ..result_presentation import (
+    result_field_position_label,
+    section_point_labels_from_locations,
+    section_point_relative_position_label,
+)
 from ..scope_selection import build_mesh_selection_topology
 from ..sketch_constraint_ui import SketchConstraintOverlay
 from ..wire_editor import (
@@ -6340,15 +6344,14 @@ class FEMViewport(QWidget):
             return
         views = {
             # Each tuple is (focal-to-camera direction, screen-up axis).
-            # The directions deliberately follow the arrows in the coordinate
-            # PNGs: positive X is left in XY/XZ, positive Y is left in YZ, and
-            # the paired labels swap the screen axes.
-            "front": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),   # XZ
-            "back": ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0)),   # ZX
-            "left": ((-1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),   # YZ
-            "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),   # ZY
-            "top": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),    # XY
-            "bottom": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),  # YX
+            # Orthographic views follow the usual 2-D convention: the first
+            # axis in the view label points right and the second points up.
+            "front": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),  # XZ
+            "back": ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),    # ZX
+            "left": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),    # YZ
+            "right": ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # ZY
+            "top": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),     # XY
+            "bottom": ((0.0, 0.0, -1.0), (1.0, 0.0, 0.0)), # YX
             "iso": ((1.0, 1.0, 1.0), (-1.0, 2.0, -1.0)),
         }
         direction, up = views[view]
@@ -6361,8 +6364,8 @@ class FEMViewport(QWidget):
         camera.SetPosition(*(focal + direction_array * max(distance, 1.0)))
         camera.SetViewUp(*up)
         # VTK orthogonalizes the view-up vector against the current view
-        # direction, avoiding a roll that would make the PNG legend disagree
-        # with the actual screen axes.
+        # direction, avoiding a roll that would make the coordinate icon
+        # disagree with the actual screen axes.
         camera.OrthogonalizeViewUp()
         self._reset_camera_to_fit()
         self._refresh_symbols_for_camera(render=False)
@@ -7294,7 +7297,18 @@ class FEMViewport(QWidget):
             FieldPosition.SECTION_POINT,
             FieldPosition.SECTION_END,
         }:
-            title += f"（{result_field_position_label(field_id)}）"
+            locations = (
+                payload.topology.point_locations
+                if payload.topology.value_layout is ResultValueLayout.POINT
+                else payload.topology.cell_locations
+            )
+            position = result_field_position_label(
+                field_id,
+                section_point_labels=section_point_labels_from_locations(
+                    locations
+                ),
+            )
+            title += f"（{position}）"
         options: dict[str, Any] = {
             "title": title,
             "vertical": vertical,
@@ -7468,7 +7482,14 @@ class FEMViewport(QWidget):
         if location.local_node is not None:
             values.append(f"局部节点 {int(location.local_node)}")
         if location.section_point is not None:
-            values.append(f"截面点 {int(location.section_point.number)}")
+            position = section_point_relative_position_label(
+                location.section_point
+            )
+            values.append(
+                position
+                if position.startswith("截面点 ")
+                else f"截面位置 {position}"
+            )
             values.append(
                 "截面坐标 "
                 f"({location.section_point.local_y:.6g}, "

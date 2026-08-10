@@ -348,12 +348,12 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
 @pytest.mark.parametrize(
     ("view", "up", "direction"),
     [
-        ("top", (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
-        ("bottom", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
-        ("front", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
-        ("back", (1.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
-        ("left", (0.0, 0.0, 1.0), (-1.0, 0.0, 0.0)),
-        ("right", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+        ("top", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        ("bottom", (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+        ("front", (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
+        ("back", (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ("left", (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+        ("right", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
         (
             "iso",
             (-1.0, 2.0, -1.0),
@@ -394,6 +394,42 @@ def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
     assert plotter.camera.up == up
     assert actual_direction == pytest.approx(direction)
     assert plotter.camera.orthogonalized
+
+
+@pytest.mark.parametrize(
+    ("view", "horizontal_axis", "vertical_axis"),
+    [
+        ("top", (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ("bottom", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+        ("front", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ("back", (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+        ("left", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        ("right", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+    ],
+)
+def test_coordinate_view_places_first_axis_right_and_second_axis_up(
+    view,
+    horizontal_axis,
+    vertical_axis,
+):
+    _application()
+    viewport = FEMViewport()
+    plotter = _ViewPlotter()
+    viewport._plotter = plotter
+
+    viewport.set_view(view)
+
+    camera_to_focal = (
+        np.asarray(plotter.camera.focal_point)
+        - np.asarray(plotter.camera.position)
+    )
+    camera_to_focal /= np.linalg.norm(camera_to_focal)
+    screen_up = np.asarray(plotter.camera.up, dtype=float)
+    screen_up /= np.linalg.norm(screen_up)
+    screen_right = np.cross(camera_to_focal, screen_up)
+
+    assert np.dot(screen_right, horizontal_axis) == pytest.approx(1.0)
+    assert np.dot(screen_up, vertical_axis) == pytest.approx(1.0)
 
 
 def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
