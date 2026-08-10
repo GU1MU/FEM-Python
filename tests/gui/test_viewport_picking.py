@@ -79,6 +79,38 @@ def _rendered_viewport() -> tuple[FEMViewport, object]:
     return viewport, plotter
 
 
+def test_isometric_view_keeps_z_up_with_real_vtk() -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._grid = SimpleNamespace(
+        points=np.asarray(((-1.0, -1.0, -1.0), (1.0, 1.0, 1.0)))
+    )
+
+    viewport.set_view("iso")
+
+    display = viewport._world_points_to_display(
+        np.asarray(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        )
+    )
+    assert display is not None
+    origin, positive_x, positive_y, positive_z = display
+    assert positive_x[0] < origin[0] < positive_y[0]
+    assert positive_z[0] == pytest.approx(origin[0])
+    assert positive_z[1] > origin[1]
+    assert positive_x[1] < origin[1]
+    assert positive_y[1] < origin[1]
+    plotter.close()
+    viewport.close()
+
+
 def test_line_only_polydata_does_not_create_vertex_cells() -> None:
     points = np.asarray(
         (

@@ -112,7 +112,7 @@ _PNG_FILES = {
 
 
 _VECTOR_VIEW_ICONS = frozenset(
-    {"front", "back", "left", "right", "top", "bottom"}
+    {"front", "back", "left", "right", "top", "bottom", "iso"}
 )
 
 
@@ -134,7 +134,7 @@ _PATHS = {
     "right": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#e3a21a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#3a9d5d' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Z</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text>",
     "top": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#d84a3a' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#3a9d5d' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text>",
     "bottom": "<path d='M5 19H20M5 19V4' stroke='#455a64' stroke-width='2.1'/><path d='M20 19l-4-2.5v5z' fill='#3a9d5d' stroke='none'/><path d='M5 4L2.5 8h5z' fill='#d84a3a' stroke='none'/><circle cx='5' cy='19' r='1.6' fill='#455a64' stroke='none'/><text x='16.2' y='15.4' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>Y</text><text x='8' y='7.2' fill='#66717b' stroke='none' font-size='6.2' font-weight='700'>X</text>",
-    "iso": "<path d='M12 13l9 5M12 13l-9 5M12 13V3' stroke='#455a64' stroke-width='2.1'/><path d='M21 18l-4.6.1 2.2-4z' fill='#d84a3a' stroke='none'/><path d='M3 18l2.4-4 2.2 4z' fill='#3a9d5d' stroke='none'/><path d='M12 3L9.5 7h5z' fill='#e3a21a' stroke='none'/><circle cx='12' cy='13' r='1.6' fill='#455a64' stroke='none'/><text x='18.2' y='14.4' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>X</text><text x='2' y='14.4' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>Y</text><text x='15' y='6.2' fill='#66717b' stroke='none' font-size='5.7' font-weight='700'>Z</text>",
+    "iso": "<path d='M12 13l9 5M12 13l-9 5M12 13V3' stroke='#455a64' stroke-width='2.1'/><path d='M21 18l-4.6.1 2.2-4z' fill='#3a9d5d' stroke='none'/><path d='M3 18l2.4-4 2.2 4z' fill='#d84a3a' stroke='none'/><path d='M12 3L9.5 7h5z' fill='#e3a21a' stroke='none'/><circle cx='12' cy='13' r='1.6' fill='#455a64' stroke='none'/>",
     "view_more": "<path d='M5 8l7-4 7 4-7 4z'/><circle cx='7' cy='18' r='1'/><circle cx='12' cy='18' r='1'/><circle cx='17' cy='18' r='1'/>",
     "orthographic": "<rect x='4' y='5' width='16' height='14'/><path d='M8 9h8v6H8'/>",
     "perspective": "<path d='M5 5h14l-3 14H8z'/><path d='M9 9h6l-1 6h-4z'/>",

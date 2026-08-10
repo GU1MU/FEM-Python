@@ -324,7 +324,7 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert viewport._element_line_width() == 1
     assert viewport._line_render_options() == {}
     assert viewport._node_point_size() == 7
-    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#d8dde2"
+    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#BFDCEB"
     assert viewport._element_layer_color(viewport._visual_palette()) == "#3F6F8C"
     assert viewport._node_layer_color(viewport._visual_palette()) == "#9A6F3F"
 
@@ -340,7 +340,7 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
     palette = viewport._visual_palette()
 
     assert not viewport._is_line_mesh()
-    assert viewport._mesh_layer_color(palette) == "#d8dde2"
+    assert viewport._mesh_layer_color(palette) == "#BFDCEB"
     assert viewport._element_layer_color(palette) == "#3F6F8C"
     assert viewport._node_layer_color(palette) == "#9A6F3F"
 
@@ -356,7 +356,7 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
         ("right", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
         (
             "iso",
-            (-1.0, 2.0, -1.0),
+            (-1.0, -1.0, 2.0),
             tuple(np.asarray((1.0, 1.0, 1.0)) / np.sqrt(3.0)),
         ),
     ],
@@ -394,6 +394,31 @@ def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
     assert plotter.camera.up == up
     assert actual_direction == pytest.approx(direction)
     assert plotter.camera.orthogonalized
+
+
+def test_isometric_view_keeps_positive_z_vertical():
+    _application()
+    viewport = FEMViewport()
+    plotter = _ViewPlotter()
+    viewport._plotter = plotter
+
+    viewport.set_view("iso")
+
+    camera_to_focal = (
+        np.asarray(plotter.camera.focal_point)
+        - np.asarray(plotter.camera.position)
+    )
+    camera_to_focal /= np.linalg.norm(camera_to_focal)
+    screen_up = np.asarray(plotter.camera.up, dtype=float)
+    screen_up /= np.linalg.norm(screen_up)
+    screen_right = np.cross(camera_to_focal, screen_up)
+    expected_up = np.asarray((-1.0, -1.0, 2.0), dtype=float)
+    expected_up /= np.linalg.norm(expected_up)
+    expected_right = np.asarray((-1.0, 1.0, 0.0), dtype=float)
+    expected_right /= np.linalg.norm(expected_right)
+
+    assert screen_right == pytest.approx(expected_right)
+    assert screen_up == pytest.approx(expected_up)
 
 
 @pytest.mark.parametrize(

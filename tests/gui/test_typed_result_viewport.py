@@ -218,6 +218,45 @@ def _cell_payload():
     return build_result_render_payload(topology)
 
 
+def _beam_payload():
+    points = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.4, 0.0), (2.0, 0.8, 0.0))
+    )
+    topology = ResultFieldTopology(
+        source=_source(),
+        materialization_generation=9,
+        selection=ScalarFieldSelection(
+            FieldMaterializationKey(
+                FieldRequest(
+                    ResultFieldId(
+                        ResultVariable.U,
+                        FieldPosition.NODE,
+                    )
+                ),
+                recovery_contract=3,
+            ),
+            "Magnitude",
+        ),
+        deformation_scale=4.0,
+        points=points,
+        cells=((0, 1), (1, 2)),
+        cell_kinds=(ResultCellKind.FEM_ELEMENT,) * 2,
+        canonical_element_types=("Beam2", "Beam2"),
+        values=np.asarray((1.0, 2.0, 3.0)),
+        value_layout=ResultValueLayout.POINT,
+        point_locations=tuple(
+            _node_location(node_id, tuple(point))
+            for node_id, point in zip(
+                (10, 20, 30),
+                points,
+                strict=True,
+            )
+        ),
+        cell_locations=(None, None),
+    )
+    return build_result_render_payload(topology)
+
+
 def _node_payload():
     points = np.asarray(
         (
@@ -545,6 +584,229 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     np.testing.assert_array_equal(payload.dataset.points, original_points)
     assert viewport.artifact_id == "artifact-1"
     assert viewport.run_id == "run-1"
+    viewport.close()
+
+
+def test_deformed_beam_result_moves_visible_nodes_with_the_elements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    model_points = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0))
+    )
+    displayed_points = np.asarray(
+        ((0.0, 0.0, 0.0), (1.0, 0.4, 0.0), (2.0, 0.8, 0.0))
+    )
+    cells = ((0, 1), (1, 2))
+    payload = _beam_payload()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._geometry = _geometry(
+        points=model_points,
+        cells=cells,
+        node_ids=(10, 20, 30),
+        element_ids=(401, 402),
+    )
+    viewport._pick_grid = _model_grid(
+        points=model_points,
+        cells=cells,
+        cell_types=(3, 3),
+        node_ids=(10, 20, 30),
+        element_ids=(401, 402),
+    )
+    viewport._show_nodes = True
+    viewport._show_node_labels = True
+    viewport._display = DisplayState("deformed", True)
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    node_data, _options = next(
+        (dataset, options)
+        for dataset, options in plotter.mesh_calls
+        if options.get("name") == "nodes"
+    )
+    np.testing.assert_array_equal(node_data.points, displayed_points)
+    label_points, labels = plotter.label_calls[-1]
+    np.testing.assert_array_equal(label_points, displayed_points)
+    assert labels == ["10", "20", "30"]
+    viewport.close()
+
+
+@pytest.mark.parametrize("dimension", ("2d", "3d"))
+def test_deformed_continuum_result_moves_surface_nodes_and_labels_together(
+    dimension: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    if dimension == "2d":
+        payload = _point_payload()
+        displayed_points = np.asarray(payload.dataset.points)
+        model_points = displayed_points - np.asarray(
+            ((0.05, 0.10, 0.0), (0.15, -0.05, 0.0), (-0.10, 0.20, 0.0))
+        )
+        node_ids = (10, 20, 30)
+        element_ids = (201,)
+    else:
+        model_points = np.asarray(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+                (1.0, 0.0, 1.0),
+                (1.0, 1.0, 1.0),
+                (0.0, 1.0, 1.0),
+            )
+        )
+        displayed_points = model_points + np.asarray(
+            (
+                (0.05, -0.02, 0.08),
+                (0.10, 0.03, 0.04),
+                (0.12, 0.08, 0.02),
+                (0.04, 0.06, 0.07),
+                (0.02, -0.01, 0.15),
+                (0.08, 0.04, 0.18),
+                (0.14, 0.10, 0.20),
+                (0.03, 0.07, 0.17),
+            )
+        )
+        payload = _translated_hex_payload(displayed_points)
+        node_ids = tuple(range(1, 9))
+        element_ids = (1,)
+
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._geometry = _geometry(
+        points=model_points,
+        cells=payload.topology.cells,
+        node_ids=node_ids,
+        element_ids=element_ids,
+    )
+    viewport._show_nodes = True
+    viewport._show_node_labels = True
+    viewport._display = DisplayState("deformed", False)
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    result_data, result_options = next(
+        (dataset, options)
+        for dataset, options in plotter.mesh_calls
+        if options.get("name") == "result"
+    )
+    node_data, _node_options = next(
+        (dataset, options)
+        for dataset, options in plotter.mesh_calls
+        if options.get("name") == "nodes"
+    )
+    assert not np.array_equal(model_points, displayed_points)
+    np.testing.assert_array_equal(result_data.points, displayed_points)
+    np.testing.assert_array_equal(node_data.points, displayed_points)
+    label_points, labels = plotter.label_calls[-1]
+    np.testing.assert_array_equal(label_points, displayed_points)
+    assert labels == [str(node_id) for node_id in node_ids]
+    assert result_options["color"] == "#BFDCEB"
+    assert result_options["show_edges"] is True
+    assert result_options["edge_color"] == "#3F6F8C"
+    viewport.close()
+
+
+@pytest.mark.parametrize("dimension", ("1d", "2d", "3d"))
+def test_no_contour_result_uses_only_deformed_model_outline(
+    dimension: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
+    if dimension == "1d":
+        payload = _beam_payload()
+        node_ids = (10, 20, 30)
+        element_ids = (401, 402)
+    elif dimension == "2d":
+        payload = _point_payload()
+        node_ids = (10, 20, 30)
+        element_ids = (201,)
+    else:
+        payload = _translated_hex_payload(
+            np.asarray(
+                (
+                    (0.0, 0.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    (1.0, 1.0, 0.0),
+                    (0.0, 1.0, 0.0),
+                    (0.0, 0.0, 1.0),
+                    (1.0, 0.0, 1.0),
+                    (1.0, 1.0, 1.0),
+                    (0.0, 1.0, 1.0),
+                )
+            )
+            + np.asarray((0.2, -0.1, 0.3))
+        )
+        node_ids = tuple(range(1, 9))
+        element_ids = (1,)
+
+    displayed_points = np.asarray(payload.dataset.points)
+    model_points = displayed_points - np.asarray((0.2, -0.1, 0.3))
+    geometry = _geometry(
+        points=model_points,
+        cells=payload.topology.cells,
+        node_ids=node_ids,
+        element_ids=element_ids,
+    )
+    geometry.cell_array = np.fromiter(
+        (
+            value
+            for cell in geometry.cells
+            for value in (len(cell), *cell)
+        ),
+        dtype=np.int64,
+    )
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    base_surface = _Actor()
+    base_edges = _Actor()
+    viewport._plotter = plotter
+    viewport._geometry = geometry
+    viewport._actors.update(
+        mesh_surface=base_surface,
+        element_edges=base_edges,
+    )
+    viewport._display = DisplayState("deformed", False)
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    assert not base_surface.visible
+    assert not base_edges.visible
+    assert "undeformed_overlay" not in viewport._actors
+    _result_data, result_options = next(
+        (dataset, options)
+        for dataset, options in plotter.mesh_calls
+        if options.get("name") == "result"
+    )
+    expected_surface_color = "#3F6F8C" if dimension == "1d" else "#BFDCEB"
+    assert result_options["color"] == expected_surface_color
+    assert result_options["show_edges"] is (dimension != "1d")
+    assert result_options["edge_color"] == "#3F6F8C"
+    assert "result_edges" not in viewport._actors
+    if dimension == "1d":
+        np.testing.assert_array_equal(
+            _result_data.points,
+            displayed_points,
+        )
+        viewport.set_undeformed_overlay_visible(True)
+        _overlay_data, overlay_options = next(
+            (dataset, options)
+            for dataset, options in plotter.mesh_calls
+            if options.get("name") == "undeformed_overlay"
+        )
+        assert overlay_options["color"] == "#3F6F8C"
     viewport.close()
 
 

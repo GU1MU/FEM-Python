@@ -6093,11 +6093,15 @@ class FEMViewport(QWidget):
             ("element_edges", self._element_layer_color(palette)),
             ("result_edges", self._background_settings.foreground_color),
             ("nodes", self._node_layer_color(palette)),
-            ("undeformed_overlay", palette["overlay"]),
+            ("undeformed_overlay", self._element_layer_color(palette)),
         ):
             self._set_actor_color(name, color)
         if not self._display.contour_enabled:
-            self._set_actor_color("result", palette["result"])
+            self._set_actor_color("result", self._mesh_layer_color(palette))
+            self._set_actor_edge_color(
+                "result",
+                self._element_layer_color(palette),
+            )
         self._refresh_labels(render=False)
         if self._symbols_visible and self._model is not None:
             self.show_boundary_and_loads(self._symbol_settings.step_name, render=False)
@@ -6107,22 +6111,29 @@ class FEMViewport(QWidget):
 
     def set_edges_visible(self, visible: bool, *, render: bool = True) -> None:
         self._show_edges = bool(visible)
-        if self._display.contour_enabled:
+        if self._result_grid is not None:
             base_edges = self._actors.get("element_edges")
             if base_edges is not None:
                 base_edges.SetVisibility(False)
             result_edges = self._actors.get("result_edges")
-            if (
-                self._show_edges
-                and result_edges is None
-                and self._plotter is not None
-                and self._result_grid is not None
-            ):
-                result_edges = self._add_result_edges_layer(
-                    self._result_grid
+            if self._display.contour_enabled:
+                if (
+                    self._show_edges
+                    and result_edges is None
+                    and self._plotter is not None
+                ):
+                    result_edges = self._add_result_edges_layer(
+                        self._result_grid
+                    )
+                if result_edges is not None:
+                    result_edges.SetVisibility(self._show_edges)
+            else:
+                if result_edges is not None:
+                    result_edges.SetVisibility(False)
+                self._set_actor_edge_visibility(
+                    "result",
+                    self._show_edges and not self._is_line_mesh(),
                 )
-            if result_edges is not None:
-                result_edges.SetVisibility(self._show_edges)
             if render:
                 self._render()
             return
@@ -6352,7 +6363,8 @@ class FEMViewport(QWidget):
             "right": ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # ZY
             "top": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),     # XY
             "bottom": ((0.0, 0.0, -1.0), (1.0, 0.0, 0.0)), # YX
-            "iso": ((1.0, 1.0, 1.0), (-1.0, 2.0, -1.0)),
+            # Preserve the +X/+Y/+Z viewpoint and keep global +Z vertical.
+            "iso": ((1.0, 1.0, 1.0), (-1.0, -1.0, 2.0)),
         }
         direction, up = views[view]
         camera = self._plotter.camera
@@ -6991,7 +7003,46 @@ class FEMViewport(QWidget):
     def _model_display_points(self) -> np.ndarray:
         if self._geometry is None:
             return np.empty((0, 3), dtype=float)
-        return np.asarray(self._geometry.points, dtype=float)
+        model_points = np.asarray(self._geometry.points, dtype=float)
+        if self._display.shape_mode != "deformed":
+            return model_points
+        payload = self._rendered_result_payload()
+        if payload is None:
+            return model_points
+
+        result_points = np.asarray(payload.dataset.points, dtype=float)
+        result_cells = payload.topology.cells
+        model_cells = tuple(
+            tuple(int(point_index) for point_index in cell)
+            for cell in self._geometry.cells
+        )
+        if (
+            len(result_points) == len(model_points)
+            and result_cells == model_cells
+            and all(
+                kind is ResultCellKind.FEM_ELEMENT
+                for kind in payload.topology.cell_kinds
+            )
+        ):
+            return result_points
+
+        coordinates: dict[int, np.ndarray] = {}
+        for point_index, location in enumerate(
+            payload.topology.point_locations
+        ):
+            if location is None or location.node_id is None:
+                continue
+            coordinates.setdefault(
+                int(location.node_id),
+                result_points[point_index],
+            )
+        if not set(self._geometry.node_id_to_point_index).issubset(coordinates):
+            return model_points
+
+        displayed = model_points.copy()
+        for node_id, point_index in self._geometry.node_id_to_point_index.items():
+            displayed[int(point_index)] = coordinates[int(node_id)]
+        return displayed
 
     def _refresh_pick_grid(self, points: np.ndarray | None = None) -> None:
         if self._geometry is None or _pyvista is None:
@@ -7124,10 +7175,7 @@ class FEMViewport(QWidget):
             base.SetVisibility(False)
         base_edges = self._actors.get("element_edges")
         if base_edges is not None:
-            base_edges.SetVisibility(
-                self._show_edges
-                and not self._display.contour_enabled
-            )
+            base_edges.SetVisibility(False)
         kwargs: dict[str, Any] = {
             "name": "result",
             "reset_camera": False,
@@ -7163,17 +7211,19 @@ class FEMViewport(QWidget):
                     self._contour["maximum"],
                 )
         else:
-            kwargs["color"] = self._visual_palette()["result"]
+            palette = self._visual_palette()
+            kwargs.update(
+                color=self._mesh_layer_color(palette),
+                show_edges=self._show_edges and not self._is_line_mesh(),
+                edge_color=self._element_layer_color(palette),
+            )
         self._actors["result"] = self._plotter.add_mesh(dataset, **kwargs)
         if self._display.contour_enabled and self._contour["legend"]:
             self._configure_contour_bar(
                 checked,
                 getattr(self._actors["result"], "mapper", None),
             )
-        if (
-            self._display.contour_enabled
-            and self._show_edges
-        ):
+        if self._display.contour_enabled and self._show_edges:
             self._add_result_edges_layer(dataset)
         if (
             self._display.contour_enabled
@@ -7196,6 +7246,8 @@ class FEMViewport(QWidget):
                 selected_mesh_references,
                 entity_kind=selected_kind,
             )
+        self._refresh_node_layer(render=False)
+        self._refresh_labels(render=False)
         self._refresh_undeformed_overlay()
         self._restore_selection()
         self._render()
@@ -7521,7 +7573,7 @@ class FEMViewport(QWidget):
         undeformed = self._make_grid(self._geometry.points)
         self._actors["undeformed_overlay"] = self._plotter.add_mesh(
             undeformed,
-            color=self._visual_palette()["overlay"],
+            color=self._element_layer_color(self._visual_palette()),
             style="wireframe",
             line_width=self._element_line_width(),
             opacity=0.65,
@@ -8966,7 +9018,7 @@ class FEMViewport(QWidget):
                 "label_background": "#263746",
             }
         return {
-            "mesh": "#d8dde2", "element": "#3F6F8C", "node": "#9A6F3F",
+            "mesh": "#BFDCEB", "element": "#3F6F8C", "node": "#9A6F3F",
             "result": "#b9c6d2", "overlay": "#7f8c8d",
             "label_background": "#ffffff",
         }
@@ -8981,6 +9033,35 @@ class FEMViewport(QWidget):
         except Exception:
             try:
                 actor.prop.color = color
+            except Exception:
+                pass
+
+    def _set_actor_edge_color(self, name: str, color: str) -> None:
+        actor = self._actors.get(name)
+        if actor is None:
+            return
+        qcolor = QColor(color)
+        try:
+            actor.GetProperty().SetEdgeColor(
+                qcolor.redF(),
+                qcolor.greenF(),
+                qcolor.blueF(),
+            )
+        except Exception:
+            try:
+                actor.prop.edge_color = color
+            except Exception:
+                pass
+
+    def _set_actor_edge_visibility(self, name: str, visible: bool) -> None:
+        actor = self._actors.get(name)
+        if actor is None:
+            return
+        try:
+            actor.GetProperty().SetEdgeVisibility(bool(visible))
+        except Exception:
+            try:
+                actor.prop.show_edges = bool(visible)
             except Exception:
                 pass
 

@@ -120,7 +120,7 @@ def test_view_actions_map_to_coordinate_plane_pngs():
     assert _PNG_FILES["iso"] == "view_xyz.png"
 
 
-def test_orthographic_view_actions_prefer_directionally_exact_vector_icons():
+def test_coordinate_view_actions_prefer_directionally_exact_vector_icons():
     assert _VECTOR_VIEW_ICONS == {
         "front",
         "back",
@@ -128,8 +128,8 @@ def test_orthographic_view_actions_prefer_directionally_exact_vector_icons():
         "right",
         "top",
         "bottom",
+        "iso",
     }
-    assert "iso" not in _VECTOR_VIEW_ICONS
 
 
 def test_png_sources_have_real_transparent_corners():
