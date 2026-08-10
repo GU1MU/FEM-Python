@@ -106,13 +106,11 @@ class GuiActionKey(str, Enum):
     EXPORT_VTK = "export_vtk"
     SCREENSHOT = "screenshot"
     ABOUT = "about"
-    SELECT_NODE = "select_node"
+    SELECT_POINT = "select_point"
     SELECT_EDGE = "select_edge"
     SELECT_ELEMENT = "select_element"
-    GEOMETRY_SELECT_POINT = "geometry_select_point"
-    GEOMETRY_SELECT_EDGE = "geometry_select_edge"
-    GEOMETRY_SELECT_FACE = "geometry_select_face"
-    GEOMETRY_SELECT_BODY = "geometry_select_body"
+    SELECT_FACE = "select_face"
+    SELECT_BODY = "select_body"
     CLEAR_SELECTION = "clear_selection"
     SELECTED_INFO = "selected_info"
 
@@ -243,13 +241,11 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.EXPORT_VTK, "导出 VTK", "export_vtk", "export"),
     _d(GuiActionKey.SCREENSHOT, "导出视口", "export_viewport_image", "image"),
     _d(GuiActionKey.ABOUT, "关于", "show_about"),
-    _d(GuiActionKey.SELECT_NODE, "选择节点", "_set_selection_mode", "select_node", checkable=True, checked=True, group="selection", argument="node"),
-    _d(GuiActionKey.SELECT_EDGE, "选择边", "_start_edge_scope_selection", "clear_selection", checkable=True, group="selection"),
-    _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_mode", "select_element", checkable=True, group="selection", argument="element"),
-    _d(GuiActionKey.GEOMETRY_SELECT_POINT, "选择点", "_set_geometry_selection_mode", "select_geometry_point", checkable=True, group="selection", argument="point"),
-    _d(GuiActionKey.GEOMETRY_SELECT_EDGE, "选择边", "_set_geometry_selection_mode", "select_geometry_edge", checkable=True, group="selection", argument="edge"),
-    _d(GuiActionKey.GEOMETRY_SELECT_FACE, "选择面", "_set_geometry_selection_mode", "select_geometry_face", checkable=True, group="selection", argument="face"),
-    _d(GuiActionKey.GEOMETRY_SELECT_BODY, "选择部件", "_set_geometry_selection_mode", "select_geometry_body", checkable=True, group="selection", argument="body"),
+    _d(GuiActionKey.SELECT_POINT, "选择点", "_set_selection_filter", "select_geometry_point", checkable=True, checked=True, group="selection", argument="point", checked_only=True),
+    _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_filter", "select_geometry_point", checkable=True, group="selection", argument="element", checked_only=True),
+    _d(GuiActionKey.SELECT_EDGE, "选择边", "_set_selection_filter", "select_geometry_edge", checkable=True, group="selection", argument="edge", checked_only=True),
+    _d(GuiActionKey.SELECT_FACE, "选择面", "_set_selection_filter", "select_geometry_face", checkable=True, group="selection", argument="face", checked_only=True),
+    _d(GuiActionKey.SELECT_BODY, "选择体", "_set_selection_filter", "select_geometry_body", checkable=True, group="selection", argument="body", checked_only=True),
     _d(GuiActionKey.CLEAR_SELECTION, "清除选择", "clear_selection", "clear_selection"),
     _d(GuiActionKey.SELECTED_INFO, "查看所选信息", "show_selected_information", "inspect"),
 )
@@ -277,6 +273,9 @@ class GuiActionContext:
     sketch_editor_active: bool = False
     boolean_editor_active: bool = False
     planar_solid_face_selected: bool = False
+    selection_space: str = "mesh"
+    selection_filter: str = "point"
+    selection_topological_dimension: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -310,6 +309,17 @@ class GuiActionContext:
             "open_dialog_keys",
             frozenset(str(item) for item in self.open_dialog_keys),
         )
+        if self.selection_space not in {"geometry", "mesh"}:
+            raise ValueError("selection_space must be geometry or mesh")
+        if self.selection_filter not in {
+            "point", "element", "edge", "face", "body",
+        }:
+            raise ValueError("unsupported selection_filter")
+        if (
+            self.selection_topological_dimension is not None
+            and self.selection_topological_dimension not in {1, 2, 3}
+        ):
+            raise ValueError("selection_topological_dimension must be 1, 2, 3, or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,19 +591,6 @@ def derive_action_availability(
         and not busy,
         "当前没有可撤销的几何特征",
     )
-    for key in (
-        GuiActionKey.GEOMETRY_SELECT_POINT,
-        GuiActionKey.GEOMETRY_SELECT_EDGE,
-        GuiActionKey.GEOMETRY_SELECT_FACE,
-        GuiActionKey.GEOMETRY_SELECT_BODY,
-    ):
-        set_state(key, has_native_geometry and not busy, "请先创建自主几何")
-    if has_native_geometry and geometry_dimension(recipe) == 1:
-        set_state(
-            GuiActionKey.GEOMETRY_SELECT_FACE,
-            False,
-            "One-dimensional wire geometry has no selectable faces.",
-        )
     set_state(
         GuiActionKey.GEOMETRY_REGION,
         has_model and not busy,
@@ -801,13 +798,39 @@ def derive_action_availability(
         GuiActionKey.NODES,
         GuiActionKey.NODE_LABELS,
         GuiActionKey.ELEMENT_LABELS,
-        GuiActionKey.SELECT_NODE,
-        GuiActionKey.SELECT_EDGE,
-        GuiActionKey.SELECT_ELEMENT,
         GuiActionKey.SYMBOLS,
         GuiActionKey.SYMBOL_SETTINGS,
     ):
         set_state(key, has_model, "请先生成网格或打开 INP 模型")
+    selection_keys = {
+        "point": GuiActionKey.SELECT_POINT,
+        "element": GuiActionKey.SELECT_ELEMENT,
+        "edge": GuiActionKey.SELECT_EDGE,
+        "face": GuiActionKey.SELECT_FACE,
+        "body": GuiActionKey.SELECT_BODY,
+    }
+    selection_dimension = context.selection_topological_dimension
+    if context.selection_space == "geometry":
+        geometry_available = has_native_geometry and not busy
+        for kind, key in selection_keys.items():
+            enabled = geometry_available and kind != "element"
+            reason = (
+                "几何选择空间不支持单元"
+                if kind == "element"
+                else "请先创建自主几何"
+            )
+            if kind == "face" and selection_dimension == 1:
+                enabled = False
+                reason = "一维几何没有可选择的面"
+            set_state(key, enabled, reason)
+    else:
+        for kind, key in selection_keys.items():
+            enabled = has_model and not busy
+            reason = "请先生成网格或打开 INP 模型"
+            if kind == "face" and selection_dimension == 1:
+                enabled = False
+                reason = "当前一维网格没有可选择的拓扑面"
+            set_state(key, enabled, reason)
     for key in (
         GuiActionKey.FIT,
         GuiActionKey.FRONT,
@@ -926,12 +949,7 @@ def derive_action_availability(
         )
         for key in mutation_keys:
             set_state(key, False, "请先完成或取消当前草图编辑")
-        for key in (
-            GuiActionKey.GEOMETRY_SELECT_POINT,
-            GuiActionKey.GEOMETRY_SELECT_EDGE,
-            GuiActionKey.GEOMETRY_SELECT_FACE,
-            GuiActionKey.GEOMETRY_SELECT_BODY,
-        ):
+        for key in selection_keys.values():
             set_state(key, False, "请先完成或取消当前草图编辑")
         for key in (
             GuiActionKey.FIT,

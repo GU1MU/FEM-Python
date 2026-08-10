@@ -13,6 +13,7 @@ from fem_gui.action_state import (
     GuiActionKey,
     derive_action_availability,
 )
+from fem_gui.visualization.selection import SelectionContextState
 
 
 def _by_key(values):
@@ -154,6 +155,84 @@ def test_native_scope_actions_remain_disabled_until_meshing() -> None:
 def test_geometry_selection_rejects_noncanonical_values() -> None:
     with pytest.raises(TypeError, match="LogicalEntityRef"):
         GuiActionContext(geometry_selection=("edge:left",))
+
+
+def test_five_selection_actions_share_one_contextual_descriptor_group() -> None:
+    descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
+    keys = (
+        GuiActionKey.SELECT_POINT,
+        GuiActionKey.SELECT_ELEMENT,
+        GuiActionKey.SELECT_EDGE,
+        GuiActionKey.SELECT_FACE,
+        GuiActionKey.SELECT_BODY,
+    )
+
+    assert [descriptors[key].text for key in keys] == [
+        "选择点", "选择单元", "选择边", "选择面", "选择体",
+    ]
+    assert {descriptors[key].group for key in keys} == {"selection"}
+    assert {descriptors[key].handler for key in keys} == {"_set_selection_filter"}
+    assert descriptors[GuiActionKey.SELECT_ELEMENT].icon_name == "select_geometry_point"
+
+
+def test_selection_context_remembers_one_filter_per_space() -> None:
+    state = SelectionContextState()
+    state.set_filter("face")
+    assert state.active_filter == "face"
+
+    assert state.set_space("geometry") == "body"
+    state.set_filter("edge")
+    assert state.set_space("mesh") == "face"
+    assert state.set_space("geometry") == "edge"
+
+    with pytest.raises(ValueError, match="does not support elements"):
+        state.set_filter("element")
+
+
+def test_geometry_selection_projection_disables_elements_and_missing_faces() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    base = session.snapshot()
+    recipe = RectangleGeometry("Part-1", 4.0, 2.0)
+    snapshot = replace(
+        base,
+        parts=(NativePart(id="P1", name="Part-1", geometry_recipe=recipe),),
+        active_part_id="P1",
+        geometry_recipe=recipe,
+    )
+    projection = describe_session_authoring(snapshot)
+
+    states_2d = _by_key(
+        derive_action_availability(
+            snapshot,
+            projection,
+            GuiActionContext(
+                selection_space="geometry",
+                selection_topological_dimension=2,
+            ),
+        )
+    )
+    assert not states_2d[GuiActionKey.SELECT_ELEMENT].enabled
+    for key in (
+        GuiActionKey.SELECT_POINT,
+        GuiActionKey.SELECT_EDGE,
+        GuiActionKey.SELECT_FACE,
+        GuiActionKey.SELECT_BODY,
+    ):
+        assert states_2d[key].enabled
+
+    states_1d = _by_key(
+        derive_action_availability(
+            snapshot,
+            projection,
+            GuiActionContext(
+                selection_space="geometry",
+                selection_topological_dimension=1,
+            ),
+        )
+    )
+    assert not states_1d[GuiActionKey.SELECT_FACE].enabled
+    assert "一维几何" in states_1d[GuiActionKey.SELECT_FACE].reason
 
 
 def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> None:

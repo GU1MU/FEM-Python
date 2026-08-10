@@ -118,7 +118,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
         "close",
         "submit_job",
         "fit",
-        "select_node",
+        "select_point",
         "model_info",
         "deformed",
         "overlay",
@@ -133,7 +133,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     geometry = build_model_geometry(model)
     window._model_loaded(gui_inp_path, (model, geometry))
     window._update_action_states()
-    for name in ("reload", "close", "fit", "select_node", "model_info", "symbols", "step_info", "check_model", "job_manager"):
+    for name in ("reload", "close", "fit", "select_point", "model_info", "symbols", "step_info", "check_model", "job_manager"):
         assert window.actions[name].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
     assert window.check_current_model(show_success=False)

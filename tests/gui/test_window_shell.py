@@ -44,7 +44,7 @@ def test_action_states_without_model_or_result():
     window = FEMMainWindow()
 
     assert not window.actions["submit_job"].isEnabled()
-    assert not window.actions["select_node"].isEnabled()
+    assert not window.actions["select_point"].isEnabled()
     assert not window.actions["deformed"].isEnabled()
     assert not window.actions["query"].isEnabled()
 

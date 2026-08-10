@@ -874,6 +874,7 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
         render_preview(preview, **kwargs)
 
     monkeypatch.setattr(window.viewport, "show_geometry_preview", fail_preview)
+    window.ribbon.set_current("几何")
     window._set_native_geometry(
         CylinderGeometry("renderer-failure", 0.5, 1.0),
         "圆柱",
@@ -883,7 +884,7 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
     assert errors == [("编辑几何", "preview backend failed")]
     window._on_geometry_entity_pick(LogicalEntityRef("body:P1/domain"))
     assert window.actions["geometry_move"].isEnabled()
-    assert window.actions["geometry_select_face"].isEnabled()
+    assert window.actions["select_face"].isEnabled()
     assert window.actions["mesh_settings"].isEnabled()
     window.close()
 

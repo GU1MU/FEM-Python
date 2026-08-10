@@ -4650,7 +4650,7 @@ class FEMViewport(QWidget):
         )
         if mode in {
             "geometry_point", "geometry_edge", "geometry_face", "geometry_body",
-            "mesh_node", "mesh_edge", "mesh_face", "mesh_element",
+            "mesh_node", "mesh_edge", "mesh_face", "mesh_element", "mesh_body",
         }:
             self._selection_mode = mode
         else:
@@ -7465,6 +7465,15 @@ class FEMViewport(QWidget):
                 mode,
             )
         if mode == "mesh_element":
+            return self._pick_cell(
+                x,
+                y,
+                self._pick_grid,
+                "element_id",
+                "model_pick_grid",
+                mode,
+            )
+        if mode == "mesh_body":
             return self._pick_cell(
                 x,
                 y,
