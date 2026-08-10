@@ -858,6 +858,7 @@ def test_public_edit_type_validation_precedes_result_confirmation(
 def test_real_fempy_project_vertical_remains_openable(
     tmp_path: Path,
     monkeypatch,
+    dispose_gui_widget,
 ) -> None:
     _application()
     monkeypatch.setattr(FEMMainWindow, "_show_error", lambda *_args, **_kwargs: None)
@@ -907,7 +908,7 @@ def test_real_fempy_project_vertical_remains_openable(
     result_path = result_target.with_suffix(".femres")
     assert window.close_model(confirm=False)
     _wait_idle(window)
-    window.close()
+    dispose_gui_widget(window)
     reopened = FEMMainWindow()
     opened = reopened.open_result_path(result_path)
     assert opened.completion is not None
@@ -1119,6 +1120,7 @@ def test_result_save_overwrites_existing_archive_atomically(tmp_path: Path) -> N
 def test_real_solve_save_close_and_reopen_result_roundtrip(
     gui_inp_path: Path,
     tmp_path: Path,
+    dispose_gui_widget,
 ) -> None:
     _application()
     window = FEMMainWindow()
@@ -1136,7 +1138,7 @@ def test_real_solve_save_close_and_reopen_result_roundtrip(
     result_path = target.with_suffix(".femres")
     assert result_path.is_file()
     assert window.close_model(confirm=False)
-    window.close()
+    dispose_gui_widget(window)
 
     reopened = FEMMainWindow()
     opened = reopened.open_result_path(result_path)

@@ -54,6 +54,7 @@ def test_action_states_without_model_or_result():
 def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
     _application()
     window = FEMMainWindow()
+    runtime = window.viewport_panel.agent_chat_drawer.agent_runtime
     calls: list[bool] = []
     monkeypatch.setattr(
         window.viewport,
@@ -64,3 +65,4 @@ def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
     window.close()
 
     assert calls == [True]
+    assert runtime.is_shutdown

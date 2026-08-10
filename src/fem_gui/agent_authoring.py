@@ -1492,6 +1492,10 @@ def _result_catalog_failure(
     )
 
 
+def _ignore_projection_refresh() -> None:
+    pass
+
+
 class SessionGeometryAuthoringPort:
     """A2/A3 port for atomic geometry writes and detached mesh tasks."""
 
@@ -1535,6 +1539,16 @@ class SessionGeometryAuthoringPort:
         if not callable(callback):
             raise TypeError("record listener must be callable")
         self._record_listener = callback
+
+    def detach_gui_callbacks(self) -> None:
+        """Release callbacks owned by a closing GUI window."""
+
+        self._refresh_callback = _ignore_projection_refresh
+        self._start_mesh_task = None
+        self._start_solve_task = None
+        self._start_preflight_task = None
+        self._apply_definition_delta = None
+        self._record_listener = None
 
     def set_context(self, context: AuthoringContext) -> None:
         if type(context) is not AuthoringContext:
@@ -2569,6 +2583,16 @@ class AgentAuthoringBridge:
         if not callable(callback):
             raise TypeError("result invalidation confirmation must be callable")
         self._result_invalidation_confirmation = callback
+
+    def detach_gui_callbacks(self) -> None:
+        """Break GUI-owned callback cycles when the window closes."""
+
+        self._patch_listener = None
+        self._lifecycle_listener = None
+        self._result_invalidation_confirmation = None
+        detach_port = getattr(self._port, "detach_gui_callbacks", None)
+        if callable(detach_port):
+            detach_port()
 
     def bind_snapshot(
         self,

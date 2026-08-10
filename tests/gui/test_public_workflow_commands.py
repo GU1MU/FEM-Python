@@ -119,7 +119,7 @@ def test_pending_public_command_is_the_busy_gate_and_completion_handle() -> None
         ),
         code="task.busy",
     )
-    terminal = await_succeeded(receipt)
+    terminal = await_succeeded(receipt, timeout=2.0)
 
     assert terminal.value is None
     assert receipt.completion is not None
@@ -143,7 +143,7 @@ def test_public_inp_import_accepts_gb18030_comments(tmp_path) -> None:
     )
     window = FEMMainWindow()
 
-    terminal = await_succeeded(window.open_inp_path(path))
+    terminal = await_succeeded(window.open_inp_path(path), timeout=2.0)
 
     assert terminal.value is None
     assert window.document.source_kind == "imported"

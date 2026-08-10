@@ -247,7 +247,7 @@ def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
     )
     window = FEMMainWindow()
     receipt = window.open_project_path(source)
-    await_succeeded(receipt)
+    await_succeeded(receipt, timeout=2.0)
 
     assert receipt.diagnostic is None
     assert window.document.source_kind == "native"

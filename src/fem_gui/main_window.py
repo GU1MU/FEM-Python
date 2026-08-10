@@ -340,6 +340,7 @@ _RESULT_FIELD_STATE_LABELS = {
 _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
+_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS = 5.0
 
 
 _VISIBLE_OUTPUT_VARIABLES = frozenset({"u", "rf", "s"})
@@ -747,6 +748,13 @@ class FEMMainWindow(QMainWindow):
             tuple[object, ResultFieldTopologyTemplate] | None
         ) = None
         self._step_combos: list[QComboBox] = []
+        self._closing = False
+        self._deferred_ui_callbacks: list[Callable[[], None]] = []
+        self._deferred_ui_timer = QTimer(self)
+        self._deferred_ui_timer.setSingleShot(True)
+        self._deferred_ui_timer.timeout.connect(
+            self._run_deferred_ui_callbacks
+        )
         self._build_actions()
         self._build_menus()
         self._build_ribbon()
@@ -762,6 +770,23 @@ class FEMMainWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self.task_controller.busy
+
+    def _defer_ui(self, callback: Callable[[], None]) -> None:
+        if self._closing:
+            return
+        self._deferred_ui_callbacks.append(callback)
+        if not self._deferred_ui_timer.isActive():
+            self._deferred_ui_timer.start(0)
+
+    def _run_deferred_ui_callbacks(self) -> None:
+        callbacks = tuple(self._deferred_ui_callbacks)
+        self._deferred_ui_callbacks.clear()
+        if self._closing:
+            return
+        for callback in callbacks:
+            if self._closing:
+                break
+            callback()
 
     @property
     def import_notices(self) -> tuple[object, ...]:
@@ -3167,10 +3192,7 @@ class FEMMainWindow(QMainWindow):
             visual_selection != selection
             and render_selection != visual_selection
         ):
-            QTimer.singleShot(
-                0,
-                self._apply_result_averaging_threshold,
-            )
+            self._defer_ui(self._apply_result_averaging_threshold)
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -3582,7 +3604,7 @@ class FEMMainWindow(QMainWindow):
         # stale line over the native VTK surface after the mouse is released.
         splitter.setOpaqueResize(True)
         splitter.splitterMoved.connect(
-            lambda _position, _index: QTimer.singleShot(0, self.viewport.render)
+            lambda _position, _index: self._defer_ui(self.viewport.render)
         )
         splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
@@ -4710,7 +4732,7 @@ class FEMMainWindow(QMainWindow):
                 and current.launch_is_current(self.document)
             )
             if not is_current:
-                QTimer.singleShot(0, self._refresh_current_face_sketch_preview)
+                self._defer_ui(self._refresh_current_face_sketch_preview)
                 return
             display = build_face_sketch_boolean_display(
                 sketch,
@@ -4745,7 +4767,7 @@ class FEMMainWindow(QMainWindow):
                     f"精确预览失败：{message}",
                 )
             else:
-                QTimer.singleShot(0, self._refresh_current_face_sketch_preview)
+                self._defer_ui(self._refresh_current_face_sketch_preview)
 
         started = self._start_task(
             workload,
@@ -6523,7 +6545,7 @@ class FEMMainWindow(QMainWindow):
             if not started:
                 cleanup_failure()
 
-        QTimer.singleShot(0, launch)
+        self._defer_ui(launch)
 
     def _launch_exact_part_boolean_preview(
         self,
@@ -7235,7 +7257,7 @@ class FEMMainWindow(QMainWindow):
 
                 def resume_after_commit(record: TaskCompletion) -> None:
                     if record.state is BackgroundTaskState.SUCCEEDED:
-                        QTimer.singleShot(0, lambda: on_committed(name))
+                        self._defer_ui(lambda: on_committed(name))
 
                 completion.observe(resume_after_commit)
             return None
@@ -7594,7 +7616,7 @@ class FEMMainWindow(QMainWindow):
                 "section": self.assign_section_to_region,
             }.get(operation)
         if callback is not None:
-            QTimer.singleShot(0, callback)
+            self._defer_ui(callback)
         elif operation != "scope":
             raise RuntimeError(
                 f"unsupported guided scope operation: {operation}"
@@ -8107,7 +8129,12 @@ class FEMMainWindow(QMainWindow):
             return False
         if not wait:
             return True
-        terminal = completion.result()
+        try:
+            terminal = completion.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            self.cancel_current_task()
+            self.status_panel.set_state("保存分析结果超时，正在取消任务", 5000)
+            return False
         deadline = perf_counter() + 5.0
         while self.busy and perf_counter() < deadline:
             QApplication.processEvents()
@@ -8305,7 +8332,12 @@ class FEMMainWindow(QMainWindow):
             completion.observe(agent_save_finished)
         if not wait:
             return True
-        terminal = completion.result()
+        try:
+            terminal = completion.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            self.cancel_current_task()
+            self.status_panel.set_state("保存自主项目超时，正在取消任务", 5000)
+            return False
         return (
             terminal.state is BackgroundTaskState.SUCCEEDED
             and not self.document.dirty
@@ -9936,16 +9968,29 @@ class FEMMainWindow(QMainWindow):
         task = self._prepare_model_check()
         if task is None:
             return False
-        with ThreadPoolExecutor(
+        executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="fem-preflight",
-        ) as executor:
-            evaluation = executor.submit(
-                self._evaluate_model_check,
-                task.model,
-                task.step_name,
-                task.token,
-            ).result()
+        )
+        future = executor.submit(
+            self._evaluate_model_check,
+            task.model,
+            task.step_name,
+            task.token,
+        )
+        timed_out = False
+        try:
+            evaluation = future.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
+        except TimeoutError:
+            timed_out = True
+            future.cancel()
+            self.status_panel.set_state("模型检查超时", 5000)
+            return False
+        finally:
+            executor.shutdown(
+                wait=not timed_out,
+                cancel_futures=timed_out,
+            )
         return self._complete_model_check(
             task.token,
             evaluation,
@@ -10939,7 +10984,7 @@ class FEMMainWindow(QMainWindow):
         if self._viewport_fit_pending:
             return
         self._viewport_fit_pending = True
-        QTimer.singleShot(0, self._run_scheduled_viewport_fit)
+        self._defer_ui(self._run_scheduled_viewport_fit)
 
     def _run_scheduled_viewport_fit(self) -> None:
         self._viewport_fit_pending = False
@@ -11684,7 +11729,7 @@ class FEMMainWindow(QMainWindow):
             return
         if self._pending_local_mesh_selection:
             self._pending_local_mesh_selection = False
-            QTimer.singleShot(0, self.set_local_mesh_control)
+            self._defer_ui(self.set_local_mesh_control)
             return
         if self._pending_analysis_selection is not None:
             self._complete_scope_creation_from_bar()
@@ -12184,10 +12229,7 @@ class FEMMainWindow(QMainWindow):
             visual_selection != selection
             and render_selection != visual_selection
         ):
-            QTimer.singleShot(
-                0,
-                self._apply_result_averaging_threshold,
-            )
+            self._defer_ui(self._apply_result_averaging_threshold)
 
     def _install_viewport_result_payload(
         self,
@@ -12593,10 +12635,7 @@ class FEMMainWindow(QMainWindow):
             visual_selection != settings.selection
             and render_selection != visual_selection
         ):
-            QTimer.singleShot(
-                0,
-                self._apply_result_averaging_threshold,
-            )
+            self._defer_ui(self._apply_result_averaging_threshold)
 
     def _finish_typed_result_display_materialization(
         self,
@@ -13312,7 +13351,7 @@ class FEMMainWindow(QMainWindow):
             box.exec()
             if box.clickedButton() is cancel_button:
                 self.cancel_current_task(
-                    after_cleanup=lambda: QTimer.singleShot(0, self.close)
+                    after_cleanup=lambda: self._defer_ui(self.close)
                 )
             event.ignore()
             return
@@ -13328,5 +13367,9 @@ class FEMMainWindow(QMainWindow):
             if receipt.diagnostic is not None:
                 event.ignore()
                 return
+        self._closing = True
+        self._deferred_ui_timer.stop()
+        self._deferred_ui_callbacks.clear()
+        self.viewport_panel.overlay_host.shutdown(wait=False)
         self.viewport.shutdown_backend()
         event.accept()

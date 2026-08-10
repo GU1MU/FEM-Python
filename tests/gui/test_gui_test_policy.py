@@ -40,6 +40,15 @@ def _is_thread_join(node: ast.Call) -> bool:
     )
 
 
+def _is_dialog_result(node: ast.Call) -> bool:
+    function = node.func
+    return (
+        isinstance(function, ast.Attribute)
+        and isinstance(function.value, ast.Name)
+        and function.value.id.casefold().endswith("dialog")
+    )
+
+
 def _function_defaults(node: ast.FunctionDef) -> tuple[tuple[str, ast.AST], ...]:
     positional = node.args.posonlyargs + node.args.args
     aligned = zip(positional[-len(node.args.defaults) :], node.args.defaults)
@@ -66,7 +75,9 @@ def test_gui_tests_keep_real_waits_within_two_seconds() -> None:
                         violations.append(f"{path.name}:{node.lineno} {name}")
                 elif name == "result":
                     timeout = _number(_timeout_argument(node))
-                    if timeout is not None and timeout > 2.0:
+                    if not _is_dialog_result(node) and (
+                        timeout is None or timeout > 2.0
+                    ):
                         violations.append(f"{path.name}:{node.lineno} result")
                 elif name == "qWait":
                     delay_ms = _number(node.args[0] if node.args else None)

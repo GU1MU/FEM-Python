@@ -367,6 +367,7 @@ def test_delete_rechecks_session_capability_before_mutation_or_warning(
 def test_native_create_survives_project_save_and_reopen(
     tmp_path,
     monkeypatch,
+    dispose_gui_widget,
 ) -> None:
     _application()
     window = FEMMainWindow()
@@ -412,7 +413,7 @@ def test_native_create_survives_project_save_and_reopen(
     expected_step = with_compatibility_analysis_names(
         (window.document.steps[0],)
     )[0]
-    window.close()
+    dispose_gui_widget(window)
 
     reopened = FEMMainWindow()
     monkeypatch.setattr(

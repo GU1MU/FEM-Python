@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import os
+import weakref
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -19,6 +21,34 @@ from fem_gui.main_window import FEMMainWindow
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_closed_main_window_releases_python_wrapper(dispose_gui_widget):
+    _application()
+    window = FEMMainWindow()
+    wrapper_reference = weakref.ref(window)
+
+    dispose_gui_widget(window)
+    del window
+    gc.collect()
+
+    assert wrapper_reference() is None
+
+
+def test_close_discards_deferred_callbacks_and_stops_owned_timer():
+    _application()
+    window = FEMMainWindow()
+    invoked: list[bool] = []
+    window._defer_ui(lambda: invoked.append(True))
+
+    assert window._deferred_ui_timer.isActive()
+    assert window.close()
+    assert window._deferred_ui_callbacks == []
+    assert not window._deferred_ui_timer.isActive()
+
+    QApplication.processEvents()
+
+    assert invoked == []
 
 
 def test_main_window_has_modules_navigation_and_viewport_toolbar():
@@ -455,6 +485,7 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
     assert not geometry_face.isHidden()
     assert not model_point.isHidden()
     assert window._selection_context.space == "mesh"
+    window.hide()
     window.close()
 
 

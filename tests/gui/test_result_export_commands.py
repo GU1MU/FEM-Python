@@ -111,7 +111,7 @@ def test_public_result_exports_use_compact_snapshot_bound_tables(
         tmp_path / "result.csv",
         csv_spec,
     )
-    await_succeeded(csv_receipt)
+    await_succeeded(csv_receipt, timeout=2.0)
     assert csv_receipt.completion is not None
     csv_outcome = csv_receipt.completion.outcome
     assert csv_outcome is not None
@@ -147,7 +147,7 @@ def test_public_result_exports_use_compact_snapshot_bound_tables(
             selections,
         ),
     )
-    await_succeeded(components_receipt)
+    await_succeeded(components_receipt, timeout=2.0)
     with (tmp_path / "components.csv").open(
         encoding="utf-8-sig",
         newline="",
@@ -170,7 +170,7 @@ def test_public_result_exports_use_compact_snapshot_bound_tables(
         tmp_path / "result.vtk",
         vtk_spec,
     )
-    await_succeeded(vtk_receipt)
+    await_succeeded(vtk_receipt, timeout=2.0)
     assert vtk_receipt.completion is not None
     vtk_outcome = vtk_receipt.completion.outcome
     assert vtk_outcome is not None

@@ -399,6 +399,7 @@ def test_a6_port_rejects_legacy_solve_proposal_shape() -> None:
 
 def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     monkeypatch,
+    dispose_gui_widget,
 ) -> None:
     _application()
     busy_window = FEMMainWindow()
@@ -414,7 +415,7 @@ def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
         busy_window.task_controller._active = None
     assert failed.state is ProposalState.FAILED
     assert busy_window.session.snapshot().runs == ()
-    busy_window.close()
+    dispose_gui_widget(busy_window)
 
     start_window = FEMMainWindow()
     _seed_window(start_window, validated=True)

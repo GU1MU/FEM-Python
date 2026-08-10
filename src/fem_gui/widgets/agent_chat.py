@@ -110,9 +110,13 @@ _BOUNDARY_EVENT_TYPES = frozenset(
 )
 
 
-def _shutdown_runtime_safely(runtime: QtAgentRuntime) -> None:
+def _shutdown_runtime_safely(
+    runtime: QtAgentRuntime,
+    *,
+    wait: bool = False,
+) -> None:
     try:
-        runtime.shutdown(wait=True)
+        runtime.shutdown(wait=wait)
     except RuntimeError:
         # Python may already be finalizing its thread executors.
         pass
@@ -1249,6 +1253,7 @@ class AgentChatDrawer(_BoundaryFrame):
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Ignored,
         )
+        self._shutting_down = False
         self._runtime_busy = False
         self._composer_proposal: tuple[ProposalView, str] | None = None
         self._manual_composer_proposal: tuple[ProposalView, str] | None = None
@@ -1310,6 +1315,19 @@ class AgentChatDrawer(_BoundaryFrame):
         self._conversation_scroll_timer.timeout.connect(
             self._apply_queued_conversation_scroll
         )
+        self._continuation_settle_timer = QTimer(self)
+        self._continuation_settle_timer.setSingleShot(True)
+        self._continuation_settle_timer.timeout.connect(
+            self._settle_continuation_state
+        )
+        self._composer_focus_timer = QTimer(self)
+        self._composer_focus_timer.setSingleShot(True)
+        self._composer_focus_timer.timeout.connect(self._focus_composer_input)
+        self._composer_accept_timer = QTimer(self)
+        self._composer_accept_timer.setSingleShot(True)
+        self._composer_accept_timer.timeout.connect(
+            self._settle_composer_accepting
+        )
         self._live_activity_label: QLabel | None = None
         self._live_activity_base = ""
         self._live_activity_tick = 0
@@ -1362,11 +1380,11 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         runtime = self.agent_runtime
         self.destroyed.connect(
-            lambda _object=None: _shutdown_runtime_safely(runtime)
+            lambda _object=None: _shutdown_runtime_safely(runtime, wait=False)
         )
         application = QApplication.instance()
         if application is not None:
-            application.aboutToQuit.connect(runtime.shutdown)
+            application.aboutToQuit.connect(self._application_quit)
         self._update_workspace_state()
         self._render_event_presentation(preserve_tool_expansion=False)
 
@@ -1591,7 +1609,7 @@ class AgentChatDrawer(_BoundaryFrame):
             EventType.PROPOSAL_FAILED,
         }:
             self._continuation_active = True
-            QTimer.singleShot(0, self._settle_continuation_state)
+            self._continuation_settle_timer.start(0)
         if event.event_type in {
             EventType.PROPOSAL_ACCEPTED,
             EventType.PROPOSAL_STARTED,
@@ -2434,7 +2452,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
         if not show_task:
             if self._composer_task_was_visible and self.isVisible():
-                QTimer.singleShot(0, self.input.setFocus)
+                self._composer_focus_timer.start(0)
             self._composer_task_was_visible = False
             return
         self._composer_task_was_visible = True
@@ -2505,7 +2523,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._composer_accepting_id = proposal.proposal_id
         self._sync_composer_state()
         self._accept_authoring_proposal(proposal, turn_id)
-        QTimer.singleShot(0, self._settle_composer_accepting)
+        self._composer_accept_timer.start(0)
 
     def _reject_composer_proposal(self) -> None:
         if self._composer_proposal is None:
@@ -2517,6 +2535,8 @@ class AgentChatDrawer(_BoundaryFrame):
         self._sync_composer_state()
 
     def _settle_composer_accepting(self) -> None:
+        if self._shutting_down:
+            return
         if self._composer_accepting_id is None:
             return
         proposal = None
@@ -2530,9 +2550,15 @@ class AgentChatDrawer(_BoundaryFrame):
         self._sync_composer_state()
 
     def _settle_continuation_state(self) -> None:
+        if self._shutting_down:
+            return
         if not self.agent_runtime.busy:
             self._continuation_active = False
             self._sync_composer_state()
+
+    def _focus_composer_input(self) -> None:
+        if not self._shutting_down:
+            self.input.setFocus()
 
     def _show_add_menu(self) -> None:
         menu_size = self.add_menu.sizeHint()
@@ -3264,6 +3290,8 @@ class AgentChatDrawer(_BoundaryFrame):
         revision_hash: str,
         succeeded: bool,
     ) -> None:
+        if self._shutting_down:
+            return
         key = (revision, revision_hash)
         self._pending_solve_confirmations.discard(key)
         if succeeded:
@@ -3273,6 +3301,8 @@ class AgentChatDrawer(_BoundaryFrame):
         )
 
     def _reset_runtime_session(self, _session_id: str) -> None:
+        if self._shutting_down:
+            return
         bridge = self.authoring_bridge
         stale_pending = getattr(
             bridge,
@@ -3305,9 +3335,13 @@ class AgentChatDrawer(_BoundaryFrame):
         self._show_preview_notice("新的 Agent 会话已就绪")
 
     def _apply_runtime_event(self, event: AgentEvent) -> None:
+        if self._shutting_down:
+            return
         self.apply_agent_event(event)
 
     def _show_runtime_notice(self, text: str) -> None:
+        if self._shutting_down:
+            return
         self._show_preview_notice(text)
 
     def _confirmation_targets_live_session(self) -> bool:
@@ -3319,6 +3353,8 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def set_runtime_busy(self, _busy: bool) -> None:
         """投影后台 runtime 的串行操作状态。"""
+        if self._shutting_down:
+            return
         self._runtime_busy = self.agent_runtime.busy
         if not self._runtime_busy:
             self._continuation_active = False
@@ -3442,9 +3478,31 @@ class AgentChatDrawer(_BoundaryFrame):
             and pending.review_hash == review_hash
         )
 
-    def shutdown_runtime(self) -> None:
+    def _application_quit(self) -> None:
+        self.shutdown_runtime(wait=False)
+
+    def shutdown_runtime(self, *, wait: bool = False) -> None:
         """安全关闭后台执行边界；收起聊天框不会调用本方法。"""
-        self.agent_runtime.shutdown(wait=True)
+        if not self._shutting_down:
+            self._shutting_down = True
+            self._project_save_handler = None
+            detach_callbacks = getattr(
+                self.authoring_bridge,
+                "detach_gui_callbacks",
+                None,
+            )
+            if callable(detach_callbacks):
+                detach_callbacks()
+            for timer in (
+                self._stream_refresh_timer,
+                self._conversation_scroll_timer,
+                self._continuation_settle_timer,
+                self._composer_focus_timer,
+                self._composer_accept_timer,
+                self._live_activity_timer,
+            ):
+                timer.stop()
+        self.agent_runtime.shutdown(wait=wait)
 
 
 class AgentChatLauncher(_BoundaryToolButton):
@@ -3546,7 +3604,7 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_width = self.DEFAULT_DRAWER_WIDTH
         self._drawer_reveal = 0
         self._drawer_open = True
-        self._overlay_window_sync_pending = False
+        self._shutting_down = False
         self._anchor_window: QWidget | None = None
         self._animation = QPropertyAnimation(
             self,
@@ -3556,6 +3614,9 @@ class ModelViewportOverlayHost(QWidget):
         self._animation.setDuration(self.ANIMATION_DURATION_MS)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._animation.finished.connect(self._animation_finished)
+        self._overlay_sync_timer = QTimer(self)
+        self._overlay_sync_timer.setSingleShot(True)
+        self._overlay_sync_timer.timeout.connect(self._sync_overlay_windows)
         native_surface_updated = getattr(
             self.viewport,
             "nativeSurfaceUpdated",
@@ -3571,6 +3632,17 @@ class ModelViewportOverlayHost(QWidget):
         self._settle_overlay_geometry()
 
     def closeEvent(self, event) -> None:
+        self.shutdown(wait=False)
+        super().closeEvent(event)
+
+    def shutdown(self, *, wait: bool = False) -> None:
+        """Stop native overlays and the Agent runtime before owner teardown."""
+
+        if not self._shutting_down:
+            self._shutting_down = True
+            self._animation.stop()
+            self._overlay_sync_timer.stop()
+        self.agent_chat_drawer.shutdown_runtime(wait=wait)
         self.agent_chat_drawer.hide()
         self.chat_launcher.hide()
         if self._bottom_overlay is not None:
@@ -3578,8 +3650,6 @@ class ModelViewportOverlayHost(QWidget):
         if self._anchor_window is not None:
             self._anchor_window.removeEventFilter(self)
             self._anchor_window = None
-        self.agent_chat_drawer.shutdown_runtime()
-        super().closeEvent(event)
 
     def _get_drawer_reveal(self) -> int:
         return self._drawer_reveal
@@ -3811,7 +3881,8 @@ class ModelViewportOverlayHost(QWidget):
     def _overlay_windows_can_show(self) -> bool:
         anchor_window = self._anchor_window
         return bool(
-            self.isVisible()
+            not self._shutting_down
+            and self.isVisible()
             and anchor_window is not None
             and anchor_window.isVisible()
             and not anchor_window.isMinimized()
@@ -3845,17 +3916,19 @@ class ModelViewportOverlayHost(QWidget):
 
     def _schedule_overlay_window_sync(self) -> None:
         """在宿主或 VTK 更新后同步独立覆盖窗口。"""
-        if self._overlay_window_sync_pending:
+        if self._shutting_down or self._overlay_sync_timer.isActive():
             return
-        self._overlay_window_sync_pending = True
-        QTimer.singleShot(0, self._sync_overlay_windows)
+        self._overlay_sync_timer.start(0)
 
     def _sync_overlay_windows(self) -> None:
-        self._overlay_window_sync_pending = False
+        if self._shutting_down:
+            return
         self._refresh_anchor_window()
         self._position_overlays()
 
     def _animation_finished(self) -> None:
+        if self._shutting_down:
+            return
         self._sync_overlay_window_visibility()
 
     def eventFilter(self, watched: object, event: object) -> bool:

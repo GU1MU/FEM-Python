@@ -10,8 +10,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+import weakref
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as wait_for_futures
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -119,6 +120,7 @@ _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
 _MAX_ADAPTIVE_MESSAGE_DELTA_CHARACTERS = 64_000
 _MESSAGE_DELTA_FRAME_SECONDS = 0.03
 _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
+_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 _TOOL_DISPLAY_NAMES = {
     "show_capabilities": "检查 Agent 能力",
@@ -258,19 +260,25 @@ class _QtAuthoringToolProxy(DynamicToolRegistry):
         runtime: "QtAgentRuntime",
         controller: AuthoringWorkflowController,
     ) -> None:
-        self._runtime = runtime
+        self._runtime_ref = weakref.ref(runtime)
         self._controller = controller
+
+    def _runtime_owner(self) -> "QtAgentRuntime":
+        runtime = self._runtime_ref()
+        if runtime is None:
+            raise RuntimeError("Qt Agent runtime is no longer available")
+        return runtime
 
     @property
     def definitions(self):
         # The provider worker only reads this immutable owner-thread cache.
         # Calling ``controller.definitions`` here would cross the Qt boundary
         # on every provider request.
-        return self._runtime._authoring_tool_definitions()
+        return self._runtime_owner()._authoring_tool_definitions()
 
     @property
     def provider_snapshot(self) -> AuthoringTurnSnapshot:
-        return self._runtime.authoring_turn_snapshot
+        return self._runtime_owner().authoring_turn_snapshot
 
     def refresh_turn_snapshot(
         self,
@@ -285,7 +293,7 @@ class _QtAuthoringToolProxy(DynamicToolRegistry):
         arguments: Mapping[str, Any],
         context: ToolExecutionContext,
     ) -> ToolResult:
-        return self._runtime._dispatch_authoring_tool(
+        return self._runtime_owner()._dispatch_authoring_tool(
             name,
             arguments,
             context,
@@ -982,7 +990,7 @@ class QtAgentRuntime(QObject):
         self._try_publish_authoring_tool_cache_owner_thread()
 
     def shutdown(self, *, wait: bool = True) -> None:
-        """Cancel, close the engine off-thread, and join owned executors."""
+        """Cancel and close the engine without an unbounded executor join."""
         with self._lock:
             if self._shutdown:
                 return
@@ -993,11 +1001,14 @@ class QtAgentRuntime(QObject):
             authoring_invocations = tuple(self._authoring_invocations.values())
             self._authoring_invocations.clear()
             generation = self._generation
-            if self._busy:
+            cancel_future = (
                 self._control_executor.submit(
                     self._run_cancel,
                     generation,
                 )
+                if self._busy
+                else None
+            )
             should_close = self._engine is not None or self._busy
             close_future = (
                 self._session_executor.submit(self._run_close)
@@ -1011,17 +1022,32 @@ class QtAgentRuntime(QObject):
                 )
             )
         close_failed = False
-        if wait and close_future is not None:
-            try:
-                close_future.result()
-            except Exception:
-                close_failed = True
+        shutdown_timed_out = False
+        futures = tuple(
+            future
+            for future in (cancel_future, close_future)
+            if future is not None
+        )
+        if wait and futures:
+            completed, pending = wait_for_futures(
+                futures,
+                timeout=_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+            shutdown_timed_out = bool(pending)
+            if close_future in completed:
+                try:
+                    close_future.result()
+                except Exception:
+                    close_failed = True
+        join_executors = wait and not shutdown_timed_out
         try:
-            self._session_executor.shutdown(wait=wait)
+            self._session_executor.shutdown(wait=join_executors)
         finally:
-            self._control_executor.shutdown(wait=wait)
+            self._control_executor.shutdown(wait=join_executors)
         if close_failed:
             self.operationRejected.emit("Agent 后台关闭时发生错误")
+        elif shutdown_timed_out:
+            self.operationRejected.emit("Agent 后台关闭超时")
         self.shutdownFinished.emit()
 
     def _provider_safe_text(
