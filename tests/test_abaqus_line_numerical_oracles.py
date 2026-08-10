@@ -46,7 +46,7 @@ def _rect_cantilever(load_label: str) -> list[str]:
     ]
 
 
-def test_rect_a_b_axes_match_euler_bernoulli_tip_deflection_oracle(
+def test_rect_a_b_axes_match_timoshenko_tip_deflection_oracle(
     tmp_path,
 ) -> None:
     p1_path = write_inp(
@@ -69,20 +69,32 @@ def test_rect_a_b_axes_match_euler_bernoulli_tip_deflection_oracle(
     width = 0.10
     length = 2.0
     modulus = 210.0e9
+    poisson_ratio = 0.3
     load = 120.0
+    area = height * width
     i_yy = height * width**3 / 12.0
     i_zz = width * height**3 / 12.0
-    expected_y = load * length**4 / (8.0 * modulus * i_zz)
-    expected_z = load * length**4 / (8.0 * modulus * i_yy)
+    shear_modulus = modulus / (2.0 * (1.0 + poisson_ratio))
+    shear_factor = 10.0 * (1.0 + poisson_ratio) / (
+        12.0 + 11.0 * poisson_ratio
+    )
+    shear_rigidity = shear_factor * shear_modulus * area
+    expected_y = (
+        load * length**4 / (8.0 * modulus * i_zz)
+        + load * length**2 / (2.0 * shear_rigidity)
+    )
+    expected_z = (
+        load * length**4 / (8.0 * modulus * i_yy)
+        + load * length**2 / (2.0 * shear_rigidity)
+    )
 
     displacement_y = p1_result.nodal_displacement(2, 2)
     displacement_z = p2_result.nodal_displacement(2, 3)
     assert displacement_y == pytest.approx(expected_y)
     assert displacement_z == pytest.approx(expected_z)
     assert displacement_y / displacement_z == pytest.approx(
-        i_yy / i_zz
+        expected_y / expected_z
     )
-    assert displacement_y / displacement_z == pytest.approx(0.25)
 
 
 def test_thick_pipe_maps_to_exact_annulus_section_properties() -> None:

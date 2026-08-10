@@ -441,8 +441,17 @@ def test_beam2_cantilever_matches_closed_form_tip_response(dof, section_property
     if dof == 0:
         expected = load * 4.0 / (210.0 * section.area)
     elif dof in (1, 2):
-        expected = load * 4.0**3 / (
-            3.0 * 210.0 * getattr(section, section_property)
+        shear_modulus = 210.0 / (2.0 * (1.0 + 0.25))
+        shear_rigidities = section.effective_shear_rigidities(
+            shear_modulus,
+            0.25,
+        )
+        shear_rigidity = shear_rigidities[dof - 1]
+        expected = (
+            load
+            * 4.0**3
+            / (3.0 * 210.0 * getattr(section, section_property))
+            + load * 4.0 / shear_rigidity
         )
     else:
         expected = load * 4.0 / ((210.0 / 2.5) * section.J)

@@ -4424,14 +4424,31 @@ def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
     tip_z_result = static_linear.solve(model, tip_z_step)
     distributed_result = static_linear.solve(model, distributed_step)
     tip_id = model.node_sets["TIP"].node_ids[0]
+    shear_modulus = elastic_modulus / (2.0 * (1.0 + 0.3))
+    shear_y, shear_z = section.effective_shear_rigidities(
+        shear_modulus,
+        0.3,
+    )
     assert tip_y_result.U[model.mesh.global_dof(tip_id, 1)] == pytest.approx(
-        tip_force * length**3 / (3.0 * elastic_modulus * section.Izz)
+        tip_force
+        * (
+            length**3 / (3.0 * elastic_modulus * section.Izz)
+            + length / shear_y
+        )
     )
     assert tip_z_result.U[model.mesh.global_dof(tip_id, 2)] == pytest.approx(
-        tip_force * length**3 / (3.0 * elastic_modulus * section.Iyy)
+        tip_force
+        * (
+            length**3 / (3.0 * elastic_modulus * section.Iyy)
+            + length / shear_z
+        )
     )
     assert distributed_result.U[model.mesh.global_dof(tip_id, 1)] == pytest.approx(
-        line_load * length**4 / (8.0 * elastic_modulus * section.Izz)
+        line_load
+        * (
+            length**4 / (8.0 * elastic_modulus * section.Izz)
+            + length**2 / (2.0 * shear_y)
+        )
     )
     envelope = post.stress.beam.nodal_envelope(distributed_result)
     assert max(row.absolute_maximum for row in envelope) > 0.0

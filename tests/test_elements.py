@@ -210,7 +210,7 @@ def test_inclined_beam_rigid_body_mode_has_zero_internal_force(mode):
     assert float(Ue @ Ke @ Ue) == pytest.approx(0.0, abs=1e-12)
 
 
-def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
+def test_inclined_beam_cantilever_matches_timoshenko_tip_response():
     mesh = make_beam_stiffness_mesh()
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
@@ -219,13 +219,17 @@ def test_inclined_beam_cantilever_matches_euler_bernoulli_tip_response():
     L = frame.length
     rotation = frame.rotation
     E = float(elem.props["E"])
-    Izz = parse_beam2_section(elem.props).Izz
+    nu = float(elem.props["nu"])
+    section = parse_beam2_section(elem.props)
+    Izz = section.Izz
+    shear_modulus = E / (2.0 * (1.0 + nu))
+    shear_y, _ = section.effective_shear_rigidities(shear_modulus, nu)
     free = mesh.node_dofs(elem.node_ids[1])
     F = np.zeros(mesh.num_dofs, dtype=float)
     F[free[:3]] = rotation[1]
 
     U_tip = np.linalg.solve(Ke[np.ix_(free, free)], F[free])
-    v_local = L**3 / (3.0 * E * Izz)
+    v_local = L**3 / (3.0 * E * Izz) + L / shear_y
     expected = np.concatenate([
         rotation[1] * v_local,
         rotation[2] * (L**2 / (2.0 * E * Izz)),

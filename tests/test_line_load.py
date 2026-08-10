@@ -317,9 +317,17 @@ def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactio
     mesh = model.mesh
     length = 4.0
     E = model.mesh.elements[0].props["E"]
-    Izz = parse_beam2_section(model.mesh.elements[0].props).Izz
+    nu = model.mesh.elements[0].props["nu"]
+    section = parse_beam2_section(model.mesh.elements[0].props)
+    Izz = section.Izz
+    shear_modulus = E / (2.0 * (1.0 + nu))
+    shear_y, _ = section.effective_shear_rigidities(shear_modulus, nu)
 
-    assert result.U[mesh.global_dof(2, 1)] == pytest.approx(q * length**4 / (8.0 * E * Izz))
+    expected_tip = (
+        q * length**4 / (8.0 * E * Izz)
+        + q * length**2 / (2.0 * shear_y)
+    )
+    assert result.U[mesh.global_dof(2, 1)] == pytest.approx(expected_tip)
     assert result.U[mesh.global_dof(2, 5)] == pytest.approx(q * length**3 / (6.0 * E * Izz))
     assert result.reactions[mesh.global_dof(1, 1)] == pytest.approx(-q * length)
     assert result.reactions[mesh.global_dof(1, 5)] == pytest.approx(-q * length**2 / 2.0)
