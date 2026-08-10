@@ -17,6 +17,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QDialog,
     QGroupBox,
@@ -108,6 +109,10 @@ def test_panel_keeps_advanced_sketch_behavior_internal() -> None:
     assert "约束" in group_titles
     assert group_titles.isdisjoint({"捕捉", "显示", "绘图行为"})
     assert "草图约束与尺寸" not in group_titles
+    for object_name in ("sketchGridGroup", "sketchConstraintGroup"):
+        group = panel.findChild(QGroupBox, object_name)
+        assert group is not None
+        assert "border: none" in group.styleSheet()
     assert "点坐标" not in {
         label.text() for label in panel.findChildren(QLabel)
     }
@@ -167,6 +172,34 @@ def test_constraint_type_click_starts_choice_without_extra_confirmation() -> Non
     dialog.close()
 
 
+def test_constraint_type_dialog_uses_smooth_agent_chat_scrollbar() -> None:
+    app = _application()
+    dialog = sketch_editor_panel_module._ConstraintTypeDialog()
+    dialog.type_list.setFixedHeight(120)
+    dialog.show()
+    app.processEvents()
+
+    assert (
+        dialog.type_list.verticalScrollMode()
+        == QAbstractItemView.ScrollMode.ScrollPerPixel
+    )
+    assert dialog.type_list.horizontalScrollBarPolicy() == (
+        Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    )
+    scroll_bar = dialog.type_list.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    assert scroll_bar.singleStep() == 18
+    assert "width: 10px" in scroll_bar.styleSheet()
+    assert "border-radius: 4px" in scroll_bar.styleSheet()
+    assert "agent_chat_scroll_up.svg" in scroll_bar.styleSheet()
+
+    QApplication.sendEvent(dialog.type_list.viewport(), _wheel_event())
+    app.processEvents()
+
+    assert 0 < scroll_bar.value() < scroll_bar.pageStep()
+    dialog.close()
+
+
 def test_constraint_actions_share_one_row_and_success_prompt_is_removed() -> None:
     app = _application()
     controller = SketchDraftController("constraint-actions")
@@ -202,6 +235,10 @@ def test_constraint_command_bar_uses_staged_prompts_and_target_highlights() -> N
 
     panel._start_constraint_command("coincident")
     assert panel.constraint_command_bar.parentWidget() is viewport
+    assert "QLabel#sketchConstraintCommandPrompt" in (
+        panel.constraint_command_bar.styleSheet()
+    )
+    assert "background: transparent" in panel.constraint_command_bar.styleSheet()
     assert panel.constraint_command_prompt.text() == "请选择第一个点"
     panel._select_point("P1")
     assert panel.constraint_command_prompt.text() == "请选择第二个点"
@@ -308,6 +345,30 @@ def test_empty_sketch_camera_fit_uses_compact_default_work_area() -> None:
         (),
     )
     assert viewport._fit_bounds() == pytest.approx(bounds)
+    viewport.close()
+
+
+def test_sketch_uv_overlay_uses_two_decimals_and_bold_black_text() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_active = True
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+    )
+
+    viewport._update_sketch_uv_label((1.234, -2.346, 0.0))
+
+    label = viewport._sketch_uv_label
+    assert label.text() == "U = 1.23\nV = -2.35"
+    assert label.font().bold()
+    assert "color: #000000" in label.styleSheet()
+    assert "background: rgba(255, 255, 255, 230)" in label.styleSheet()
+    assert not label.isHidden()
+    viewport._update_sketch_uv_label(None)
+    assert label.isHidden()
     viewport.close()
 
 
@@ -456,19 +517,22 @@ def test_editor_content_scrolls_without_expanding_the_window_minimum_height() ->
     panel.close()
 
 
-def test_dimension_dialog_blocks_wheel_value_changes() -> None:
+def test_dimension_dialog_blocks_wheel_and_hides_driving_choice() -> None:
     _application()
     dialog = sketch_editor_panel_module._DimensionEditorDialog(
         "长度",
         2.0,
-        driving=False,
     )
     value = dialog.value_spin.value()
 
     QApplication.sendEvent(dialog.value_spin, _wheel_event())
 
+    assert dialog.value_spin.decimals() == 1
+    assert dialog.value_spin.singleStep() == 0.1
+    assert dialog.value_spin.text() == "2.0"
     assert dialog.value_spin.value() == value
-    assert dialog.driving_check.isChecked()
+    assert not hasattr(dialog, "driving_check")
+    assert "驱动尺寸" not in {label.text() for label in dialog.findChildren(QLabel)}
     dialog.close()
 
 
@@ -1572,7 +1636,10 @@ def test_strict_sketch_cut_enters_detached_planar_boolean_workflow() -> None:
     assert window._planar_boolean_controller is not None
     assert window._planar_boolean_controller.geometry == recipe
     assert window.document.geometry_recipe == recipe
-    assert not window.planar_boolean_panel.isHidden()
+    assert window.planar_boolean_panel.isHidden()
+    assert window.viewport_panel._active_bottom_overlay is (
+        window.viewport_panel.planar_boolean_face_bar
+    )
     window.cancel_planar_boolean()
     assert window.document.geometry_recipe == recipe
     window.close_model(confirm=False)

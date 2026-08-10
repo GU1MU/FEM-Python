@@ -115,23 +115,56 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     tree = ResultTree()
     tree.set_catalog("Step-1", catalog)
     step = tree.topLevelItem(0).child(0)
-    stress_items = tuple(
+    stress = next(
         step.child(index)
         for index in range(step.childCount())
-        if step.child(index).text(0).startswith("应力 S（截面")
+        if step.child(index).text(0) == "应力 S"
+    )
+    position_items = tuple(
+        stress.child(index)
+        for index in range(stress.childCount())
     )
 
-    assert tuple(item.text(0) for item in stress_items) == tuple(
-        f"应力 S（{label}）" for label in _POSITION_LABELS
+    assert tuple(item.text(0) for item in position_items) == _POSITION_LABELS
+    assert (
+        tuple(
+            position_items[0].child(index).text(0)
+            for index in range(position_items[0].childCount())
+        )
+        == _POINT_COMPONENTS
     )
-    assert tuple(
-        stress_items[0].child(index).text(0)
-        for index in range(stress_items[0].childCount())
-    ) == _POINT_COMPONENTS
-    assert tuple(
-        stress_items[-1].child(index).text(0)
-        for index in range(stress_items[-1].childCount())
-    ) == _SECTION_COMPONENTS
+    assert (
+        tuple(
+            position_items[-1].child(index).text(0)
+            for index in range(position_items[-1].childCount())
+        )
+        == _SECTION_COMPONENTS
+    )
+    assert all("（" not in item.text(0) for item in position_items)
+
+    stress.setExpanded(False)
+    position_items[1].setExpanded(False)
+    point_two_selection = ScalarFieldSelection(
+        _point_field(provider, 2).key,
+        "Mises",
+    )
+    assert tree.select_selection(point_two_selection)
+    assert not stress.isExpanded()
+    assert not position_items[1].isExpanded()
+
+    stress.setExpanded(True)
+    position_items[0].setExpanded(True)
+    position_items[1].setExpanded(False)
+    tree.set_catalog("Step-1", catalog)
+    refreshed_step = tree.topLevelItem(0).child(0)
+    refreshed_stress = next(
+        refreshed_step.child(index)
+        for index in range(refreshed_step.childCount())
+        if refreshed_step.child(index).text(0) == "应力 S"
+    )
+    assert refreshed_stress.isExpanded()
+    assert refreshed_stress.child(0).isExpanded()
+    assert not refreshed_stress.child(1).isExpanded()
 
     window = FEMMainWindow()
     window._current_result_provider = lambda: provider
@@ -182,6 +215,39 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     )
     window.close()
     tree.close()
+
+
+def test_beam_section_selection_batches_all_five_lazy_fields() -> None:
+    result = make_beam_field_characterization_result()
+    provider = build_result_provider(
+        ResultSourceKey(
+            "beam-lazy-result",
+            "beam-lazy-session",
+            "beam-lazy-artifact",
+            1,
+            "Step-1",
+            "beam-lazy-run",
+        ),
+        result,
+    )
+    point_three = _point_field(provider, 3)
+    selection = ScalarFieldSelection(point_three.key, "Mises")
+
+    keys = FEMMainWindow._result_materialization_keys(provider, selection)
+
+    field_ids = tuple(key.request.field_id for key in keys)
+    assert tuple(
+        result_field_id.section_point_number for result_field_id in field_ids
+    ) == (1, 2, 3, 4, None)
+    assert tuple(result_field_id.position for result_field_id in field_ids) == (
+        FieldPosition.SECTION_POINT,
+        FieldPosition.SECTION_POINT,
+        FieldPosition.SECTION_POINT,
+        FieldPosition.SECTION_POINT,
+        FieldPosition.SECTION_END,
+    )
+    patch = provider.materialize(keys)
+    assert tuple(field.key for field in patch.fields) == keys
 
 
 def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
@@ -277,11 +343,18 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
         selection = ScalarFieldSelection(availability.key, "Mises")
         export = prepare_result_export_snapshot(provider.snapshot, selection)
         topology = project_scalar_field_topology(export)
-        payloads.append(build_result_render_payload(topology))
+        payloads.append(
+            build_result_render_payload(
+                topology,
+                reusable=payloads[-1] if payloads else None,
+            )
+        )
 
     assert payloads[0].topology.selection.field_key != (
         payloads[1].topology.selection.field_key
     )
+    assert payloads[1].dataset is payloads[0].dataset
+    assert payloads[1].scalar_name != payloads[0].scalar_name
     assert {
         location.section_point.number
         for location in payloads[0].topology.point_locations

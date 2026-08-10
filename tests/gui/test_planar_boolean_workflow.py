@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -10,6 +11,7 @@ from fem.application import StrictPlanarBooleanResult
 from fem.geometry import (
     LogicalEntityRef,
     RectangleGeometry,
+    SketchArc,
     SketchGeometry,
     SketchLine,
     SketchPlane,
@@ -18,6 +20,8 @@ from fem.geometry import (
     WireMember,
     WirePoint,
 )
+from fem_gui.geometry_preview import build_geometry_preview
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.planar_boolean import PlanarBooleanController
 from fem_gui.task_controller import TaskApplyStatus
@@ -168,12 +172,66 @@ def test_planar_boolean_panel_can_clear_target_and_delete_tool() -> None:
     window.close()
 
 
-def test_2d_boolean_dispatches_to_non_modal_planar_workflow() -> None:
+def test_planar_boolean_target_pick_is_persistently_highlighted(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(RectangleGeometry("Target", 3.0, 2.0), "测试")
+    highlighted = []
+    monkeypatch.setattr(
+        window.viewport,
+        "highlight_geometry_entities",
+        lambda references: highlighted.append(tuple(references)),
+    )
+    window.cut_geometry()
+    bar = window.viewport_panel.planar_boolean_face_bar
+    assert window.viewport_panel._active_bottom_overlay is bar
+    assert "切除" in bar.prompt_label.text()
+    target = LogicalEntityRef("face:domain")
+
+    assert window._assign_planar_boolean_reference(target)
+
+    assert window._selected_geometry_refs == {target}
+    assert highlighted[-1] == (target,)
+    assert window.viewport_panel.planar_boolean_face_bar.isHidden()
+    assert window.viewport_panel._active_bottom_overlay is None
+    assert window._sketch_editor_controller is not None
+    window.cancel_planar_boolean()
+    window.close()
+
+
+def test_planar_boolean_face_prompt_cancel_restores_original_state() -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
     window._set_native_geometry(source, "测试")
-    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+
+    window.fuse_geometry()
+    window.viewport_panel.planar_boolean_face_bar.cancel_button.click()
+
+    assert window._planar_boolean_controller is None
+    assert window._sketch_editor_controller is None
+    assert window.viewport_panel._active_bottom_overlay is None
+    assert window.document.geometry_recipe == source
+    window.close()
+
+
+def test_2d_boolean_with_preselected_face_enters_tool_sketch_without_panel(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    target = LogicalEntityRef("face:domain")
+    window._selected_geometry_refs = {target}
+    highlighted = []
+    monkeypatch.setattr(
+        window.viewport,
+        "highlight_geometry_entities",
+        lambda references: highlighted.append(tuple(references)),
+    )
 
     window.cut_geometry()
 
@@ -181,7 +239,10 @@ def test_2d_boolean_dispatches_to_non_modal_planar_workflow() -> None:
     assert controller is not None
     assert window._body_boolean_controller is None
     assert controller.target_face_id == "face:domain"
-    assert not window.planar_boolean_panel.isHidden()
+    assert highlighted[-1] == (target,)
+    assert window.planar_boolean_panel.isHidden()
+    assert window.viewport_panel.planar_boolean_face_bar.isHidden()
+    assert window._sketch_editor_controller is not None
     assert window.document.geometry_recipe == source
     assert not window.actions["geometry_cut"].isEnabled()
     assert not window.actions["geometry_fuse"].isEnabled()
@@ -225,7 +286,48 @@ def test_boolean_actions_are_disabled_while_sketch_editor_is_active() -> None:
     window.close()
 
 
-def test_tool_sketch_finish_returns_to_planar_panel_without_committing(
+def test_tool_sketch_finish_requests_automatic_boolean_commit(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    reference_calls = []
+    monkeypatch.setattr(
+        window.viewport,
+        "show_sketch_reference_preview",
+        lambda preview, **kwargs: reference_calls.append((preview, kwargs)),
+    )
+    refresh_calls = []
+    monkeypatch.setattr(
+        window,
+        "_refresh_planar_boolean_preview",
+        lambda **kwargs: refresh_calls.append(kwargs),
+    )
+    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+    window.cut_geometry()
+
+    draft = window._sketch_editor_controller
+    assert draft is not None
+    assert window.sketch_editor_panel.authoring_purpose == ("planar_boolean_tool")
+    assert reference_calls
+    assert "support_face_id" not in reference_calls[-1][1]
+    draft.add_rectangle(0.5, 0.5, 1.5, 1.5)
+    window.finish_sketch_geometry()
+
+    controller = window._planar_boolean_controller
+    assert controller is not None and controller.ready
+    assert window._sketch_editor_controller is None
+    assert window.planar_boolean_panel.isHidden()
+    assert window.document.geometry_recipe == source
+    assert refresh_calls == [{"auto_commit": True}]
+
+    window.cancel_planar_boolean()
+    window.close()
+
+
+def test_successful_automatic_preview_immediately_requests_commit(
     monkeypatch,
 ) -> None:
     _application()
@@ -234,30 +336,47 @@ def test_tool_sketch_finish_returns_to_planar_panel_without_committing(
     window._set_native_geometry(source, "测试")
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
+    controller = window._planar_boolean_controller
+    assert controller is not None
+    controller.set_tool_recipe(_tool_sketch())
+    payload = object.__new__(StrictPlanarBooleanResult)
+    object.__setattr__(payload, "geometry", source)
+    object.__setattr__(payload, "proof", object())
+    object.__setattr__(payload, "preview", object())
+    monkeypatch.setattr(
+        main_window_module,
+        "build_strict_planar_boolean_preview",
+        lambda _geometry, _preview: build_geometry_preview(source),
+    )
+    commit_calls = []
     monkeypatch.setattr(
         window,
-        "_refresh_planar_boolean_preview",
-        lambda: None,
+        "finish_planar_boolean",
+        lambda: commit_calls.append(True),
     )
 
-    window._edit_planar_boolean_tool()
-    draft = window._sketch_editor_controller
-    assert draft is not None
-    assert window.sketch_editor_panel.authoring_purpose == ("planar_boolean_tool")
-    draft.add_rectangle(0.5, 0.5, 1.5, 1.5)
-    window.finish_sketch_geometry()
+    def complete_start(
+        _workload,
+        on_success,
+        _label,
+        _on_failure,
+        **kwargs,
+    ):
+        assert kwargs["apply_result"](payload).status is TaskApplyStatus.ACCEPTED
+        on_success(payload)
+        return True
 
-    controller = window._planar_boolean_controller
-    assert controller is not None and controller.ready
-    assert window._sketch_editor_controller is None
-    assert not window.planar_boolean_panel.isHidden()
-    assert window.document.geometry_recipe == source
+    monkeypatch.setattr(window, "_start_task", complete_start)
 
+    window._refresh_planar_boolean_preview(auto_commit=True)
+
+    assert window._planar_boolean_preview_result is payload
+    assert commit_calls == [True]
     window.cancel_planar_boolean()
     window.close()
 
 
-def test_tool_sketch_cancel_returns_to_boolean_panel() -> None:
+def test_automatic_finish_commits_without_reopening_a_panel(monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -265,16 +384,112 @@ def test_tool_sketch_cancel_returns_to_boolean_panel() -> None:
     window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
     window.cut_geometry()
     controller = window._planar_boolean_controller
+    assert controller is not None
+    controller.set_tool_recipe(_tool_sketch())
+    window._exit_sketch_editor()
+    payload = object.__new__(StrictPlanarBooleanResult)
+    object.__setattr__(payload, "geometry", source)
+    object.__setattr__(
+        payload,
+        "proof",
+        SimpleNamespace(result_entities=()),
+    )
+    object.__setattr__(payload, "preview", object())
+    window._planar_boolean_preview_result = payload
+    monkeypatch.setattr(
+        main_window_module,
+        "build_strict_planar_boolean_preview",
+        lambda _geometry, _preview: build_geometry_preview(source),
+    )
+    commits = []
 
-    window._edit_planar_boolean_tool()
+    def commit(recipe, label, **kwargs):
+        commits.append((recipe, label, kwargs))
+        return True
+
+    monkeypatch.setattr(window, "_set_native_geometry", commit)
+
+    window.finish_planar_boolean()
+
+    assert commits == [
+        (
+            source,
+            "二维布尔后的",
+            {
+                "base_session_revision": controller.base_session_revision,
+                "preserve_editor": True,
+            },
+        )
+    ]
+    assert window._planar_boolean_controller is None
+    assert window.planar_boolean_panel.isHidden()
+    window.close()
+
+
+def test_fuse_tool_accepts_arc_closed_by_target_edge_and_tangent_rectangle(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+    window.fuse_geometry()
+    monkeypatch.setattr(
+        window,
+        "_refresh_planar_boolean_preview",
+        lambda **_kwargs: None,
+    )
+
+    draft = window._sketch_editor_controller
+    assert draft is not None
+    references = {
+        item.reference.source.logical_id: item
+        for item in window.sketch_editor_panel._reference_points
+    }
+    draft.add_arc(
+        (3.0, 0.0),
+        (4.0, 1.0),
+        (3.0, 2.0),
+        start_external_reference=references["point:bottom-right"],
+        end_external_reference=references["point:top-right"],
+    )
+    draft.add_rectangle((1.0, -1.0), (3.0, 0.0))
+    window.sketch_editor_panel._refresh()
+
+    assert not draft.can_finish
+    assert window.sketch_editor_panel.finish_button.isEnabled()
+    window.sketch_editor_panel.try_finish()
+
+    controller = window._planar_boolean_controller
+    assert controller is not None and controller.ready
+    assert controller.tool_geometry is not None
+    assert len(controller.tool_face_ids) == 2
+    assert sum(
+        isinstance(curve, SketchArc) for curve in controller.tool_geometry.curves
+    ) == 1
+    assert sum(
+        isinstance(curve, SketchLine) for curve in controller.tool_geometry.curves
+    ) == 5
+    window.cancel_planar_boolean()
+    window.close()
+
+
+def test_tool_sketch_cancel_aborts_the_guided_boolean_workflow() -> None:
+    _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+    window.cut_geometry()
+
     assert window._sketch_editor_controller is not None
     window.cancel_sketch_geometry()
 
     assert window._sketch_editor_controller is None
-    assert window._planar_boolean_controller is controller
-    assert not window.planar_boolean_panel.isHidden()
+    assert window._planar_boolean_controller is None
+    assert window.planar_boolean_panel.isHidden()
     assert window.document.geometry_recipe == source
-    window.cancel_planar_boolean()
     window.close()
 
 
@@ -344,6 +559,40 @@ def test_occ_preview_failure_keeps_committed_geometry(monkeypatch) -> None:
     assert window._planar_boolean_preview_result is None
     assert not window.planar_boolean_panel.finish_button.isEnabled()
     window.cancel_planar_boolean()
+    window.close()
+
+
+def test_automatic_preview_failure_reopens_the_tool_sketch(monkeypatch) -> None:
+    application = _application()
+    window = FEMMainWindow()
+    source = RectangleGeometry("Target", 3.0, 2.0)
+    window._set_native_geometry(source, "测试")
+    window._selected_geometry_refs = {LogicalEntityRef("face:domain")}
+    window.cut_geometry()
+    controller = window._planar_boolean_controller
+    assert controller is not None
+    controller.set_tool_recipe(_tool_sketch())
+    window._exit_sketch_editor()
+
+    def fail_start(
+        _workload,
+        _on_success,
+        _label,
+        on_failure,
+        **_kwargs,
+    ):
+        on_failure("synthetic OCC failure")
+        return True
+
+    monkeypatch.setattr(window, "_start_task", fail_start)
+
+    window._refresh_planar_boolean_preview(auto_commit=True)
+    application.processEvents()
+
+    assert window.document.geometry_recipe == source
+    assert window._sketch_editor_controller is not None
+    assert window.sketch_editor_panel.authoring_purpose == "planar_boolean_tool"
+    window.cancel_sketch_geometry()
     window.close()
 
 

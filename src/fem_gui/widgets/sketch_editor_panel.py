@@ -7,8 +7,10 @@ from pathlib import Path
 import re
 
 from PySide6.QtCore import QEvent, QItemSelectionModel, QSettings, Qt, Signal
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -56,8 +58,6 @@ from fem.geometry import (
     SketchTangentConstraint,
     SketchVerticalConstraint,
 )
-from fem.geometry.recipes import sketch_constraint_entity_ids
-
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
     SketchPreferences,
@@ -71,7 +71,7 @@ from ..sketch_editor import (
 )
 from ..sketch_constraint_ui import (
     build_constraint_overlays,
-    constraint_text,
+    constraint_type_text,
     constraints_for_entities,
     infer_line_preview,
     measured_dimension_value,
@@ -133,6 +133,20 @@ QScrollBar::sub-page:vertical {
     (_SKETCH_SCROLL_ICON_ROOT / "agent_chat_scroll_down.svg").as_posix(),
 )
 
+_SKETCH_SECTION_GROUP_STYLESHEET = """
+QGroupBox {
+    border: none;
+    margin-top: 20px;
+    padding-top: 0;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 0;
+    padding: 0;
+}
+"""
+
 _CONSTRAINT_TYPES = (
     ("重合", "coincident"),
     ("点在曲线上", "point_on_curve"),
@@ -152,6 +166,29 @@ _CONSTRAINT_TYPES = (
 _CONSTRAINT_LABELS = {kind: label for label, kind in _CONSTRAINT_TYPES}
 
 
+class _SmoothScrollListWidget(QListWidget):
+    """Use the same pixel-based wheel behavior as the fem-agent chat."""
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        scroll_bar = self.verticalScrollBar()
+        pixel_delta = event.pixelDelta().y()
+        if pixel_delta:
+            distance = pixel_delta
+        else:
+            line_step = max(scroll_bar.singleStep(), self.fontMetrics().lineSpacing())
+            distance = round(
+                event.angleDelta().y()
+                / 120
+                * line_step
+                * max(QApplication.wheelScrollLines(), 1)
+            )
+        if event.inverted():
+            distance = -distance
+        if distance:
+            scroll_bar.setValue(scroll_bar.value() - distance)
+        event.accept()
+
+
 class _ConstraintTypeDialog(QDialog):
     """Choose one constraint type and close immediately."""
 
@@ -160,8 +197,18 @@ class _ConstraintTypeDialog(QDialog):
         self.setObjectName("sketchConstraintTypeDialog")
         self.setWindowTitle("添加约束")
         self.selected_kind: str | None = None
-        self.type_list = QListWidget(self)
+        self.type_list = _SmoothScrollListWidget(self)
         self.type_list.setObjectName("sketchConstraintTypeList")
+        self.type_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.type_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.type_list.verticalScrollBar().setSingleStep(18)
+        self.type_list.verticalScrollBar().setStyleSheet(
+            _SKETCH_SCROLLBAR_STYLESHEET
+        )
         for label, kind in _CONSTRAINT_TYPES:
             self.type_list.addItem(label)
             self.type_list.item(self.type_list.count() - 1).setData(
@@ -190,7 +237,6 @@ class _DimensionEditorDialog(QDialog):
         label: str,
         value: float,
         *,
-        driving: bool,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -198,15 +244,13 @@ class _DimensionEditorDialog(QDialog):
         self.setWindowTitle("编辑约束")
         self.value_spin = QDoubleSpinBox(self)
         self.value_spin.setObjectName("sketchDimensionEditorValue")
-        self.value_spin.setDecimals(6)
-        self.value_spin.setRange(1.0e-12, 1.0e12)
+        self.value_spin.setDecimals(1)
+        self.value_spin.setRange(0.1, 1.0e12)
+        self.value_spin.setSingleStep(0.1)
         self.value_spin.setValue(value)
         self.value_spin.installEventFilter(self)
-        self.driving_check = QCheckBox("驱动尺寸", self)
-        self.driving_check.setChecked(True)
         form = QFormLayout()
         form.addRow(label, self.value_spin)
-        form.addRow("", self.driving_check)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
@@ -553,11 +597,23 @@ class SketchEditorPanel(QWidget):
         self.constraint_value_spin.hide()
         self.add_constraint_button = QPushButton("添加约束", self)
         self.add_constraint_button.clicked.connect(self._choose_constraint_type)
-        self.constraints_table = QTableWidget(0, 3, self)
+        self.constraints_table = QTableWidget(0, 2, self)
         self.constraints_table.setObjectName("sketchConstraintsTable")
-        self.constraints_table.setHorizontalHeaderLabels(("ID", "类型", "对象"))
+        self.constraints_table.setHorizontalHeaderLabels(("类型", "值"))
+        for column in range(self.constraints_table.columnCount()):
+            self.constraints_table.horizontalHeaderItem(column).setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter
+            )
         self.constraints_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
+        )
+        self.constraints_table.verticalHeader().setVisible(False)
+        self.constraints_table.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
+        )
+        self.constraints_table.verticalScrollBar().setSingleStep(18)
+        self.constraints_table.verticalScrollBar().setStyleSheet(
+            _SKETCH_SCROLLBAR_STYLESHEET
         )
         self.constraints_table.itemSelectionChanged.connect(
             self._constraint_row_changed
@@ -608,6 +664,8 @@ class SketchEditorPanel(QWidget):
         form.addRow("工作平面", self.work_plane_label)
 
         grid_group = QGroupBox("网格", self)
+        grid_group.setObjectName("sketchGridGroup")
+        grid_group.setStyleSheet(_SKETCH_SECTION_GROUP_STYLESHEET)
         grid_layout = QFormLayout(grid_group)
         grid_layout.addRow(self.grid_visible_check)
         grid_layout.addRow("间距", self.spacing_spin)
@@ -630,6 +688,8 @@ class SketchEditorPanel(QWidget):
         content_layout.addWidget(self.circle_parameter_group)
         content_layout.addWidget(self.arc_parameter_group)
         constraint_group = QGroupBox("约束", self)
+        constraint_group.setObjectName("sketchConstraintGroup")
+        constraint_group.setStyleSheet(_SKETCH_SECTION_GROUP_STYLESHEET)
         constraint_layout = QVBoxLayout(constraint_group)
         constraint_layout.addWidget(self.constraints_table)
         constraint_buttons = QHBoxLayout()
@@ -672,6 +732,8 @@ class SketchEditorPanel(QWidget):
             "#sketchConstraintCommandBar {"
             "background: rgba(250, 251, 252, 245);"
             "border: 1px solid #c8d0d8; border-radius: 6px; }"
+            "QLabel#sketchConstraintCommandPrompt {"
+            "background: transparent; border: none; }"
         )
         command_layout = QHBoxLayout(self.constraint_command_bar)
         command_layout.setContentsMargins(12, 6, 8, 6)
@@ -1816,24 +1878,31 @@ class SketchEditorPanel(QWidget):
 
     def delete_selected_constraint(self) -> None:
         row = self.constraints_table.currentRow()
-        item = self.constraints_table.item(row, 0) if row >= 0 else None
-        if item is None:
+        constraint_id = self._constraint_id_for_row(row)
+        if constraint_id is None:
             self._set_status("请先选择要删除的草图约束")
             return
-        self.delete_constraint(item.text())
+        self.delete_constraint(constraint_id)
+
+    def _constraint_id_for_row(self, row: int) -> str | None:
+        item = self.constraints_table.item(row, 0) if row >= 0 else None
+        constraint_id = (
+            item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        )
+        return constraint_id if isinstance(constraint_id, str) else None
 
     def _constraint_row_changed(self) -> None:
         row = self.constraints_table.currentRow()
-        item = self.constraints_table.item(row, 0) if row >= 0 else None
-        self.delete_constraint_button.setEnabled(item is not None)
-        if item is None or self._controller is None:
+        constraint_id = self._constraint_id_for_row(row)
+        self.delete_constraint_button.setEnabled(constraint_id is not None)
+        if constraint_id is None or self._controller is None:
             self.edit_constraint_button.setEnabled(False)
             return
         constraint = next(
             (
                 value
                 for value in self._controller.constraints
-                if value.id == item.text()
+                if value.id == constraint_id
             ),
             None,
         )
@@ -1850,13 +1919,13 @@ class SketchEditorPanel(QWidget):
 
     def _edit_selected_constraint(self) -> None:
         row = self.constraints_table.currentRow()
-        item = self.constraints_table.item(row, 0) if row >= 0 else None
-        if item is None:
+        constraint_id = self._constraint_id_for_row(row)
+        if constraint_id is None:
             self._set_status("请先选择要编辑的草图约束")
             return
         constraint = next(
             value for value in self._require_controller().constraints
-            if value.id == item.text()
+            if value.id == constraint_id
         )
         if not isinstance(
             constraint,
@@ -1881,7 +1950,6 @@ class SketchEditorPanel(QWidget):
                 if constraint.driving or measured is None
                 else measured
             ),
-            driving=constraint.driving,
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1890,7 +1958,7 @@ class SketchEditorPanel(QWidget):
             self.edit_dimension(
                 constraint.id,
                 value=dialog.value_spin.value(),
-                driving=dialog.driving_check.isChecked(),
+                driving=True,
             )
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
@@ -1970,6 +2038,11 @@ class SketchEditorPanel(QWidget):
 
     def try_finish(self) -> None:
         controller = self._require_controller()
+        if self._can_close_planar_boolean_arcs(controller):
+            for start_point_id, end_point_id in (
+                self._planar_boolean_arc_closure_pairs(controller)
+            ):
+                controller.add_line(start_point_id, end_point_id)
         try:
             controller.to_sketch_geometry()
         except SketchDraftValidationError as error:
@@ -2567,20 +2640,26 @@ class SketchEditorPanel(QWidget):
         point_map = {point.id: point for point in snapshot.points}
         curve_map = {curve.id: curve for curve in snapshot.curves}
         for row, constraint in enumerate(related):
-            text = constraint_text(constraint)
+            type_item = QTableWidgetItem(constraint_type_text(constraint))
+            type_item.setData(Qt.ItemDataRole.UserRole, constraint.id)
+            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_text = ""
             if isinstance(
                 constraint,
                 (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
-            ) and not constraint.driving:
-                measured = measured_dimension_value(constraint, point_map, curve_map)
-                if measured is not None:
-                    text = text.replace(f"{constraint.value:g}", f"{measured:g}")
-            self.constraints_table.setItem(row, 0, QTableWidgetItem(constraint.id))
-            self.constraints_table.setItem(row, 1, QTableWidgetItem(text))
-            self.constraints_table.setItem(
-                row, 2,
-                QTableWidgetItem("、".join(sketch_constraint_entity_ids(constraint))),
-            )
+            ):
+                value = constraint.value
+                if not constraint.driving:
+                    measured = measured_dimension_value(
+                        constraint, point_map, curve_map
+                    )
+                    if measured is not None:
+                        value = measured
+                value_text = f"{value:g}"
+            self.constraints_table.setItem(row, 0, type_item)
+            value_item = QTableWidgetItem(value_text)
+            value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.constraints_table.setItem(row, 1, value_item)
         self._constraint_row_changed()
 
     def _refresh(self, *, selected_id: str | None = None) -> None:
@@ -2603,10 +2682,13 @@ class SketchEditorPanel(QWidget):
                 if diagnostics
                 else ""
             )
-            self.finish_button.setEnabled(controller.can_finish)
+            can_finish = controller.can_finish or self._can_close_planar_boolean_arcs(
+                controller
+            )
+            self.finish_button.setEnabled(can_finish)
             self.finish_button.setToolTip(
                 "完成草图"
-                if controller.can_finish
+                if can_finish
                 else "请先处理草图诊断"
             )
             self.undo_button.setEnabled(controller.can_undo)
@@ -2619,6 +2701,78 @@ class SketchEditorPanel(QWidget):
         finally:
             self._refreshing = False
         self._send_render_data()
+
+    def _can_close_planar_boolean_arcs(
+        self,
+        controller: SketchDraftController,
+    ) -> bool:
+        if self._authoring_purpose != "planar_boolean_tool":
+            return False
+        closure_pairs = self._planar_boolean_arc_closure_pairs(controller)
+        if not closure_pairs:
+            return False
+        allowed_codes = {"sketch.open-loop", "sketch.no-profile"}
+        return all(
+            not diagnostic.blocking or diagnostic.code in allowed_codes
+            for diagnostic in controller.finish_diagnostics
+        )
+
+    def _planar_boolean_arc_closure_pairs(
+        self,
+        controller: SketchDraftController,
+    ) -> tuple[tuple[str, str], ...]:
+        if self._authoring_purpose != "planar_boolean_tool":
+            return ()
+        snapshot = controller.snapshot()
+        degree: dict[str, int] = {}
+        for curve in snapshot.curves:
+            if isinstance(curve, SketchLine):
+                endpoint_ids = (curve.start_point_id, curve.end_point_id)
+            elif isinstance(curve, SketchArc):
+                endpoint_ids = (curve.start_point_id, curve.end_point_id)
+            else:
+                continue
+            for point_id in endpoint_ids:
+                degree[point_id] = degree.get(point_id, 0) + 1
+        point_map = {point.id: point for point in snapshot.points}
+        line_midpoints = tuple(
+            point
+            for point in self._reference_points
+            if point.derived_type.value == "line_midpoint"
+        )
+        tolerance = max(self._preferences.auto_merge_tolerance, 1.0e-8)
+        pairs: list[tuple[str, str]] = []
+        for curve in snapshot.curves:
+            if not isinstance(curve, SketchArc):
+                continue
+            start_id = curve.start_point_id
+            end_id = curve.end_point_id
+            if degree.get(start_id) != 1 or degree.get(end_id) != 1:
+                continue
+            start_reference = controller.external_reference_for_point(start_id)
+            end_reference = controller.external_reference_for_point(end_id)
+            if (
+                start_reference is None
+                or end_reference is None
+                or start_reference.derived_type.value != "topology_vertex"
+                or end_reference.derived_type.value != "topology_vertex"
+                or start_reference.source == end_reference.source
+            ):
+                continue
+            start = point_map[start_id]
+            end = point_map[end_id]
+            midpoint_u = 0.5 * (start.u + end.u)
+            midpoint_v = 0.5 * (start.v + end.v)
+            if any(
+                math.hypot(
+                    midpoint.u - midpoint_u,
+                    midpoint.v - midpoint_v,
+                )
+                <= tolerance
+                for midpoint in line_midpoints
+            ):
+                pairs.append((start_id, end_id))
+        return tuple(pairs)
 
     def _send_render_data(self) -> None:
         if self._controller is None:

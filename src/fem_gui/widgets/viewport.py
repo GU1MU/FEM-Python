@@ -641,6 +641,19 @@ def _sketch_geometry_color(constraint_status: str) -> str:
     }[constraint_status]
 
 
+def _sketch_constraint_label_options(*, warning: bool) -> dict[str, object]:
+    return {
+        "font_size": 12,
+        "bold": True,
+        "shape": "rounded_rect",
+        "shape_color": "#ffebee" if warning else "#fff8e1",
+        "shape_opacity": 0.96,
+        "margin": 5,
+        "text_color": "#b71c1c" if warning else "#263238",
+        "always_visible": True,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _ViewportCameraState:
     """Camera values that control framing and on-screen magnification."""
@@ -850,7 +863,7 @@ def _sketch_coordinate_label(
     plane: SketchPlane,
 ) -> str:
     u, v = plane.to_local(tuple(float(value) for value in point))
-    return f"(U={u:.2f}, V={v:.2f})"
+    return f"U = {u:.2f}\nV = {v:.2f}"
 
 
 def _sketch_snap_label(kind: str | None) -> str | None:
@@ -1422,6 +1435,21 @@ class FEMViewport(QWidget):
         }
         self._message = QLabel("", self)
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._sketch_uv_label = QLabel("", self)
+        self._sketch_uv_label.setObjectName("sketchUvCoordinateLabel")
+        self._sketch_uv_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+        )
+        uv_font = self._sketch_uv_label.font()
+        uv_font.setBold(True)
+        self._sketch_uv_label.setFont(uv_font)
+        self._sketch_uv_label.setStyleSheet(
+            "QLabel#sketchUvCoordinateLabel {"
+            "color: #000000; background: rgba(255, 255, 255, 230);"
+            "border: none; border-radius: 3px; padding: 3px 5px; }"
+        )
+        self._sketch_uv_label.move(12, 12)
+        self._sketch_uv_label.hide()
         self._stack = QStackedLayout()
         self._stack.addWidget(self._message)
         host = QWidget(self)
@@ -1605,6 +1633,12 @@ class FEMViewport(QWidget):
                     position.x(),
                     position.y(),
                 )
+                hover_point, _hover_reason = self._sketch_work_plane_point_at(
+                    vtk_x,
+                    vtk_y,
+                    snap=False,
+                )
+                self._update_sketch_uv_label(hover_point)
                 if self._sketch_authoring_mode in {"select", "trim"}:
                     point_id = (
                         self._sketch_point_at(vtk_x, vtk_y)
@@ -1754,6 +1788,7 @@ class FEMViewport(QWidget):
             self._pending_hover_position = None
             self._hover_timer.stop()
             if self._sketch_authoring_active:
+                self._update_sketch_uv_label(None)
                 self._set_sketch_authoring_preview_point(None)
                 self._set_sketch_entity_hover(None, None)
             if self._wire_authoring_active:
@@ -2129,6 +2164,7 @@ class FEMViewport(QWidget):
         self._sketch_hover_entity = None
         self._sketch_constraint_selection_active = False
         self._sketch_constraint_selection = ()
+        self._update_sketch_uv_label(None)
         self._clear_preselection(render=False)
         self._remove_all_layers(render=False)
         self._show_sketch_draft(render=False, reset_camera=True)
@@ -2602,6 +2638,7 @@ class FEMViewport(QWidget):
         self._sketch_hover_entity = None
         self._sketch_constraint_selection_active = False
         self._sketch_constraint_selection = ()
+        self._update_sketch_uv_label(None)
         self._clear_preselection(render=False)
         if render:
             self._render()
@@ -3000,11 +3037,11 @@ class FEMViewport(QWidget):
                 np.asarray(tuple(item.position for item in data.constraint_overlays)),
                 tuple(item.text for item in data.constraint_overlays),
                 point_size=0,
-                font_size=10,
-                shape="rounded_rect",
-                text_color="#c62828" if any(item.warning for item in data.constraint_overlays) else "#5d3a9b",
                 name="sketch_constraint_overlays",
                 reset_camera=False,
+                **_sketch_constraint_label_options(
+                    warning=any(item.warning for item in data.constraint_overlays)
+                ),
             )
         selection = self._sketch_selection_polydata(data, coordinates)
         if selection is not None:
@@ -3595,6 +3632,24 @@ class FEMViewport(QWidget):
             return
         self._sketch_authoring_preview_point = normalized
         self._show_sketch_authoring_hover(render=True)
+
+    def _update_sketch_uv_label(
+        self,
+        point: tuple[float, float, float] | None,
+    ) -> None:
+        if not self._sketch_authoring_active or point is None:
+            self._sketch_uv_label.hide()
+            return
+        plane = (
+            SketchPlane.xy()
+            if self._sketch_draft_render_data is None
+            else self._sketch_draft_render_data.plane
+        )
+        self._sketch_uv_label.setText(_sketch_coordinate_label(point, plane))
+        self._sketch_uv_label.adjustSize()
+        self._sketch_uv_label.move(12, 12)
+        self._sketch_uv_label.raise_()
+        self._sketch_uv_label.show()
 
     def _show_sketch_authoring_hover(self, *, render: bool) -> None:
         for actor_name in (

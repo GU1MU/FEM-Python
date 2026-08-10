@@ -3506,7 +3506,9 @@ class AgentChatDrawer(_BoundaryFrame):
 
 
 class AgentChatLauncher(_BoundaryToolButton):
-    """聊天框关闭后留在模型画布右上角的覆盖式入口。"""
+    """聊天框关闭后留在模型画布上的可拖动覆盖式入口。"""
+
+    dragDelta = Signal(QPoint)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -3516,8 +3518,61 @@ class AgentChatLauncher(_BoundaryToolButton):
             True,
         )
         self.setText("FA")
-        self.setToolTip("打开 FEM Agent")
+        self.setToolTip("点击打开 FEM Agent；拖动可移动")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._press_global_position: QPoint | None = None
+        self._last_global_position: QPoint | None = None
+        self._dragging = False
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            position = event.globalPosition().toPoint()
+            self._press_global_position = position
+            self._last_global_position = position
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._press_global_position is not None
+            and self._last_global_position is not None
+            and event.buttons() & Qt.MouseButton.LeftButton
+        ):
+            position = event.globalPosition().toPoint()
+            if not self._dragging:
+                distance = (
+                    position - self._press_global_position
+                ).manhattanLength()
+                if distance < QApplication.startDragDistance():
+                    event.accept()
+                    return
+                self._dragging = True
+                self.setDown(False)
+            delta = position - self._last_global_position
+            self._last_global_position = position
+            if not delta.isNull():
+                self.dragDelta.emit(delta)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if (
+            self._press_global_position is not None
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            was_dragging = self._dragging
+            self._press_global_position = None
+            self._last_global_position = None
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            if was_dragging:
+                self.setDown(False)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -3572,6 +3627,7 @@ class ModelViewportOverlayHost(QWidget):
             authoring_controller=authoring_controller,
         )
         self.chat_launcher = AgentChatLauncher(self)
+        self._launcher_position: QPoint | None = None
         self._bottom_overlay: QWidget | None = None
         self._bottom_overlay_visible = False
         self.agent_chat_drawer.layout().setSizeConstraint(
@@ -3594,6 +3650,7 @@ class ModelViewportOverlayHost(QWidget):
         self.chat_launcher.clicked.connect(
             lambda: self.set_drawer_open(True)
         )
+        self.chat_launcher.dragDelta.connect(self._move_launcher_by)
         self.agent_chat_drawer.closeRequested.connect(
             lambda: self.set_drawer_open(False)
         )
@@ -3761,6 +3818,35 @@ class ModelViewportOverlayHost(QWidget):
     def _resize_drawer_by(self, delta: int) -> None:
         self.set_drawer_width(self._drawer_width + int(delta))
 
+    def _move_launcher_by(self, delta: QPoint) -> None:
+        if self._launcher_position is None:
+            host_origin = self.mapToGlobal(QPoint(0, 0))
+            self._launcher_position = (
+                self.chat_launcher.geometry().topLeft() - host_origin
+            )
+        self._launcher_position = self._bounded_launcher_position(
+            self._launcher_position + delta
+        )
+        self._position_overlays()
+
+    def _bounded_launcher_position(self, position: QPoint) -> QPoint:
+        return QPoint(
+            max(
+                0,
+                min(
+                    position.x(),
+                    max(0, self.width() - self.chat_launcher.width()),
+                ),
+            ),
+            max(
+                0,
+                min(
+                    position.y(),
+                    max(0, self.height() - self.chat_launcher.height()),
+                ),
+            ),
+        )
+
     def _effective_drawer_width(self) -> int:
         return min(self._drawer_width, max(0, self.width()))
 
@@ -3815,17 +3901,24 @@ class ModelViewportOverlayHost(QWidget):
         )
         launcher_width = self.chat_launcher.width()
         launcher_height = self.chat_launcher.height()
-        launcher_x = max(
-            0,
-            self.width() - launcher_width - self.LAUNCHER_MARGIN,
-        )
-        launcher_y = min(
-            self.LAUNCHER_MARGIN,
-            max(0, self.height() - launcher_height),
-        )
+        if self._launcher_position is None:
+            launcher_position = QPoint(
+                max(
+                    0,
+                    self.width() - launcher_width - self.LAUNCHER_MARGIN,
+                ),
+                min(
+                    self.LAUNCHER_MARGIN,
+                    max(0, self.height() - launcher_height),
+                ),
+            )
+        else:
+            self._launcher_position = self._bounded_launcher_position(
+                self._launcher_position
+            )
+            launcher_position = self._launcher_position
         self.chat_launcher.move(
-            host_origin.x() + launcher_x,
-            host_origin.y() + launcher_y,
+            host_origin + launcher_position,
         )
         bottom_overlay = self._bottom_overlay
         if bottom_overlay is not None:

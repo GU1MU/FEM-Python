@@ -12,6 +12,7 @@ from fem.application.results import (
     ResultCellKind,
     ResultFieldTopology,
     ResultValueLayout,
+    field_materialization_sort_key,
 )
 from fem.post.vtk.cells import vtk_cell_type
 
@@ -217,8 +218,6 @@ def _has_reusable_topology(
         current_topology.source == candidate_topology.source
         and current_topology.materialization_generation
         == candidate_topology.materialization_generation
-        and current_topology.selection.field_key
-        == candidate_topology.selection.field_key
         and current_topology.deformation_scale
         == candidate_topology.deformation_scale
         and current_topology.value_layout is candidate_topology.value_layout
@@ -226,10 +225,6 @@ def _has_reusable_topology(
         and current_topology.cell_kinds == candidate_topology.cell_kinds
         and current_topology.canonical_element_types
         == candidate_topology.canonical_element_types
-        and current_topology.point_locations
-        == candidate_topology.point_locations
-        and current_topology.cell_locations
-        == candidate_topology.cell_locations
         and np.array_equal(
             np.asarray(current.dataset.points),
             candidate_topology.points,
@@ -275,7 +270,11 @@ def _payload_on_reused_dataset(
 
 def _component_scalar_name(topology: ResultFieldTopology) -> str:
     component = topology.selection.component
-    return f"{RESULT_SCALAR_NAME}:{component}"
+    field_token = ":".join(
+        str(value)
+        for value in field_materialization_sort_key(topology.selection.field_key)
+    )
+    return f"{RESULT_SCALAR_NAME}:{field_token}:{component}"
 
 
 def _flat_cell_array(topology: ResultFieldTopology) -> np.ndarray:

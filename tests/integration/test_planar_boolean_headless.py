@@ -24,6 +24,7 @@ from fem.geometry import (
     LogicalEntityRef,
     PlanarBooleanLineageResolutionError,
     RectangleGeometry,
+    SketchArc,
     SketchCircle,
     SketchGeometry,
     SketchLine,
@@ -349,6 +350,48 @@ def test_planar_fuse_rejects_contact_with_unaffected_object_face(
 
 
 @pytest.mark.gmsh
+def test_fuse_accepts_circle_crossing_target_boundary(real_gmsh) -> None:
+    del real_gmsh
+    target = RectangleGeometry("Fuse Target", 3.0, 2.0)
+    tool, tool_face_ids = _circle_tool(
+        "Fuse Circle",
+        ((3.0, 1.0, 0.6),),
+    )
+
+    with geometry.model("planar-circle-boundary-fuse", dimension=2) as cad:
+        fused = prepare_planar_boolean(
+            cad,
+            target,
+            "face:domain",
+            tool,
+            tool_face_ids,
+            "fuse",
+        )
+
+    result_faces = tuple(
+        entity for entity in fused.proof.result_entities if entity.kind == "face"
+    )
+    intersection_points = tuple(
+        logical_id
+        for logical_id in fused.proof.generated_intersections
+        if logical_id.startswith("point:")
+    )
+    assert len(result_faces) == 1
+    assert len(intersection_points) == 2
+    assert fused.preview.faces
+
+    with geometry.model("planar-circle-boundary-fuse-replay", dimension=2) as cad:
+        compiled = compile_recipe(cad, fused.geometry)
+    with geometry.model(
+        "planar-circle-boundary-fuse-preview-replay",
+        dimension=2,
+    ) as cad:
+        replay = prepare_strict_planar_recipe_preview(cad, fused.geometry)
+    assert len(compiled.domain) == 1
+    assert replay.faces
+
+
+@pytest.mark.gmsh
 def test_overlapping_fuse_and_extruded_cut_remain_exact_and_meshable(
     real_gmsh,
 ) -> None:
@@ -408,6 +451,49 @@ def test_overlapping_fuse_and_extruded_cut_remain_exact_and_meshable(
     model = generate_fem_model(extrusion, MeshSettings(0.5))
     assert model.mesh.nodes
     assert model.mesh.elements
+
+
+@pytest.mark.gmsh
+def test_planar_fuse_accepts_boundary_arc_and_point_touching_rectangle(
+    real_gmsh,
+) -> None:
+    del real_gmsh
+    target = RectangleGeometry("Target", 3.0, 2.0)
+    tool = SketchGeometry(
+        "Fuse Tool",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 3.0, 0.0),
+            SketchPoint("P2", 3.0, 1.0),
+            SketchPoint("P3", 3.0, 2.0),
+            SketchPoint("P4", 1.0, -1.0),
+            SketchPoint("P5", 3.0, -1.0),
+            SketchPoint("P6", 3.0, 0.0),
+            SketchPoint("P7", 1.0, 0.0),
+        ),
+        (
+            SketchArc("A1", "P1", "P2", "P3", "ccw"),
+            SketchLine("L1", "P3", "P1"),
+            SketchLine("L2", "P4", "P5"),
+            SketchLine("L3", "P5", "P6"),
+            SketchLine("L4", "P6", "P7"),
+            SketchLine("L5", "P7", "P4"),
+        ),
+    )
+
+    with geometry.model("planar-boundary-arc-fuse", dimension=2) as cad:
+        prepared = prepare_planar_boolean(
+            cad,
+            target,
+            "face:domain",
+            tool,
+            _profile_face_ids(tool),
+            "fuse",
+        )
+
+    assert len(
+        [entity for entity in prepared.proof.result_entities if entity.kind == "face"]
+    ) == 1
 
 
 @pytest.mark.gmsh

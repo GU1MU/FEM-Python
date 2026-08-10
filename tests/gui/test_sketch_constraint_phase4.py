@@ -7,8 +7,8 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QDialog
 
 from fem.geometry import (
     SketchCoincidentConstraint,
@@ -80,6 +80,27 @@ def test_overlay_and_chinese_solver_status_are_renderer_independent() -> None:
     assert solve_status_text(result) == "欠约束"
 
 
+def test_radius_overlay_shows_value_away_from_circle_center() -> None:
+    controller = _constraint_controller()
+    controller.add_constraint_and_solve(
+        SketchRadiusDimension("R1", "C1", 1.0, driving=False)
+    )
+    snapshot = controller.snapshot()
+
+    overlay = build_constraint_overlays(
+        snapshot.points,
+        snapshot.curves,
+        snapshot.constraints,
+        snapshot.plane,
+    )[0]
+
+    assert overlay.kind == "radius"
+    assert overlay.text == "R 1"
+    assert overlay.position[:2] == pytest.approx(
+        (5.0 + 0.72 / math.sqrt(2.0), 5.0 + 0.72 / math.sqrt(2.0))
+    )
+
+
 def test_panel_constraint_crud_filters_selection_and_driving_dimension() -> None:
     _application()
     controller = _line_controller()
@@ -96,6 +117,35 @@ def test_panel_constraint_crud_filters_selection_and_driving_dimension() -> None
     points = {point.id: point for point in controller.snapshot().points}
     assert math.isclose(math.dist((points["P1"].u, points["P1"].v), (points["P2"].u, points["P2"].v)), 3.0)
     assert panel.constraints_table.rowCount() == 2
+    assert panel.constraints_table.columnCount() == 2
+    assert [
+        panel.constraints_table.horizontalHeaderItem(column).text()
+        for column in range(2)
+    ] == ["类型", "值"]
+    assert panel.constraints_table.verticalHeader().isHidden()
+    assert (
+        panel.constraints_table.verticalScrollMode()
+        == QAbstractItemView.ScrollMode.ScrollPerPixel
+    )
+    constraint_scroll = panel.constraints_table.verticalScrollBar()
+    assert constraint_scroll.singleStep() == 18
+    assert "width: 10px" in constraint_scroll.styleSheet()
+    assert "border-radius: 4px" in constraint_scroll.styleSheet()
+    assert "agent_chat_scroll_up.svg" in constraint_scroll.styleSheet()
+    assert panel.constraints_table.item(0, 0).text() == "水平"
+    assert panel.constraints_table.item(0, 1).text() == ""
+    assert panel.constraints_table.item(1, 0).text() == "距离"
+    assert panel.constraints_table.item(1, 1).text() == "3"
+    assert all(
+        panel.constraints_table.item(row, column).textAlignment()
+        == Qt.AlignmentFlag.AlignCenter
+        for row in range(2)
+        for column in range(2)
+    )
+    assert (
+        panel.constraints_table.item(1, 0).data(Qt.ItemDataRole.UserRole)
+        == dimension.id
+    )
 
     panel.delete_constraint(horizontal.id)
     assert tuple(item.id for item in controller.constraints) == (dimension.id,)
@@ -155,7 +205,6 @@ def test_dimension_is_reference_until_edit_dialog_sets_driving_value(
 
     def accept_edit(dialog) -> QDialog.DialogCode:
         dialog.value_spin.setValue(4.0)
-        dialog.driving_check.setChecked(True)
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(

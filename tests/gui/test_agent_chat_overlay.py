@@ -502,6 +502,52 @@ def test_native_viewport_cannot_cover_independent_tool_overlays():
     host.close()
 
 
+def test_launcher_drag_moves_within_viewport_without_opening_drawer():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.show()
+    host.activateWindow()
+    application.processEvents()
+    host.set_drawer_open(False, animated=False)
+    application.processEvents()
+
+    launcher = host.chat_launcher
+    initial_rect = _global_rect(launcher)
+    press_position = launcher.rect().center()
+    drag_delta = QPoint(-160, 120)
+    QTest.mousePress(
+        launcher,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        press_position,
+    )
+    QTest.mouseMove(launcher, press_position + drag_delta)
+    application.processEvents()
+    QTest.mouseRelease(
+        launcher,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        launcher.rect().center(),
+    )
+    application.processEvents()
+
+    moved_rect = _global_rect(launcher)
+    assert moved_rect.topLeft() == initial_rect.topLeft() + drag_delta
+    assert _global_rect(host).contains(moved_rect)
+    assert not host.drawer_is_open
+
+    host.resize(120, 100)
+    application.processEvents()
+    assert _global_rect(host).contains(_global_rect(launcher))
+
+    QTest.mouseClick(launcher, Qt.MouseButton.LeftButton)
+    application.processEvents()
+    assert host.drawer_is_open
+    host.close()
+
+
 def test_tool_overlays_follow_host_window_lifecycle():
     application = _application()
     viewport = _ViewportProbe()

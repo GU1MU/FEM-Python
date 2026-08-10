@@ -146,6 +146,42 @@ class ScopeCreationBar(QWidget):
         self.activeChanged.emit(False)
 
 
+class PlanarBooleanFaceBar(QWidget):
+    """One-step target-Face prompt for a planar Boolean workflow."""
+
+    cancelRequested = Signal()
+    activeChanged = Signal(bool)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("planarBooleanFaceBar")
+        self.setAutoFillBackground(True)
+        self.prompt_label = QLabel(self)
+        self.prompt_label.setObjectName("planarBooleanFacePrompt")
+        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button.setObjectName("planarBooleanFaceCancel")
+        self.cancel_button.clicked.connect(self.cancelRequested)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+        layout.addWidget(self.prompt_label, 1)
+        layout.addWidget(self.cancel_button)
+        self.hide()
+
+    def begin(self, operation: str) -> None:
+        operation_label = {"fuse": "合并", "cut": "切除"}.get(str(operation))
+        if operation_label is None:
+            raise ValueError("二维布尔操作必须是合并或切除")
+        self.prompt_label.setText(
+            f"请选择用于{operation_label}的一个目标面；选择后将进入工具草图"
+        )
+        self.activeChanged.emit(True)
+
+    def finish(self) -> None:
+        self.hide()
+        self.activeChanged.emit(False)
+
+
 class ViewportPanel(QWidget):
     """组合常驻工具栏与有限元三维视口。"""
 
@@ -172,16 +208,37 @@ class ViewportPanel(QWidget):
             authoring_controller=authoring_controller,
         )
         self.agent_chat_drawer = self.overlay_host.agent_chat_drawer
+        self._active_bottom_overlay: QWidget | None = None
         self.scope_creation_bar = ScopeCreationBar(self.overlay_host)
-        self.overlay_host.set_bottom_overlay(self.scope_creation_bar)
+        self.planar_boolean_face_bar = PlanarBooleanFaceBar(self.overlay_host)
         self.scope_creation_bar.activeChanged.connect(
-            self._set_scope_creation_active
+            lambda active: self._set_bottom_overlay_active(
+                self.scope_creation_bar,
+                active,
+            )
         )
+        self.planar_boolean_face_bar.activeChanged.connect(
+            lambda active: self._set_bottom_overlay_active(
+                self.planar_boolean_face_bar,
+                active,
+            )
+        )
+        self.overlay_host.set_bottom_overlay(self.scope_creation_bar)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.overlay_host, 1)
 
-    def _set_scope_creation_active(self, active: bool) -> None:
-        self.overlay_host.set_bottom_overlay_visible(active)
+    def _set_bottom_overlay_active(
+        self,
+        overlay: QWidget,
+        active: bool,
+    ) -> None:
+        if active:
+            self._active_bottom_overlay = overlay
+            self.overlay_host.set_bottom_overlay(overlay)
+            self.overlay_host.set_bottom_overlay_visible(True)
+        elif self._active_bottom_overlay is overlay:
+            self._active_bottom_overlay = None
+            self.overlay_host.set_bottom_overlay_visible(False)
 
     def set_geometry_context(self, enabled: bool) -> None:
         self.toolbar.set_geometry_context(enabled)

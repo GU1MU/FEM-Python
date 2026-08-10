@@ -142,8 +142,13 @@ def test_panel_creates_displays_and_deletes_advanced_relation_and_angle() -> Non
     assert isinstance(parallel, SketchParallelConstraint)
     assert isinstance(angle, SketchAngleDimension)
     assert panel.constraints_table.rowCount() == 2
-    assert "平行" in panel.constraints_table.item(0, 1).text()
-    assert any("角度" in panel.constraints_table.item(row, 1).text() for row in range(2))
+    assert panel.constraints_table.item(0, 0).text() == "平行"
+    angle_row = next(
+        row
+        for row in range(2)
+        if panel.constraints_table.item(row, 0).text() == "角度"
+    )
+    assert panel.constraints_table.item(angle_row, 1).text() == "0"
 
     panel.delete_constraint(parallel.id)
     assert tuple(item.id for item in controller.constraints) == (angle.id,)

@@ -313,6 +313,24 @@ def resolve_planar_boolean_lineage(
             target_ids,
             tool_ids,
         )
+        if not target_ids and not tool_ids:
+            # A boundary-only fuse can split and then merge coincident operand
+            # edges. OCC may return a new edge whose support signature no
+            # longer matches either original edge, while the result Face is
+            # still fully proven. Keep same-dimensional provenance through
+            # the selected Profiles' proven boundary sets in that case.
+            _record_same_kind_mappings(
+                mappings,
+                logical_id,
+                _face_boundary_source_ids(
+                    target_evidence,
+                    (context.target_face_id,),
+                ),
+                _face_boundary_source_ids(
+                    tool_evidence,
+                    context.tool_face_ids,
+                ),
+            )
         if logical_id in generated_intersections:
             mappings.add(
                 BooleanLineageMapping(
@@ -367,6 +385,16 @@ def resolve_planar_boolean_lineage(
             if adjacent_edges
             else set()
         )
+        for mapping in mappings:
+            if (
+                mapping.target_logical_id not in adjacent_edge_ids
+                or LogicalEntityRef(mapping.source_logical_id).kind != "edge"
+            ):
+                continue
+            if mapping.source == "target":
+                adjacent_target_sources.add(mapping.source_logical_id)
+            else:
+                adjacent_tool_sources.add(mapping.source_logical_id)
         exact_target = _exact_primary_matches(
             cad,
             point,
@@ -555,6 +583,24 @@ def _record_same_kind_mappings(
                     ),
                 )
             )
+
+
+def _face_boundary_source_ids(
+    evidence: PlanarOperandEvidence,
+    face_ids: tuple[str, ...],
+) -> set[str]:
+    result: set[str] = set()
+    for face_id in face_ids:
+        try:
+            face = evidence.catalog.entity(face_id)
+        except KeyError:
+            continue
+        result.update(
+            logical_id
+            for logical_id in face.topology_links
+            if logical_id.startswith("edge:")
+        )
+    return result
 
 
 def _record_cross_dimension_mappings(

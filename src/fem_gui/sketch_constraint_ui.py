@@ -70,15 +70,19 @@ _KIND_TEXT = {
 }
 
 
+def constraint_type_text(constraint: SketchConstraint) -> str:
+    return _KIND_TEXT[type(constraint)][1]
+
+
 def constraint_text(constraint: SketchConstraint) -> str:
-    kind, label = _KIND_TEXT[type(constraint)]
-    del kind
+    label = constraint_type_text(constraint)
+    if isinstance(constraint, SketchRadiusDimension):
+        return f"R {constraint.value:g}"
     if isinstance(
         constraint,
-        (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
+        (SketchDistanceDimension, SketchAngleDimension),
     ):
-        mode = "驱动" if constraint.driving else "参考"
-        return f"{label} {constraint.value:g}（{mode}）"
+        return f"{label} {constraint.value:g}"
     return label
 
 
@@ -165,6 +169,25 @@ def build_constraint_overlays(
             continue
         u = sum(point.u for point in anchors) / len(anchors)
         v = sum(point.v for point in anchors) / len(anchors)
+        if isinstance(constraint, SketchRadiusDimension):
+            curve = curve_map[constraint.curve_id]
+            center = point_map[curve.center_point_id]
+            if isinstance(curve, SketchCircle):
+                angle = math.pi / 4.0
+                radius = curve.radius
+            else:
+                start = point_map[curve.start_point_id]
+                end = point_map[curve.end_point_id]
+                start_angle = math.atan2(start.v - center.v, start.u - center.u)
+                end_angle = math.atan2(end.v - center.v, end.u - center.u)
+                if curve.orientation == "ccw":
+                    sweep = (end_angle - start_angle) % (2.0 * math.pi)
+                else:
+                    sweep = -((start_angle - end_angle) % (2.0 * math.pi))
+                angle = start_angle + 0.5 * sweep
+                radius = math.hypot(start.u - center.u, start.v - center.v)
+            u = center.u + 0.72 * radius * math.cos(angle)
+            v = center.v + 0.72 * radius * math.sin(angle)
         kind, _label = _KIND_TEXT[type(constraint)]
         value = measured_dimension_value(constraint, point_map, curve_map)
         text = constraint_text(constraint)
@@ -238,6 +261,7 @@ __all__ = [
     "SketchInferencePreview",
     "build_constraint_overlays",
     "constraint_text",
+    "constraint_type_text",
     "constraints_for_entities",
     "infer_line_preview",
     "measured_dimension_value",

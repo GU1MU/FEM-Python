@@ -158,6 +158,33 @@ def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection():
     window.close()
 
 
+def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
+    application.processEvents()
+    viewport_size = window.viewport.size()
+    bar = window.viewport_panel.planar_boolean_face_bar
+    host = window.viewport_panel.overlay_host
+
+    bar.begin("cut")
+    application.processEvents()
+
+    assert window.viewport.size() == viewport_size
+    assert bar.isVisible()
+    assert "切除" in bar.prompt_label.text()
+    assert "目标面" in bar.prompt_label.text()
+    host_origin = host.mapToGlobal(QPoint(0, 0))
+    assert bar.geometry().left() == host_origin.x()
+    assert bar.geometry().bottom() == host_origin.y() + host.height() - 1
+
+    bar.finish()
+    application.processEvents()
+    assert bar.isHidden()
+    window.close()
+
+
 def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     _application()
     window = FEMMainWindow()

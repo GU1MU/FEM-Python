@@ -875,11 +875,14 @@ def _curve_intersection_diagnostics(
                     pair_code = "sketch.crossing"
                 break
             if pair_code is not None:
+                tangent_contact = pair_code == "sketch.tangent-ambiguity"
                 diagnostics.append(
                     SketchDiagnostic(
                         pair_code,
                         f"曲线 {left_id} 和 {right_id} 的几何关系无法唯一解释",
                         (left_id, right_id),
+                        blocking=not tangent_contact,
+                        severity="warning" if tangent_contact else "error",
                     )
                 )
     return tuple(diagnostics)
