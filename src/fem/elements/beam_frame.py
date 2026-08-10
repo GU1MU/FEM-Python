@@ -264,7 +264,7 @@ class BeamFrameField:
     that tangent.  The frame is sampled at a fixed eight-point Gauss rule;
     the same samples are used by stiffness, distributed-load, and recovery
     paths.  No frame derivative is introduced, keeping this a linear
-    Euler--Bernoulli contract without warping or corotational terms.
+    Timoshenko contract without warping or corotational terms.
     """
 
     length: float

@@ -58,6 +58,8 @@ class BeamSectionEndStress:
     s11_min: float
     s11_abs_max: float
     s12_abs_max: float
+    shear_y: float = 0.0
+    shear_z: float = 0.0
 
     def __post_init__(self) -> None:
         for name in ("element_id", "local_node", "node_id"):
@@ -87,6 +89,8 @@ class BeamSectionEndStress:
             "s11_min",
             "s11_abs_max",
             "s12_abs_max",
+            "shear_y",
+            "shear_z",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value):
@@ -104,6 +108,30 @@ class BeamSectionEndStress:
             raise ValueError(
                 "s11_abs_max must equal max(abs(s11_max), abs(s11_min))"
             )
+
+    @property
+    def N(self) -> float:
+        return self.axial_force
+
+    @property
+    def Vy(self) -> float:
+        return self.shear_y
+
+    @property
+    def Vz(self) -> float:
+        return self.shear_z
+
+    @property
+    def My(self) -> float:
+        return self.moment_y
+
+    @property
+    def Mz(self) -> float:
+        return self.moment_z
+
+    @property
+    def T(self) -> float:
+        return self.torque
 
     def values(self) -> dict[str, float]:
         """Return the legacy longitudinal section-stress components."""
@@ -462,6 +490,8 @@ def recover_section_stress(
                     s11_min=recovered.s11_min,
                     s11_abs_max=recovered.s11_abs_max,
                     s12_abs_max=recovered.s12_abs_max,
+                    shear_y=forces.shear_y,
+                    shear_z=forces.shear_z,
                 )
             )
             for point_stress in recovered.point_stresses:

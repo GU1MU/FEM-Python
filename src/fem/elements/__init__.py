@@ -30,6 +30,7 @@ from .beam_frame import (
     validate_beam_frame_field,
     validate_beam_frame_fields,
 )
+from .beam_section import BeamSectionEndForces
 from .capabilities import (
     ElementCapabilityDescriptor,
     ElementCapabilityLimitation,
@@ -67,6 +68,7 @@ __all__ = [
     "BeamOrientationInvalidError",
     "BeamOrientationParallelError",
     "BeamOrientationUnsupportedTargetError",
+    "BeamSectionEndForces",
     "ElementCapabilityDescriptor",
     "ElementCapabilityLimitation",
     "ElementCapabilityRequirement",

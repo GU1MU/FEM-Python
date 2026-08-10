@@ -35,6 +35,54 @@ class Beam2Section:
     height: float | None = None
     width: float | None = None
 
+    def shear_correction_factors(
+        self,
+        poisson_ratio: float,
+    ) -> tuple[float, float]:
+        """Return Cowper ``(kappa_y, kappa_z)`` for the local shear axes.
+
+        The coefficients depend on the section shape and isotropic material
+        Poisson ratio.  All currently supported sections are doubly symmetric,
+        so both directions have the same coefficient.
+        """
+
+        nu = _validated_poisson_ratio(poisson_ratio)
+        if self.section_type == "rectangle":
+            kappa = 10.0 * (1.0 + nu) / (12.0 + 11.0 * nu)
+        elif self.section_type == "solid_circle":
+            kappa = 6.0 * (1.0 + nu) / (7.0 + 6.0 * nu)
+        else:
+            assert self.outer_radius is not None and self.inner_radius is not None
+            radius_ratio_squared = (self.inner_radius / self.outer_radius) ** 2
+            radius_term = (1.0 + radius_ratio_squared) ** 2
+            kappa = 6.0 * (1.0 + nu) * radius_term / (
+                (7.0 + 6.0 * nu) * radius_term
+                + (20.0 + 12.0 * nu) * radius_ratio_squared
+            )
+        return kappa, kappa
+
+    def effective_shear_rigidities(
+        self,
+        shear_modulus: float,
+        poisson_ratio: float,
+    ) -> tuple[float, float]:
+        """Return effective local ``(kappa_y G A, kappa_z G A)``."""
+
+        try:
+            shear = float(shear_modulus)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Beam2 shear modulus must be finite and > 0, "
+                f"got {shear_modulus!r}"
+            ) from error
+        if not isfinite(shear) or shear <= 0.0:
+            raise ValueError(
+                "Beam2 shear modulus must be finite and > 0, "
+                f"got {shear_modulus!r}"
+            )
+        kappa_y, kappa_z = self.shear_correction_factors(poisson_ratio)
+        return kappa_y * shear * self.area, kappa_z * shear * self.area
+
 
 @dataclass(frozen=True, slots=True)
 class BeamSectionPoint:
@@ -70,15 +118,29 @@ class BeamSectionPoint:
 
 @dataclass(frozen=True, slots=True)
 class BeamSectionEndForces:
-    """Tension-positive Beam2 resultants at one element-end section."""
+    """Tension-positive Beam2 resultants at one element-end section.
+
+    The first four fields retain the historical positional constructor order.
+    Transverse shear resultants are appended so existing
+    ``BeamSectionEndForces(N, My, Mz, T)`` callers remain valid.
+    """
 
     axial_force: float
     moment_y: float
     moment_z: float
     torque: float
+    shear_y: float = 0.0
+    shear_z: float = 0.0
 
     def __post_init__(self) -> None:
-        for name in ("axial_force", "moment_y", "moment_z", "torque"):
+        for name in (
+            "axial_force",
+            "moment_y",
+            "moment_z",
+            "torque",
+            "shear_y",
+            "shear_z",
+        ):
             value = float(getattr(self, name))
             if not isfinite(value):
                 raise ValueError(f"Beam2 section force {name} must be finite")
@@ -87,6 +149,14 @@ class BeamSectionEndForces:
     @property
     def N(self) -> float:
         return self.axial_force
+
+    @property
+    def Vy(self) -> float:
+        return self.shear_y
+
+    @property
+    def Vz(self) -> float:
+        return self.shear_z
 
     @property
     def My(self) -> float:
@@ -350,6 +420,24 @@ def _positive_dimension(props: Mapping[str, Any], name: str) -> float:
             f"Beam2 section property {name} must be finite and > 0, got {props[name]!r}"
         )
     return value
+
+
+def _validated_poisson_ratio(value: float) -> float:
+    """Return one finite isotropic Poisson ratio in its admissible range."""
+
+    try:
+        poisson_ratio = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Beam2 Poisson ratio must be finite and satisfy -1 < nu < 0.5, "
+            f"got {value!r}"
+        ) from error
+    if not isfinite(poisson_ratio) or not -1.0 < poisson_ratio < 0.5:
+        raise ValueError(
+            "Beam2 Poisson ratio must be finite and satisfy -1 < nu < 0.5, "
+            f"got {value!r}"
+        )
+    return poisson_ratio
 
 
 def _circle_section(
