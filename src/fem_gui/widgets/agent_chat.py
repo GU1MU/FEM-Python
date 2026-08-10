@@ -3603,7 +3603,7 @@ class ModelViewportOverlayHost(QWidget):
 
         self._drawer_width = self.DEFAULT_DRAWER_WIDTH
         self._drawer_reveal = 0
-        self._drawer_open = True
+        self._drawer_open = False
         self._shutting_down = False
         self._anchor_window: QWidget | None = None
         self._animation = QPropertyAnimation(

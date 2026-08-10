@@ -6,7 +6,7 @@ import pytest
 from fem import boundary
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
+from fem.boundary.step import boundary_for_step, effective_step_boundaries
 from fem.boundary import step as boundary_step
 from fem.core.model import (
     AnalysisStep,
@@ -34,6 +34,7 @@ from tests.helpers.mesh_builders import (
     make_tet4_stiffness_mesh,
     make_truss_stiffness_mesh,
 )
+from tests.helpers.model_builders import make_two_step_static_pull_truss_model
 
 
 class _IterationCountingList(list):
@@ -91,6 +92,24 @@ def test_3d_nodal_forces_accumulate_like_2d():
     F = boundary.loads.build_load_vector(mesh, bc)
 
     assert F[mesh.global_dof(1, 2)] == pytest.approx(-5.0)
+
+
+def test_effective_step_boundaries_accumulate_all_preceding_steps() -> None:
+    model = make_two_step_static_pull_truss_model()
+    previous = DisplacementConstraint("TIP", 1, 1, 0.125)
+    current = DisplacementConstraint("TIP", 1, 1, 0.25)
+    model.steps[1].boundaries = (previous,)
+    model.steps[2].boundaries = (current,)
+
+    initial = effective_step_boundaries(model, "Initial")
+    inherited = effective_step_boundaries(model, "pull2")
+
+    assert initial == tuple(model.steps[0].boundaries)
+    assert inherited == (*model.steps[0].boundaries, previous, current)
+
+    resolved = boundary_for_step(model, "pull2")
+    tip_ux = model.mesh.global_dof(2, 0)
+    assert resolved.prescribed_displacements[tip_ux] == pytest.approx(0.25)
 
 
 @pytest.mark.parametrize(

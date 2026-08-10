@@ -10,10 +10,13 @@ from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
+from fem.boundary.step import effective_step_boundaries
+
 from ..icons import icon
 
 ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
+ROLE_INHERITED = ROLE_KEY + 1
 
 _ACTIVE_PART_BACKGROUND = QColor("#d9ecff")
 _ICON_ROOT = Path(__file__).resolve().parents[1] / "resources" / "icons"
@@ -80,6 +83,7 @@ _TREE_ICONS = {
     "assignment": "section",
     "step": "step",
     "boundary": "boundary",
+    "inherited_boundary": "boundary",
     "cload": "load",
     "surface_load": "load",
     "edge_load": "load",
@@ -425,24 +429,49 @@ class ModelTree(QTreeWidget):
             step_item = self._item(step.name, "step", index)
             if first_step_item is None and step.name.lower() != "initial":
                 first_step_item = step_item
+            boundary_definitions = effective_step_boundaries(model, step)
+            boundary_sources = tuple(
+                (
+                    source_index,
+                    source_step,
+                    source_boundary_index,
+                )
+                for source_index, source_step in enumerate(
+                    model.steps[: index + 1]
+                )
+                for source_boundary_index, _boundary in enumerate(
+                    source_step.boundaries
+                )
+            )
+            boundary_count = (
+                len(boundary_definitions)
+                if boundary_definitions
+                else getattr(step, "summary_boundary_count", 0)
+            )
             bc_root = self._category(
                 step_item,
                 "边界条件",
-                getattr(step, "summary_boundary_count", len(step.boundaries)),
+                boundary_count,
             )
-            for bc_index, boundary in enumerate(step.boundaries):
-                identity = getattr(boundary, "name", None)
-                bc_root.addChild(
-                    self._item(
-                        identity or f"位移约束 {bc_index + 1}",
-                        "boundary",
-                        (
-                            (step.name, identity)
-                            if identity is not None
-                            else (index, bc_index)
-                        ),
-                    )
+            for bc_index, boundary in enumerate(boundary_definitions):
+                source_index, source_step, source_boundary_index = (
+                    boundary_sources[bc_index]
                 )
+                inherited = source_index < index
+                identity = getattr(boundary, "name", None)
+                label = identity or f"位移约束 {source_boundary_index + 1}"
+                source_key = (
+                    (source_index, source_boundary_index)
+                    if inherited or identity is None
+                    else (source_step.name, identity)
+                )
+                boundary_item = self._item(
+                    label,
+                    "inherited_boundary" if inherited else "boundary",
+                    source_key,
+                )
+                boundary_item.setData(0, ROLE_INHERITED, inherited)
+                bc_root.addChild(boundary_item)
             load_count = (
                 len(step.cloads)
                 + len(step.surface_loads)
@@ -730,6 +759,8 @@ class ModelTree(QTreeWidget):
         key = item.data(0, ROLE_KEY)
         if kind in {"empty", "category", "detail"}:
             return None
+        if kind == "inherited_boundary":
+            return "boundary", key
         return kind, key
 
     def _on_clicked(self, item: QTreeWidgetItem) -> None:
@@ -745,6 +776,7 @@ class ModelTree(QTreeWidget):
         if entry is not None:
             editable = (
                 entry[0] in _EDITABLE_KINDS
+                and not bool(item.data(0, ROLE_INHERITED))
                 and not (
                     entry[0] == "part"
                     and type(entry[1]) is not str
@@ -778,6 +810,7 @@ class ModelTree(QTreeWidget):
             menu.addAction("编辑")
             if (
                 entry[0] in _EDITABLE_KINDS
+                and not bool(item.data(0, ROLE_INHERITED))
                 and not (
                     entry[0] == "part"
                     and type(entry[1]) is not str
@@ -789,6 +822,7 @@ class ModelTree(QTreeWidget):
             menu.addAction("删除")
             if (
                 entry[0] in _DELETABLE_KINDS
+                and not bool(item.data(0, ROLE_INHERITED))
                 and not (
                     entry[0] == "part"
                     and type(entry[1]) is not str

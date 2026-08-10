@@ -161,6 +161,20 @@ def test_selected_step_validation_includes_inherited_initial_boundaries():
         validate_model(model, selected)
 
 
+def test_selected_step_validation_includes_previous_step_boundaries():
+    model = make_two_step_static_pull_truss_model()
+    selected = model.steps[2]
+    model.steps[1].boundaries = (
+        DisplacementConstraint("MISSING_PREVIOUS_TARGET", 1, 3, 0.0),
+    )
+
+    validate_model_structure(model)
+    with pytest.raises(KeyError, match="MISSING_PREVIOUS_TARGET"):
+        validate_analysis_step(model, selected)
+    with pytest.raises(KeyError, match="MISSING_PREVIOUS_TARGET"):
+        validate_model(model, selected)
+
+
 def test_selected_step_does_not_inherit_initial_loads():
     model = make_two_step_static_pull_truss_model()
     selected = model.steps[1]

@@ -168,7 +168,7 @@ def test_five_selection_actions_share_one_contextual_descriptor_group() -> None:
     )
 
     assert [descriptors[key].text for key in keys] == [
-        "选择点", "选择单元", "选择边", "选择面", "选择体",
+        "选择点", "选择单元", "选择边", "选择面", "选择部件",
     ]
     assert {descriptors[key].group for key in keys} == {"selection"}
     assert {descriptors[key].handler for key in keys} == {"_set_selection_filter"}

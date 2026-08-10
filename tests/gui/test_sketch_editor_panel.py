@@ -6,9 +6,24 @@ import math
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QItemSelectionModel, QSettings, Qt
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QItemSelectionModel,
+    QSettings,
+    Qt,
+)
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QGroupBox,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+)
 
 from fem.geometry import (
     LogicalEntityRef,
@@ -29,6 +44,7 @@ from fem_gui.widgets.sketch_editor_panel import SketchEditorPanel
 from fem_gui.widgets.viewport import (
     FEMViewport,
     SketchDraftRenderData,
+    _sketch_axis_local_endpoints,
     _sketch_camera_bounds,
     _sketch_curve_sample_count,
     _sketch_intersection_points,
@@ -54,6 +70,19 @@ def _reference_point(u: float, v: float) -> SketchReferencePoint:
     )
 
 
+def _wheel_event(delta: int = -120) -> QWheelEvent:
+    return QWheelEvent(
+        QPointF(20.0, 20.0),
+        QPointF(20.0, 20.0),
+        QPoint(),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+
+
 def test_panel_uses_fine_default_grid_and_omits_curve_profile_lists() -> None:
     _application()
     panel = SketchEditorPanel(SketchDraftController("compact-panel"))
@@ -66,6 +95,156 @@ def test_panel_uses_fine_default_grid_and_omits_curve_profile_lists() -> None:
     labels = {label.text() for label in panel.findChildren(QLabel)}
     assert "曲线" not in labels
     assert "Profiles" not in labels
+
+
+def test_panel_keeps_advanced_sketch_behavior_internal() -> None:
+    _application()
+    panel = SketchEditorPanel(SketchDraftController("fixed-defaults"))
+
+    group_titles = {
+        group.title() for group in panel.findChildren(QGroupBox)
+    }
+    assert "网格" in group_titles
+    assert "约束" in group_titles
+    assert group_titles.isdisjoint({"捕捉", "显示", "绘图行为"})
+    assert "草图约束与尺寸" not in group_titles
+    assert "点坐标" not in {
+        label.text() for label in panel.findChildren(QLabel)
+    }
+    assert panel.point_search_edit.isHidden()
+    assert panel.point_filter_combo.isHidden()
+    assert panel.points_table.isHidden()
+    assert panel.constraint_type_combo.isHidden()
+    assert panel.constraint_targets_edit.isHidden()
+    assert panel.constraint_value_spin.isHidden()
+    assert panel.constraint_driving_check.isHidden()
+    assert panel.solve_status_label.isHidden()
+    assert panel.diagnostic_scroll.isHidden()
+    assert not hasattr(panel, "delete_button")
+    assert not hasattr(panel, "release_association_button")
+    for attribute in (
+        "snap_check",
+        "snap_sketch_points_check",
+        "snap_external_points_check",
+        "snap_midpoints_check",
+        "snap_centers_check",
+        "snap_intersections_check",
+        "screen_snap_tolerance_spin",
+        "auto_merge_tolerance_spin",
+        "show_point_ids_check",
+        "show_external_labels_check",
+        "show_profile_fill_check",
+        "show_work_plane_axes_check",
+        "continuous_polyline_check",
+        "end_polyline_on_close_check",
+        "keep_tool_after_completion_check",
+        "confirm_cascade_delete_check",
+        "auto_constraints_check",
+    ):
+        assert not hasattr(panel, attribute)
+    assert panel._preferences.grid_snap
+    assert panel._preferences.snap_sketch_points
+    assert panel._preferences.snap_external_points
+    assert panel._preferences.snap_midpoints
+    assert panel._preferences.snap_centers
+    assert panel._preferences.snap_intersections
+    assert panel._preferences.auto_constraints
+
+
+def test_constraint_type_click_starts_choice_without_extra_confirmation() -> None:
+    _application()
+    dialog = sketch_editor_panel_module._ConstraintTypeDialog()
+    item = next(
+        dialog.type_list.item(index)
+        for index in range(dialog.type_list.count())
+        if dialog.type_list.item(index).data(Qt.ItemDataRole.UserRole) == "fixed"
+    )
+
+    dialog.type_list.itemClicked.emit(item)
+
+    assert dialog.selected_kind == "fixed"
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    dialog.close()
+
+
+def test_constraint_actions_share_one_row_and_success_prompt_is_removed() -> None:
+    app = _application()
+    controller = SketchDraftController("constraint-actions")
+    controller.add_rectangle((0.0, 0.0), (2.0, 1.0))
+    panel = SketchEditorPanel(controller)
+    panel.resize(420, 650)
+    panel.show()
+    app.processEvents()
+
+    button_y = {
+        button.mapTo(panel, QPoint(0, 0)).y()
+        for button in (
+            panel.add_constraint_button,
+            panel.delete_constraint_button,
+            panel.edit_constraint_button,
+        )
+    }
+    assert len(button_y) == 1
+    assert panel.diagnostic_label.text() == ""
+    assert panel.diagnostic_scroll.isHidden()
+    assert panel.solve_status_label.isHidden()
+    panel.close()
+
+
+def test_constraint_command_bar_uses_staged_prompts_and_target_highlights() -> None:
+    _application()
+    controller = SketchDraftController("staged-command")
+    controller.add_point("P1", 0.0, 0.0)
+    controller.add_point("P2", 1.0, 0.0)
+    panel = SketchEditorPanel(controller)
+    viewport = FEMViewport()
+    panel.begin(viewport)
+
+    panel._start_constraint_command("coincident")
+    assert panel.constraint_command_bar.parentWidget() is viewport
+    assert panel.constraint_command_prompt.text() == "请选择第一个点"
+    panel._select_point("P1")
+    assert panel.constraint_command_prompt.text() == "请选择第二个点"
+    assert viewport._sketch_constraint_selection == (("point", "P1"),)
+
+    panel._select_point("P1")
+    assert panel.constraint_command_prompt.text() == "请选择第一个点"
+    assert viewport._sketch_constraint_selection == ()
+
+    panel._select_point("P1")
+    panel._select_point("P2")
+    assert panel.constraint_command_prompt.text() == "重合：点击确定添加约束"
+    assert "已选择" not in panel.constraint_command_prompt.text()
+    panel.cancel_constraint_command_button.click()
+    assert panel._constraint_command_kind is None
+    assert not viewport._sketch_constraint_selection_active
+    panel.end()
+    viewport.close()
+
+
+def test_removed_entity_buttons_remain_available_by_keyboard_and_context_menu() -> None:
+    _application()
+    controller = SketchDraftController("context-actions")
+    point = controller.add_point(
+        0.0,
+        0.0,
+        external_reference=_reference_point(0.0, 0.0),
+    )
+    controller.select_point(point.id)
+    panel = SketchEditorPanel(controller)
+    viewport = FEMViewport()
+    panel.attach_viewport(viewport)
+
+    menu = panel._create_sketch_context_menu("point", point.id)
+
+    assert [action.text() for action in menu.actions()] == ["删除", "解除关联"]
+    assert not hasattr(panel, "delete_button")
+    assert not hasattr(panel, "release_association_button")
+    viewport.sketchDeleteRequested.emit()
+    assert controller.snapshot().points == ()
+    menu.close()
+    panel.close()
+    viewport.close()
 
 
 def test_rectangle_and_circle_second_click_previews_follow_cursor() -> None:
@@ -130,6 +309,38 @@ def test_empty_sketch_camera_fit_uses_compact_default_work_area() -> None:
     )
     assert viewport._fit_bounds() == pytest.approx(bounds)
     viewport.close()
+
+
+def test_sketch_axes_remain_anchored_when_rectangle_is_away_from_origin() -> None:
+    class GridLayout:
+        center = (1.2, -1.0, 0.0)
+        plane_size = 4.0
+
+    u_start, u_end = _sketch_axis_local_endpoints(GridLayout(), 0)
+    v_start, v_end = _sketch_axis_local_endpoints(GridLayout(), 1)
+
+    assert u_start == pytest.approx((-0.8, 0.0))
+    assert u_end == pytest.approx((3.2, 0.0))
+    assert v_start == pytest.approx((0.0, -3.0))
+    assert v_end == pytest.approx((0.0, 1.0))
+    assert u_start[1] == u_end[1] == 0.0
+    assert v_start[0] == v_end[0] == 0.0
+
+    controller = SketchDraftController("offset-rectangle")
+    panel = SketchEditorPanel(controller)
+    panel.set_mode("rectangle")
+    panel._point_from_viewport((1.2, -1.0, 0.0))
+    panel._point_from_viewport((2.4, -0.2, 0.0))
+    coordinates = {(point.u, point.v) for point in controller.snapshot().points}
+    assert coordinates == {
+        (1.2, -1.0),
+        (2.4, -1.0),
+        (2.4, -0.2),
+        (1.2, -0.2),
+    }
+    points = controller.snapshot().points
+    assert sum(point.u for point in points) / len(points) == pytest.approx(1.8)
+    assert sum(point.v for point in points) / len(points) == pytest.approx(-0.6)
 
 
 def test_panel_polyline_closes_a_profile_and_emits_finish() -> None:
@@ -201,12 +412,116 @@ def test_many_diagnostics_stay_scrollable_and_cancel_remains_available() -> None
     panel.cancelRequested.connect(lambda: cancelled.append(True))
 
     assert panel.diagnostic_label.text().count("\n") > 10
-    assert panel.diagnostic_scroll.height() <= 150
+    assert panel.diagnostic_scroll.isHidden()
     assert panel.cancel_button.isVisible()
-    assert panel.cancel_button.geometry().bottom() <= panel.rect().bottom()
+    assert (
+        panel.cancel_button.mapTo(
+            panel,
+            panel.cancel_button.rect().bottomLeft(),
+        ).y()
+        <= panel.rect().bottom()
+    )
     panel.cancel_button.click()
     assert cancelled == [True]
     panel.close()
+
+
+def test_editor_content_scrolls_without_expanding_the_window_minimum_height() -> None:
+    app = _application()
+    panel = SketchEditorPanel(SketchDraftController("scrollable-panel"))
+    panel.resize(420, 400)
+    panel.show()
+    app.processEvents()
+
+    assert panel.minimumSizeHint().height() < 300
+    assert panel.editor_scroll.verticalScrollBar().maximum() > 0
+    assert panel.editor_scroll.horizontalScrollBar().maximum() == 0
+    assert panel.editor_scroll.verticalScrollBar().isVisible()
+    scroll_style = panel.editor_scroll.verticalScrollBar().styleSheet()
+    assert "background: transparent" in scroll_style
+    assert "width: 10px" in scroll_style
+    assert "border-radius: 4px" in scroll_style
+    assert "agent_chat_scroll_up.svg" in scroll_style
+    QApplication.sendEvent(panel.editor_scroll.viewport(), _wheel_event())
+    app.processEvents()
+    assert panel.editor_scroll.verticalScrollBar().value() > 0
+    assert panel.cancel_button.isVisible()
+    assert (
+        panel.cancel_button.mapTo(
+            panel,
+            panel.cancel_button.rect().bottomLeft(),
+        ).y()
+        <= panel.rect().bottom()
+    )
+    panel.close()
+
+
+def test_dimension_dialog_blocks_wheel_value_changes() -> None:
+    _application()
+    dialog = sketch_editor_panel_module._DimensionEditorDialog(
+        "长度",
+        2.0,
+        driving=False,
+    )
+    value = dialog.value_spin.value()
+
+    QApplication.sendEvent(dialog.value_spin, _wheel_event())
+
+    assert dialog.value_spin.value() == value
+    assert dialog.driving_check.isChecked()
+    dialog.close()
+
+
+def test_event_filter_tolerates_non_wheel_event_during_panel_construction() -> None:
+    _application()
+    panel = SketchEditorPanel(SketchDraftController("construction-event"))
+    constraint_type_combo = panel.constraint_type_combo
+    constraint_value_spin = panel.constraint_value_spin
+
+    del panel.constraint_type_combo
+    del panel.constraint_value_spin
+    try:
+        handled = panel.eventFilter(
+            panel.points_table,
+            QEvent(QEvent.Type.Hide),
+        )
+    finally:
+        panel.constraint_type_combo = constraint_type_combo
+        panel.constraint_value_spin = constraint_value_spin
+
+    assert handled is False
+    panel.close()
+
+
+def test_sketch_entry_refits_after_splitter_layout_settles(monkeypatch) -> None:
+    app = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
+    window._create_native_model("模型-1")
+    app.processEvents()
+    original_width = window.viewport.width()
+    fitted_sizes = []
+    monkeypatch.setattr(
+        window.viewport,
+        "fit",
+        lambda: fitted_sizes.append(window.viewport.size()),
+    )
+
+    window._begin_sketch_editor(
+        None,
+        original_recipe=None,
+        part_name="部件-1",
+    )
+
+    assert fitted_sizes == []
+    app.processEvents()
+    assert len(fitted_sizes) == 1
+    assert fitted_sizes[0] == window.viewport.size()
+    assert fitted_sizes[0].width() < original_width
+    assert window.minimumSizeHint().height() < 600
+    window._exit_sketch_editor()
+    window.close()
 
 
 def test_invalid_dirty_sketch_can_be_cancelled_from_panel(
@@ -684,10 +999,25 @@ def test_point_delete_prompt_lists_cascade_and_undo_restores_entities(
     }
 
 
-def test_phase3_preferences_restore_without_persisting_session_state(tmp_path) -> None:
+def test_only_grid_preferences_are_user_configurable(tmp_path) -> None:
     _application()
     path = tmp_path / "sketch.ini"
     store = QSettings(str(path), QSettings.Format.IniFormat)
+    store.setValue("sketch/grid_visible", False)
+    store.setValue("sketch/grid_spacing", 0.25)
+    store.setValue("sketch/grid_snap", False)
+    store.setValue("sketch/snap_midpoints", False)
+    store.setValue("sketch/screen_snap_tolerance", 13.0)
+    store.setValue("sketch/auto_merge_tolerance", 0.02)
+    store.setValue("sketch/show_point_ids", False)
+    store.setValue("sketch/show_external_labels", False)
+    store.setValue("sketch/show_profile_fill", False)
+    store.setValue("sketch/show_work_plane_axes", False)
+    store.setValue("sketch/continuous_polyline", False)
+    store.setValue("sketch/end_polyline_on_close", True)
+    store.setValue("sketch/keep_tool_after_completion", False)
+    store.setValue("sketch/confirm_cascade_delete", False)
+    store.setValue("sketch/auto_constraints", False)
     controller = SketchDraftController("phase-3-preferences")
     point = controller.add_point(0.0, 0.0)
     controller.select_point(point.id)
@@ -695,17 +1025,8 @@ def test_phase3_preferences_restore_without_persisting_session_state(tmp_path) -
     revision = controller.snapshot().revision
     can_undo = controller.can_undo
 
+    panel.grid_visible_check.setChecked(True)
     panel.grid_visible_check.setChecked(False)
-    panel.snap_check.setChecked(True)
-    panel.spacing_spin.setValue(0.25)
-    panel.snap_midpoints_check.setChecked(False)
-    panel.screen_snap_tolerance_spin.setValue(13.0)
-    panel.auto_merge_tolerance_spin.setValue(0.02)
-    panel.show_point_ids_check.setChecked(False)
-    panel.show_external_labels_check.setChecked(False)
-    panel.show_profile_fill_check.setChecked(False)
-    panel.show_work_plane_axes_check.setChecked(False)
-    panel.continuous_polyline_check.setChecked(False)
     panel.set_mode("circle")
     panel.point_filter_combo.setCurrentIndex(
         panel.point_filter_combo.findData("free")
@@ -721,14 +1042,18 @@ def test_phase3_preferences_restore_without_persisting_session_state(tmp_path) -
     assert not restored.grid_visible
     assert restored.grid_snap
     assert restored.grid_spacing == 0.25
-    assert not restored.snap_midpoints
-    assert restored.screen_snap_tolerance == 13.0
-    assert restored.auto_merge_tolerance == 0.02
-    assert not restored.show_point_ids
-    assert not restored.show_external_labels
-    assert not restored.show_profile_fill
-    assert not restored.show_work_plane_axes
-    assert not restored.continuous_polyline
+    assert restored.snap_midpoints
+    assert restored.screen_snap_tolerance == 9.0
+    assert restored.auto_merge_tolerance == 1.0e-6
+    assert restored.show_point_ids
+    assert restored.show_external_labels
+    assert restored.show_profile_fill
+    assert restored.show_work_plane_axes
+    assert restored.continuous_polyline
+    assert not restored.end_polyline_on_close
+    assert restored.keep_tool_after_completion
+    assert restored.confirm_cascade_delete
+    assert restored.auto_constraints
     controller.undo()
     assert controller.snapshot().points == ()
 
@@ -737,7 +1062,7 @@ def test_phase3_preferences_restore_without_persisting_session_state(tmp_path) -
         settings=QSettings(str(path), QSettings.Format.IniFormat),
     )
     assert not reopened.grid_visible_check.isChecked()
-    assert reopened.snap_check.isChecked()
+    assert reopened._preferences.grid_snap
     assert reopened.mode == "polyline"
     assert reopened.point_filter_combo.currentData() == "all"
     assert reopened.controller.selected_ids == ()
@@ -956,33 +1281,30 @@ def test_curved_display_sampling_tracks_screen_chord_error() -> None:
         assert chord_error_pixels <= 0.75
 
 
-def test_phase3_auto_merge_and_drawing_behaviors(monkeypatch) -> None:
+def test_fixed_auto_merge_and_drawing_behaviors() -> None:
     _application()
     controller = SketchDraftController("phase-3-behaviors")
     panel = SketchEditorPanel(controller)
-    panel.auto_merge_tolerance_spin.setValue(0.1)
     existing = controller.add_point(0.0, 0.0)
-    assert panel._point_id_at(0.05, 0.0) == existing.id
+    assert panel._point_id_at(0.5e-6, 0.0) == existing.id
+    assert panel._point_id_at(2.0e-6, 0.0) is None
 
-    panel.continuous_polyline_check.setChecked(False)
     panel._point_from_viewport((0.0, 0.0, 0.0))
     panel._point_from_viewport((1.0, 0.0, 0.0))
     assert len(controller.snapshot().curves) == 1
-    assert panel._pending_points == []
-    assert panel._polyline_start_id is None
+    assert panel._pending_points == [(1.0, 0.0)]
+    assert panel._polyline_start_id is not None
     assert panel.mode == "polyline"
 
     rectangle_controller = SketchDraftController("phase-3-tool")
     rectangle_panel = SketchEditorPanel(rectangle_controller)
-    rectangle_panel.keep_tool_after_completion_check.setChecked(False)
     rectangle_panel.set_mode("rectangle")
     rectangle_panel._point_from_viewport((0.0, 0.0, 0.0))
     rectangle_panel._point_from_viewport((2.0, 1.0, 0.0))
-    assert rectangle_panel.mode == "select"
+    assert rectangle_panel.mode == "rectangle"
 
     close_controller = SketchDraftController("phase-3-close")
     close_panel = SketchEditorPanel(close_controller)
-    close_panel.end_polyline_on_close_check.setChecked(True)
     for point in (
         (0.0, 0.0, 0.0),
         (1.0, 0.0, 0.0),
@@ -991,62 +1313,8 @@ def test_phase3_auto_merge_and_drawing_behaviors(monkeypatch) -> None:
     ):
         close_panel._point_from_viewport(point)
     assert close_panel.mode == "polyline"
-    assert close_panel._pending_points == []
-    assert close_panel._polyline_start_id is None
-
-    continuing_controller = SketchDraftController("phase-3-continue-close")
-    continuing_panel = SketchEditorPanel(continuing_controller)
-    continuing_panel.continuous_polyline_check.setChecked(True)
-    continuing_panel.end_polyline_on_close_check.setChecked(False)
-    for point in (
-        (0.0, 0.0, 0.0),
-        (1.0, 0.0, 0.0),
-        (1.0, 1.0, 0.0),
-        (0.0, 0.0, 0.0),
-    ):
-        continuing_panel._point_from_viewport(point)
-    first_id = continuing_panel._polyline_first_id
-    assert continuing_panel.mode == "polyline"
-    assert continuing_panel._polyline_start_id == first_id
-    assert continuing_panel._pending_points == [(0.0, 0.0)]
-    continuing_panel._point_from_viewport((-1.0, 0.0, 0.0))
-    assert len(continuing_controller.snapshot().curves) == 4
-    assert continuing_panel._polyline_start_id != first_id
-
-    switch_controller = SketchDraftController("phase-3-switch-after-close")
-    switch_panel = SketchEditorPanel(switch_controller)
-    switch_panel.end_polyline_on_close_check.setChecked(True)
-    switch_panel.keep_tool_after_completion_check.setChecked(False)
-    for point in (
-        (0.0, 0.0, 0.0),
-        (1.0, 0.0, 0.0),
-        (1.0, 1.0, 0.0),
-        (0.0, 0.0, 0.0),
-    ):
-        switch_panel._point_from_viewport(point)
-    assert switch_panel.mode == "select"
-    assert switch_panel._pending_points == []
-    assert switch_panel._polyline_start_id is None
-
-    delete_controller = SketchDraftController("phase-3-delete")
-    start = delete_controller.add_point(0.0, 0.0)
-    shared = delete_controller.add_point(1.0, 0.0)
-    delete_controller.add_line(start.id, shared.id)
-    delete_controller.select_point(shared.id)
-    delete_panel = SketchEditorPanel(delete_controller)
-    delete_panel.confirm_cascade_delete_check.setChecked(False)
-    monkeypatch.setattr(
-        sketch_editor_panel_module.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("disabled cascade confirmation was shown")
-        ),
-    )
-    delete_panel.delete_selected()
-    assert shared.id not in {
-        point.id for point in delete_controller.snapshot().points
-    }
-    assert delete_controller.snapshot().curves == ()
+    assert close_panel._polyline_start_id == close_panel._polyline_first_id
+    assert close_panel._pending_points == [(0.0, 0.0)]
 
 
 def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:

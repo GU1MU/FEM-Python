@@ -27,7 +27,11 @@ from fem.application.results import (
     ResultCellKind,
     ResultValueLayout,
 )
-from fem.boundary.step import boundary_for_step, get_step
+from fem.boundary.step import (
+    boundary_for_step,
+    effective_step_boundaries,
+    get_step,
+)
 from fem.core._constraint_targets import (
     displacement_target_kind,
     resolve_displacement_node_ids,
@@ -525,6 +529,7 @@ class SketchDraftRenderData:
     snap_midpoints: tuple[tuple[float, float, float], ...] = ()
     snap_centers: tuple[tuple[float, float, float], ...] = ()
     geometry_revision: int = 0
+    constraint_status: str = "under_constrained"
     analytic_points: tuple[SketchPoint, ...] = ()
     analytic_curves: tuple[SketchCurve, ...] = ()
     constraint_overlays: tuple[SketchConstraintOverlay, ...] = ()
@@ -569,6 +574,14 @@ class SketchDraftRenderData:
             self.geometry_revision, int
         ):
             raise TypeError("sketch geometry revision must be an integer")
+        if self.constraint_status not in {
+            "under_constrained",
+            "fully_constrained",
+            "redundant",
+            "conflicting",
+            "failed",
+        }:
+            raise ValueError("invalid sketch constraint status")
         if any(type(point) is not SketchPoint for point in analytic_points):
             raise TypeError("analytic_points must contain SketchPoint values")
         if any(
@@ -616,6 +629,16 @@ class SketchDraftRenderData:
         object.__setattr__(self, "selected_ids", selected_ids)
         object.__setattr__(self, "snap_midpoints", snap_midpoints)
         object.__setattr__(self, "snap_centers", snap_centers)
+
+
+def _sketch_geometry_color(constraint_status: str) -> str:
+    return {
+        "under_constrained": "#1976a8",
+        "fully_constrained": "#2e7d32",
+        "redundant": "#ef6c00",
+        "conflicting": "#c62828",
+        "failed": "#c62828",
+    }[constraint_status]
 
 
 @dataclass(frozen=True, slots=True)
@@ -800,6 +823,26 @@ def _sketch_grid_polydata(
         dtype=float,
     )
     return grid, layout
+
+
+def _sketch_axis_local_endpoints(
+    layout: _WireGridLayout,
+    axis: int,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Keep sketch axes anchored to the work-plane origin as the grid moves."""
+
+    if axis not in {0, 1}:
+        raise ValueError("sketch axis must be 0 or 1")
+    center = np.asarray(layout.center[:2], dtype=float)
+    half_size = 0.5 * layout.plane_size
+    start = np.zeros(2, dtype=float)
+    end = np.zeros(2, dtype=float)
+    start[axis] = min(float(center[axis] - half_size), 0.0)
+    end[axis] = max(float(center[axis] + half_size), 0.0)
+    return (
+        tuple(float(value) for value in start),
+        tuple(float(value) for value in end),
+    )
 
 
 def _sketch_coordinate_label(
@@ -1200,6 +1243,10 @@ class FEMViewport(QWidget):
     sketchSnapConfirmed = Signal(object)
     sketchPointDragPreviewRequested = Signal(str, object)
     sketchPointDragCommitRequested = Signal(str, object)
+    sketchConstraintSelectionConfirmed = Signal()
+    sketchConstraintSelectionCancelled = Signal()
+    sketchDeleteRequested = Signal()
+    sketchContextMenuRequested = Signal(str, str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1347,6 +1394,9 @@ class FEMViewport(QWidget):
         self._sketch_authoring_preview_point: (
             tuple[float, float, float] | None
         ) = None
+        self._sketch_hover_entity: tuple[str, str] | None = None
+        self._sketch_constraint_selection_active = False
+        self._sketch_constraint_selection: tuple[tuple[str, str], ...] = ()
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(40)
@@ -1421,6 +1471,19 @@ class FEMViewport(QWidget):
         event_type = event.type()
         if event_type == QEvent.Type.KeyPress:
             if self._sketch_authoring_active:
+                if self._sketch_constraint_selection_active:
+                    if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                        self.sketchConstraintSelectionConfirmed.emit()
+                        return True
+                    if event.key() == Qt.Key.Key_Escape:
+                        self.sketchConstraintSelectionCancelled.emit()
+                        return True
+                if (
+                    event.key() == Qt.Key.Key_Delete
+                    and self._sketch_authoring_mode == "select"
+                ):
+                    self.sketchDeleteRequested.emit()
+                    return True
                 if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
                     if self.cancel_pending_sketch_interaction():
                         return True
@@ -1467,6 +1530,29 @@ class FEMViewport(QWidget):
                     return True
                 return False
             if self._sketch_authoring_active:
+                if (
+                    button == Qt.MouseButton.RightButton
+                    and self._sketch_authoring_mode == "select"
+                    and not self._sketch_constraint_selection_active
+                ):
+                    position = self._plotter_event_position(watched, event)
+                    vtk_x, vtk_y = self._qt_to_vtk_position(
+                        position.x(), position.y()
+                    )
+                    point_id = self._sketch_point_at(vtk_x, vtk_y)
+                    curve_id = (
+                        None
+                        if point_id is not None
+                        else self._sketch_curve_at(vtk_x, vtk_y)
+                    )
+                    entity_id = point_id or curve_id
+                    if entity_id is not None:
+                        self.sketchContextMenuRequested.emit(
+                            "point" if point_id is not None else "curve",
+                            entity_id,
+                            event.globalPosition().toPoint(),
+                        )
+                        return True
                 if button in {
                     Qt.MouseButton.MiddleButton,
                     Qt.MouseButton.RightButton,
@@ -1479,6 +1565,7 @@ class FEMViewport(QWidget):
                     self._sketch_drag_point_id = (
                         self._sketch_point_at(vtk_x, vtk_y)
                         if self._sketch_authoring_mode == "select"
+                        and not self._sketch_constraint_selection_active
                         else None
                     )
                     self._sketch_drag_moved = False
@@ -1518,6 +1605,23 @@ class FEMViewport(QWidget):
                     position.x(),
                     position.y(),
                 )
+                if self._sketch_authoring_mode in {"select", "trim"}:
+                    point_id = (
+                        self._sketch_point_at(vtk_x, vtk_y)
+                        if self._sketch_authoring_mode == "select"
+                        else None
+                    )
+                    curve_id = (
+                        None
+                        if point_id is not None
+                        else self._sketch_curve_at(vtk_x, vtk_y)
+                    )
+                    self._set_sketch_entity_hover(
+                        "point" if point_id is not None else "curve",
+                        point_id or curve_id,
+                    )
+                    self._set_sketch_authoring_preview_point(None)
+                    return True
                 point, _reason = self._sketch_work_plane_point_at(
                     vtk_x,
                     vtk_y,
@@ -1651,6 +1755,7 @@ class FEMViewport(QWidget):
             self._hover_timer.stop()
             if self._sketch_authoring_active:
                 self._set_sketch_authoring_preview_point(None)
+                self._set_sketch_entity_hover(None, None)
             if self._wire_authoring_active:
                 self._set_wire_authoring_hover(None)
             self._clear_preselection(render=True)
@@ -2021,6 +2126,9 @@ class FEMViewport(QWidget):
         self.set_sketch_reference_points(reference_points, render=False)
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
+        self._sketch_hover_entity = None
+        self._sketch_constraint_selection_active = False
+        self._sketch_constraint_selection = ()
         self._clear_preselection(render=False)
         self._remove_all_layers(render=False)
         self._show_sketch_draft(render=False, reset_camera=True)
@@ -2328,6 +2436,8 @@ class FEMViewport(QWidget):
         }:
             raise ValueError("unsupported sketch authoring mode")
         self._sketch_authoring_mode = normalized
+        self._set_sketch_authoring_preview_point(None)
+        self._set_sketch_entity_hover(None, None)
         self.cancel_pending_sketch_interaction()
 
     def set_sketch_grid(
@@ -2394,6 +2504,30 @@ class FEMViewport(QWidget):
         if self._sketch_authoring_active:
             self._show_sketch_authoring_hover(render=True)
 
+    def begin_sketch_constraint_selection(self) -> None:
+        self._sketch_constraint_selection_active = True
+        self._sketch_constraint_selection = ()
+        self._show_sketch_constraint_selection(render=True)
+
+    def set_sketch_constraint_selection(
+        self,
+        targets: Iterable[tuple[str, str]],
+    ) -> None:
+        normalized = tuple(
+            ("curve" if kind == "edge" else str(kind), str(entity_id))
+            for kind, entity_id in targets
+        )
+        if normalized == self._sketch_constraint_selection:
+            return
+        self._sketch_constraint_selection = normalized
+        if self._sketch_authoring_active:
+            self._show_sketch_constraint_selection(render=True)
+
+    def end_sketch_constraint_selection(self) -> None:
+        self._sketch_constraint_selection_active = False
+        self._sketch_constraint_selection = ()
+        self._show_sketch_constraint_selection(render=True)
+
     def set_sketch_inference_preview(self, kinds: Iterable[str]) -> None:
         """Update only transient inference labels, without rebuilding geometry."""
 
@@ -2406,6 +2540,9 @@ class FEMViewport(QWidget):
             self._show_sketch_authoring_hover(render=True)
 
     def cancel_pending_sketch_interaction(self) -> bool:
+        if self._sketch_constraint_selection_active:
+            self.sketchConstraintSelectionCancelled.emit()
+            return True
         if self._sketch_drag_point_id is not None:
             self._sketch_drag_point_id = None
             self._sketch_drag_moved = False
@@ -2441,6 +2578,9 @@ class FEMViewport(QWidget):
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
+            "sketch_entity_hover",
+            "sketch_constraint_selection_points",
+            "sketch_constraint_selection_curves",
             "sketch_constraint_overlays",
             "sketch_reference_surface",
             "sketch_support_face_highlight",
@@ -2459,6 +2599,9 @@ class FEMViewport(QWidget):
         self._sketch_drag_moved = False
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
+        self._sketch_hover_entity = None
+        self._sketch_constraint_selection_active = False
+        self._sketch_constraint_selection = ()
         self._clear_preselection(render=False)
         if render:
             self._render()
@@ -2510,12 +2653,114 @@ class FEMViewport(QWidget):
             if selection is not None:
                 self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
                     selection,
-                    color="#f5a623",
-                    line_width=6,
-                    point_size=15,
+                    color="#ffb300",
+                    line_width=8,
+                    point_size=14,
                     render_points_as_spheres=True,
-                    opacity=0.75,
+                    render_lines_as_tubes=True,
+                    opacity=1.0,
                     name="sketch_authoring_selection",
+                    reset_camera=False,
+                    pickable=False,
+                )
+        if render:
+            self._render()
+
+    def _set_sketch_entity_hover(
+        self,
+        kind: str | None,
+        entity_id: str | None,
+    ) -> None:
+        normalized = (
+            None
+            if kind is None or entity_id is None
+            else ("curve" if kind == "edge" else str(kind), str(entity_id))
+        )
+        if normalized == self._sketch_hover_entity:
+            return
+        self._sketch_hover_entity = normalized
+        self._show_sketch_entity_hover(render=True)
+
+    def _show_sketch_entity_hover(self, *, render: bool) -> None:
+        self._remove_actor("sketch_entity_hover")
+        data = self._sketch_draft_render_data
+        if (
+            data is not None
+            and self._sketch_hover_entity is not None
+            and not is_offscreen_environment()
+            and self._ensure_plotter()
+            and _pyvista is not None
+        ):
+            kind, entity_id = self._sketch_hover_entity
+            hover_data = replace(
+                data,
+                selected_kind=kind,
+                selected_id=entity_id,
+                selected_ids=(entity_id,),
+            )
+            coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+            geometry = self._sketch_selection_polydata(hover_data, coordinates)
+            if geometry is not None:
+                self._actors["sketch_entity_hover"] = self._plotter.add_mesh(
+                    geometry,
+                    color="#ffd54f",
+                    line_width=6,
+                    point_size=12,
+                    render_points_as_spheres=True,
+                    render_lines_as_tubes=True,
+                    opacity=0.95,
+                    name="sketch_entity_hover",
+                    reset_camera=False,
+                    pickable=False,
+                )
+        if render:
+            self._render()
+
+    def _show_sketch_constraint_selection(self, *, render: bool) -> None:
+        actor_names = {
+            "point": "sketch_constraint_selection_points",
+            "curve": "sketch_constraint_selection_curves",
+        }
+        for actor_name in actor_names.values():
+            self._remove_actor(actor_name)
+        data = self._sketch_draft_render_data
+        if (
+            data is not None
+            and self._sketch_constraint_selection
+            and not is_offscreen_environment()
+            and self._ensure_plotter()
+            and _pyvista is not None
+        ):
+            coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+            for kind, actor_name in actor_names.items():
+                ids = tuple(
+                    entity_id
+                    for entity_kind, entity_id in self._sketch_constraint_selection
+                    if entity_kind == kind
+                )
+                if not ids:
+                    continue
+                selection_data = replace(
+                    data,
+                    selected_kind=kind,
+                    selected_id=ids[0],
+                    selected_ids=ids,
+                )
+                geometry = self._sketch_selection_polydata(
+                    selection_data,
+                    coordinates,
+                )
+                if geometry is None:
+                    continue
+                self._actors[actor_name] = self._plotter.add_mesh(
+                    geometry,
+                    color="#ffb300",
+                    line_width=8,
+                    point_size=14,
+                    render_points_as_spheres=True,
+                    render_lines_as_tubes=True,
+                    opacity=1.0,
+                    name=actor_name,
                     reset_camera=False,
                     pickable=False,
                 )
@@ -2574,6 +2819,9 @@ class FEMViewport(QWidget):
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
+            "sketch_entity_hover",
+            "sketch_constraint_selection_points",
+            "sketch_constraint_selection_curves",
         ):
             self._remove_actor(name)
         if is_offscreen_environment():
@@ -2583,6 +2831,7 @@ class FEMViewport(QWidget):
         if not self._ensure_plotter() or _pyvista is None:
             return
         coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+        geometry_color = _sketch_geometry_color(data.constraint_status)
         grid, grid_layout = _sketch_grid_polydata(
             _pyvista,
             data.plane,
@@ -2599,16 +2848,14 @@ class FEMViewport(QWidget):
                 reset_camera=False,
                 pickable=False,
             )
-        center = np.asarray(grid_layout.center[:2], dtype=float)
         origin = np.asarray(data.plane.origin, dtype=float)
-        half_size = 0.5 * grid_layout.plane_size
         label_points = [origin]
         axis_labels = ["O"]
         for index in range(2) if self._sketch_show_work_plane_axes else ():
-            local_start = center.copy()
-            local_end = center.copy()
-            local_start[index] -= half_size
-            local_end[index] += half_size
+            local_start, local_end = _sketch_axis_local_endpoints(
+                grid_layout,
+                index,
+            )
             start = np.asarray(
                 data.plane.to_global(*local_start),
                 dtype=float,
@@ -2676,7 +2923,7 @@ class FEMViewport(QWidget):
             ).astype(np.int64)
             self._actors["sketch_draft_curves"] = self._plotter.add_mesh(
                 curves,
-                color="#173443",
+                color=geometry_color,
                 line_width=3,
                 name="sketch_draft_curves",
                 reset_camera=False,
@@ -2691,7 +2938,7 @@ class FEMViewport(QWidget):
             point_coordinates = coordinates[np.asarray(authoring_points)]
             self._actors["sketch_draft_points"] = self._plotter.add_mesh(
                 _pyvista.PolyData(point_coordinates),
-                color="#1976a8",
+                color=geometry_color,
                 point_size=10,
                 render_points_as_spheres=True,
                 name="sketch_draft_points",
@@ -2706,7 +2953,7 @@ class FEMViewport(QWidget):
                         point_size=0,
                         font_size=9,
                         shape=None,
-                        text_color="#1976a8",
+                        text_color=geometry_color,
                         name="sketch_draft_point_labels",
                         reset_camera=False,
                     )
@@ -2763,15 +3010,18 @@ class FEMViewport(QWidget):
         if selection is not None:
             self._actors["sketch_authoring_selection"] = self._plotter.add_mesh(
                 selection,
-                color="#f5a623",
-                line_width=6,
-                point_size=15,
+                color="#ffb300",
+                line_width=8,
+                point_size=14,
                 render_points_as_spheres=True,
-                opacity=0.75,
+                render_lines_as_tubes=True,
+                opacity=1.0,
                 name="sketch_authoring_selection",
                 reset_camera=False,
                 pickable=False,
             )
+        self._show_sketch_constraint_selection(render=False)
+        self._show_sketch_entity_hover(render=False)
         self._show_sketch_authoring_hover(render=False)
         if reset_camera:
             bounds = _sketch_camera_bounds(
@@ -2882,7 +3132,7 @@ class FEMViewport(QWidget):
         self._remove_actor("sketch_draft_curves")
         self._actors["sketch_draft_curves"] = self._plotter.add_mesh(
             polydata,
-            color="#173443",
+            color=_sketch_geometry_color(data.constraint_status),
             line_width=3,
             name="sketch_draft_curves",
             reset_camera=False,
@@ -3341,6 +3591,8 @@ class FEMViewport(QWidget):
             if point is None
             else tuple(float(value) for value in point)
         )
+        if normalized == self._sketch_authoring_preview_point:
+            return
         self._sketch_authoring_preview_point = normalized
         self._show_sketch_authoring_hover(render=True)
 
@@ -3392,8 +3644,8 @@ class FEMViewport(QWidget):
         self._actors["sketch_authoring_hover_outline"] = (
             self._plotter.add_mesh(
                 _pyvista.PolyData(label_point),
-                color="#173443",
-                point_size=24,
+                color="#e0a800",
+                point_size=14,
                 render_points_as_spheres=True,
                 name="sketch_authoring_hover_outline",
                 reset_camera=False,
@@ -3402,8 +3654,8 @@ class FEMViewport(QWidget):
         )
         self._actors["sketch_authoring_hover"] = self._plotter.add_mesh(
             _pyvista.PolyData(label_point),
-            color="#00e5ff",
-            point_size=16,
+            color="#ffd54f",
+            point_size=9,
             render_points_as_spheres=True,
             name="sketch_authoring_hover",
             reset_camera=False,
@@ -3442,7 +3694,7 @@ class FEMViewport(QWidget):
                 point_size=0,
                 font_size=11,
                 shape=None,
-                text_color="#00e5ff",
+                text_color="#a66a00",
                 name="sketch_authoring_hover_label",
                 reset_camera=False,
             )
@@ -3676,6 +3928,8 @@ class FEMViewport(QWidget):
         modifiers: Qt.KeyboardModifier = Qt.KeyboardModifier.NoModifier,
     ) -> None:
         if self._sketch_authoring_mode == "select":
+            self._sketch_hover_entity = None
+            self._show_sketch_entity_hover(render=False)
             point_id = self._sketch_point_at(x, y)
             if point_id is not None:
                 self.sketchDraftPointSelectionRequested.emit(point_id, modifiers)
@@ -3702,6 +3956,8 @@ class FEMViewport(QWidget):
             self.sketchAuthoringMissed.emit(reason or "point.ray")
             return
         if self._sketch_authoring_mode == "trim":
+            self._sketch_hover_entity = None
+            self._show_sketch_entity_hover(render=False)
             curve_id = self._sketch_curve_at(x, y)
             if curve_id is None:
                 self.sketchAuthoringMissed.emit("trim")
@@ -6130,18 +6386,10 @@ class FEMViewport(QWidget):
         constraint_label_points: dict[int, np.ndarray] = {}
         constraint_labels_by_node: dict[int, list[str]] = {}
         if settings.show_constraints:
-            boundary_definitions = list(
-                selected_definition.boundaries if selected_definition is not None else ()
+            boundary_definitions = effective_step_boundaries(
+                self._model,
+                selected_definition,
             )
-            initial_step = next(
-                (
-                    step for step in self._model.steps
-                    if step.name.lower() == "initial"
-                ),
-                None,
-            )
-            if initial_step is not None and initial_step is not selected_definition:
-                boundary_definitions = [*initial_step.boundaries, *boundary_definitions]
             constraints_by_target: dict[
                 tuple[str, str | int],
                 dict[int, float],

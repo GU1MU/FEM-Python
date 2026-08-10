@@ -106,7 +106,7 @@ def validate_model_structure(model: Any) -> None:
 
 
 def validate_analysis_step(model: Any, step: Any | None) -> None:
-    """Validate references and effective Initial boundaries for one Step."""
+    """Validate references and inherited boundaries effective for one Step."""
     if step is None:
         return
     _require_model_attributes(model)
@@ -565,19 +565,39 @@ def _validate_step_references(
 
 
 def _effective_step_boundaries(model: Any, step: Any) -> tuple[Any, ...]:
-    """Return the Initial boundaries inherited by one selected Step."""
-    initial = next(
+    """Return cumulative boundaries inherited through one selected Step."""
+    selected_index = next(
         (
-            candidate
-            for candidate in model.steps
-            if str(candidate.name).casefold() == "initial"
+            index
+            for index, candidate in enumerate(model.steps)
+            if candidate is step
         ),
         None,
     )
-    selected = tuple(getattr(step, "boundaries", ()))
-    if initial is None or initial is step:
-        return selected
-    return tuple(getattr(initial, "boundaries", ())) + selected
+    if selected_index is None:
+        selected_name = str(getattr(step, "name", ""))
+        selected_index = next(
+            (
+                index
+                for index, candidate in enumerate(model.steps)
+                if str(candidate.name) == selected_name
+            ),
+            None,
+        )
+    if selected_index is None:
+        return (
+            *(
+                boundary
+                for candidate in model.steps
+                for boundary in getattr(candidate, "boundaries", ())
+            ),
+            *getattr(step, "boundaries", ()),
+        )
+    return tuple(
+        boundary
+        for candidate in model.steps[: selected_index + 1]
+        for boundary in getattr(candidate, "boundaries", ())
+    )
 
 
 def _model_spatial_dimension(

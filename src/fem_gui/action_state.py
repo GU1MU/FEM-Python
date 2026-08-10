@@ -245,7 +245,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_filter", "select_geometry_point", checkable=True, group="selection", argument="element", checked_only=True),
     _d(GuiActionKey.SELECT_EDGE, "选择边", "_set_selection_filter", "select_geometry_edge", checkable=True, group="selection", argument="edge", checked_only=True),
     _d(GuiActionKey.SELECT_FACE, "选择面", "_set_selection_filter", "select_geometry_face", checkable=True, group="selection", argument="face", checked_only=True),
-    _d(GuiActionKey.SELECT_BODY, "选择体", "_set_selection_filter", "select_geometry_body", checkable=True, group="selection", argument="body", checked_only=True),
+    _d(GuiActionKey.SELECT_BODY, "选择部件", "_set_selection_filter", "select_geometry_body", checkable=True, group="selection", argument="body", checked_only=True),
     _d(GuiActionKey.CLEAR_SELECTION, "清除选择", "clear_selection", "clear_selection"),
     _d(GuiActionKey.SELECTED_INFO, "查看所选信息", "show_selected_information", "inspect"),
 )

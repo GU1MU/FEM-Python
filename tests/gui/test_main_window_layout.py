@@ -193,6 +193,13 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
         ).findChildren(QToolButton)
         if button.defaultAction() is not None
     }
+    project_action_order = [
+        button.defaultAction()
+        for button in window.ribbon.stack.widget(
+            tab_names.index("项目")
+        ).findChildren(QToolButton)
+        if button.defaultAction() is not None
+    ]
     result_actions = {
         button.defaultAction()
         for button in window.ribbon.stack.widget(
@@ -211,6 +218,9 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_vtk"] not in project_actions
     assert window.actions["model_info"] in project_actions
     assert window.actions["submit_job"] not in project_actions
+    assert project_action_order.index(window.actions["open_result"]) < (
+        project_action_order.index(window.actions["save_result"])
+    )
     project_group_titles = {
         label.text()
         for label in window.ribbon.stack.widget(
@@ -479,7 +489,7 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
     assert geometry_face.defaultAction().isEnabled()
     assert model_point is not None and not model_point.isHidden()
     assert not window.actions["select_element"].isEnabled()
-    assert window.actions["select_face"].toolTip() == "选择几何面"
+    assert window.actions["select_face"].toolTip() == "选择面"
 
     window.ribbon.set_current("模型")
     assert not geometry_face.isHidden()

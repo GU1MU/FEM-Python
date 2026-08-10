@@ -16,9 +16,20 @@ from fem.application import (
     describe_model_capabilities,
 )
 from fem.application.results import project_output_requests
-from fem.core.model import AnalysisStep, GravityLoad, OutputRequest
+from fem.core.model import (
+    AnalysisStep,
+    DisplacementConstraint,
+    GravityLoad,
+    OutputRequest,
+)
 from fem.elements import BeamOrientation
-from fem_gui.widgets.model_tree import ModelTree, ROLE_KEY, ROLE_KIND
+from fem_gui.widgets.model_tree import (
+    ModelTree,
+    ROLE_INHERITED,
+    ROLE_KEY,
+    ROLE_KIND,
+)
+from tests.helpers.model_builders import make_two_step_static_pull_truss_model
 
 
 def _application() -> QApplication:
@@ -139,6 +150,7 @@ def test_boundary_and_load_context_menus_emit_delete_request(
         item
         for item in _items(tree)
         if item.data(0, ROLE_KIND) == "boundary"
+        and not item.data(0, ROLE_INHERITED)
     )
     load = next(
         item
@@ -183,6 +195,59 @@ def test_boundary_and_load_context_menus_emit_delete_request(
 
     assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
     assert deleted[-1] == ("cload", load.data(0, ROLE_KEY))
+
+
+def test_runnable_steps_show_boundaries_inherited_from_every_previous_step():
+    _application()
+    model = make_two_step_static_pull_truss_model()
+    model.steps[1].boundaries = (
+        DisplacementConstraint("TIP", 1, 1, 0.125),
+    )
+    tree = ModelTree()
+    tree.set_model(model)
+    step = next(
+        item
+        for item in _items(tree)
+        if item.data(0, ROLE_KIND) == "step" and item.text(0) == "pull2"
+    )
+    boundary_root = next(
+        step.child(index)
+        for index in range(step.childCount())
+        if step.child(index).text(0).startswith("边界条件")
+    )
+
+    assert boundary_root.text(0) == "边界条件 (3)"
+    inherited = tuple(
+        boundary_root.child(index)
+        for index in range(boundary_root.childCount())
+    )
+    assert [item.text(0) for item in inherited] == [
+        "位移约束 1",
+        "位移约束 2",
+        "位移约束 1",
+    ]
+    assert all(item.data(0, ROLE_INHERITED) is True for item in inherited)
+    assert all(
+        item.data(0, ROLE_KIND) == "inherited_boundary"
+        for item in inherited
+    )
+    assert [item.data(0, ROLE_KEY) for item in inherited] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+    ]
+    assert all(not item.toolTip(0) for item in inherited)
+
+    edited = []
+    informed = []
+    tree.editRequested.connect(lambda kind, key: edited.append((kind, key)))
+    tree.informationRequested.connect(
+        lambda kind, key: informed.append((kind, key))
+    )
+    tree._on_double_clicked(inherited[0])
+
+    assert edited == []
+    assert informed == [("boundary", (0, 0))]
 
 
 def test_line_load_is_a_regular_load_tree_item():

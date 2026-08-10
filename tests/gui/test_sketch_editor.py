@@ -6,7 +6,9 @@ from fem.geometry import (
     LogicalEntityRef,
     SketchExternalReference,
     SketchExternalReferenceType,
+    SketchHorizontalConstraint,
     SketchReferencePoint,
+    SketchVerticalConstraint,
 )
 from fem_gui.sketch_editor import (
     SketchDraftController,
@@ -46,14 +48,23 @@ def test_rectangle_is_one_undo_command_and_has_profile() -> None:
 
     assert len(controller.snapshot().points) == 4
     assert len(controller.snapshot().curves) == 4
+    assert tuple(type(item) for item in controller.constraints) == (
+        SketchHorizontalConstraint,
+        SketchVerticalConstraint,
+        SketchHorizontalConstraint,
+        SketchVerticalConstraint,
+    )
+    assert all(item.source == "inferred" for item in controller.constraints)
     assert controller.can_finish
     assert len(controller.profiles) == 1
 
     controller.undo()
     assert controller.snapshot().points == ()
     assert controller.snapshot().curves == ()
+    assert controller.constraints == ()
     controller.redo()
     assert len(controller.snapshot().curves) == 4
+    assert len(controller.constraints) == 4
 
 
 def test_selection_is_transient_and_does_not_change_history() -> None:

@@ -987,12 +987,46 @@ class SketchDraftController:
             SketchLine(curve_names[2], ids[2], ids[3]),
             SketchLine(curve_names[3], ids[3], ids[0]),
         )
+        used_constraint_ids = {
+            constraint_id.casefold() for constraint_id in self._constraints
+        }
+
+        def next_constraint_id() -> str:
+            index = 1
+            while f"C{index}".casefold() in used_constraint_ids:
+                index += 1
+            constraint_id = f"C{index}"
+            used_constraint_ids.add(constraint_id.casefold())
+            return constraint_id
+
+        rectangle_constraints = (
+            SketchHorizontalConstraint(
+                next_constraint_id(), curve_names[0], source="inferred"
+            ),
+            SketchVerticalConstraint(
+                next_constraint_id(), curve_names[1], source="inferred"
+            ),
+            SketchHorizontalConstraint(
+                next_constraint_id(), curve_names[2], source="inferred"
+            ),
+            SketchVerticalConstraint(
+                next_constraint_id(), curve_names[3], source="inferred"
+            ),
+        )
 
         def apply() -> None:
             for item in (*points, *lines):
                 self._assert_new_id(item.id)
             self._points.update({item.id: item for item in points})
             self._curves.update({item.id: item for item in lines})
+            validate_sketch_constraints(
+                (*self._constraints.values(), *rectangle_constraints),
+                self._points,
+                tuple(self._curves.values()),
+            )
+            self._constraints.update(
+                {item.id: item for item in rectangle_constraints}
+            )
             for point, reference_point in zip(points, references, strict=True):
                 if reference_point is not None:
                     self._points[point.id] = SketchPoint(

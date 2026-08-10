@@ -107,6 +107,7 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
     host.show()
+    host.set_drawer_open(True, animated=False)
     application.processEvents()
     application.processEvents()
 
@@ -168,6 +169,7 @@ def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
     host.show()
+    host.set_drawer_open(True, animated=False)
     application.processEvents()
 
     editor = host.agent_chat_drawer.input
@@ -210,6 +212,7 @@ def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
     host.show()
+    host.set_drawer_open(True, animated=False)
     application.processEvents()
 
     editor = host.agent_chat_drawer.input
@@ -399,6 +402,9 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     assert host.layout().indexOf(host.agent_chat_drawer) == -1
     assert host.agent_chat_drawer.parentWidget() is host
     assert viewport.parentWidget() is host
+    assert not host.drawer_is_open
+    assert host.agent_chat_drawer.isHidden()
+    assert host.chat_launcher.isVisible()
 
     host.set_drawer_open(False, animated=False)
     assert host.agent_chat_drawer.isHidden()
@@ -610,6 +616,7 @@ def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
     host = ModelViewportOverlayHost(viewport)
     host.resize(680, 420)
     host.show()
+    host.set_drawer_open(True, animated=False)
     application.processEvents()
 
     inside = QPoint(host.width() - 20, 90)
@@ -700,6 +707,7 @@ def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
     host = ModelViewportOverlayHost(viewport)
     host.resize(600, 400)
     host.show()
+    host.set_drawer_open(True, animated=False)
     application.processEvents()
 
     drawer = host.agent_chat_drawer

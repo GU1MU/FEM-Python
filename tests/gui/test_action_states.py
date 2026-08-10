@@ -85,9 +85,9 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     window = FEMMainWindow()
     assert window.actions["open"].isEnabled()
     assert not window.actions["geometry_create"].isEnabled()
-    assert "请先新建模型" in window.actions["geometry_create"].toolTip()
+    assert window.actions["geometry_create"].toolTip() == "新建部件"
     assert not window.actions["geometry_sketch"].isEnabled()
-    assert "请先新建模型" in window.actions["geometry_sketch"].toolTip()
+    assert window.actions["geometry_sketch"].toolTip() == "新建草图"
     assert not window.actions["material_manager"].isEnabled()
     assert not window.actions["geometry_undo"].isEnabled()
     assert not window.actions["geometry_delete"].isEnabled()
@@ -312,18 +312,18 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
     window.close()
 
 
-def test_every_disabled_action_explains_why_it_is_unavailable():
+def test_every_disabled_action_keeps_its_plain_command_tooltip():
     _application()
     window = FEMMainWindow()
 
-    unexplained = [
+    decorated = [
         name
         for name, action in window.actions.items()
         if not action.isEnabled()
-        and action.toolTip().strip() == action.text().strip()
+        and action.toolTip().strip() != action.text().strip()
     ]
 
-    assert unexplained == []
+    assert decorated == []
     window.close()
 
 
@@ -352,10 +352,7 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     window._update_action_states()
 
     assert not window.actions["load_create"].isEnabled()
-    assert "[step.reference.invalid]" in window.actions["load_create"].toolTip()
-    assert "请选择当前模型中存在的同类命名区域" in (
-        window.actions["load_create"].toolTip()
-    )
+    assert window.actions["load_create"].toolTip() == "载荷边界条件"
     window.close()
 
 
@@ -493,9 +490,7 @@ def test_truss_member_policy_disables_only_local_mesh_control():
     assert window.actions["mesh_generate"].isEnabled()
     assert window.actions["mesh_controls"].isEnabled()
     assert not window.actions["mesh_local_control"].isEnabled()
-    assert "固定生成一个单元" in window.actions[
-        "mesh_local_control"
-    ].toolTip()
+    assert window.actions["mesh_local_control"].toolTip() == "局部网格"
 
     window._apply_session_delta(
         window.session.replace_mesh_settings(
@@ -510,7 +505,7 @@ def test_truss_member_policy_disables_only_local_mesh_control():
         )
     )
     assert not window.actions["mesh_generate"].isEnabled()
-    assert "删除局部尺寸" in window.actions["mesh_generate"].toolTip()
+    assert window.actions["mesh_generate"].toolTip() == "生成网格"
     assert window.actions["mesh_controls"].isEnabled()
     window.close()
 

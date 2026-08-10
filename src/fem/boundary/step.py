@@ -61,7 +61,7 @@ def boundary_for_step(model: Any, step: str | int | AnalysisStep | None = None) 
         if elem_lookup_cache is None:
             elem_lookup_cache = {int(elem.id): elem for elem in model.mesh.elements}
         return elem_lookup_cache
-    for constraint in _step_boundaries(model, selected_step):
+    for constraint in effective_step_boundaries(model, selected_step):
         for node_id in resolve_displacement_node_ids(model, constraint):
             for component in range(
                 constraint.first_component,
@@ -318,15 +318,56 @@ def _validated_line_load_vector(vector: Any) -> tuple[float, float, float]:
     return tuple(float(value) for value in values)
 
 
-def _step_boundaries(model: Any, step: AnalysisStep) -> tuple:
-    """Return initial boundaries inherited by the selected step."""
-    initial = next(
-        (candidate for candidate in model.steps if candidate.name.lower() == "initial"),
+def effective_step_boundaries(
+    model: Any,
+    step: str | int | AnalysisStep | None = None,
+) -> tuple[Any, ...]:
+    """Return cumulative displacement boundaries through one analysis step.
+
+    Every step inherits displacement boundaries from all preceding steps in
+    model order.  Keeping this projection public lets solver and UI consumers
+    present the same effective definitions.
+    """
+    selected_step = (
+        step
+        if step is not None
+        and any(candidate is step for candidate in model.steps)
+        else get_step(model, step)
+    )
+    if selected_step is None:
+        return ()
+    selected_index = next(
+        (
+            index
+            for index, candidate in enumerate(model.steps)
+            if candidate is selected_step
+        ),
         None,
     )
-    if initial is None or initial is step:
-        return tuple(step.boundaries)
-    return tuple(initial.boundaries) + tuple(step.boundaries)
+    if selected_index is None:
+        selected_name = str(selected_step.name)
+        selected_index = next(
+            (
+                index
+                for index, candidate in enumerate(model.steps)
+                if str(candidate.name) == selected_name
+            ),
+            None,
+        )
+    if selected_index is None:
+        return (
+            *(
+                boundary
+                for candidate in model.steps
+                for boundary in candidate.boundaries
+            ),
+            *selected_step.boundaries,
+        )
+    return tuple(
+        boundary
+        for candidate in model.steps[: selected_index + 1]
+        for boundary in candidate.boundaries
+    )
 
 
 def _pressure_vector(

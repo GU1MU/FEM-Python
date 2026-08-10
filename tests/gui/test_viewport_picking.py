@@ -33,6 +33,7 @@ from fem_gui.widgets.viewport import (
     _geometry_point_polydata,
     _geometry_surface_polydata,
     _line_only_polydata,
+    _sketch_geometry_color,
     _wire_coordinate_label,
 )
 
@@ -170,6 +171,55 @@ def test_empty_sketch_shows_xy_axes_origin_and_cursor_coordinates(
     assert "sketch_work_plane_axis_labels" in viewport._actors
     assert "sketch_authoring_hover" in viewport._actors
     assert "sketch_authoring_hover_label" in viewport._actors
+    hover_property = viewport._actors["sketch_authoring_hover"].GetProperty()
+    assert hover_property.GetPointSize() == 9.0
+    assert hover_property.GetColor() == pytest.approx((1.0, 0.8353, 0.3098), abs=1e-3)
+    plotter.close()
+    viewport.close()
+
+
+def test_sketch_constraint_state_selection_and_hover_have_distinct_colors(
+    monkeypatch,
+) -> None:
+    _application()
+    plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
+    viewport = FEMViewport()
+    viewport._plotter = plotter
+    viewport._ensure_plotter = lambda: True
+    viewport._sketch_authoring_active = True
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        ((0.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+        ("P1", "P2"),
+        ((0, 1),),
+        ("L1",),
+        constraint_status="fully_constrained",
+    )
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport_module, "is_offscreen_environment", lambda: False)
+
+    viewport._show_sketch_draft(render=False)
+    assert _sketch_geometry_color("under_constrained") == "#1976a8"
+    assert _sketch_geometry_color("fully_constrained") == "#2e7d32"
+    assert viewport._actors["sketch_draft_curves"].GetProperty().GetColor() == pytest.approx(
+        (0.1804, 0.4902, 0.1961), abs=1e-3
+    )
+
+    viewport._set_sketch_entity_hover("curve", "L1")
+    hover = viewport._actors["sketch_entity_hover"].GetProperty()
+    assert hover.GetLineWidth() == 6.0
+    assert hover.GetColor() == pytest.approx((1.0, 0.8353, 0.3098), abs=1e-3)
+
+    viewport.update_sketch_selection("curve", ("L1",))
+    selected = viewport._actors["sketch_authoring_selection"].GetProperty()
+    assert selected.GetLineWidth() == 8.0
+    assert selected.GetColor() == pytest.approx((1.0, 0.7020, 0.0), abs=1e-3)
+
+    viewport.begin_sketch_constraint_selection()
+    viewport.set_sketch_constraint_selection(
+        (("point", "P1"), ("curve", "L1"))
+    )
+    assert "sketch_constraint_selection_points" in viewport._actors
+    assert "sketch_constraint_selection_curves" in viewport._actors
     plotter.close()
     viewport.close()
 

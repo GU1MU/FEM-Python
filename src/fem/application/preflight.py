@@ -181,7 +181,7 @@ def _evaluate_static_preflight(
                     subject=report_step_name,
                     path=("steps", report_step_name),
                     remediation=(
-                        "请修复当前分析步及其继承的 Initial 边界引用。"
+                        "请修复当前分析步及其继承的前序分析步边界引用。"
                     ),
                 )
             )
@@ -241,7 +241,7 @@ def _evaluate_static_preflight(
                             report_step_name,
                             "boundaries",
                         ),
-                        remediation="请为当前分析步或 Initial 步添加位移约束。",
+                        remediation="请为当前分析步或任一前序分析步添加位移约束。",
                     )
                 )
 

@@ -3272,8 +3272,8 @@ class FEMMainWindow(QMainWindow):
                     "open_project",
                     "save_project",
                     "open",
-                    "save_result",
                     "open_result",
+                    "save_result",
                     "model_info",
                 ),
                 ("new_native", "open"),
@@ -4235,17 +4235,12 @@ class FEMMainWindow(QMainWindow):
             f"有限元分析 — {name} [{source_label}]{dirty_marker}"
         )
 
-    def _set_action_available(self, name: str, available: bool, reason: str) -> None:
-        """Keep disabled workflow commands explainable instead of silently grey."""
+    def _set_action_available(self, name: str, available: bool, _reason: str) -> None:
+        """Apply availability while keeping the command's plain label."""
         action = self.actions[name]
         action.setEnabled(bool(available))
-        if available:
-            action.setToolTip(action.text())
-            action.setStatusTip(action.text())
-            return
-        message = str(reason).strip() or "当前状态不可用"
-        action.setToolTip(f"{action.text()}（{message}）")
-        action.setStatusTip(message)
+        action.setToolTip(action.text())
+        action.setStatusTip(action.text())
 
     def start_wire_geometry(self) -> None:
         """Start a detached Wire draft from the Geometry ribbon."""
@@ -4575,6 +4570,7 @@ class FEMMainWindow(QMainWindow):
             target_body_id=launch.workplane.target_body_id,
         )
         self.ribbon.set_current("几何")
+        self._schedule_viewport_fit()
         self.status_panel.set_state(
             "面草图编辑已启动；完成闭合材料轮廓后选择“创建”",
             0,
@@ -5026,6 +5022,7 @@ class FEMMainWindow(QMainWindow):
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         self.ribbon.set_current("几何")
         self.viewport.set_view("top")
+        self._schedule_viewport_fit()
         self.status_panel.set_state(
             "二维草图编辑已启动，请在 XY 工作平面绘制闭合轮廓",
             0,
@@ -5781,6 +5778,7 @@ class FEMMainWindow(QMainWindow):
                     topological_dimension=2,
                 )
             )
+        self._schedule_viewport_fit()
         self.status_panel.set_state(
             "请在只读目标的 XY 平面上绘制闭合工具轮廓",
             0,
@@ -11242,29 +11240,25 @@ class FEMMainWindow(QMainWindow):
             action.setChecked(selection_filter == active_filter)
         labels = (
             {
-                "point": "选择几何点",
-                "element": "几何选择空间不支持单元",
-                "edge": "选择几何边",
-                "face": "选择几何面",
-                "body": "选择几何体",
+                "point": "选择点",
+                "element": "选择单元",
+                "edge": "选择边",
+                "face": "选择面",
+                "body": "选择部件",
             }
             if self._selection_context.space == "geometry"
             else {
-                "point": "选择节点",
-                "element": "选择有限元单元",
-                "edge": "选择网格拓扑边",
-                "face": "选择网格拓扑面",
+                "point": "选择点",
+                "element": "选择单元",
+                "edge": "选择边",
+                "face": "选择面",
                 "body": "选择部件",
             }
         )
         for selection_filter, label in labels.items():
             action = self.actions[self._selection_action_name(selection_filter)]
-            if action.isEnabled():
-                action.setToolTip(label)
-                action.setStatusTip(label)
-            else:
-                reason = action.statusTip()
-                action.setToolTip(f"{label}（{reason}）")
+            action.setToolTip(label)
+            action.setStatusTip(label)
 
     def _set_selection_mode(self, mode: str) -> None:
         normalized = "element" if mode == "element" else "node"

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.core.model import FEMModel, GravityLoad
+from fem.core.model import DisplacementConstraint, FEMModel, GravityLoad
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -22,6 +22,7 @@ from tests.helpers.mesh_builders import (
     make_selection_quad_mesh,
 )
 from tests.helpers.model_builders import make_static_pull_truss_model
+from tests.helpers.model_builders import make_two_step_static_pull_truss_model
 
 
 def _application() -> QApplication:
@@ -56,9 +57,14 @@ class _Plotter:
         self.render_count = 0
         self.camera = camera
         self.window_size = (800, 400)
+        self.mesh_calls = []
 
     def render(self) -> None:
         self.render_count += 1
+
+    def add_mesh(self, dataset, **kwargs):
+        self.mesh_calls.append((dataset, kwargs))
+        return _GravityActor()
 
 
 class _GravityActor:
@@ -182,6 +188,51 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
     )
     assert viewport._boundary_cache == {}
     assert viewport._beam_frame_cache == {}
+
+
+def test_runnable_step_previews_constraints_from_previous_step(monkeypatch):
+    _application()
+    monkeypatch.setattr(
+        viewport_module,
+        "_pyvista",
+        pytest.importorskip("pyvista"),
+    )
+    model = make_two_step_static_pull_truss_model()
+    model.steps[0].boundaries = ()
+    model.steps[1].boundaries = (
+        DisplacementConstraint("FIXED", 1, 3, 0.0),
+    )
+    geometry = build_model_geometry(model)
+    viewport = FEMViewport()
+    viewport.set_model(
+        model,
+        geometry,
+        refresh_symbols=False,
+        render=False,
+    )
+    plotter = _Plotter(_Camera(scale=1.0))
+    viewport._plotter = plotter
+    viewport.set_symbol_settings(
+        SymbolSettings(
+            step_name="pull2",
+            show_constraints=True,
+            show_nodal_loads=False,
+            show_edge_loads=False,
+            show_surface_loads=False,
+            show_line_loads=False,
+        ),
+        refresh=False,
+    )
+
+    viewport.show_boundary_and_loads("pull2", render=False)
+
+    constraint_calls = [
+        (dataset, options)
+        for dataset, options in plotter.mesh_calls
+        if options.get("name") == "constraints"
+    ]
+    assert len(constraint_calls) == 1
+    assert constraint_calls[0][0].n_points > 0
 
 
 def test_gravity_uses_one_centered_yellow_direction_arrow(monkeypatch):

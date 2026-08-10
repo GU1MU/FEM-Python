@@ -225,7 +225,7 @@ def solve_status_text(result: SketchSolveResult) -> str:
         "conflicting": "约束冲突",
         "failed": "约束求解失败",
     }
-    text = f"{labels[result.status]}；剩余自由度：{result.remaining_dof}"
+    text = labels[result.status]
     if result.redundant_constraint_ids:
         text += "；冗余：" + "、".join(result.redundant_constraint_ids)
     if result.conflicting_constraint_ids:
