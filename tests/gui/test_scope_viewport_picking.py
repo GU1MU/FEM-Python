@@ -95,6 +95,7 @@ def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:
         ("mesh_edge", 1),
         ("mesh_face", 1),
         ("mesh_element", 20),
+        ("mesh_body", 30),
     ):
         viewport._submit_pick(
             PickHit(
@@ -111,6 +112,7 @@ def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:
         edge,
         face,
         MeshEntityRef.element(20),
+        MeshEntityRef.element(30),
     ]
     viewport.close()
 

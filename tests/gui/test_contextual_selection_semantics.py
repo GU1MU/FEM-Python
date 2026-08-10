@@ -1,0 +1,271 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication
+
+from fem.application import MeshEntityRef
+from fem.application.definitions import mesh_entity_ref_sort_key
+from fem.application.native_scope_materialization import (
+    NATIVE_PART_OWNERSHIP_KEY,
+    NATIVE_SCOPE_CATALOG_KEY,
+)
+from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.core.model import FEMModel
+from fem_gui.main_window import FEMMainWindow
+from fem_gui.scope_selection import build_mesh_selection_topology
+from fem_gui.visualization.model_adapter import build_model_geometry
+
+
+def _application() -> QApplication:
+    return QApplication.instance() or QApplication([])
+
+
+def _two_imported_parts_model(*, reverse: bool = False) -> FEMModel:
+    nodes = [
+        Node2D(1, 0.0, 0.0),
+        Node2D(2, 1.0, 0.0),
+        Node2D(3, 2.0, 0.0),
+        Node2D(4, 0.0, 1.0),
+        Node2D(5, 1.0, 1.0),
+        Node2D(6, 2.0, 1.0),
+        Node2D(11, 10.0, 0.0),
+        Node2D(12, 11.0, 0.0),
+        Node2D(13, 12.0, 0.0),
+        Node2D(14, 10.0, 1.0),
+        Node2D(15, 11.0, 1.0),
+        Node2D(16, 12.0, 1.0),
+    ]
+    elements = [
+        Element2D(1, [1, 2, 5, 4], type="Quad4"),
+        Element2D(2, [2, 3, 6, 5], type="Quad4"),
+        Element2D(10, [11, 12, 15, 14], type="Quad4"),
+        Element2D(11, [12, 13, 16, 15], type="Quad4"),
+    ]
+    return FEMModel(
+        Mesh2D(
+            list(reversed(nodes)) if reverse else nodes,
+            list(reversed(elements)) if reverse else elements,
+        )
+    )
+
+
+def test_imported_mesh_topology_has_stable_parts_and_whole_edges() -> None:
+    first = build_mesh_selection_topology(_two_imported_parts_model())
+    repeated = build_mesh_selection_topology(
+        _two_imported_parts_model(reverse=True)
+    )
+
+    assert first.part_elements == repeated.part_elements
+    assert first.edge_expansions == repeated.edge_expansions
+    assert {
+        part_id: tuple(reference.element_id for reference in references)
+        for part_id, references in first.part_elements.items()
+    } == {"P1": (1, 2), "P2": (10, 11)}
+
+    p2_body = first.expand("body", MeshEntityRef.element(10))
+    assert tuple(reference.element_id for reference in p2_body) == (10, 11)
+    assert {reference.part_id for reference in p2_body} == {"P2"}
+
+    whole_edge = next(
+        group
+        for group in set(first.edge_expansions.values())
+        if len(group) == 2
+        and {reference.part_id for reference in group} == {"P1"}
+    )
+    assert first.expand("edge", whole_edge[-1]) == whole_edge
+
+
+def test_native_mesh_topology_uses_exact_catalog_and_numeric_part_order() -> None:
+    model = _two_imported_parts_model()
+    model.metadata[NATIVE_PART_OWNERSHIP_KEY] = {
+        "P2": {
+            "node_ids": (1, 2, 3, 4, 5, 6),
+            "element_ids": (1, 2),
+        },
+        "P10": {
+            "node_ids": (11, 12, 13, 14, 15, 16),
+            "element_ids": (10, 11),
+        },
+    }
+    model.metadata[NATIVE_SCOPE_CATALOG_KEY] = {
+        "edge:P2/bottom": {
+            "kind": "edge",
+            "node_ids": (1, 2, 3),
+            "element_ids": (1, 2),
+            "edges": ((1, 0, (1, 2)), (2, 0, (2, 3))),
+            "faces": (),
+        },
+        "edge:P10/bottom": {
+            "kind": "edge",
+            "node_ids": (11, 12, 13),
+            "element_ids": (10, 11),
+            "edges": ((10, 0, (11, 12)), (11, 0, (12, 13))),
+            "faces": (),
+        },
+        "face:P2/domain": {
+            "kind": "face",
+            "node_ids": (1, 2, 3, 4, 5, 6),
+            "element_ids": (1, 2),
+            "edges": (),
+            "faces": (),
+        },
+        "face:P10/domain": {
+            "kind": "face",
+            "node_ids": (11, 12, 13, 14, 15, 16),
+            "element_ids": (10, 11),
+            "edges": (),
+            "faces": (),
+        },
+    }
+
+    topology = build_mesh_selection_topology(model)
+
+    assert tuple(topology.part_elements) == ("P2", "P10")
+    exact = topology.expand(
+        "edge",
+        MeshEntityRef.edge(11, 0, (12, 13)),
+    )
+    assert tuple(reference.element_id for reference in exact) == (10, 11)
+    assert {reference.part_id for reference in exact} == {"P10"}
+    exact_face = topology.expand("face", MeshEntityRef.element(11))
+    assert tuple(reference.element_id for reference in exact_face) == (10, 11)
+    assert {reference.part_id for reference in exact_face} == {"P10"}
+    ordered = sorted(
+        (
+            MeshEntityRef.element(10, part_id="P10"),
+            MeshEntityRef.element(1, part_id="P2"),
+        ),
+        key=mesh_entity_ref_sort_key,
+    )
+    assert [reference.part_id for reference in ordered] == ["P2", "P10"]
+
+
+def test_mesh_filters_share_mesh_reference_collection_and_group_toggle(
+    monkeypatch,
+) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("selection-semantics.inp"),
+        (model, build_model_geometry(model)),
+    )
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: False,
+    )
+
+    window._set_selection_filter("point")
+    window._on_mesh_scope_entity_pick(MeshEntityRef.node(1))
+    assert window._selected_mesh_scope_refs == {
+        MeshEntityRef.node(1, part_id="P1")
+    }
+    assert window.selection.node_id is None
+    window._on_viewport_pick_missed("mesh_node")
+    assert not window._selected_mesh_scope_refs
+    window._on_mesh_scope_entity_pick(MeshEntityRef.node(1))
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: True,
+    )
+    window._on_viewport_pick_missed("mesh_node")
+    assert window._selected_mesh_scope_refs == {
+        MeshEntityRef.node(1, part_id="P1")
+    }
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: False,
+    )
+
+    window._set_selection_filter("element")
+    assert not window._selected_mesh_scope_refs
+    window._on_mesh_scope_entity_pick(MeshEntityRef.element(1))
+    assert window._selected_mesh_scope_refs == {
+        MeshEntityRef.element(1, part_id="P1")
+    }
+    assert window.selection.element_id is None
+
+    window._set_selection_filter("edge")
+    topology = window._mesh_selection_topology()
+    whole_edge = next(
+        group
+        for group in set(topology.edge_expansions.values())
+        if len(group) == 2
+    )
+    window._on_mesh_scope_entity_pick(whole_edge[0])
+    assert window._selected_mesh_scope_refs == set(whole_edge)
+    assert window.status_panel.object_label.text() == "对象：已选择 1 个拓扑边"
+
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: True,
+    )
+    window._on_mesh_scope_entity_pick(whole_edge[-1])
+    assert not window._selected_mesh_scope_refs
+
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: False,
+    )
+    window._set_selection_filter("body")
+    window._on_mesh_scope_entity_pick(MeshEntityRef.element(10))
+    assert window._canonical_mesh_scope_selection() == (
+        MeshEntityRef.element(10, part_id="P2"),
+        MeshEntityRef.element(11, part_id="P2"),
+    )
+    assert window.status_panel.object_label.text() == "对象：已选择 1 个部件"
+    window._set_selection_filter("element")
+    assert len(window._selected_mesh_scope_refs) == 2
+    window._selected_mesh_scope_refs = {
+        MeshEntityRef.element(10, part_id="P2")
+    }
+    window._set_selection_filter("body")
+    assert window._canonical_mesh_scope_selection() == (
+        MeshEntityRef.element(10, part_id="P2"),
+        MeshEntityRef.element(11, part_id="P2"),
+    )
+    window._set_selection_filter("point")
+    assert not window._selected_mesh_scope_refs
+    window.close()
+
+
+def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(monkeypatch) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("selection-box-semantics.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._set_selection_filter("edge")
+    topology = window._mesh_selection_topology()
+    whole_edge = next(
+        group
+        for group in set(topology.edge_expansions.values())
+        if len(group) == 2
+    )
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: False,
+    )
+    window._on_mesh_entities_box_selected(whole_edge)
+    assert window._selected_mesh_scope_refs == set(whole_edge)
+
+    monkeypatch.setattr(
+        window,
+        "_geometry_pick_is_additive",
+        lambda: True,
+    )
+    window._on_mesh_entities_box_selected(whole_edge)
+    assert not window._selected_mesh_scope_refs
+    window.close()

@@ -471,7 +471,7 @@ def test_module_switch_restores_each_selection_space_filter_without_stale_checks
 
     window.ribbon.set_current("模型")
     assert window._selection_context.active_filter == "point"
-    assert window.viewport._selection_mode == "node"
+    assert window.viewport._selection_mode == "mesh_node"
     window._set_selection_filter("face")
     assert window.viewport._selection_mode == "mesh_face"
 
