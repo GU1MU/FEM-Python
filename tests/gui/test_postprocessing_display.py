@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.application import MeshEntityRef
 from fem.io.inp import read
 from fem.application.results import (
     FieldPosition,
@@ -119,8 +120,9 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
     window._model_loaded(gui_inp_path, (model, geometry))
-    window.selection.select_node(1)
-    window.viewport.highlight_node(1)
+    window._set_selection_filter("point")
+    window._on_mesh_scope_entity_pick(MeshEntityRef.node(1))
+    selected_references = set(window._selected_mesh_scope_refs)
     _install_result(window)
 
     assert window._display.shape_mode == "deformed"
@@ -148,9 +150,14 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert not window.actions["node_labels"].isChecked()
     assert not window.actions["element_labels"].isChecked()
     assert window.actions["edges"].isChecked()
-    assert window.selection.node_id == 1
-    assert window.viewport._selected_id == 1
-    assert not window.viewport._selection_highlight_visible
+    assert selected_references == {
+        MeshEntityRef.node(1, part_id="P1")
+    }
+    assert window._selected_mesh_scope_refs == selected_references
+    assert (
+        window.viewport._mesh_scope_selected_references
+        == selected_references
+    )
 
     window.actions["contour"].setChecked(False)
     window._toggle_contour(False)
