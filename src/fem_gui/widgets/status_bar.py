@@ -72,6 +72,11 @@ class CAEStatusBar(QStatusBar):
             "geometry_edge": "几何边",
             "geometry_face": "几何面",
             "geometry_body": "几何体",
+            "mesh_node": "节点",
+            "mesh_element": "单元",
+            "mesh_edge": "拓扑边",
+            "mesh_face": "拓扑面",
+            "mesh_body": "部件",
         }
         self.selection_label.setText(f"选择：{labels.get(mode, '节点')}")
 

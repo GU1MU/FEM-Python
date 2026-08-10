@@ -148,8 +148,8 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert background in ribbon_actions
     assert background not in window.viewport_panel.toolbar.actions()
     selected_info = window.actions["selected_info"]
-    assert selected_info in window.viewport_panel.toolbar.actions()
-    assert selected_info in ribbon_actions
+    assert selected_info not in window.viewport_panel.toolbar.actions()
+    assert selected_info not in ribbon_actions
     result_menu = window.findChild(QMenu, "menuResult")
     assert result_menu is not None
     tab_names = [
@@ -212,7 +212,7 @@ def test_small_ribbon_commands_use_readable_icons():
     window.close()
 
 
-def test_model_page_replaces_clear_selection_with_edge_selection():
+def test_geometry_and_model_pages_reuse_five_semantic_selection_actions():
     _application()
     window = FEMMainWindow()
     tab_names = [
@@ -227,10 +227,11 @@ def test_model_page_replaces_clear_selection_with_edge_selection():
     }
 
     assert model_actions == {
-        "action_select_node",
+        "action_select_point",
         "action_select_element",
         "action_select_edge",
-        "action_selected_info",
+        "action_select_face",
+        "action_select_body",
         "action_nodes",
         "action_edges",
         "action_node_labels",
@@ -264,10 +265,11 @@ def test_model_page_replaces_clear_selection_with_edge_selection():
             "geometry_manager",
             "geometry_undo",
             "geometry_delete",
-            "geometry_select_point",
-            "geometry_select_edge",
-            "geometry_select_face",
-            "geometry_select_body",
+            "select_point",
+            "select_element",
+            "select_edge",
+            "select_face",
+            "select_body",
         )
     }
     mesh_actions = {
@@ -415,28 +417,68 @@ def test_standard_views_use_coordinate_plane_names():
     window.close()
 
 
-def test_viewport_toolbar_switches_to_geometry_selection_after_creation():
+def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
     _application()
     window = FEMMainWindow()
     from fem.geometry import RectangleGeometry
 
+    semantic_names = (
+        "select_point", "select_element", "select_edge", "select_face", "select_body",
+    )
+    toolbar_actions = [
+        action.objectName().removeprefix("action_")
+        for action in window.viewport_panel.toolbar.actions()
+        if action.objectName().removeprefix("action_") in semantic_names
+    ]
+    assert toolbar_actions == list(semantic_names)
+
+    window.ribbon.set_current("几何")
     window._set_native_geometry(RectangleGeometry("toolbar-geometry", 2.0, 1.0), "矩形")
+    window.show()
+    _application().processEvents()
 
     geometry_face = window.viewport_panel.toolbar.findChild(
         QToolButton,
-        "viewportAction_geometry_select_face",
+        "viewportAction_select_face",
     )
-    model_node = window.viewport_panel.toolbar.findChild(
+    model_point = window.viewport_panel.toolbar.findChild(
         QToolButton,
-        "viewportAction_select_node",
+        "viewportAction_select_point",
     )
     assert geometry_face is not None and not geometry_face.isHidden()
     assert geometry_face.defaultAction().isEnabled()
-    assert model_node is not None and model_node.isHidden()
+    assert model_point is not None and not model_point.isHidden()
+    assert not window.actions["select_element"].isEnabled()
+    assert window.actions["select_face"].toolTip() == "选择几何面"
 
     window.ribbon.set_current("模型")
-    assert geometry_face.isHidden()
-    assert not model_node.isHidden()
+    assert not geometry_face.isHidden()
+    assert not model_point.isHidden()
+    assert window._selection_context.space == "mesh"
+    window.close()
+
+
+def test_module_switch_restores_each_selection_space_filter_without_stale_checks():
+    _application()
+    window = FEMMainWindow()
+    names = ("select_point", "select_element", "select_edge", "select_face", "select_body")
+    groups = {window.actions[name].actionGroup() for name in names}
+    assert len(groups) == 1
+
+    window.ribbon.set_current("几何")
+    window._set_selection_filter("edge")
+    assert window.viewport._selection_mode == "geometry_edge"
+
+    window.ribbon.set_current("模型")
+    assert window._selection_context.active_filter == "point"
+    assert window.viewport._selection_mode == "mesh_node"
+    window._set_selection_filter("face")
+    assert window.viewport._selection_mode == "mesh_face"
+
+    window.ribbon.set_current("几何")
+    assert window._selection_context.active_filter == "edge"
+    assert window.viewport._selection_mode == "geometry_edge"
+    assert [name for name in names if window.actions[name].isChecked()] == ["select_edge"]
     window.close()
 
 

@@ -300,6 +300,7 @@ def test_completed_scope_clears_persistent_viewport_selection() -> None:
             "selected_info": SimpleNamespace(setEnabled=lambda enabled: None)
         },
         _update_action_states=lambda: None,
+        _restore_temporary_selection_context=lambda _owner: None,
         create_displacement_boundary=lambda: None,
         create_load=lambda: None,
         assign_section_to_region=lambda: None,

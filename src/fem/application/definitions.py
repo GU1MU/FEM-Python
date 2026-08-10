@@ -173,13 +173,15 @@ class MeshEntityRef:
 
 def mesh_entity_ref_sort_key(
     reference: MeshEntityRef,
-) -> tuple[str, int, int, int, tuple[int, ...]]:
+) -> tuple[int, int, int, int, tuple[int, ...]]:
     """Return a deterministic ordering key for mesh entity references."""
+
+    from .native_part import part_id_sort_key
 
     kind_order = {"node": 0, "edge": 1, "face": 2, "element": 3}
     primary, local_index = reference.identity
     return (
-        "" if reference.part_id is None else reference.part_id,
+        -1 if reference.part_id is None else part_id_sort_key(reference.part_id),
         kind_order[reference.kind],
         primary,
         local_index,

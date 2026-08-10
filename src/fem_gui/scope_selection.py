@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 
 from fem.application import MeshEntityRef
+from fem.application.definitions import mesh_entity_ref_sort_key
 from fem.application.native_scope_materialization import (
+    NATIVE_PART_OWNERSHIP_KEY,
+    NATIVE_SCOPE_CATALOG_KEY,
     mesh_references_for_logical_entities,
 )
 from fem.geometry import LogicalEntityRef, NATIVE_GEOMETRY_TYPES
+from fem.geometry.part_namespace import part_id_sort_key
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 
@@ -28,6 +33,441 @@ class ScopeSelectionTopology:
         LogicalEntityRef,
         tuple[MeshEntityRef, ...],
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class MeshSelectionTopology:
+    """Deterministic mesh filters and whole-topology expansion."""
+
+    topological_dimension: int
+    part_elements: dict[str, tuple[MeshEntityRef, ...]]
+    node_owners: dict[int, str]
+    element_owners: dict[int, str]
+    edge_expansions: dict[
+        tuple[str, tuple[int, int]],
+        tuple[MeshEntityRef, ...],
+    ]
+    face_expansions: dict[
+        tuple[str, tuple[int, int]],
+        tuple[MeshEntityRef, ...],
+    ]
+
+    def reference_kind(self, selection_filter: str) -> str:
+        """Return the MeshEntityRef kind produced by one semantic filter."""
+
+        if selection_filter == "point":
+            return "node"
+        if selection_filter in {"element", "body"}:
+            return "element"
+        if selection_filter == "edge":
+            return "element" if self.topological_dimension == 1 else "edge"
+        if selection_filter == "face":
+            return "element" if self.topological_dimension == 2 else "face"
+        raise ValueError("unsupported mesh selection filter")
+
+    def canonical_reference(self, reference: MeshEntityRef) -> MeshEntityRef:
+        """Attach the deterministic Part owner to one picked mesh reference."""
+
+        if type(reference) is not MeshEntityRef:
+            raise TypeError("mesh selection requires MeshEntityRef")
+        identity = (
+            int(reference.node_id)
+            if reference.kind == "node"
+            else int(reference.element_id)
+        )
+        owner = (
+            self.node_owners.get(identity)
+            if reference.kind == "node"
+            else self.element_owners.get(identity)
+        )
+        if owner is None or reference.part_id == owner:
+            return reference
+        return MeshEntityRef(
+            reference.kind,
+            node_id=reference.node_id,
+            element_id=reference.element_id,
+            local_index=reference.local_index,
+            node_ids=reference.node_ids,
+            part_id=owner,
+        )
+
+    def expand(
+        self,
+        selection_filter: str,
+        picked: MeshEntityRef,
+    ) -> tuple[MeshEntityRef, ...]:
+        """Expand one local hit into its complete semantic mesh entity."""
+
+        reference = self.canonical_reference(picked)
+        if selection_filter == "point":
+            return (reference,) if reference.kind == "node" else ()
+        if selection_filter == "element":
+            return (reference,) if reference.kind == "element" else ()
+        if selection_filter == "body":
+            if reference.kind != "element" or reference.part_id is None:
+                return ()
+            return self.part_elements.get(reference.part_id, ())
+        expansions = (
+            self.edge_expansions
+            if selection_filter == "edge"
+            else self.face_expansions
+            if selection_filter == "face"
+            else None
+        )
+        if expansions is None:
+            raise ValueError("unsupported mesh selection filter")
+        return expansions.get((reference.kind, reference.identity), ())
+
+    def pick_references(
+        self,
+        selection_filter: str,
+    ) -> tuple[MeshEntityRef, ...]:
+        """Return stable local references that may seed a topology pick."""
+
+        expansions = (
+            self.edge_expansions
+            if selection_filter == "edge"
+            else self.face_expansions
+            if selection_filter == "face"
+            else None
+        )
+        if expansions is None:
+            raise ValueError("topology pick references require edge or face")
+        return _canonical_mesh_references(
+            reference
+            for group in expansions.values()
+            for reference in group
+        )
+
+
+def build_mesh_selection_topology(
+    model: Any,
+    *,
+    feature_angle_degrees: float = 30.0,
+) -> MeshSelectionTopology:
+    """Build exact native or deterministically inferred mesh selection groups."""
+
+    mesh = model.mesh
+    dimension = _mesh_topological_dimension(mesh)
+    node_owners, element_owners, part_elements = _mesh_part_ownership(
+        model,
+        dimension,
+    )
+    metadata = getattr(model, "metadata", None)
+    catalog = (
+        metadata.get(NATIVE_SCOPE_CATALOG_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    if isinstance(catalog, Mapping) and catalog:
+        edge_groups, face_groups = _native_mesh_topology_groups(
+            catalog,
+            dimension,
+            element_owners,
+        )
+    else:
+        inferred = _inferred_scope_selection_topology(
+            model,
+            feature_angle_degrees=feature_angle_degrees,
+        )
+        edge_groups = tuple(
+            references
+            for logical, references in inferred.mesh_references.items()
+            if logical.kind == "edge"
+        )
+        face_groups = tuple(
+            references
+            for logical, references in inferred.mesh_references.items()
+            if logical.kind == "face"
+        )
+    canonical_edges = _owned_topology_groups(edge_groups, element_owners)
+    canonical_faces = _owned_topology_groups(face_groups, element_owners)
+    return MeshSelectionTopology(
+        topological_dimension=dimension,
+        part_elements=part_elements,
+        node_owners=node_owners,
+        element_owners=element_owners,
+        edge_expansions=_topology_expansion_index(canonical_edges),
+        face_expansions=_topology_expansion_index(canonical_faces),
+    )
+
+
+def _mesh_topological_dimension(mesh: Any) -> int:
+    if mesh_faces.boundary(mesh):
+        return 3
+    if mesh_edges.boundary(mesh):
+        return 2
+    return 1
+
+
+def _mesh_part_ownership(
+    model: Any,
+    dimension: int,
+) -> tuple[
+    dict[int, str],
+    dict[int, str],
+    dict[str, tuple[MeshEntityRef, ...]],
+]:
+    mesh = model.mesh
+    metadata = getattr(model, "metadata", None)
+    raw_ownership = (
+        metadata.get(NATIVE_PART_OWNERSHIP_KEY)
+        if isinstance(metadata, Mapping)
+        else None
+    )
+    mesh_element_ids = {int(element.id) for element in mesh.elements}
+    if isinstance(raw_ownership, Mapping):
+        exact_rows: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
+        for raw_part_id, raw in sorted(
+            raw_ownership.items(),
+            key=lambda item: part_id_sort_key(str(item[0])),
+        ):
+            if not isinstance(raw, Mapping):
+                continue
+            part_id = str(raw_part_id)
+            node_ids = tuple(sorted(int(value) for value in raw.get("node_ids", ())))
+            element_ids = tuple(
+                sorted(int(value) for value in raw.get("element_ids", ()))
+            )
+            exact_rows.append((part_id, node_ids, element_ids))
+        if {
+            element_id
+            for _part_id, _node_ids, element_ids in exact_rows
+            for element_id in element_ids
+        } == mesh_element_ids:
+            node_owners = {
+                node_id: part_id
+                for part_id, node_ids, _element_ids in exact_rows
+                for node_id in node_ids
+            }
+            element_owners = {
+                element_id: part_id
+                for part_id, _node_ids, element_ids in exact_rows
+                for element_id in element_ids
+            }
+            return (
+                node_owners,
+                element_owners,
+                {
+                    part_id: tuple(
+                        MeshEntityRef.element(
+                            element_id,
+                            part_id=part_id,
+                        )
+                        for element_id in element_ids
+                    )
+                    for part_id, _node_ids, element_ids in exact_rows
+                },
+            )
+
+    elements = tuple(sorted(mesh.elements, key=lambda item: int(item.id)))
+    groups = _connected_mesh_element_groups(mesh, elements, dimension)
+    element_owners: dict[int, str] = {}
+    part_elements: dict[str, tuple[MeshEntityRef, ...]] = {}
+    for part_number, group in enumerate(groups, start=1):
+        part_id = f"P{part_number}"
+        element_ids = tuple(int(elements[index].id) for index in group)
+        element_owners.update(
+            (element_id, part_id) for element_id in element_ids
+        )
+        part_elements[part_id] = tuple(
+            MeshEntityRef.element(element_id, part_id=part_id)
+            for element_id in element_ids
+        )
+    node_owners: dict[int, str] = {}
+    for element in elements:
+        owner = element_owners[int(element.id)]
+        for raw_node_id in element.node_ids:
+            node_id = int(raw_node_id)
+            current = node_owners.get(node_id)
+            if current is None or part_id_sort_key(owner) < part_id_sort_key(current):
+                node_owners[node_id] = owner
+    default_owner = next(iter(part_elements), None)
+    if default_owner is not None:
+        for node in mesh.nodes:
+            node_owners.setdefault(int(node.id), default_owner)
+    return node_owners, element_owners, part_elements
+
+
+def _connected_mesh_element_groups(
+    mesh: Any,
+    elements: tuple[Any, ...],
+    dimension: int,
+) -> tuple[tuple[int, ...], ...]:
+    element_index = {
+        int(element.id): index for index, element in enumerate(elements)
+    }
+    groups = _DisjointGroups(len(elements))
+    token_owner: dict[tuple[int, ...], int] = {}
+    if dimension == 3:
+        rows = (
+            (
+                int(element_id),
+                tuple(sorted(_face_corner_node_ids(tuple(int(value) for value in node_ids)))),
+            )
+            for element_id, _local_index, node_ids in mesh_faces.all(mesh)
+        )
+    elif dimension == 2:
+        rows = (
+            (
+                int(element_id),
+                tuple(sorted((int(node_ids[0]), int(node_ids[-1])))),
+            )
+            for element_id, _local_index, node_ids in mesh_edges.all(mesh)
+            if len(node_ids) >= 2
+        )
+    else:
+        rows = (
+            (int(element.id), (int(node_id),))
+            for element in elements
+            for node_id in element.node_ids
+        )
+    for element_id, token in rows:
+        index = element_index.get(element_id)
+        if index is None:
+            continue
+        previous = token_owner.get(token)
+        if previous is None:
+            token_owner[token] = index
+        else:
+            groups.union(previous, index)
+    return groups.values()
+
+
+def _native_mesh_topology_groups(
+    catalog: Mapping[Any, Any],
+    dimension: int,
+    element_owners: Mapping[int, str],
+) -> tuple[
+    tuple[tuple[MeshEntityRef, ...], ...],
+    tuple[tuple[MeshEntityRef, ...], ...],
+]:
+    edge_groups: list[tuple[MeshEntityRef, ...]] = []
+    face_groups: list[tuple[MeshEntityRef, ...]] = []
+    for _logical_id, raw in sorted(
+        catalog.items(),
+        key=lambda item: str(item[0]),
+    ):
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind", ""))
+        if kind == "edge":
+            if dimension == 1:
+                references = tuple(
+                    MeshEntityRef.element(
+                        int(element_id),
+                        part_id=element_owners.get(int(element_id)),
+                    )
+                    for element_id in raw.get("element_ids", ())
+                )
+            else:
+                references = _catalog_boundary_references(
+                    raw.get("edges", ()),
+                    "edge",
+                    element_owners,
+                )
+            if references:
+                edge_groups.append(references)
+        elif kind == "face":
+            if dimension == 2:
+                references = tuple(
+                    MeshEntityRef.element(
+                        int(element_id),
+                        part_id=element_owners.get(int(element_id)),
+                    )
+                    for element_id in raw.get("element_ids", ())
+                )
+            elif dimension == 3:
+                references = _catalog_boundary_references(
+                    raw.get("faces", ()),
+                    "face",
+                    element_owners,
+                )
+            else:
+                references = ()
+            if references:
+                face_groups.append(references)
+    return tuple(edge_groups), tuple(face_groups)
+
+
+def _catalog_boundary_references(
+    rows: Any,
+    kind: str,
+    element_owners: Mapping[int, str],
+) -> tuple[MeshEntityRef, ...]:
+    constructor = MeshEntityRef.edge if kind == "edge" else MeshEntityRef.face
+    references: list[MeshEntityRef] = []
+    for row in rows:
+        element_id, local_index, node_ids = tuple(row)
+        normalized_element_id = int(element_id)
+        references.append(
+            constructor(
+                normalized_element_id,
+                int(local_index),
+                tuple(int(value) for value in node_ids),
+                part_id=element_owners.get(normalized_element_id),
+            )
+        )
+    return _canonical_mesh_references(references)
+
+
+def _owned_topology_groups(
+    groups: tuple[tuple[MeshEntityRef, ...], ...],
+    element_owners: Mapping[int, str],
+) -> tuple[tuple[MeshEntityRef, ...], ...]:
+    owned: list[tuple[MeshEntityRef, ...]] = []
+    for group in groups:
+        by_part: dict[str | None, list[MeshEntityRef]] = {}
+        for reference in group:
+            owner = element_owners.get(int(reference.element_id))
+            canonical = (
+                reference
+                if reference.part_id == owner
+                else MeshEntityRef(
+                    reference.kind,
+                    node_id=reference.node_id,
+                    element_id=reference.element_id,
+                    local_index=reference.local_index,
+                    node_ids=reference.node_ids,
+                    part_id=owner,
+                )
+            )
+            by_part.setdefault(owner, []).append(canonical)
+        owned.extend(
+            _canonical_mesh_references(references)
+            for _part_id, references in sorted(
+                by_part.items(),
+                key=lambda item: (
+                    -1 if item[0] is None else part_id_sort_key(item[0])
+                ),
+            )
+            if references
+        )
+    return tuple(
+        sorted(
+            owned,
+            key=lambda group: mesh_entity_ref_sort_key(group[0]),
+        )
+    )
+
+
+def _topology_expansion_index(
+    groups: tuple[tuple[MeshEntityRef, ...], ...],
+) -> dict[
+    tuple[str, tuple[int, int]],
+    tuple[MeshEntityRef, ...],
+]:
+    return {
+        (reference.kind, reference.identity): group
+        for group in groups
+        for reference in group
+    }
+
+
+def _canonical_mesh_references(
+    references: Any,
+) -> tuple[MeshEntityRef, ...]:
+    return tuple(sorted(set(references), key=mesh_entity_ref_sort_key))
 
 
 def build_scope_selection_topology(
@@ -575,6 +1015,8 @@ class _DisjointGroups:
 
 
 __all__ = [
+    "MeshSelectionTopology",
     "ScopeSelectionTopology",
+    "build_mesh_selection_topology",
     "build_scope_selection_topology",
 ]

@@ -73,6 +73,7 @@ from fem.application import (
     prepare_face_sketch_boolean,
     prepare_strict_planar_recipe_preview,
 )
+from fem.application.definitions import mesh_entity_ref_sort_key
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.changes import ChangeKind
@@ -241,7 +242,9 @@ from .face_sketch_editor import (
 )
 from .part_geometry_preview import build_multi_part_geometry_preview
 from .scope_selection import (
+    MeshSelectionTopology,
     ScopeSelectionTopology,
+    build_mesh_selection_topology,
     build_scope_selection_topology,
 )
 from .postprocessing_dialogs import (
@@ -310,7 +313,7 @@ from .visualization.result_renderer import (
     ResultRenderPayload,
     build_result_render_payload,
 )
-from .visualization.selection import SelectionState
+from .visualization.selection import SelectionContextState, SelectionState
 from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
 from .widgets.navigation_panel import NavigationPanel
@@ -636,6 +639,9 @@ class FEMMainWindow(QMainWindow):
         self._selected_geometry_refs: set[LogicalEntityRef] = set()
         self._selected_mesh_scope_refs: set[MeshEntityRef] = set()
         self._geometry_selection_mode = "body"
+        self._selection_context = SelectionContextState()
+        self._temporary_selection_context: SelectionContextState | None = None
+        self._temporary_selection_owner: str | None = None
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
         self._pending_scope_kind: str | None = None
@@ -650,6 +656,9 @@ class FEMMainWindow(QMainWindow):
         self._scope_selection_overlay_active = False
         self._scope_selection_topology_cache: (
             ScopeSelectionTopology | None
+        ) = None
+        self._mesh_selection_topology_cache: (
+            MeshSelectionTopology | None
         ) = None
         self._wire_editor_controller: WireDraftController | None = None
         self._wire_editor_original_recipe: object | None = None
@@ -2659,6 +2668,7 @@ class FEMMainWindow(QMainWindow):
             != snapshot.artifact.artifact_id
         ):
             self._scope_selection_topology_cache = None
+            self._mesh_selection_topology_cache = None
 
         step_names = self.session.runnable_step_names()
         if self._current_step_name not in step_names:
@@ -2749,8 +2759,9 @@ class FEMMainWindow(QMainWindow):
                 ):
                     self._selected_geometry_refs.clear()
                     self._geometry_selection_mode = "body"
-                    self.actions["geometry_select_body"].setChecked(True)
-                    self.actions["geometry_select_face"].setChecked(False)
+                    self._selection_context.geometry_filter = "body"
+                    if self._selection_context.space == "geometry":
+                        self.actions["select_body"].setChecked(True)
                     self.viewport.set_selection_mode("geometry_body")
                 try:
                     if (
@@ -2947,9 +2958,16 @@ class FEMMainWindow(QMainWindow):
     def _clear_model_projection(self) -> None:
         self._close_inspection_windows()
         self._close_job_manager()
+        self._restore_temporary_selection_context()
         self._pending_analysis_selection = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
+        self._pending_local_mesh_selection = False
+        self._temporary_selection_context = None
+        self._temporary_selection_owner = None
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        self._scope_selection_overlay_active = False
         self.viewport_panel.scope_creation_bar.finish()
         self.inspection_service = None
         self.geometry = None
@@ -2983,6 +3001,10 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_result()
         if not had_projection:
             return
+        self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        self.viewport.clear_selection()
         if self.document.source_kind == "result":
             self.viewport.clear_model()
             return
@@ -3030,6 +3052,15 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "provider projection does not match the current model"
             )
+        previous_provider = self.result_provider
+        if (
+            type(previous_provider) is ResultProvider
+            and previous_provider.source != provider.source
+        ):
+            self.selection.clear()
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self.viewport.clear_selection()
         cached = self._result_visualization_provider_cache
         if (
             cached is not None
@@ -3152,7 +3183,12 @@ class FEMMainWindow(QMainWindow):
         file_menu.addAction(self.actions["exit"])
         edit_menu = self.menuBar().addMenu("编辑")
         edit_menu.setObjectName("menuEdit")
-        edit_menu.addActions([self.actions[name] for name in ("select_node", "select_element", "select_edge")])
+        edit_menu.addActions([
+            self.actions[name]
+            for name in (
+                "select_point", "select_element", "select_edge", "select_face", "select_body",
+            )
+        ])
         view_menu = self.menuBar().addMenu("视图")
         view_menu.setObjectName("menuView")
         view_menu.addActions([self.actions[name] for name in (
@@ -3246,8 +3282,8 @@ class FEMMainWindow(QMainWindow):
             (
                 "选择",
                 (
-                    "geometry_select_point", "geometry_select_edge",
-                    "geometry_select_face", "geometry_select_body",
+                    "select_point", "select_element", "select_edge",
+                    "select_face", "select_body",
                 ),
                 (),
             ),
@@ -3274,7 +3310,14 @@ class FEMMainWindow(QMainWindow):
         self._add_ribbon_page("模型", (
             ("定义", ("material_manager", "section_manager", "section_assign"), ("material_manager",)),
             scope_group,
-            ("选择", ("select_node", "select_element", "select_edge", "selected_info"), ()),
+            (
+                "选择",
+                (
+                    "select_point", "select_element", "select_edge",
+                    "select_face", "select_body",
+                ),
+                (),
+            ),
             ("显示", ("nodes", "edges", "node_labels", "element_labels"), ()),
             ("符号", ("symbols", "symbol_settings"), ()),
         ))
@@ -3652,21 +3695,10 @@ class FEMMainWindow(QMainWindow):
         self.setStatusBar(self.status_panel)
 
     def _on_module_changed(self, module_name: str) -> None:
-        geometry_context = (
-            module_name in {"几何", "网格"}
-            and isinstance(self.document.geometry_recipe, NATIVE_GEOMETRY_TYPES)
-        )
-        self.viewport_panel.set_geometry_context(geometry_context)
-        if geometry_context:
-            action = self.actions[f"geometry_select_{self._geometry_selection_mode}"]
-            action.setChecked(True)
-            self._set_geometry_selection_mode(self._geometry_selection_mode)
-        elif self.document.has_model:
-            action = self.actions[
-                "select_element" if self.selection.mode == "element" else "select_node"
-            ]
-            action.setChecked(True)
-            self._set_selection_mode(self.selection.mode)
+        if self._temporary_selection_context is None:
+            self._set_selection_space(
+                "geometry" if module_name == "几何" else "mesh"
+            )
         if module_name == "结果":
             self.navigation.show_result()
         elif module_name in {"项目", "几何", "网格", "模型", "分析"}:
@@ -4110,6 +4142,19 @@ class FEMMainWindow(QMainWindow):
             planar_solid_face_selected=(
                 self._face_sketch_selection_is_valid()
             ),
+            selection_space=self._selection_context.space,
+            selection_filter=self._selection_context.active_filter,
+            selection_topological_dimension=(
+                geometry_dimension(self.document.geometry_recipe)
+                if self._selection_context.space == "geometry"
+                and isinstance(
+                    self.document.geometry_recipe,
+                    NATIVE_GEOMETRY_TYPES,
+                )
+                else authoring.report.topological_dimension
+                if self._selection_context.space == "mesh"
+                else None
+            ),
         )
         for availability in derive_action_availability(
             self.document,
@@ -4121,6 +4166,7 @@ class FEMMainWindow(QMainWindow):
                 availability.enabled,
                 availability.reason,
             )
+        self._sync_selection_action_state()
         has_result = provider is not None
         self.result_variable_combo.setEnabled(has_result and not self.busy)
         self.result_component_combo.setEnabled(has_result and not self.busy)
@@ -7029,10 +7075,9 @@ class FEMMainWindow(QMainWindow):
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         self._geometry_selection_mode = "body"
-        self.actions["geometry_select_body"].setChecked(True)
-        self.viewport.set_selection_mode("geometry_body")
-        self.status_panel.set_selection_mode("geometry_body")
-        self.viewport_panel.set_geometry_context(True)
+        self._selection_context.geometry_filter = "body"
+        if self._selection_context.space == "geometry":
+            self._set_selection_filter("body", force=True)
         message = (
             f"{label}几何已创建；网格、模型和结果已标记过期，"
             "请进入网格模块生成网格"
@@ -7110,6 +7155,16 @@ class FEMMainWindow(QMainWindow):
                 )
             )
         return self._scope_selection_topology_cache
+
+    def _mesh_selection_topology(self) -> MeshSelectionTopology:
+        model = self.document.model
+        if model is None:
+            raise RuntimeError("mesh selection requires a generated mesh")
+        if self._mesh_selection_topology_cache is None:
+            self._mesh_selection_topology_cache = (
+                build_mesh_selection_topology(model)
+            )
+        return self._mesh_selection_topology_cache
 
     def _start_edge_scope_selection(self) -> None:
         if self.document.model is None:
@@ -7406,7 +7461,6 @@ class FEMMainWindow(QMainWindow):
             self._pending_analysis_edit = None
             return
         self._pending_scope_kind = default_kind
-        self.viewport_panel.set_geometry_context(False)
         if default_kind in {"edge", "face", "body"}:
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
@@ -7416,11 +7470,19 @@ class FEMMainWindow(QMainWindow):
                 render=False,
             )
             self._scope_selection_overlay_active = True
-            self._set_geometry_selection_mode(default_kind)
+            self._begin_temporary_selection_context(
+                "analysis_scope",
+                "geometry",
+                default_kind,
+            )
         else:
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
-            self._set_mesh_scope_selection_mode(default_kind)
+            self._begin_temporary_selection_context(
+                "analysis_scope",
+                "mesh",
+                "point" if default_kind == "node" else default_kind,
+            )
         self._show_scope_creation_bar(default_kind)
         label = {
             "boundary": "边界条件",
@@ -7496,6 +7558,7 @@ class FEMMainWindow(QMainWindow):
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         self.viewport.clear_selection()
+        self._restore_temporary_selection_context("analysis_scope")
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
         self._update_action_states()
@@ -7595,6 +7658,7 @@ class FEMMainWindow(QMainWindow):
             recipe,
             NATIVE_GEOMETRY_TYPES,
         ):
+            self._restore_temporary_selection_context("local_mesh")
             return
         local_control_action = self.actions["mesh_local_control"]
         if not local_control_action.isEnabled():
@@ -7602,6 +7666,7 @@ class FEMMainWindow(QMainWindow):
                 local_control_action.statusTip(),
                 6000,
             )
+            self._restore_temporary_selection_context("local_mesh")
             return
         is_wire = geometry_dimension(recipe) == 1
         supported_kinds = {"point", "edge"} if is_wire else {"point", "edge", "face"}
@@ -7612,7 +7677,6 @@ class FEMMainWindow(QMainWindow):
             or (is_wire and len(selected_references) != 1)
         ):
             self._pending_local_mesh_selection = True
-            self.viewport_panel.set_geometry_context(True)
             default_kind = (
                 "face"
                 if geometry_dimension(recipe) == 3
@@ -7620,8 +7684,11 @@ class FEMMainWindow(QMainWindow):
                 if is_wire
                 else "edge"
             )
-            self.actions[f"geometry_select_{default_kind}"].setChecked(True)
-            self._set_geometry_selection_mode(default_kind)
+            self._begin_temporary_selection_context(
+                "local_mesh",
+                "geometry",
+                default_kind,
+            )
             self.status_panel.set_state(
                 f"请选择需要设置局部网格的{'面' if default_kind == 'face' else '边'}；"
                 "Ctrl 多选，Enter 完成，Esc 取消",
@@ -7634,6 +7701,7 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         if not self._exec_dialog(dialog):
+            self._restore_temporary_selection_context("local_mesh")
             return
         control = dialog.control()
         selected_references = (
@@ -7660,6 +7728,7 @@ class FEMMainWindow(QMainWindow):
         )
         if receipt.diagnostic is not None:
             self._show_command_rejection("局部网格控制", receipt)
+            self._restore_temporary_selection_context("local_mesh")
             return
         kind_name = {
             "point": "点",
@@ -7670,6 +7739,7 @@ class FEMMainWindow(QMainWindow):
             f"已设置所选{kind_name}的局部尺寸，请重新生成网格",
             5000,
         )
+        self._restore_temporary_selection_context("local_mesh")
 
     def clear_native_mesh(self) -> None:
         recipe = self.document.geometry_recipe
@@ -8467,12 +8537,16 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state("正在初始化视口……")
         self._scope_selection_overlay_active = False
         self._scope_selection_topology_cache = None
+        self._mesh_selection_topology_cache = None
+        self._restore_temporary_selection_context()
         self._close_inspection_windows()
         self._close_job_manager()
         self.geometry = geometry
         self.result_provider = None
         self.result_selection = None
         self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
         self._display = DisplayState()
         self._overlay_undeformed = False
         self.actions["undeformed"].setChecked(True)
@@ -10997,11 +11071,7 @@ class FEMMainWindow(QMainWindow):
         return tuple(
             sorted(
                 self._selected_mesh_scope_refs,
-                key=lambda reference: (
-                    reference.kind,
-                    reference.identity,
-                    reference.node_ids,
-                ),
+                key=mesh_entity_ref_sort_key,
             )
         )
 
@@ -11017,6 +11087,139 @@ class FEMMainWindow(QMainWindow):
                 "mesh scope selection contains incompatible entity kinds"
             )
         return next(iter(kinds))
+
+    @staticmethod
+    def _selection_action_name(selection_filter: str) -> str:
+        return f"select_{selection_filter}"
+
+    def _begin_temporary_selection_context(
+        self,
+        owner: str,
+        space: str,
+        selection_filter: str,
+    ) -> None:
+        """Override module selection semantics until one guided flow ends."""
+
+        if self._temporary_selection_context is None:
+            self._temporary_selection_context = replace(
+                self._selection_context
+            )
+            self._temporary_selection_owner = str(owner)
+        elif self._temporary_selection_owner != owner:
+            raise RuntimeError("another temporary selection context is active")
+        self._set_selection_space(space)
+        self._set_selection_filter(selection_filter)
+
+    def _restore_temporary_selection_context(
+        self,
+        owner: str | None = None,
+    ) -> None:
+        saved = self._temporary_selection_context
+        if saved is None:
+            return
+        if owner is not None and self._temporary_selection_owner != owner:
+            return
+        self._temporary_selection_context = None
+        self._temporary_selection_owner = None
+        self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        self.viewport.clear_selection()
+        module_name = ""
+        ribbon = getattr(self, "ribbon", None)
+        tab_bar = None if ribbon is None else ribbon.tab_bar
+        if tab_bar is not None and tab_bar.currentIndex() >= 0:
+            module_name = tab_bar.tabText(tab_bar.currentIndex())
+        saved.set_space("geometry" if module_name == "几何" else "mesh")
+        self._selection_context = saved
+        self.viewport_panel.set_geometry_context(saved.space == "geometry")
+        self._set_selection_filter(saved.active_filter, force=True)
+        self.status_panel.set_object()
+        self.actions["selected_info"].setEnabled(False)
+
+    def _set_selection_space(self, space: str) -> None:
+        normalized = "geometry" if space == "geometry" else "mesh"
+        changed = self._selection_context.space != normalized
+        selection_filter = self._selection_context.set_space(normalized)
+        if changed:
+            self.selection.clear()
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self.viewport.clear_selection()
+            self.status_panel.set_object()
+            self.actions["selected_info"].setEnabled(False)
+        self.viewport_panel.set_geometry_context(normalized == "geometry")
+        self._set_selection_filter(selection_filter, force=True)
+
+    def _set_selection_filter(
+        self,
+        selection_filter: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if selection_filter not in {
+            "point", "element", "edge", "face", "body",
+        }:
+            raise ValueError("unsupported semantic selection filter")
+        if self._selection_context.space == "geometry" and selection_filter == "element":
+            self._sync_selection_action_state()
+            return
+        if selection_filter == "face":
+            if (
+                self._selection_context.space == "geometry"
+                and isinstance(
+                    self.document.geometry_recipe,
+                    NATIVE_GEOMETRY_TYPES,
+                )
+                and geometry_dimension(self.document.geometry_recipe) == 1
+            ):
+                selection_filter = "body"
+            elif self._selection_context.space == "mesh":
+                report = self._model_capability_report()
+                if report is not None and report.topological_dimension == 1:
+                    selection_filter = "edge"
+        changed = selection_filter != self._selection_context.active_filter
+        self._selection_context.set_filter(selection_filter)
+        self.actions[self._selection_action_name(selection_filter)].setChecked(True)
+        if self._selection_context.space == "geometry":
+            self._set_geometry_selection_mode(selection_filter)
+        else:
+            self._set_mesh_scope_selection_mode(
+                "node" if selection_filter == "point" else selection_filter
+            )
+        if changed or force:
+            self._update_action_states()
+
+    def _sync_selection_action_state(self) -> None:
+        active_filter = self._selection_context.active_filter
+        for selection_filter in ("point", "element", "edge", "face", "body"):
+            action = self.actions[self._selection_action_name(selection_filter)]
+            action.setChecked(selection_filter == active_filter)
+        labels = (
+            {
+                "point": "选择几何点",
+                "element": "几何选择空间不支持单元",
+                "edge": "选择几何边",
+                "face": "选择几何面",
+                "body": "选择几何体",
+            }
+            if self._selection_context.space == "geometry"
+            else {
+                "point": "选择节点",
+                "element": "选择有限元单元",
+                "edge": "选择网格拓扑边",
+                "face": "选择网格拓扑面",
+                "body": "选择部件",
+            }
+        )
+        for selection_filter, label in labels.items():
+            action = self.actions[self._selection_action_name(selection_filter)]
+            if action.isEnabled():
+                action.setToolTip(label)
+                action.setStatusTip(label)
+            else:
+                reason = action.statusTip()
+                action.setToolTip(f"{label}（{reason}）")
 
     def _set_selection_mode(self, mode: str) -> None:
         normalized = "element" if mode == "element" else "node"
@@ -11066,23 +11269,44 @@ class FEMMainWindow(QMainWindow):
     def _set_mesh_scope_selection_mode(self, mode: str) -> None:
         normalized = (
             mode
-            if mode in {"node", "edge", "face", "element"}
+            if mode in {"node", "edge", "face", "element", "body"}
             else "node"
         )
-        if (
+        reference_kind = normalized
+        if self.document.model is not None:
+            semantic_filter = "point" if normalized == "node" else normalized
+            reference_kind = self._mesh_selection_topology().reference_kind(
+                semantic_filter
+            )
+        incompatible = (
             self._selected_mesh_scope_refs
-            and self._mesh_scope_selection_kind() != normalized
-        ):
+            and self._mesh_scope_selection_kind() != reference_kind
+        )
+        if incompatible:
             self._selected_mesh_scope_refs.clear()
             self.viewport.clear_selection()
             self.status_panel.set_object()
+        elif (
+            self._selected_mesh_scope_refs
+            and normalized in {"edge", "face", "body"}
+            and self.document.model is not None
+        ):
+            topology = self._mesh_selection_topology()
+            self._selected_mesh_scope_refs = {
+                expanded
+                for reference in self._selected_mesh_scope_refs
+                for expanded in topology.expand(normalized, reference)
+            }
         self.selection.clear()
         self._selected_geometry_refs.clear()
         self.actions["selected_info"].setEnabled(False)
         self.viewport.set_selection_mode(f"mesh_{normalized}")
         self.status_panel.set_selection_mode(f"mesh_{normalized}")
+        if self._selected_mesh_scope_refs:
+            self._refresh_mesh_scope_selection(normalized)
 
     def clear_selection(self) -> None:
+        temporary_owner = self._temporary_selection_owner
         self.selection.clear()
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
@@ -11097,6 +11321,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.clear_selection()
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
+        self._restore_temporary_selection_context(temporary_owner)
         self._update_action_states()
 
     @staticmethod
@@ -11259,24 +11484,18 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "meshEntityPicked 必须携带 MeshEntityRef"
             )
-        additive = self._geometry_pick_is_additive()
-        if (
-            self._mesh_scope_selection_kind() != reference.kind
-            or not additive
-        ):
-            changed = self._selected_mesh_scope_refs.symmetric_difference(
-                {reference}
-            )
-            self._selected_mesh_scope_refs = {reference}
-        elif reference in self._selected_mesh_scope_refs:
-            self._selected_mesh_scope_refs.remove(reference)
-            changed = {reference}
-        else:
-            self._selected_mesh_scope_refs.add(reference)
-            changed = {reference}
-        self._refresh_mesh_scope_selection(
-            reference.kind,
-            changed_references=changed,
+        semantic_filter = self._active_mesh_selection_filter()
+        expanded = self._expand_mesh_selection_reference(
+            semantic_filter,
+            reference,
+        )
+        if not expanded:
+            self._on_viewport_pick_missed(f"mesh_{semantic_filter}")
+            return
+        self._apply_mesh_selection_groups(
+            semantic_filter,
+            (expanded,),
+            additive=self._geometry_pick_is_additive(),
         )
 
     def _on_mesh_entities_box_selected(
@@ -11296,17 +11515,87 @@ class FEMMainWindow(QMainWindow):
         kind = selected[0].kind
         if any(reference.kind != kind for reference in selected):
             raise ValueError("mesh box selection cannot mix entity kinds")
-        if self._geometry_pick_is_additive():
-            self._selected_mesh_scope_refs.symmetric_difference_update(
-                selected
+        semantic_filter = self._active_mesh_selection_filter()
+        groups = tuple(
+            expanded
+            for reference in selected
+            if (
+                expanded := self._expand_mesh_selection_reference(
+                    semantic_filter,
+                    reference,
+                )
             )
-            changed = set(selected)
+        )
+        if not groups:
+            self._on_viewport_pick_missed(f"mesh_{semantic_filter}")
+            return
+        self._apply_mesh_selection_groups(
+            semantic_filter,
+            groups,
+            additive=self._geometry_pick_is_additive(),
+        )
+
+    def _active_mesh_selection_filter(self) -> str:
+        mode = self.viewport._selection_mode
+        if mode.startswith("mesh_"):
+            semantic_filter = mode.removeprefix("mesh_")
+            return "point" if semantic_filter == "node" else semantic_filter
+        return "point" if self.selection.mode == "node" else "element"
+
+    def _expand_mesh_selection_reference(
+        self,
+        semantic_filter: str,
+        reference: MeshEntityRef,
+    ) -> tuple[MeshEntityRef, ...]:
+        if self.document.model is None:
+            return (reference,)
+        if (
+            self._pending_analysis_selection is not None
+            and semantic_filter in {"point", "element"}
+        ):
+            return (reference,)
+        return self._mesh_selection_topology().expand(
+            semantic_filter,
+            reference,
+        )
+
+    def _apply_mesh_selection_groups(
+        self,
+        semantic_filter: str,
+        groups: tuple[tuple[MeshEntityRef, ...], ...],
+        *,
+        additive: bool,
+    ) -> None:
+        unique_groups = tuple(
+            {
+                tuple(sorted(set(group), key=mesh_entity_ref_sort_key))
+                for group in groups
+                if group
+            }
+        )
+        previous = set(self._selected_mesh_scope_refs)
+        if additive:
+            selected = set(previous)
+            for group in sorted(
+                unique_groups,
+                key=lambda values: mesh_entity_ref_sort_key(values[0]),
+            ):
+                group_set = set(group)
+                if group_set.issubset(selected):
+                    selected.difference_update(group_set)
+                else:
+                    selected.update(group_set)
         else:
-            changed = self._selected_mesh_scope_refs.symmetric_difference(
-                selected
-            )
-            self._selected_mesh_scope_refs = set(selected)
-        self._refresh_mesh_scope_selection(kind, changed_references=changed)
+            selected = {
+                reference
+                for group in unique_groups
+                for reference in group
+            }
+        self._selected_mesh_scope_refs = selected
+        self._refresh_mesh_scope_selection(
+            semantic_filter,
+            changed_references=previous.symmetric_difference(selected),
+        )
 
     def _refresh_mesh_scope_selection(
         self,
@@ -11315,24 +11604,48 @@ class FEMMainWindow(QMainWindow):
         changed_references: set[MeshEntityRef] | None = None,
     ) -> None:
         references = self._selected_mesh_scope_refs
+        reference_kind = (
+            next(iter(references)).kind
+            if references
+            else (
+                "node" if kind in {"node", "point"} else kind
+            )
+        )
         self.viewport_panel.scope_creation_bar.set_selection_ready(
             bool(references)
         )
         self.viewport.highlight_mesh_entities(
             references,
             changed_references=changed_references,
-            entity_kind=kind,
+            entity_kind=reference_kind,
         )
         labels = {
+            "point": "节点",
             "node": "节点",
-            "edge": "单元边",
-            "face": "单元面",
+            "edge": "拓扑边",
+            "face": "拓扑面",
             "element": "单元",
+            "body": "部件",
         }
-        self.status_panel.set_selection_mode(f"mesh_{kind}")
+        semantic_count = len(references)
+        if (
+            references
+            and kind in {"edge", "face", "body"}
+            and self.document.model is not None
+        ):
+            topology = self._mesh_selection_topology()
+            semantic_count = len(
+                {
+                    group
+                    for reference in references
+                    if (group := topology.expand(kind, reference))
+                }
+            )
+        status_kind = "node" if kind == "point" else kind
+        self.status_panel.set_selection_mode(f"mesh_{status_kind}")
         self.status_panel.set_object(
             (
-                f"已选择 {len(references)} 个"
+                f"已选择 {semantic_count} 个"
                 f"{labels.get(kind, '网格实体')}"
             )
             if references
@@ -11423,7 +11736,6 @@ class FEMMainWindow(QMainWindow):
             reference = LogicalEntityRef(f"body:{key}/domain")
             self._selected_geometry_refs = {reference}
             self._geometry_selection_mode = "body"
-            self.actions["geometry_select_body"].setChecked(True)
             self.viewport.set_selection_mode("geometry_body")
             self.viewport.highlight_geometry_entities((reference,))
             active_part = next(
@@ -11449,7 +11761,6 @@ class FEMMainWindow(QMainWindow):
                 return
             self._selected_geometry_refs = {reference}
             self._geometry_selection_mode = "body"
-            self.actions["geometry_select_body"].setChecked(True)
             self.viewport.set_selection_mode("geometry_body")
             self.viewport.highlight_geometry_entities((reference,))
             self.status_panel.set_object(f"实体 {key}")
