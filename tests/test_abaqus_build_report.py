@@ -17,7 +17,7 @@ STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
-B31_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
+B31_NOTICE = "abaqus.b31.linear_timoshenko_support_boundary"
 FRAME_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
 
@@ -58,11 +58,13 @@ def test_each_successful_b31_read_reports_exactly_one_formulation_notice(
     message = notice.message.casefold()
     assert "b31" in message
     assert "timoshenko" in message
-    assert "euler" in message
+    assert "linear" in message
+    assert "static" in message
     assert "shear" in message
+    assert "euler" not in message
     assert any(
         token in message
-        for token in ("short", "thick", "sensitive", "reproduce")
+        for token in ("unsupported", "boundary", "equivalence")
     )
 
 
@@ -162,7 +164,7 @@ def test_formulation_notice_does_not_leak_into_authoritative_model_data():
 
     serialized = repr(authoritative_data).casefold()
     assert B31_NOTICE not in serialized
-    assert "euler_bernoulli_approximation" not in serialized
+    assert "linear_timoshenko_support_boundary" not in serialized
 
 
 def test_short_thick_b31_is_reported_without_mesh_slenderness_block(

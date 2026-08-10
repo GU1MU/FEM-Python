@@ -1791,7 +1791,7 @@ def test_non_adapter_semantics_do_not_read_abaqus_type_provenance():
 
 
 def test_abaqus_formulation_notice_has_one_adapter_owner():
-    notice_code = "abaqus.b31.euler_bernoulli_approximation"
+    notice_code = "abaqus.b31.linear_timoshenko_support_boundary"
     occurrences = []
     for path in _python_files(SRC_ROOT):
         source = _source(path)

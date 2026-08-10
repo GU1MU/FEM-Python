@@ -235,7 +235,7 @@ def test_characterization_output_parent_child_is_preserved_without_blocking_impo
     result = inp.read_with_report(path)
 
     assert tuple(notice.code for notice in result.notices) == (
-        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.linear_timoshenko_support_boundary",
     )
     requests = result.model.steps[0].outputs
     assert tuple((item.kind, item.target, item.variables) for item in requests) == (

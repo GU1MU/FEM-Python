@@ -124,7 +124,7 @@ def test_noncollinear_two_span_b31_imports_and_solves(tmp_path) -> None:
     assert np.all(np.isfinite(displacement))
     assert np.linalg.norm(displacement) > 0.0
     assert tuple(notice.code for notice in result.notices) == (
-        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.linear_timoshenko_support_boundary",
         FRAME_NOTICE,
     )
 

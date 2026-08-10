@@ -1089,14 +1089,16 @@ def _build_import_notices(
         return ()
     notices: list[AbaqusImportNotice] = [
         AbaqusImportNotice(
-            code="abaqus.b31.euler_bernoulli_approximation",
+            code="abaqus.b31.linear_timoshenko_support_boundary",
             message=(
-                "The source uses Abaqus B31, a shear-flexible Timoshenko "
-                "family. The current solver maps the supported input subset "
-                "to a linear Euler–Bernoulli Beam2 and does not provide "
-                "shear-deformation numerical parity. Do not rely on this "
-                "result for shear-sensitive, short/thick, nonlinear, or "
-                "Abaqus-result-reproduction work."
+                "The supported Abaqus B31 input subset maps to the solver's "
+                "linear, small-deformation, static Timoshenko Beam2 "
+                "formulation, including transverse shear deformation. This "
+                "does not claim full Abaqus B31 numerical equivalence: "
+                "nonlinear and dynamic or mass behavior, Abaqus "
+                "element-length slenderness compensation, user-defined "
+                "transverse shear stiffness, warping or a seventh degree of "
+                "freedom, and PIPE or arbitrary sections remain unsupported."
             ),
             locations=tuple(locations),
         ),

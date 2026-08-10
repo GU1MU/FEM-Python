@@ -45,7 +45,7 @@ MIXED_PLATE = (
     / "data"
     / "MixedPlateCps3Cps4_PerforatedJob.inp"
 )
-B31_NOTICE = "abaqus.b31.euler_bernoulli_approximation"
+B31_NOTICE = "abaqus.b31.linear_timoshenko_support_boundary"
 B31_NORMAL_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
 PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (

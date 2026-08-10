@@ -147,7 +147,10 @@ def test_isolated_default_frame_is_valid_and_right_handed(tmp_path: Path) -> Non
     assert frame.local_x == pytest.approx((1.0, 0.0, 0.0))
     assert frame.local_y == pytest.approx((0.0, 0.0, 1.0))
     assert frame.local_z == pytest.approx((0.0, -1.0, 0.0))
-    assert result.notices[0].code == "abaqus.b31.euler_bernoulli_approximation"
+    assert (
+        result.notices[0].code
+        == "abaqus.b31.linear_timoshenko_support_boundary"
+    )
 
 
 def test_kink_and_branch_keep_shared_nodes_and_report_generated_groups(
@@ -174,7 +177,7 @@ def test_kink_and_branch_keep_shared_nodes_and_report_generated_groups(
     assert result.model.mesh.num_nodes == 5
     assert result.model.mesh.num_elements == 4
     assert tuple(notice.code for notice in result.notices) == (
-        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.linear_timoshenko_support_boundary",
         "abaqus.b31.nodal_normal_generation_approximation",
     )
     report = _frame_report(result.model)

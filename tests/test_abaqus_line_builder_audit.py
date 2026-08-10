@@ -372,7 +372,7 @@ def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
     assert tuple(
         notice.code for notice in result.notices
     ) == (
-        "abaqus.b31.euler_bernoulli_approximation",
+        "abaqus.b31.linear_timoshenko_support_boundary",
         "abaqus.b31.nodal_normal_generation_approximation",
     )
     notice = result.notices[1]
