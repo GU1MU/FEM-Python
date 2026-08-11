@@ -451,6 +451,13 @@ class SketchDraftController:
 
     add_constraint_solved = add_constraint_and_solve
 
+    def add_constraints_and_solve(
+        self, constraints: tuple[SketchConstraint, ...]
+    ) -> SketchSolveResult:
+        """Add several constraints through one atomic solver transaction."""
+
+        return self.commit_constrained_edit(add_constraints=tuple(constraints))
+
     def move_points_constrained(
         self, coordinates: dict[str, tuple[float, float]]
     ) -> SketchSolveResult:

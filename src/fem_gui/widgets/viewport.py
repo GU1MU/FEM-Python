@@ -6565,6 +6565,17 @@ class FEMViewport(QWidget):
         """Render once after a caller completes a batch of viewport updates."""
         self._render()
 
+    def schedule_resize_repaint(self) -> None:
+        """Merge a geometry commit into QtInteractor's pending resize paint."""
+        if self._plotter is not None:
+            try:
+                self._plotter.update()
+            except (AttributeError, RuntimeError, TypeError):
+                self.update()
+            self.nativeSurfaceUpdated.emit()
+            return
+        self.update()
+
     def invalidate_boundary_cache(self) -> None:
         """Drop GUI-only expanded boundary data after analysis definitions change."""
         self._boundary_cache.clear()

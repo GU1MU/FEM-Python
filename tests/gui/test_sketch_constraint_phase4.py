@@ -223,6 +223,111 @@ def test_dimension_is_reference_until_edit_dialog_sets_driving_value(
     )
 
 
+def test_fixed_constraint_lists_coordinates_and_edit_moves_circle(
+    monkeypatch,
+) -> None:
+    _application()
+    controller = SketchDraftController("固定圆心")
+    controller.add_circle((5.0, 4.0), 2.0, point_id="O", curve_id="C1")
+    panel = SketchEditorPanel(controller)
+    fixed = panel.create_constraint("fixed", ("O",))
+
+    assert isinstance(fixed, SketchFixedConstraint)
+    assert panel.constraints_table.item(0, 1).text() == "5.00, 4.00"
+    panel.constraints_table.setCurrentCell(0, 0)
+    assert panel.edit_constraint_button.isEnabled()
+
+    def accept_edit(dialog) -> QDialog.DialogCode:
+        dialog.u_spin.setValue(7.25)
+        dialog.v_spin.setValue(-1.5)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        sketch_editor_panel_module._FixedConstraintEditorDialog,
+        "exec",
+        accept_edit,
+    )
+    panel.edit_constraint_button.click()
+
+    edited = controller.constraints[0]
+    center = next(point for point in controller.snapshot().points if point.id == "O")
+    circle = controller.snapshot().curves[0]
+    assert isinstance(edited, SketchFixedConstraint)
+    assert (edited.u, edited.v) == (7.25, -1.5)
+    assert (center.u, center.v) == (7.25, -1.5)
+    assert circle.radius == 2.0
+    assert panel.constraints_table.item(0, 1).text() == "7.25, -1.50"
+
+    controller.undo()
+    restored = next(point for point in controller.snapshot().points if point.id == "O")
+    assert (restored.u, restored.v) == (5.0, 4.0)
+
+
+def test_staged_fixed_selection_creates_one_constraint_per_point_atomically() -> None:
+    _application()
+    controller = SketchDraftController("批量固定")
+    controller.add_point("P1", 0.0, 0.0)
+    controller.add_point("P2", 2.0, 3.0)
+    controller.add_line("L1", "P1", "P2")
+    panel = SketchEditorPanel(controller)
+    before = controller.snapshot()
+
+    panel._start_constraint_command("fixed")
+    panel._select_point("P1")
+    panel._select_point("P2")
+    assert panel.confirm_constraint_command_button.isEnabled()
+    assert "2 个点" in panel.constraint_command_prompt.text()
+    panel._confirm_constraint_command()
+
+    assert len(controller.constraints) == 2
+    assert all(
+        isinstance(item, SketchFixedConstraint) for item in controller.constraints
+    )
+    assert controller.snapshot().revision == before.revision + 1
+    controller.undo()
+    assert controller.snapshot().constraints == ()
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_type"),
+    (
+        ("vertical", SketchVerticalConstraint),
+        ("distance", SketchDistanceDimension),
+    ),
+)
+def test_staged_multi_line_selection_creates_independent_constraints_atomically(
+    kind, expected_type
+) -> None:
+    _application()
+    controller = SketchDraftController("批量直线约束")
+    for point in (
+        SketchPoint("P1", 0.0, 0.0),
+        SketchPoint("P2", 0.0, 1.0),
+        SketchPoint("P3", 2.0, 0.0),
+        SketchPoint("P4", 2.0, 3.0),
+    ):
+        controller.add_point(point.id, point.u, point.v)
+    controller.add_line("L1", "P1", "P2")
+    controller.add_line("L2", "P3", "P4")
+    panel = SketchEditorPanel(controller)
+    before = controller.snapshot()
+
+    panel._start_constraint_command(kind)
+    panel._select_curve("L1")
+    panel._select_curve("L2")
+    assert panel.confirm_constraint_command_button.isEnabled()
+    assert "2 条直线" in panel.constraint_command_prompt.text()
+    panel._confirm_constraint_command()
+
+    assert len(controller.constraints) == 2
+    assert all(isinstance(item, expected_type) for item in controller.constraints)
+    if kind == "distance":
+        assert all(not item.driving for item in controller.constraints)
+    assert controller.snapshot().revision == before.revision + 1
+    controller.undo()
+    assert controller.snapshot().constraints == ()
+
+
 def test_rectangle_fixed_corner_and_two_edited_lengths_fully_constrain() -> None:
     _application()
     controller = SketchDraftController("矩形约束流程")

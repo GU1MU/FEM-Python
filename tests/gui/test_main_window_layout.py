@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QMenu,
+    QRubberBand,
     QToolBar,
     QToolButton,
 )
@@ -109,14 +110,14 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
-def test_splitter_resize_uses_preview_line_and_queues_final_viewport_render():
+def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
     application = _application()
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
     application.processEvents()
-    render_calls = []
-    window.viewport.render = lambda: render_calls.append(True)
+    repaint_calls = []
+    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(True)
     splitter = window.main_splitter
     handle = splitter.handle(1)
     original_sizes = splitter.sizes()
@@ -132,7 +133,7 @@ def test_splitter_resize_uses_preview_line_and_queues_final_viewport_render():
     application.processEvents()
 
     assert splitter.sizes() == original_sizes
-    assert render_calls == []
+    assert repaint_calls == []
 
     QTest.mouseRelease(
         handle,
@@ -142,9 +143,13 @@ def test_splitter_resize_uses_preview_line_and_queues_final_viewport_render():
     )
 
     assert splitter.sizes() != original_sizes
-    assert render_calls == []
+    assert repaint_calls == [True]
     application.processEvents()
-    assert render_calls == [True]
+    assert repaint_calls == [True]
+    assert not any(
+        band.isVisible()
+        for band in splitter.findChildren(QRubberBand)
+    )
     window.close()
 
 
@@ -154,19 +159,19 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
     window.show()
     window.resize(1000, 700)
     application.processEvents()
-    render_calls = []
-    window.viewport.render = lambda: render_calls.append(True)
+    repaint_calls = []
+    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(True)
     host = window.viewport_panel.overlay_host
     baseline_width = window.viewport.width()
 
     host.set_drawer_open(True, animated=False)
 
     assert window.viewport.width() == baseline_width - host.drawer_width
-    assert render_calls == []
+    assert repaint_calls == [True]
     application.processEvents()
-    assert render_calls == [True]
+    assert repaint_calls == [True]
 
-    render_calls.clear()
+    repaint_calls.clear()
     handle = host.agent_chat_drawer.resize_handle
     start = handle.rect().center()
     drawer_width = host.drawer_width
@@ -183,7 +188,7 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
     assert host._drawer_resize_preview.isVisible()
     assert host.drawer_width == drawer_width
     assert window.viewport.width() == viewport_width
-    assert render_calls == []
+    assert repaint_calls == []
 
     QTest.mouseRelease(
         handle,
@@ -194,9 +199,9 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
 
     assert host.drawer_width == drawer_width + 30
     assert window.viewport.width() == viewport_width - 30
-    assert render_calls == []
+    assert repaint_calls == [True]
     application.processEvents()
-    assert render_calls == [True]
+    assert repaint_calls == [True]
     window.close()
 
 

@@ -42,6 +42,7 @@ from fem.geometry import (
     SketchCircle,
     SketchCoincidentConstraint,
     SketchConcentricConstraint,
+    SketchConstraint,
     SketchDistanceDimension,
     SketchEqualLengthConstraint,
     SketchEqualRadiusConstraint,
@@ -264,6 +265,55 @@ class _DimensionEditorDialog(QDialog):
 
     def eventFilter(self, watched: object, event: object) -> bool:
         if watched is self.value_spin and event.type() == QEvent.Type.Wheel:
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
+
+class _FixedConstraintEditorDialog(QDialog):
+    """Edit the target coordinates stored by one fixed-point constraint."""
+
+    def __init__(
+        self,
+        u: float,
+        v: float,
+        *,
+        use_xy_labels: bool,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("sketchFixedConstraintEditorDialog")
+        self.setWindowTitle("编辑约束")
+        self.u_spin = self._coordinate_spin("sketchFixedConstraintU", u)
+        self.v_spin = self._coordinate_spin("sketchFixedConstraintV", v)
+        first_label, second_label = (
+            ("X 坐标", "Y 坐标") if use_xy_labels else ("U 坐标", "V 坐标")
+        )
+        form = QFormLayout()
+        form.addRow(first_label, self.u_spin)
+        form.addRow(second_label, self.v_spin)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def _coordinate_spin(self, object_name: str, value: float) -> QDoubleSpinBox:
+        editor = QDoubleSpinBox(self)
+        editor.setObjectName(object_name)
+        editor.setDecimals(2)
+        editor.setRange(-1.0e12, 1.0e12)
+        editor.setSingleStep(0.1)
+        editor.setValue(value)
+        editor.installEventFilter(self)
+        return editor
+
+    def eventFilter(self, watched: object, event: object) -> bool:
+        if watched in (self.u_spin, self.v_spin) and event.type() == QEvent.Type.Wheel:
             event.accept()
             return True
         return super().eventFilter(watched, event)
@@ -1510,6 +1560,11 @@ class SketchEditorPanel(QWidget):
         targets = self._constraint_command_targets
         if kind is None:
             return ""
+        if kind in {"fixed", "horizontal", "vertical"} and targets:
+            entity_text = "个点" if kind == "fixed" else "条直线"
+            return f"已选择 {len(targets)} {entity_text}；可继续选择，或点击确定"
+        if kind == "distance" and targets and targets[0][0] == "curve":
+            return f"已选择 {len(targets)} 条直线；可继续选择，或点击确定"
         if self._constraint_command_complete():
             return f"{_CONSTRAINT_LABELS[kind]}：点击确定添加约束"
         if kind == "coincident":
@@ -1517,9 +1572,9 @@ class SketchEditorPanel(QWidget):
         if kind == "point_on_curve":
             return "请选择点" if not targets else "请选择曲线"
         if kind in {"horizontal", "vertical"}:
-            return "请选择一条直线"
+            return "请选择一条或多条直线"
         if kind == "fixed":
-            return "请选择一个点"
+            return "请选择一个或多个点"
         if kind in {"parallel", "perpendicular", "equal_length", "angle"}:
             return "请选择第一条直线" if not targets else "请选择第二条直线"
         if kind == "tangent":
@@ -1532,7 +1587,7 @@ class SketchEditorPanel(QWidget):
             )
         if kind == "distance":
             return (
-                "请选择一条直线，或选择第一个点"
+                "请选择一条或多条直线，或选择第一个点"
                 if not targets
                 else "请选择第二个点"
             )
@@ -1543,12 +1598,14 @@ class SketchEditorPanel(QWidget):
     def _constraint_command_complete(self) -> bool:
         kind = self._constraint_command_kind
         targets = self._constraint_command_targets
-        if kind in {"horizontal", "vertical", "fixed", "radius"}:
+        if kind in {"horizontal", "vertical", "fixed"}:
+            return len(targets) >= 1
+        if kind == "radius":
             return len(targets) == 1
         if kind == "distance":
-            return (
-                len(targets) == 1 and targets[0][0] == "curve"
-            ) or len(targets) == 2
+            return (bool(targets) and all(item[0] == "curve" for item in targets)) or (
+                len(targets) == 2 and all(item[0] == "point" for item in targets)
+            )
         return kind is not None and len(targets) == 2
 
     def _constraint_target_allowed(self, entity_kind: str, entity_id: str) -> bool:
@@ -1587,6 +1644,8 @@ class SketchEditorPanel(QWidget):
                 return entity_kind == "point" or (
                     entity_kind == "curve" and isinstance(curve, SketchLine)
                 )
+            if targets[0][0] == "curve":
+                return entity_kind == "curve" and isinstance(curve, SketchLine)
             return targets[0][0] == "point" and entity_kind == "point"
         return False
 
@@ -1594,12 +1653,26 @@ class SketchEditorPanel(QWidget):
         target = (str(entity_kind), str(entity_id))
         if target in self._constraint_command_targets:
             index = self._constraint_command_targets.index(target)
-            del self._constraint_command_targets[index:]
+            if self._constraint_command_kind in {
+                "fixed",
+                "horizontal",
+                "vertical",
+                "distance",
+            }:
+                del self._constraint_command_targets[index]
+            else:
+                del self._constraint_command_targets[index:]
             self._update_constraint_command()
             return
-        if self._constraint_command_complete() or not self._constraint_target_allowed(
-            *target
-        ):
+        batch_kind = self._constraint_command_kind in {
+            "fixed",
+            "horizontal",
+            "vertical",
+            "distance",
+        }
+        if (
+            self._constraint_command_complete() and not batch_kind
+        ) or not self._constraint_target_allowed(*target):
             return
         self._constraint_command_targets.append(target)
         self._update_constraint_command()
@@ -1623,15 +1696,18 @@ class SketchEditorPanel(QWidget):
         if kind is None:
             return
         try:
-            constraint = self.create_constraint(
+            constraints = self.create_constraints(
                 kind,
-                tuple(entity_id for _entity_kind, entity_id in self._constraint_command_targets),
+                tuple(
+                    entity_id
+                    for _entity_kind, entity_id in self._constraint_command_targets
+                ),
                 driving=False,
             )
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
             return
-        if constraint is not None:
+        if constraints:
             self._end_constraint_command()
 
     def _cancel_constraint_command(self) -> None:
@@ -1643,6 +1719,94 @@ class SketchEditorPanel(QWidget):
         self.constraint_command_bar.hide()
         if self._viewport is not None:
             self._viewport.end_sketch_constraint_selection()
+
+    def create_constraints(
+        self,
+        kind: str,
+        entity_ids: tuple[str, ...],
+        *,
+        value: float | None = None,
+        driving: bool = False,
+    ) -> tuple[SketchConstraint, ...]:
+        """Create one or more independent constraints in one solver transaction."""
+
+        normalized = str(kind).strip().casefold()
+        targets = tuple(str(item).strip() for item in entity_ids)
+        if normalized not in {"fixed", "horizontal", "vertical", "distance"}:
+            constraint = self.create_constraint(
+                normalized, targets, value=value, driving=driving
+            )
+            return () if constraint is None else (constraint,)
+
+        controller = self._require_controller()
+        snapshot = controller.snapshot()
+        point_map = {point.id: point for point in snapshot.points}
+        curve_map = {curve.id: curve for curve in snapshot.curves}
+        if any(not item for item in targets):
+            raise ValueError("约束目标无效：实体 ID 不能为空")
+        if len(set(targets)) != len(targets):
+            raise ValueError("约束目标无效：不能重复选择同一个实体")
+
+        if normalized == "fixed":
+            if not targets or any(item not in point_map for item in targets):
+                raise ValueError("约束目标无效：固定约束需要一个或多个草图点")
+        elif normalized in {"horizontal", "vertical"}:
+            if not targets or any(
+                not isinstance(curve_map.get(item), SketchLine) for item in targets
+            ):
+                raise ValueError("约束目标无效：该约束需要一条或多条直线")
+        elif not targets or not all(
+            isinstance(curve_map.get(item), SketchLine) for item in targets
+        ):
+            constraint = self.create_constraint(
+                normalized, targets, value=value, driving=driving
+            )
+            return () if constraint is None else (constraint,)
+
+        used = {item.id.casefold() for item in snapshot.constraints}
+        next_index = 1
+
+        def next_constraint_id() -> str:
+            nonlocal next_index
+            while f"C{next_index}".casefold() in used:
+                next_index += 1
+            constraint_id = f"C{next_index}"
+            used.add(constraint_id.casefold())
+            next_index += 1
+            return constraint_id
+
+        constraints: list[SketchConstraint] = []
+        for target in targets:
+            constraint_id = next_constraint_id()
+            if normalized == "fixed":
+                point = point_map[target]
+                constraint = SketchFixedConstraint(
+                    constraint_id, point.id, point.u, point.v
+                )
+            elif normalized == "horizontal":
+                constraint = SketchHorizontalConstraint(constraint_id, target)
+            elif normalized == "vertical":
+                constraint = SketchVerticalConstraint(constraint_id, target)
+            else:
+                line = curve_map[target]
+                first = point_map[line.start_point_id]
+                second = point_map[line.end_point_id]
+                measured = math.hypot(second.u - first.u, second.v - first.v)
+                constraint = SketchDistanceDimension(
+                    constraint_id,
+                    line.start_point_id,
+                    line.end_point_id,
+                    measured if value is None or not driving else value,
+                    driving=driving,
+                )
+            constraints.append(constraint)
+
+        result = controller.add_constraints_and_solve(tuple(constraints))
+        self._set_status(solve_status_text(result))
+        if result.succeeded:
+            self._refresh()
+            return tuple(constraints)
+        return ()
 
     def create_constraint(
         self,
@@ -1792,6 +1956,29 @@ class SketchEditorPanel(QWidget):
             return constraint
         return None
 
+    def edit_fixed_constraint(self, constraint_id: str, *, u: float, v: float) -> bool:
+        """Move a fixed point by replacing its stored target coordinates."""
+
+        controller = self._require_controller()
+        constraint = next(
+            item for item in controller.constraints if item.id == constraint_id
+        )
+        if not isinstance(constraint, SketchFixedConstraint):
+            raise ValueError("所选约束不是固定约束")
+        replacement = SketchFixedConstraint(
+            constraint.id,
+            constraint.point_id,
+            u,
+            v,
+            source=constraint.source,
+            enabled=constraint.enabled,
+        )
+        result = controller.replace_constraint_and_solve(constraint_id, replacement)
+        self._set_status(solve_status_text(result))
+        if result.succeeded:
+            self._refresh(selected_id=constraint.point_id)
+        return result.succeeded
+
     def edit_dimension(
         self, constraint_id: str, *, value: float, driving: bool
     ) -> bool:
@@ -1910,6 +2097,7 @@ class SketchEditorPanel(QWidget):
             isinstance(
                 constraint,
                 (
+                    SketchFixedConstraint,
                     SketchDistanceDimension,
                     SketchRadiusDimension,
                     SketchAngleDimension,
@@ -1927,6 +2115,24 @@ class SketchEditorPanel(QWidget):
             value for value in self._require_controller().constraints
             if value.id == constraint_id
         )
+        if isinstance(constraint, SketchFixedConstraint):
+            dialog = _FixedConstraintEditorDialog(
+                constraint.u,
+                constraint.v,
+                use_xy_labels=self._require_controller().plane == SketchPlane.xy(),
+                parent=self,
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            try:
+                self.edit_fixed_constraint(
+                    constraint.id,
+                    u=dialog.u_spin.value(),
+                    v=dialog.v_spin.value(),
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                self._set_status(str(error))
+            return
         if not isinstance(
             constraint,
             (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
@@ -1973,7 +2179,7 @@ class SketchEditorPanel(QWidget):
         )
         entity_ids = typed_targets or snapshot.selected_ids
         try:
-            self.create_constraint(
+            self.create_constraints(
                 kind,
                 entity_ids,
                 value=self.constraint_value_spin.value(),
@@ -2656,6 +2862,8 @@ class SketchEditorPanel(QWidget):
                     if measured is not None:
                         value = measured
                 value_text = f"{value:g}"
+            elif isinstance(constraint, SketchFixedConstraint):
+                value_text = f"{constraint.u:.2f}, {constraint.v:.2f}"
             self.constraints_table.setItem(row, 0, type_item)
             value_item = QTableWidgetItem(value_text)
             value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)

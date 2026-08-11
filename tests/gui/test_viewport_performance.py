@@ -56,12 +56,16 @@ class _Camera:
 class _Plotter:
     def __init__(self, camera=None) -> None:
         self.render_count = 0
+        self.update_count = 0
         self.camera = camera
         self.window_size = (800, 400)
         self.mesh_calls = []
 
     def render(self) -> None:
         self.render_count += 1
+
+    def update(self) -> None:
+        self.update_count += 1
 
     def add_mesh(self, dataset, **kwargs):
         self.mesh_calls.append((dataset, kwargs))
@@ -185,6 +189,25 @@ class _VisibilityActor:
 
     def SetVisibility(self, visible: bool) -> None:
         self.visible = bool(visible)
+
+
+def test_resize_repaint_uses_pending_qt_paint_without_explicit_render():
+    _application()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    surface_updates = []
+    viewport._plotter = plotter
+    viewport.nativeSurfaceUpdated.connect(
+        lambda: surface_updates.append(True)
+    )
+
+    viewport.schedule_resize_repaint()
+
+    assert plotter.update_count == 1
+    assert plotter.render_count == 0
+    assert surface_updates == [True]
+    viewport._plotter = None
+    viewport.close()
 
 
 def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):

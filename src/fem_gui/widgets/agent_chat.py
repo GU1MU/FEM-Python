@@ -3749,8 +3749,11 @@ class ModelViewportOverlayHost(QWidget):
 
     def _set_drawer_reveal(self, value: int) -> None:
         maximum = self._effective_drawer_width()
-        self._drawer_reveal = max(0, min(int(value), maximum))
-        self._position_overlays()
+        reveal = max(0, min(int(value), maximum))
+        if reveal == self._drawer_reveal:
+            return
+        self._drawer_reveal = reveal
+        self._position_overlays(sync_visibility=False)
 
     drawerReveal = Property(
         int,
@@ -3949,20 +3952,20 @@ class ModelViewportOverlayHost(QWidget):
         self._position_overlays()
         self._animation_finished()
 
-    def _position_overlays(self) -> None:
+    def _position_overlays(self, *, sync_visibility: bool = True) -> None:
         host_origin = self.mapToGlobal(QPoint(0, 0))
         drawer_width = self._effective_drawer_width()
         drawer_x = (
             host_origin.x() + self.width() - self._drawer_reveal
         )
-        self.agent_chat_drawer.setGeometry(
-            QRect(
-                drawer_x,
-                host_origin.y(),
-                drawer_width,
-                self.height(),
-            )
+        drawer_geometry = QRect(
+            drawer_x,
+            host_origin.y(),
+            drawer_width,
+            self.height(),
         )
+        if self.agent_chat_drawer.geometry() != drawer_geometry:
+            self.agent_chat_drawer.setGeometry(drawer_geometry)
         if 0 < self._drawer_reveal < drawer_width:
             self.agent_chat_drawer.setMask(
                 QRegion(
@@ -3977,42 +3980,43 @@ class ModelViewportOverlayHost(QWidget):
         else:
             self.agent_chat_drawer.setMask(QRegion())
 
-        launcher_size = self.chat_launcher.sizeHint()
-        requested_launcher_width = min(
-            max(34, launcher_size.width()),
-            self.width(),
-        )
-        requested_launcher_height = min(
-            max(34, launcher_size.height()),
-            self.height(),
-        )
-        self.chat_launcher.resize(
-            requested_launcher_width,
-            requested_launcher_height,
-        )
-        launcher_width = self.chat_launcher.width()
-        launcher_height = self.chat_launcher.height()
-        if self._launcher_position is None:
-            launcher_position = QPoint(
-                max(
-                    0,
-                    self.width() - launcher_width - self.LAUNCHER_MARGIN,
-                ),
-                min(
-                    self.LAUNCHER_MARGIN,
-                    max(0, self.height() - launcher_height),
-                ),
+        if not self._drawer_open and self._drawer_reveal == 0:
+            launcher_size = self.chat_launcher.sizeHint()
+            requested_launcher_width = min(
+                max(34, launcher_size.width()),
+                self.width(),
             )
-        else:
-            self._launcher_position = self._bounded_launcher_position(
-                self._launcher_position
+            requested_launcher_height = min(
+                max(34, launcher_size.height()),
+                self.height(),
             )
-            launcher_position = self._launcher_position
-        self.chat_launcher.move(
-            host_origin + launcher_position,
-        )
+            self.chat_launcher.resize(
+                requested_launcher_width,
+                requested_launcher_height,
+            )
+            launcher_width = self.chat_launcher.width()
+            launcher_height = self.chat_launcher.height()
+            if self._launcher_position is None:
+                launcher_position = QPoint(
+                    max(
+                        0,
+                        self.width() - launcher_width - self.LAUNCHER_MARGIN,
+                    ),
+                    min(
+                        self.LAUNCHER_MARGIN,
+                        max(0, self.height() - launcher_height),
+                    ),
+                )
+            else:
+                self._launcher_position = self._bounded_launcher_position(
+                    self._launcher_position
+                )
+                launcher_position = self._launcher_position
+            self.chat_launcher.move(
+                host_origin + launcher_position,
+            )
         bottom_overlay = self._bottom_overlay
-        if bottom_overlay is not None:
+        if bottom_overlay is not None and self._bottom_overlay_visible:
             overlay_height = min(
                 max(1, bottom_overlay.sizeHint().height()),
                 self.height(),
@@ -4030,7 +4034,8 @@ class ModelViewportOverlayHost(QWidget):
                 )
             )
         self._position_drawer_resize_preview()
-        self._sync_overlay_window_visibility()
+        if sync_visibility:
+            self._sync_overlay_window_visibility()
 
     def _refresh_anchor_window(self) -> None:
         anchor_window = self.window()

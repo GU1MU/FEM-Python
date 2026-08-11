@@ -17,7 +17,7 @@ from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
     QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy,
-    QSplitter,
+    QRubberBand, QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -3680,7 +3680,7 @@ class FEMMainWindow(QMainWindow):
             authoring_controller=self.agent_authoring_controller,
         )
         self.viewport_panel.overlay_host.viewportGeometryCommitted.connect(
-            lambda: self._defer_ui(self.viewport.render)
+            self._viewport_geometry_committed
         )
         self.viewport_panel.agent_chat_drawer.set_project_save_handler(
             self._start_agent_project_save
@@ -3717,9 +3717,7 @@ class FEMMainWindow(QMainWindow):
         # Keep the VTK viewport at a stable size while the user drags a handle.
         # Qt shows a rubber-band preview and commits the new layout on release.
         splitter.setOpaqueResize(False)
-        splitter.splitterMoved.connect(
-            lambda _position, _index: self._defer_ui(self.viewport.render)
-        )
+        splitter.splitterMoved.connect(self._main_splitter_moved)
         splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -3815,6 +3813,24 @@ class FEMMainWindow(QMainWindow):
         self.planar_boolean_panel.cancelRequested.connect(
             self.cancel_planar_boolean
         )
+
+    def _main_splitter_moved(self, _position: int, _index: int) -> None:
+        """Clear the non-opaque drag marker before repainting the VTK surface."""
+
+        self._clear_main_splitter_drag_marker()
+        self.viewport.schedule_resize_repaint()
+
+    def _viewport_geometry_committed(self) -> None:
+        """Coalesce drawer resizes with QtInteractor's queued resize paint."""
+
+        self.viewport.schedule_resize_repaint()
+
+    def _clear_main_splitter_drag_marker(self) -> None:
+        self.main_splitter.setRubberBand(-1)
+        for marker in self.main_splitter.findChildren(QRubberBand):
+            if marker.parent() is self.main_splitter:
+                marker.hide()
+        self.main_splitter.update()
 
     def _build_status_bar(self) -> None:
         self.status_panel = CAEStatusBar(self)

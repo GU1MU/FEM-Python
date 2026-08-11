@@ -474,6 +474,37 @@ def test_drawer_open_close_and_resize_commit_viewport_geometry():
     host.close()
 
 
+def test_drawer_animation_frames_only_update_reveal_geometry():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.show()
+    application.processEvents()
+    host._drawer_open = True
+    host._drawer_reveal = 0
+    position_calls = []
+    visibility_syncs = []
+    original_position_overlays = host._position_overlays
+
+    def track_position(*, sync_visibility=True):
+        position_calls.append(sync_visibility)
+        original_position_overlays(sync_visibility=sync_visibility)
+
+    host._position_overlays = track_position
+    host._sync_overlay_window_visibility = (
+        lambda: visibility_syncs.append(True)
+    )
+
+    host._set_drawer_reveal(120)
+    host._set_drawer_reveal(120)
+    host._set_drawer_reveal(240)
+
+    assert position_calls == [False, False]
+    assert visibility_syncs == []
+    host.close()
+
+
 def test_native_viewport_cannot_cover_independent_tool_overlays():
     application = _application()
     viewport = _ViewportProbe()
