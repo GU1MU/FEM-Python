@@ -89,22 +89,27 @@ def test_thick_cantilever_tip_deflection_includes_bending_and_shear(
 
     free_displacement = np.linalg.solve(stiffness[6:, 6:], free_load)
 
-    shear_rigidity = kGA_y if shear_axis == "y" else kGA_z
+    compensated_y, compensated_z = section.abaqus_b31_shear_rigidities(
+        elastic_modulus / (2.0 * (1.0 + element.props["nu"])),
+        element.props["nu"],
+        mesh.nodes[1].x,
+    )
+    shear_rigidity = compensated_y if shear_axis == "y" else compensated_z
     expected = (
         tip_force
         * mesh.nodes[1].x**3
-        / (3.0 * elastic_modulus * getattr(section, inertia_name))
+        / (4.0 * elastic_modulus * getattr(section, inertia_name))
         + tip_force * mesh.nodes[1].x / shear_rigidity
     )
     assert free_displacement[transverse_dof] == pytest.approx(expected)
 
 
-def test_slender_cantilever_converges_to_euler_bernoulli_without_locking() -> None:
+def test_slender_cantilever_matches_abaqus_b31_one_point_limit() -> None:
     length = 20.0
     mesh = _beam_mesh(length=length, height=0.08, width=0.06)
     element = mesh.elements[0]
     section = parse_beam2_section(element.props)
-    elastic_modulus, _, kGA_y, _ = _section_rigidities(mesh)
+    elastic_modulus, shear_modulus, _, _ = _section_rigidities(mesh)
     load = 100.0
     free_load = np.zeros(6)
     free_load[1] = load
@@ -117,9 +122,17 @@ def test_slender_cantilever_converges_to_euler_bernoulli_without_locking() -> No
     euler_bernoulli = load * length**3 / (
         3.0 * elastic_modulus * section.Izz
     )
-    timoshenko = euler_bernoulli + load * length / kGA_y
-    assert displacement == pytest.approx(timoshenko)
-    assert displacement == pytest.approx(euler_bernoulli, rel=1.0e-4)
+    compensated_y, _ = section.abaqus_b31_shear_rigidities(
+        shear_modulus,
+        element.props["nu"],
+        length,
+    )
+    b31 = load * (
+        length**3 / (4.0 * elastic_modulus * section.Izz)
+        + length / compensated_y
+    )
+    assert displacement == pytest.approx(b31)
+    assert displacement < euler_bernoulli
 
 
 def test_constant_and_zero_variation_frame_paths_match() -> None:
@@ -129,7 +142,12 @@ def test_constant_and_zero_variation_frame_paths_match() -> None:
     frame = resolve_beam_frame(mesh, element)
     field = BeamFrameField.constant(frame)
     section = parse_beam2_section(element.props)
-    elastic_modulus, shear_modulus, kGA_y, kGA_z = _section_rigidities(mesh)
+    elastic_modulus, shear_modulus, _, _ = _section_rigidities(mesh)
+    kGA_y, kGA_z = section.abaqus_b31_shear_rigidities(
+        shear_modulus,
+        element.props["nu"],
+        field.length,
+    )
 
     closed_form = kernel.stiffness(mesh, element)
     integrated = _beam2_variable_stiffness(
@@ -153,7 +171,12 @@ def test_uniform_line_load_preserves_balance_and_timoshenko_response() -> None:
     element = mesh.elements[0]
     kernel = get_element_kernel("Beam2")
     section = parse_beam2_section(element.props)
-    elastic_modulus, _, kGA_y, _ = _section_rigidities(mesh)
+    elastic_modulus, shear_modulus, _, _ = _section_rigidities(mesh)
+    kGA_y, _ = section.abaqus_b31_shear_rigidities(
+        shear_modulus,
+        element.props["nu"],
+        length,
+    )
     load_per_length = 2400.0
     local_load = kernel.local_line_load(
         mesh,
@@ -175,7 +198,7 @@ def test_uniform_line_load_preserves_balance_and_timoshenko_response() -> None:
     )
 
     expected_tip = (
-        load_per_length * length**4 / (8.0 * elastic_modulus * section.Izz)
+        load_per_length * length**4 / (12.0 * elastic_modulus * section.Izz)
         + load_per_length * length**2 / (2.0 * kGA_y)
     )
     assert local_load[1] + local_load[7] == pytest.approx(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cosh, hypot, isfinite, pi, sqrt, tanh
+from math import cosh, hypot, isfinite, pi, sqrt
 import operator
 from typing import Any, Mapping
 
@@ -18,6 +18,7 @@ _SECTION_FIELDS = {
     "hollow_circle": ("outer_radius", "inner_radius"),
     "rectangle": ("height", "width"),
 }
+ABAQUS_B31_SLENDERNESS_COMPENSATION = 0.25
 
 
 @dataclass(frozen=True)
@@ -43,18 +44,19 @@ class Beam2Section:
         self,
         poisson_ratio: float,
     ) -> tuple[float, float]:
-        """Return Cowper ``(kappa_y, kappa_z)`` for the local shear axes.
+        """Return Abaqus ``(kappa_y, kappa_z)`` for the local shear axes.
 
-        The coefficients depend on the section shape and isotropic material
-        Poisson ratio.  All currently supported sections are doubly symmetric,
-        so both directions have the same coefficient.
+        Abaqus uses 0.85 for RECT and 0.89 for CIRC.  Its THICK PIPE factor
+        follows the Cowper annulus expression and therefore depends on the
+        isotropic material Poisson ratio.  All supported sections are doubly
+        symmetric, so both directions have the same coefficient.
         """
 
         nu = _validated_poisson_ratio(poisson_ratio)
         if self.section_type == "rectangle":
-            kappa = 10.0 * (1.0 + nu) / (12.0 + 11.0 * nu)
+            kappa = 0.85
         elif self.section_type == "solid_circle":
-            kappa = 6.0 * (1.0 + nu) / (7.0 + 6.0 * nu)
+            kappa = 0.89
         else:
             assert self.outer_radius is not None and self.inner_radius is not None
             radius_ratio_squared = (self.inner_radius / self.outer_radius) ** 2
@@ -86,6 +88,58 @@ class Beam2Section:
             )
         kappa_y, kappa_z = self.shear_correction_factors(poisson_ratio)
         return kappa_y * shear * self.area, kappa_z * shear * self.area
+
+    def abaqus_b31_shear_rigidities(
+        self,
+        shear_modulus: float,
+        poisson_ratio: float,
+        length: float,
+        slenderness_compensation: float = ABAQUS_B31_SLENDERNESS_COMPENSATION,
+    ) -> tuple[float, float]:
+        """Return directionally compensated B31 shear rigidities.
+
+        The local-y shear mode bends about local z and therefore consumes
+        ``Izz``; the local-z shear mode consumes ``Iyy``.  Abaqus applies the
+        first-order factor independently to those two modes.
+        """
+
+        actual_y, actual_z = self.effective_shear_rigidities(
+            shear_modulus,
+            poisson_ratio,
+        )
+        try:
+            element_length = float(length)
+            compensation = float(slenderness_compensation)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Beam2 B31 length must be finite and > 0 and slenderness "
+                "compensation must be finite and >= 0"
+            ) from error
+        if not isfinite(element_length) or element_length <= 0.0:
+            raise ValueError(
+                "Beam2 B31 length must be finite and > 0, "
+                f"got {length!r}"
+            )
+        if not isfinite(compensation) or compensation < 0.0:
+            raise ValueError(
+                "Beam2 B31 slenderness compensation must be finite and >= 0, "
+                f"got {slenderness_compensation!r}"
+            )
+        factor_y = 1.0 / (
+            1.0
+            + compensation
+            * element_length**2
+            * self.area
+            / (12.0 * self.Izz)
+        )
+        factor_z = 1.0 / (
+            1.0
+            + compensation
+            * element_length**2
+            * self.area
+            / (12.0 * self.Iyy)
+        )
+        return factor_y * actual_y, factor_z * actual_z
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,17 +523,59 @@ def _circle_section(
 
 
 def _rectangle_torsion_constant(height: float, width: float) -> float:
-    """Return the Saint-Venant torsion constant from the convergent odd series."""
+    """Return Abaqus' effective default 5x5 integrated-RECT torsion constant.
+
+    Abaqus first obtains a normalized Prandtl stress function on its local
+    second-order cross-section model, then integrates the resulting torsional
+    shear-strain energy at the default 5x5 Simpson section points.  Eliminating
+    that fixed finite-dimensional solve gives the symmetric rational form
+    below.  It intentionally represents the default integrated-section
+    discretization, not the continuous rectangular Saint-Venant series.
+    """
+
     long_side = max(height, width)
     short_side = min(height, width)
-    series = 0.0
-    for odd in range(1, 10000, 2):
-        term = tanh(odd * pi * long_side / (2.0 * short_side)) / odd**5
-        series += term
-        if term < 1e-15:
-            break
-    correction = 192.0 * short_side * series / (pi**5 * long_side)
-    return long_side * short_side**3 * (1.0 - correction) / 3.0
+    aspect_ratio = long_side / short_side
+    transformed = ((aspect_ratio - 1.0) / (aspect_ratio + 1.0)) ** 2
+    reduced_numerator = (
+        (
+            (
+                (169.0 / 2400.0 * transformed - 0.18806666666666667)
+                * transformed
+                + 0.26943333333333336
+            )
+            * transformed
+            - 0.18806666666666667
+        )
+        * transformed
+        + 169.0 / 2400.0
+    )
+    denominator = (
+        (
+            (
+                (
+                    (
+                        (transformed - 0.72) * transformed - 0.5904
+                    )
+                    * transformed
+                    + 2.2592
+                )
+                * transformed
+                - 0.5904
+            )
+            * transformed
+            - 0.72
+        )
+        * transformed
+        + 1.0
+    )
+    dimensionless_constant = (
+        (1.0 + aspect_ratio**2)
+        * (1.0 - transformed) ** 2
+        * reduced_numerator
+        / denominator
+    )
+    return long_side * short_side**3 * dimensionless_constant
 
 
 def _rectangle_torsion_shear_abs_max(

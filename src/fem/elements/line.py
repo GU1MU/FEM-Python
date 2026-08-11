@@ -118,68 +118,13 @@ def _beam2_local_stiffness(
     kGA_y: float,
     kGA_z: float,
 ) -> np.ndarray:
-    """Return the local closed-form 12-by-12 Timoshenko stiffness.
+    """Return the one-point-integrated local B31 stiffness."""
 
-    The shear-flexibility parameters are retained analytically instead of
-    integrating equal-order displacement/rotation fields.  This is the
-    locking-free, exact two-node static Timoshenko element.
-    """
-    stiffness = np.zeros((12, 12), dtype=float)
-
-    def add(indices: tuple[int, ...], values: np.ndarray) -> None:
-        stiffness[np.ix_(indices, indices)] += values
-
-    add((0, 6), E * area / length * np.array([[1.0, -1.0], [-1.0, 1.0]]))
-    add((3, 9), G * J / length * np.array([[1.0, -1.0], [-1.0, 1.0]]))
-
-    phi_y, phi_z = _beam2_shear_flexibilities(
-        length,
-        E,
-        Iyy,
-        Izz,
-        kGA_y,
-        kGA_z,
+    _, strain = _beam2_b31_interpolation(0.5, length)
+    constitutive = np.diag(
+        (E * area, G * J, E * Iyy, E * Izz, kGA_y, kGA_z),
     )
-    bending_z = E * Izz / (length**3 * (1.0 + phi_y)) * np.array(
-        [
-            [12.0, 6.0 * length, -12.0, 6.0 * length],
-            [
-                6.0 * length,
-                (4.0 + phi_y) * length**2,
-                -6.0 * length,
-                (2.0 - phi_y) * length**2,
-            ],
-            [-12.0, -6.0 * length, 12.0, -6.0 * length],
-            [
-                6.0 * length,
-                (2.0 - phi_y) * length**2,
-                -6.0 * length,
-                (4.0 + phi_y) * length**2,
-            ],
-        ]
-    )
-    add((1, 5, 7, 11), bending_z)
-
-    bending_y = E * Iyy / (length**3 * (1.0 + phi_z)) * np.array(
-        [
-            [12.0, -6.0 * length, -12.0, -6.0 * length],
-            [
-                -6.0 * length,
-                (4.0 + phi_z) * length**2,
-                6.0 * length,
-                (2.0 - phi_z) * length**2,
-            ],
-            [-12.0, 6.0 * length, 12.0, 6.0 * length],
-            [
-                -6.0 * length,
-                (2.0 - phi_z) * length**2,
-                6.0 * length,
-                (4.0 + phi_z) * length**2,
-            ],
-        ]
-    )
-    add((2, 4, 8, 10), bending_y)
-    return stiffness
+    return length * (strain.T @ constitutive @ strain)
 
 
 def _beam2_shear_flexibilities(
@@ -198,94 +143,36 @@ def _beam2_shear_flexibilities(
     )
 
 
-def _beam2_bending_interpolation(
+def _beam2_b31_interpolation(
     fraction: float,
     length: float,
-    phi: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return exact static Timoshenko displacement, curvature and shear rows."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the single B31 first-order interpolation and strain owner."""
 
     r = float(fraction)
-    denominator = 1.0 + phi
-    displacement = np.array(
-        [
-            2.0 * r**3 - 3.0 * r**2 - phi * r + denominator,
-            length
-            * (
-                r**3
-                - (2.0 + phi / 2.0) * r**2
-                + (1.0 + phi / 2.0) * r
-            ),
-            -2.0 * r**3 + 3.0 * r**2 + phi * r,
-            length
-            * (
-                r**3
-                - (1.0 - phi / 2.0) * r**2
-                - phi * r / 2.0
-            ),
-        ],
-        dtype=float,
-    ) / denominator
-    curvature = np.array(
-        [
-            6.0 * (2.0 * r - 1.0) / length**2,
-            (6.0 * r - 4.0 - phi) / length,
-            6.0 * (1.0 - 2.0 * r) / length**2,
-            (6.0 * r - 2.0 + phi) / length,
-        ],
-        dtype=float,
-    ) / denominator
-    shear = phi / denominator * np.array(
-        (-1.0 / length, -0.5, 1.0 / length, -0.5),
-        dtype=float,
-    )
-    return displacement, curvature, shear
-
-
-def _beam2_shape_matrix(
-    fraction: float,
-    length: float,
-    phi_y: float,
-    phi_z: float,
-) -> np.ndarray:
-    """Return exact translational Timoshenko interpolation at one point."""
-
-    axial = (1.0 - float(fraction), float(fraction))
-    bending_y, _, _ = _beam2_bending_interpolation(fraction, length, phi_y)
-    bending_z, _, _ = _beam2_bending_interpolation(fraction, length, phi_z)
-    shape = np.zeros((3, 12), dtype=float)
-    shape[0, (0, 6)] = axial
-    shape[1, (1, 5, 7, 11)] = bending_y
-    shape[2, (2, 4, 8, 10)] = bending_z * (1.0, -1.0, 1.0, -1.0)
-    return shape
-
-
-def _beam2_strain_displacement(
-    fraction: float,
-    length: float,
-    phi_y: float,
-    phi_z: float,
-) -> np.ndarray:
-    """Return axial, torsion, curvature and shear interpolation."""
-
-    _, curvature_y, shear_y = _beam2_bending_interpolation(
-        fraction,
-        length,
-        phi_y,
-    )
-    _, curvature_z, shear_z = _beam2_bending_interpolation(
-        fraction,
-        length,
-        phi_z,
-    )
+    if not 0.0 <= r <= 1.0:
+        raise ValueError("Beam2 B31 interpolation fraction must be in [0, 1]")
+    shape = np.zeros((6, 12), dtype=float)
+    for component in range(6):
+        shape[component, (component, component + 6)] = (1.0 - r, r)
     strain = np.zeros((6, 12), dtype=float)
     strain[0, (0, 6)] = (-1.0 / length, 1.0 / length)
     strain[1, (3, 9)] = (-1.0 / length, 1.0 / length)
-    strain[2, (2, 4, 8, 10)] = curvature_z * (1.0, -1.0, 1.0, -1.0)
-    strain[3, (1, 5, 7, 11)] = curvature_y
-    strain[4, (1, 5, 7, 11)] = shear_y
-    strain[5, (2, 4, 8, 10)] = shear_z * (1.0, -1.0, 1.0, -1.0)
-    return strain
+    strain[2, (4, 10)] = (1.0 / length, -1.0 / length)
+    strain[3, (5, 11)] = (-1.0 / length, 1.0 / length)
+    strain[4, (1, 5, 7, 11)] = (
+        -1.0 / length,
+        -(1.0 - r),
+        1.0 / length,
+        -r,
+    )
+    strain[5, (2, 4, 8, 10)] = (
+        -1.0 / length,
+        1.0 - r,
+        1.0 / length,
+        r,
+    )
+    return shape, strain
 
 
 def _beam2_variable_stiffness(
@@ -299,31 +186,60 @@ def _beam2_variable_stiffness(
     kGA_y: float,
     kGA_z: float,
 ) -> np.ndarray:
-    """Integrate the straight Timoshenko stiffness over a varying frame field."""
-    phi_y, phi_z = _beam2_shear_flexibilities(
+    """Return B31 stiffness using its sole longitudinal integration point."""
+
+    local_stiffness = _beam2_local_stiffness(
         field.length,
         E,
+        area,
         Iyy,
         Izz,
+        G,
+        J,
         kGA_y,
         kGA_z,
     )
-    constitutive = np.diag(
-        (E * area, G * J, E * Iyy, E * Izz, kGA_y, kGA_z),
-    )
+    frame = field.frame_at_fraction(0.5)
+    transformation = _beam3_transformation(frame.rotation)
+    return transformation.T @ local_stiffness @ transformation
 
-    def contribution(_fraction: float, frame: BeamFrame) -> np.ndarray:
-        strain = _beam2_strain_displacement(
-            _fraction,
-            field.length,
-            phi_y,
-            phi_z,
-        )
-        transformation = _beam3_transformation(frame.rotation)
-        local_strain = strain @ transformation
-        return local_strain.T @ constitutive @ local_strain
 
-    return np.asarray(field.integrate(contribution), dtype=float)
+def _beam2_legacy_line_load_shape_matrix(
+    fraction: float,
+    length: float,
+    phi_y: float,
+    phi_z: float,
+) -> np.ndarray:
+    """Return the pre-Phase-2 translational load interpolation."""
+
+    def bending(phi: float) -> np.ndarray:
+        r = float(fraction)
+        denominator = 1.0 + phi
+        return np.array(
+            (
+                2.0 * r**3 - 3.0 * r**2 - phi * r + denominator,
+                length
+                * (
+                    r**3
+                    - (2.0 + phi / 2.0) * r**2
+                    + (1.0 + phi / 2.0) * r
+                ),
+                -2.0 * r**3 + 3.0 * r**2 + phi * r,
+                length
+                * (
+                    r**3
+                    - (1.0 - phi / 2.0) * r**2
+                    - phi * r / 2.0
+                ),
+            ),
+            dtype=float,
+        ) / denominator
+
+    shape = np.zeros((3, 12), dtype=float)
+    shape[0, (0, 6)] = (1.0 - float(fraction), float(fraction))
+    shape[1, (1, 5, 7, 11)] = bending(phi_y)
+    shape[2, (2, 4, 8, 10)] = bending(phi_z) * (1.0, -1.0, 1.0, -1.0)
+    return shape
 
 
 def _beam2_variable_line_load(
@@ -344,7 +260,7 @@ def _beam2_variable_line_load(
         )
 
     def contribution(_fraction: float, frame: BeamFrame) -> np.ndarray:
-        shape = _beam2_shape_matrix(
+        shape = _beam2_legacy_line_load_shape_matrix(
             _fraction,
             field.length,
             phi_y,
@@ -443,22 +359,13 @@ class Beam2Kernel:
         _validate_optional_rho(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
-        kGA_y, kGA_z = section.effective_shear_rigidities(G, nu)
-        if not field.is_constant:
-            return _beam2_variable_stiffness(
-                field,
-                E,
-                section.area,
-                section.Iyy,
-                section.Izz,
-                G,
-                section.J,
-                kGA_y,
-                kGA_z,
-            )
-        frame = field.as_constant_frame()
-        local = _beam2_local_stiffness(
-            frame.length,
+        kGA_y, kGA_z = section.abaqus_b31_shear_rigidities(
+            G,
+            nu,
+            field.length,
+        )
+        return _beam2_variable_stiffness(
+            field,
             E,
             section.area,
             section.Iyy,
@@ -468,8 +375,6 @@ class Beam2Kernel:
             kGA_y,
             kGA_z,
         )
-        transformation = _beam3_transformation(frame.rotation)
-        return transformation.T @ local @ transformation
 
     def body_force(
         self,
@@ -637,7 +542,11 @@ class Beam2Kernel:
         E, nu, section = _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
         G = E / (2.0 * (1.0 + nu))
-        kGA_y, kGA_z = section.effective_shear_rigidities(G, nu)
+        kGA_y, kGA_z = section.abaqus_b31_shear_rigidities(
+            G,
+            nu,
+            field.length,
+        )
         element_displacement = np.asarray(U, dtype=float)[
             list(mesh.element_dofs(elem))
         ]

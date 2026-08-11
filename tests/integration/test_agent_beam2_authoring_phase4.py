@@ -220,10 +220,14 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
         {"section_type": "rectangle", "height": 20.0, "width": 10.0}
     )
     shear = young / (2.0 * (1.0 + poisson))
-    shear_y, _ = section.effective_shear_rigidities(shear, poisson)
+    shear_y, _ = section.abaqus_b31_shear_rigidities(
+        shear,
+        poisson,
+        length,
+    )
     expected_axial = 1000.0 * length / (young * section.area)
     expected_bending = -100.0 * (
-        length**3 / (3.0 * young * section.Izz) + length / shear_y
+        length**3 / (4.0 * young * section.Izz) + length / shear_y
     )
     expected_bending_rotation = -100.0 * length**2 / (
         2.0 * young * section.Izz

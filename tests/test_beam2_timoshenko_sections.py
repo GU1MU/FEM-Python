@@ -27,9 +27,9 @@ def _hollow_circle(inner_radius: float):
     )
 
 
-def test_rectangle_cowper_factors_match_independent_formula() -> None:
+def test_rectangle_factor_matches_abaqus_library_value() -> None:
     poisson_ratio = 0.3
-    expected = 10.0 * (1.0 + poisson_ratio) / (12.0 + 11.0 * poisson_ratio)
+    expected = 0.85
 
     kappa_y, kappa_z = _rectangle().shear_correction_factors(poisson_ratio)
 
@@ -37,9 +37,9 @@ def test_rectangle_cowper_factors_match_independent_formula() -> None:
     assert kappa_z == pytest.approx(expected)
 
 
-def test_solid_circle_cowper_factors_match_independent_limit() -> None:
+def test_solid_circle_factor_matches_abaqus_library_value() -> None:
     poisson_ratio = 0.3
-    expected = 6.0 * (1.0 + poisson_ratio) / (7.0 + 6.0 * poisson_ratio)
+    expected = 0.89
 
     kappa_y, kappa_z = _solid_circle().shear_correction_factors(poisson_ratio)
 

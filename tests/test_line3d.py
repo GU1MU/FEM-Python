@@ -146,7 +146,7 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
         ),
         (
             {"section_type": "rectangle", "height": 4.0, "width": 1.0},
-            (4.0, 16.0 / 3.0, 1.0 / 3.0, 1.1232518332307355),
+            (4.0, 16.0 / 3.0, 1.0 / 3.0, 1.1043940392156846),
         ),
     ],
 )
@@ -193,12 +193,12 @@ def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
     assert wide.Izz == pytest.approx(tall.Iyy)
 
 
-def test_beam2_square_section_torsion_matches_saint_venant_coefficient():
+def test_beam2_square_section_torsion_matches_abaqus_default_rect_coefficient():
     section = parse_beam2_section(
         {"section_type": "rectangle", "height": 2.0, "width": 2.0}
     )
 
-    assert section.J == pytest.approx(0.14057701495517982 * 2.0**4)
+    assert section.J == pytest.approx((169.0 / 1200.0) * 2.0**4)
 
 
 @pytest.mark.parametrize(
@@ -442,15 +442,16 @@ def test_beam2_cantilever_matches_closed_form_tip_response(dof, section_property
         expected = load * 4.0 / (210.0 * section.area)
     elif dof in (1, 2):
         shear_modulus = 210.0 / (2.0 * (1.0 + 0.25))
-        shear_rigidities = section.effective_shear_rigidities(
+        shear_rigidities = section.abaqus_b31_shear_rigidities(
             shear_modulus,
             0.25,
+            4.0,
         )
         shear_rigidity = shear_rigidities[dof - 1]
         expected = (
             load
             * 4.0**3
-            / (3.0 * 210.0 * getattr(section, section_property))
+            / (4.0 * 210.0 * getattr(section, section_property))
             + load * 4.0 / shear_rigidity
         )
     else:

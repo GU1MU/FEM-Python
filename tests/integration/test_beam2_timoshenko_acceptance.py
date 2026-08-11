@@ -98,7 +98,11 @@ def _bending_compliance(
     section = parse_beam2_section(
         {"section_type": section_type, **dimensions}
     )
-    shear_y, shear_z = section.effective_shear_rigidities(_G, _NU)
+    shear_y, shear_z = section.abaqus_b31_shear_rigidities(
+        _G,
+        _NU,
+        length,
+    )
     if component == 2:
         inertia = section.Izz
         shear_rigidity = shear_y
@@ -106,8 +110,8 @@ def _bending_compliance(
         inertia = section.Iyy
         shear_rigidity = shear_z
     euler_bernoulli = length**3 / (3.0 * _E * inertia)
-    timoshenko = euler_bernoulli + length / shear_rigidity
-    return euler_bernoulli, timoshenko
+    b31 = length**3 / (4.0 * _E * inertia) + length / shear_rigidity
+    return euler_bernoulli, b31
 
 
 @pytest.mark.parametrize(("section_type", "dimensions"), _SECTION_CASES)
@@ -116,7 +120,7 @@ def _bending_compliance(
     ("length", "regime"),
     ((0.5, "thick"), (12.0, "slender")),
 )
-def test_three_sections_match_both_timoshenko_bending_limits(
+def test_three_sections_match_abaqus_b31_bending_limits(
     section_type: str,
     dimensions: dict[str, float],
     component: int,
@@ -135,7 +139,7 @@ def test_three_sections_match_both_timoshenko_bending_limits(
         ),
         "Combined",
     )
-    euler_bernoulli, timoshenko = _bending_compliance(
+    euler_bernoulli, b31 = _bending_compliance(
         section_type,
         dimensions,
         length=length,
@@ -143,15 +147,11 @@ def test_three_sections_match_both_timoshenko_bending_limits(
     )
     displacement = result.nodal_displacement(2, component)
 
-    assert displacement == pytest.approx(load * timoshenko, rel=2.0e-10)
-    assert displacement - load * euler_bernoulli == pytest.approx(
-        load * (timoshenko - euler_bernoulli),
-        rel=2.0e-10,
-    )
+    assert displacement == pytest.approx(load * b31, rel=2.0e-10)
     if regime == "thick":
-        assert timoshenko > 1.05 * euler_bernoulli
+        assert b31 > 1.05 * euler_bernoulli
     else:
-        assert timoshenko == pytest.approx(euler_bernoulli, rel=2.0e-3)
+        assert b31 < euler_bernoulli
 
 
 @pytest.mark.parametrize(("section_type", "dimensions"), _SECTION_CASES)
@@ -172,14 +172,18 @@ def test_combined_load_balances_displacement_reaction_energy_and_end_forces(
     )
     result = static_linear.solve(model, "Combined")
     section = parse_beam2_section(result.model.mesh.elements[0].props)
-    shear_y, shear_z = section.effective_shear_rigidities(_G, _NU)
+    shear_y, shear_z = section.abaqus_b31_shear_rigidities(
+        _G,
+        _NU,
+        length,
+    )
 
     expected_tip = (
         axial * length / (_E * section.area),
         transverse_y
-        * (length**3 / (3.0 * _E * section.Izz) + length / shear_y),
+        * (length**3 / (4.0 * _E * section.Izz) + length / shear_y),
         transverse_z
-        * (length**3 / (3.0 * _E * section.Iyy) + length / shear_z),
+        * (length**3 / (4.0 * _E * section.Iyy) + length / shear_z),
         torque * length / (_G * section.J),
     )
     assert tuple(

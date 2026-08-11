@@ -321,10 +321,14 @@ def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactio
     section = parse_beam2_section(model.mesh.elements[0].props)
     Izz = section.Izz
     shear_modulus = E / (2.0 * (1.0 + nu))
-    shear_y, _ = section.effective_shear_rigidities(shear_modulus, nu)
+    shear_y, _ = section.abaqus_b31_shear_rigidities(
+        shear_modulus,
+        nu,
+        length,
+    )
 
     expected_tip = (
-        q * length**4 / (8.0 * E * Izz)
+        q * length**4 / (12.0 * E * Izz)
         + q * length**2 / (2.0 * shear_y)
     )
     assert result.U[mesh.global_dof(2, 1)] == pytest.approx(expected_tip)
