@@ -272,63 +272,36 @@ def _materialize_beam(
     cancellation: object | None,
 ) -> tuple[FieldData, ...]:
     allowed = {
-        FieldRecoveryKind.BEAM_SECTION_END,
-        FieldRecoveryKind.BEAM_SECTION_POINT,
-        FieldRecoveryKind.BEAM_NODE_ENVELOPE,
+        FieldRecoveryKind.BEAM_INTEGRATION_POINT_SF,
+        FieldRecoveryKind.BEAM_INTEGRATION_POINT_SM,
+        FieldRecoveryKind.BEAM_INTEGRATION_POINT_S11,
     }
-    if any(entry.recovery_kind not in allowed for _key, entry in targets):
+    if any(
+        entry.recovery_kind not in allowed
+        for _key, entry in targets
+    ):
         raise ValueError("Beam materialization received a non-Beam target")
     check_cancellation(cancellation)
     checkpoint = _checkpoint_for_cancellation(cancellation)
-    recovered = beam.recover_section_stress(
+    integration_point = beam.recover_integration_point_s11(
         result,
         checkpoint=checkpoint,
     )
-    section_end = recovered.section_end
-    check_cancellation(cancellation)
-    envelope = None
     fields = []
     for key, entry in targets:
-        if entry.recovery_kind is FieldRecoveryKind.BEAM_SECTION_POINT:
+        if entry.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_S11:
             point_number = key.request.field_id.section_point_number
             assert point_number is not None
-            fields.append(
-                _simple_rows_field(
-                    source=source,
-                    key=key,
-                    descriptor=entry.descriptor,
-                    rows=recovered.point_field(point_number).rows,
-                    association=FieldAssociation.ELEMENT_NODE,
-                    cancellation=cancellation,
-                )
-            )
-            continue
-        if entry.recovery_kind is FieldRecoveryKind.BEAM_SECTION_END:
-            fields.append(
-                _simple_rows_field(
-                    source=source,
-                    key=key,
-                    descriptor=entry.descriptor,
-                    rows=section_end.rows,
-                    association=FieldAssociation.ELEMENT_NODE,
-                    cancellation=cancellation,
-                )
-            )
-            continue
-        if envelope is None:
-            check_cancellation(cancellation)
-            envelope = beam.section_node_envelope(
-                section_end,
-                checkpoint=checkpoint,
-            )
-            check_cancellation(cancellation)
+            rows = integration_point.point_field(point_number).rows
+        else:
+            rows = integration_point.section_forces.rows
         fields.append(
             _simple_rows_field(
                 source=source,
                 key=key,
                 descriptor=entry.descriptor,
-                rows=envelope.rows,
-                association=FieldAssociation.NODE,
+                rows=rows,
+                association=FieldAssociation.INTEGRATION_POINT,
                 cancellation=cancellation,
             )
         )
@@ -487,6 +460,23 @@ def _simple_rows_field(
                     element_id=row.element_id,
                     local_node=row.local_node,
                     node_id=row.node_id,
+                    section_point=getattr(row, "section_point", None),
+                )
+            )
+        elif association is FieldAssociation.INTEGRATION_POINT:
+            locations.append(
+                FieldLocation(
+                    association=association,
+                    coordinates=_triplet(
+                        row.coordinates,
+                        label="integration-point coordinates",
+                    ),
+                    displacement=_triplet(
+                        row.displacement,
+                        label="integration-point displacement",
+                    ),
+                    element_id=row.element_id,
+                    integration_point=row.integration_point,
                     section_point=getattr(row, "section_point", None),
                 )
             )

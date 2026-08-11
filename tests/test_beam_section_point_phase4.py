@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.application.results import (
     FieldPosition,
+    PhysicalQuantity,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
     ResultArchiveRun,
@@ -48,9 +49,12 @@ from fem.elements.beam_section import (
 )
 from fem.io import load_result_archive, save_result_archive
 from fem.io.result_csv import dumps_result_csv
-from fem.post.stress.beam import recover_section_stress
+from fem.post.stress import beam as beam_stress
+from fem.post.stress.beam import recover_integration_point_s11
 from fem.solvers import static_linear
-from fem_gui.result_presentation import result_provider_section_point_labels
+from fem_gui.result_presentation import (
+    result_provider_section_point_labels,
+)
 from fem_gui.widgets.result_tree import ResultTree
 
 
@@ -61,17 +65,6 @@ _LOCAL_Z_FORCE = -2.0
 _TORQUE = 1.5
 _POINT_COLUMNS = (
     "S11",
-    "S12",
-    "Mises",
-    "MaxPrincipal",
-    "MidPrincipal",
-    "MinPrincipal",
-)
-_SECTION_COLUMNS = (
-    "S11Max",
-    "S11Min",
-    "S11AbsMax",
-    "S12AbsMax",
 )
 _SECTION_CASES = (
     ("rectangle", {"height": 0.4, "width": 0.2}),
@@ -151,7 +144,7 @@ def _solve_and_request_stress(
     provider = build_result_provider(source, result)
     outcome = execute_output_requests(
         provider,
-        (OutputRequest("field", "element", ("S",)),),
+        (OutputRequest("field", "element", ("SF", "SM", "S")),),
     )
     return result, outcome.provider_draft, outcome
 
@@ -188,28 +181,21 @@ def _rectangle_torsion_shear(
     return abs(_TORQUE) * shear_per_twist / torsion_constant
 
 
-def _independent_root_oracle(
+def _independent_integration_point_oracle(
     section_type: str,
     dimensions: dict[str, float],
-) -> tuple[dict[int, tuple[float, ...]], tuple[float, ...]]:
+) -> dict[int, tuple[float, ...]]:
     if section_type == "rectangle":
         height = dimensions["height"]
         width = dimensions["width"]
         area = height * width
         iyy = width * height**3 / 12.0
         izz = height * width**3 / 12.0
-        torsion_constant = _rectangle_torsion_constant(height, width)
         points = (
             (width / 2.0, height / 2.0),
             (-width / 2.0, height / 2.0),
             (-width / 2.0, -height / 2.0),
             (width / 2.0, -height / 2.0),
-        )
-        point_shear = 0.0
-        section_shear = _rectangle_torsion_shear(
-            height,
-            width,
-            torsion_constant,
         )
     else:
         outer_radius = (
@@ -222,53 +208,25 @@ def _independent_root_oracle(
         )
         area = math.pi * (outer_radius**2 - inner_radius**2)
         iyy = izz = math.pi * (outer_radius**4 - inner_radius**4) / 4.0
-        torsion_constant = 2.0 * iyy
         points = (
             (outer_radius, 0.0),
             (0.0, outer_radius),
             (-outer_radius, 0.0),
             (0.0, -outer_radius),
         )
-        point_shear = _TORQUE * outer_radius / torsion_constant
-        section_shear = abs(point_shear)
 
     axial = _AXIAL_FORCE / area
-    moment_y = -_LOCAL_Z_FORCE * _LENGTH
-    moment_z = _LOCAL_Y_FORCE * _LENGTH
+    moment_y = -_LOCAL_Z_FORCE * _LENGTH / 2.0
+    moment_z = _LOCAL_Y_FORCE * _LENGTH / 2.0
     point_values: dict[int, tuple[float, ...]] = {}
     s11_values = []
     for number, (local_y, local_z) in enumerate(points, start=1):
         s11 = axial + moment_y * local_z / iyy - moment_z * local_y / izz
-        principal_span = math.sqrt(s11**2 + 4.0 * point_shear**2)
-        values = (
-            s11,
-            point_shear,
-            math.sqrt(s11**2 + 3.0 * point_shear**2),
-            (s11 + principal_span) / 2.0,
-            0.0,
-            (s11 - principal_span) / 2.0,
-        )
+        values = (s11,)
         point_values[number] = values
         s11_values.append(s11)
 
-    if section_type == "rectangle":
-        maximum = max(s11_values)
-        minimum = min(s11_values)
-    else:
-        outer_radius = points[0][0]
-        increment = outer_radius * math.hypot(
-            moment_y / iyy,
-            moment_z / izz,
-        )
-        maximum = axial + increment
-        minimum = axial - increment
-    section_values = (
-        maximum,
-        minimum,
-        max(abs(maximum), abs(minimum)),
-        section_shear,
-    )
-    return point_values, section_values
+    return point_values
 
 
 def _stress_fields(provider):
@@ -276,16 +234,27 @@ def _stress_fields(provider):
         field
         for field in provider.snapshot.fields
         if field.key.request.field_id.variable is ResultVariable.S
-        and field.key.request.field_id.position
-        in (FieldPosition.SECTION_POINT, FieldPosition.SECTION_END)
+        and field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
 
 
-def _root_row(field) -> int:
+def _integration_point_row(field) -> int:
     return next(
         index
         for index, location in enumerate(field.locations)
-        if location.element_id == 10 and location.local_node == 1
+        if location.element_id == 10 and location.integration_point == 1
+    )
+
+
+def _field(provider, variable: ResultVariable):
+    return next(
+        field
+        for field in provider.snapshot.fields
+        if field.key.request.field_id.variable is variable
+        and field.key.request.field_id.position
+        is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is None
     )
 
 
@@ -325,7 +294,7 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
         section_type,
         dimensions,
     )
-    point_oracle, section_oracle = _independent_root_oracle(
+    point_oracle = _independent_integration_point_oracle(
         section_type,
         dimensions,
     )
@@ -333,47 +302,34 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
 
     assert np.all(np.isfinite(result.U))
     assert np.all(np.isfinite(result.reactions))
-    assert len(fields) == 5
+    assert len(fields) == 4
     assert all(np.all(np.isfinite(field.values)) for field in fields)
 
     point_fields = tuple(
         field
         for field in fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
-    )
-    section_field = next(
-        field
-        for field in fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
     )
     assert tuple(
         field.key.request.field_id.section_point_number for field in point_fields
     ) == (1, 2, 3, 4)
     assert all(field.descriptor.columns == _POINT_COLUMNS for field in point_fields)
-    assert section_field.descriptor.columns == _SECTION_COLUMNS
 
     for field in point_fields:
         point_number = field.key.request.field_id.section_point_number
         assert point_number is not None
-        row = _root_row(field)
+        row = _integration_point_row(field)
         np.testing.assert_allclose(
             field.values[row],
             point_oracle[point_number],
             rtol=2.0e-10,
             atol=1.0e-8,
         )
-    np.testing.assert_allclose(
-        section_field.values[_root_row(section_field)],
-        section_oracle,
-        rtol=2.0e-10,
-        atol=1.0e-8,
-    )
 
     selected_field = point_fields[2]
     query = ResultQuery(
         selected_field.key,
         "S11",
-        node_ids=(1,),
         element_ids=(10,),
     )
     queried = provider.query(query)
@@ -387,7 +343,8 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
     export = prepare_result_export_snapshot(provider.snapshot, selection)
     csv_rows = tuple(csv.DictReader(StringIO(dumps_result_csv(export, queried))))
     assert len(csv_rows) == 1
-    assert csv_rows[0]["field_position"] == "section_point"
+    assert csv_rows[0]["field_position"] == "integration_point"
+    assert csv_rows[0]["integration_point"] == "1"
     assert csv_rows[0]["section_point_number"] == "3"
     assert float(csv_rows[0]["value"]) == pytest.approx(point_oracle[3][0])
 
@@ -401,7 +358,8 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
     loaded_points = tuple(
         field
         for field in loaded.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
     assert tuple(
         field.key.request.field_id.section_point_number for field in loaded_points
@@ -444,8 +402,150 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
         if section_type == "rectangle"
         else ("截面点 1", "截面点 2", "截面点 3", "截面点 4")
     )
-    assert gui_stress_labels == (*expected_point_labels, "截面")
+    assert gui_stress_labels == expected_point_labels
     tree.close()
+
+
+def test_public_section_forces_keep_typed_ip_identity_across_consumers(
+    tmp_path: Path,
+) -> None:
+    _application()
+    _result, provider, outcome = _solve_and_request_stress(
+        "rectangle",
+        {"height": 0.4, "width": 0.2},
+    )
+    sf = _field(provider, ResultVariable.SF)
+    sm = _field(provider, ResultVariable.SM)
+
+    assert sf.descriptor.quantity is PhysicalQuantity.FORCE
+    assert sf.descriptor.columns == ("N",)
+    assert sm.descriptor.quantity is PhysicalQuantity.MOMENT
+    assert sm.descriptor.columns == ("My", "Mz")
+    assert sf.key.request.field_id.section_point_number is None
+    assert sm.key.request.field_id.section_point_number is None
+    assert len(sf.locations) == len(sm.locations) == 1
+    assert all(
+        location.element_id == 10
+        and location.integration_point == 1
+        and location.section_point is None
+        for field in (sf, sm)
+        for location in field.locations
+    )
+    assert sf.values[0] == pytest.approx((_AXIAL_FORCE,))
+    assert sm.values[0] == pytest.approx(
+        (
+            -_LOCAL_Z_FORCE * _LENGTH / 2.0,
+            _LOCAL_Y_FORCE * _LENGTH / 2.0,
+        )
+    )
+
+    for field, component in ((sf, "N"), (sm, "My"), (sm, "Mz")):
+        queried = provider.query(
+            ResultQuery(field.key, component, element_ids=(10,))
+        )
+        assert len(queried.records) == 1
+        assert queried.records[0].location.integration_point == 1
+        assert queried.records[0].location.section_point is None
+        export = prepare_result_export_snapshot(
+            provider.snapshot,
+            ScalarFieldSelection(field.key, component),
+        )
+        csv_row = next(
+            csv.DictReader(StringIO(dumps_result_csv(export, queried)))
+        )
+        assert (
+            csv_row["field_variable"]
+            == field.descriptor.field_id.variable.value
+        )
+        assert csv_row["field_position"] == "integration_point"
+        assert csv_row["integration_point"] == "1"
+        assert csv_row["section_point_number"] == ""
+
+    archive_path = tmp_path / "typed-section-forces.femres"
+    save_result_archive(
+        archive_path,
+        _archive_snapshot(provider, outcome, "rectangle"),
+    )
+    loaded = load_result_archive(archive_path).snapshot
+    loaded_by_variable = {
+        field.key.request.field_id.variable: field
+        for field in loaded.fields
+        if field.key.request.field_id.variable
+        in {ResultVariable.SF, ResultVariable.SM}
+    }
+    assert tuple(loaded_by_variable) == (ResultVariable.SF, ResultVariable.SM)
+    for variable, original in (
+        (ResultVariable.SF, sf),
+        (ResultVariable.SM, sm),
+    ):
+        restored = loaded_by_variable[variable]
+        assert restored.key == original.key
+        assert restored.descriptor == original.descriptor
+        assert restored.locations == original.locations
+        np.testing.assert_array_equal(restored.values, original.values)
+
+    tree = ResultTree()
+    tree.set_catalog("Load", provider.catalog())
+    step = tree.topLevelItem(0).child(0)
+    variables = {
+        step.child(index).text(0): step.child(index)
+        for index in range(step.childCount())
+    }
+    for label, expected_components in (
+        ("截面力 SF（积分点）", ("N",)),
+        ("截面矩 SM（积分点）", ("My", "Mz")),
+    ):
+        item = variables[label]
+        assert "积分点" in item.text(0)
+        assert tuple(
+            item.child(index).text(0)
+            for index in range(item.childCount())
+        ) == expected_components
+    tree.close()
+
+
+def test_sf_sm_and_s_share_one_constitutive_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = static_linear.solve(
+        _inline_cantilever("rectangle", {"height": 0.4, "width": 0.2}),
+        "Load",
+    )
+    provider = build_result_provider(
+        ResultSourceKey(
+            "shared-recovery-result",
+            "shared-recovery-session",
+            "shared-recovery-artifact",
+            1,
+            "Load",
+            "shared-recovery-run",
+        ),
+        result,
+    )
+    original = beam_stress.recover_integration_point_s11
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        beam_stress,
+        "recover_integration_point_s11",
+        counted,
+    )
+    outcome = execute_output_requests(
+        provider,
+        (OutputRequest("field", "element", ("SF", "SM", "S")),),
+    )
+
+    assert outcome.report.diagnostics == ()
+    assert calls == 1
+    assert {
+        field.key.request.field_id.variable
+        for field in outcome.provider_draft.snapshot.fields
+    }.issuperset({ResultVariable.SF, ResultVariable.SM, ResultVariable.S})
 
 
 def _best_batch_time(action, *, repeats: int) -> float:
@@ -479,19 +579,14 @@ def _legacy_three_component_workload(result) -> float:
 
 
 def _four_point_workload(result) -> float:
-    recovered = recover_section_stress(result)
-    section_values = sum(
-        abs(component)
-        for row in recovered.section_end.rows
-        for component in row.section_values().values()
-    )
+    recovered = recover_integration_point_s11(result)
     point_values = sum(
         abs(component)
         for field in recovered.section_points
         for row in field.rows
         for component in row.values().values()
     )
-    return section_values + point_values
+    return point_values
 
 
 def _export_switch_checksum(export) -> float:
@@ -524,12 +619,7 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     stress_fields = _stress_fields(provider)
 
     value_bytes = sum(field.values.nbytes for field in stress_fields)
-    section_rows = next(
-        field.values.shape[0]
-        for field in stress_fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
-    )
-    legacy_three_component_bytes = section_rows * 3 * np.dtype(float).itemsize
+    legacy_three_component_bytes = 2 * 3 * np.dtype(float).itemsize
     byte_ratio = value_bytes / legacy_three_component_bytes
 
     legacy_three_component_seconds = _best_batch_time(
@@ -544,21 +634,13 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     point_selections = tuple(
         ScalarFieldSelection(field.key, "S11")
         for field in stress_fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
-    )
-    section_selection = ScalarFieldSelection(
-        next(
-            field.key
-            for field in stress_fields
-            if field.key.request.field_id.position is FieldPosition.SECTION_END
-        ),
-        "S11AbsMax",
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
     )
     legacy_switch_seconds = _best_batch_time(
         lambda: _export_switch_checksum(
             prepare_result_export_snapshot(
                 provider.snapshot,
-                section_selection,
+                point_selections[0],
             )
         ),
         repeats=1200,
@@ -595,7 +677,7 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     }
     request.node.user_properties.extend(metrics.items())
 
-    assert value_bytes == 56 * np.dtype(float).itemsize
+    assert value_bytes == 4 * np.dtype(float).itemsize
     assert byte_ratio <= 10.0
     assert four_point_materialization_seconds <= max(
         12.0 * legacy_three_component_seconds,

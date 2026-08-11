@@ -16,10 +16,9 @@ Example::
         --program-section-point-number 1 \
         --odb-section-point-number 25
 
-The current FEM-Python beam stress records are ``SECTION_END`` values.  They
-are never relabelled as Abaqus ``INTEGRATION_POINT`` observations.  A separate
-diagnostic may compare them with Abaqus ``ELEMENT_NODAL`` extrapolations, and
-the report marks that comparison as cross-position and non-acceptance.
+Current FEM-Python beam stress records retain their explicit position.
+``INTEGRATION_POINT`` observations are compared formally; historical
+``SECTION_END`` rows can only enter the marked cross-position diagnostic.
 """
 
 from __future__ import print_function
@@ -34,7 +33,7 @@ import os
 import sys
 
 
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 REPORT_SCHEMA = "fem-python-b31-validation-report-v1"
 PROGRAM_SCHEMA = "fem-python-b31-validation-snapshot-v1"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,8 +77,11 @@ def _json_write(path, value):
             sort_keys=True,
             allow_nan=False,
         )
-        if PY2 and not isinstance(text, unicode):
+        if PY2 and not isinstance(text, unicode):  # noqa: F821
             text = text.decode("utf-8")
+        text = u"\n".join(
+            line.rstrip(u" \t") for line in text.splitlines()
+        )
         stream.write(text + u"\n")
 
 
@@ -485,7 +487,9 @@ def load_program_snapshot(path, args, point_number):
         normalized = dict(row)
         normalized["position"] = position
         normalized["element_id"] = int(row["element_id"])
-        normalized["node_id"] = int(row["node_id"])
+        normalized["node_id"] = (
+            None if row.get("node_id") is None else int(row["node_id"])
+        )
         normalized["components"] = {
             str(name): _finite(value, "program section component")
             for name, value in row.get("components", {}).items()

@@ -118,6 +118,8 @@ _EXPECTED_QUANTITY = {
     ResultVariable.UR: PhysicalQuantity.ROTATION,
     ResultVariable.RF: PhysicalQuantity.FORCE,
     ResultVariable.RM: PhysicalQuantity.MOMENT,
+    ResultVariable.SF: PhysicalQuantity.FORCE,
+    ResultVariable.SM: PhysicalQuantity.MOMENT,
     ResultVariable.S: PhysicalQuantity.STRESS,
     ResultVariable.LE: PhysicalQuantity.STRAIN,
 }

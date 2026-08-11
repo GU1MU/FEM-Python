@@ -51,9 +51,10 @@ def _request(
     *,
     policy: NodalAveragingPolicy | None = None,
     gauss_order: int | None = None,
+    section_point_number: int | None = None,
 ) -> FieldRequest:
     return FieldRequest(
-        ResultFieldId(variable, position),
+        ResultFieldId(variable, position, section_point_number),
         averaging_policy=policy,
         gauss_order=gauss_order,
     )
@@ -66,6 +67,7 @@ def _key(
     *,
     policy: NodalAveragingPolicy | None = None,
     gauss_order: int | None = None,
+    section_point_number: int | None = None,
 ):
     return provider.resolve_request(
         _request(
@@ -73,6 +75,7 @@ def _key(
             position,
             policy=policy,
             gauss_order=gauss_order,
+            section_point_number=section_point_number,
         )
     )
 
@@ -685,24 +688,26 @@ def test_batch_and_incremental_materialization_are_numerically_identical() -> No
     _assert_same_field(batch.field(stress_key), incremental.field(stress_key))
 
 
-def test_beam_one_section_recovery_materializes_end_and_envelope(
+def test_beam_one_integration_recovery_materializes_requested_section_points(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = build_result_provider(
         _source(),
         make_beam_field_characterization_result(),
     )
-    section_key = _key(
+    point_one_key = _key(
         provider,
         ResultVariable.S,
-        FieldPosition.SECTION_END,
+        FieldPosition.INTEGRATION_POINT,
+        section_point_number=1,
     )
-    envelope_key = _key(
+    point_four_key = _key(
         provider,
         ResultVariable.S,
-        FieldPosition.SECTION_NODE_ENVELOPE,
+        FieldPosition.INTEGRATION_POINT,
+        section_point_number=4,
     )
-    original = _materializers.beam.recover_section_stress
+    original = _materializers.beam.recover_integration_point_s11
     calls = []
 
     def counted_recover(result, *, checkpoint=None):
@@ -711,52 +716,46 @@ def test_beam_one_section_recovery_materializes_end_and_envelope(
 
     monkeypatch.setattr(
         _materializers.beam,
-        "recover_section_stress",
+        "recover_integration_point_s11",
         counted_recover,
     )
 
     draft = provider.apply(
-        provider.materialize((envelope_key, section_key))
+        provider.materialize((point_four_key, point_one_key))
     )
 
     assert len(calls) == 1
-    section = draft.field(section_key)
-    envelope = draft.field(envelope_key)
-    assert len(section.locations) == 2
-    assert [
-        (item.element_id, item.local_node, item.node_id)
-        for item in section.locations
-    ] == [(30, 1, 10), (30, 2, 20)]
-    assert section.descriptor.columns == (
-        "S11Max",
-        "S11Min",
-        "S11AbsMax",
-        "S12AbsMax",
-    )
-    assert [item.node_id for item in envelope.locations] == [10, 20]
-    assert envelope.descriptor.association is FieldAssociation.NODE
+    for key, number in ((point_one_key, 1), (point_four_key, 4)):
+        field = draft.field(key)
+        assert len(field.locations) == 1
+        location = field.locations[0]
+        assert (location.element_id, location.integration_point) == (30, 1)
+        assert location.section_point is not None
+        assert location.section_point.number == number
+        assert field.descriptor.columns == ("S11",)
+        assert field.descriptor.association is FieldAssociation.INTEGRATION_POINT
 
 
-def test_beam_lazy_recovery_uses_owned_load_context_after_caller_mutation() -> None:
+def test_beam_lazy_integration_recovery_uses_owned_result_after_caller_mutation() -> None:
     result = _loaded_beam_result()
     provider = build_result_provider(_source(), result)
-    section_key = _key(
+    point_key = _key(
         provider,
         ResultVariable.S,
-        FieldPosition.SECTION_END,
+        FieldPosition.INTEGRATION_POINT,
+        section_point_number=1,
     )
 
     result.step.line_loads = ()
     result.model.steps[0].line_loads = ()
     result.U[:] = 500.0
     result.model.mesh.elements[0].props["height"] = 1000.0
-    section = provider.apply(
-        provider.materialize((section_key,))
-    ).field(section_key)
+    field = provider.apply(
+        provider.materialize((point_key,))
+    ).field(point_key)
 
-    assert [row[2] for row in section.values] == pytest.approx(
-        [48.0, 48.0]
-    )
+    assert field.values[:, 0] == pytest.approx([0.0])
+    assert field.locations[0].integration_point == 1
 
 
 def test_apply_rejects_foreign_unknown_collision_and_ready_overwrite() -> None:
@@ -935,17 +934,23 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
 ) -> None:
     provider = build_result_provider(_source("beam"), _beam_chain_result())
     keys = (
-        _key(provider, ResultVariable.S, FieldPosition.SECTION_END),
         _key(
             provider,
             ResultVariable.S,
-            FieldPosition.SECTION_NODE_ENVELOPE,
+            FieldPosition.INTEGRATION_POINT,
+            section_point_number=1,
+        ),
+        _key(
+            provider,
+            ResultVariable.S,
+            FieldPosition.INTEGRATION_POINT,
+            section_point_number=4,
         ),
     )
     before = provider.snapshot
     cancellation = _CancellationSwitch()
     kernel_type = type(get_element_kernel("Beam2"))
-    original = kernel_type.local_section_end_forces
+    original = kernel_type.local_integration_point_forces
     completed_elements: list[int] = []
     arm_once = True
 
@@ -954,7 +959,6 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
         mesh,
         element,
         displacement,
-        local_load,
         lookup,
     ):
         nonlocal arm_once
@@ -963,7 +967,6 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
             mesh,
             element,
             displacement,
-            local_load,
             lookup,
         )
         completed_elements.append(int(element.id))
@@ -972,7 +975,7 @@ def test_beam_element_loop_cancellation_returns_no_patch_and_retries(
             arm_once = False
         return values
 
-    monkeypatch.setattr(kernel_type, "local_section_end_forces", counted)
+    monkeypatch.setattr(kernel_type, "local_integration_point_forces", counted)
 
     with pytest.raises(_Cancelled, match="cancelled"):
         provider.materialize(keys, cancellation=cancellation)

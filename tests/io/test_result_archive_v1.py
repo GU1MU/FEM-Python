@@ -14,14 +14,20 @@ import pytest
 
 from fem.application.results import (
     FieldData,
+    FieldAssociation,
+    FieldLocation,
     FieldMaterializationKey,
     FieldPosition,
+    FieldRequest,
+    PhysicalQuantity,
+    ResultFieldId,
     FieldState,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
     ResultArchiveRun,
     ResultArchiveSnapshot,
     ResultSourceKey,
+    ResultVariable,
     ResultTopologyProjection,
     build_result_provider,
     execute_output_requests,
@@ -158,7 +164,7 @@ def test_schema_v1_roundtrip_preserves_result_contract(name, builder):
         assert left.values.flags.writeable is False
 
 
-def test_beam_section_point_archive_roundtrip_preserves_point_identity() -> None:
+def test_beam_integration_point_archive_roundtrip_preserves_point_identity() -> None:
     expected = _snapshot(make_beam_field_characterization_result, "beam-points")
 
     encoded = encode_result_archive(expected)
@@ -184,7 +190,8 @@ def test_beam_section_point_archive_roundtrip_preserves_point_identity() -> None
     point_fields = tuple(
         field
         for field in actual.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
 
     assert tuple(
@@ -200,29 +207,81 @@ def test_beam_section_point_archive_roundtrip_preserves_point_identity() -> None
     )
 
 
-def test_legacy_beam_archive_remains_readable_without_fabricated_points() -> None:
+@pytest.mark.parametrize(
+    ("recovery_contract", "derived_components", "legacy_values"),
+    (
+        (1, ("S11AbsMax",), ((10.0, 5.0, 10.0), (8.0, 4.0, 8.0))),
+        (
+            2,
+            ("S11AbsMax", "S12AbsMax"),
+            ((10.0, 5.0, 10.0, 2.0), (8.0, 4.0, 8.0, 1.0)),
+        ),
+    ),
+)
+def test_legacy_beam_archive_remains_readable_without_fabricated_points(
+    recovery_contract: int,
+    derived_components: tuple[str, ...],
+    legacy_values: tuple[tuple[float, ...], ...],
+) -> None:
     current = _snapshot(make_beam_field_characterization_result, "legacy-beam")
-    section = next(
+    current_point = next(
         field
         for field in current.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number == 1
     )
-    legacy_key = FieldMaterializationKey(section.key.request, 1)
+    legacy_id = ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END)
+    legacy_key = FieldMaterializationKey(
+        FieldRequest(legacy_id),
+        recovery_contract,
+    )
     legacy_descriptor = replace(
-        section.descriptor,
-        derived_components=("S11AbsMax",),
+        current_point.descriptor,
+        field_id=legacy_id,
+        association=FieldAssociation.ELEMENT_NODE,
+        quantity=PhysicalQuantity.STRESS,
+        components=("S11Max", "S11Min"),
+        derived_components=derived_components,
+        label_key="legacy.result.field.s.section_end",
+        default_component="S11AbsMax",
+    )
+    topology = current.topology
+    node_indices = {node_id: index for index, node_id in enumerate(topology.node_ids)}
+    element_id = topology.element_ids[0]
+    connected = topology.connectivity[0]
+    legacy_locations = tuple(
+        FieldLocation(
+            association=FieldAssociation.ELEMENT_NODE,
+            coordinates=tuple(
+                float(value) for value in topology.node_coordinates[node_indices[node_id]]
+            ),
+            displacement=tuple(
+                float(value) for value in topology.nodal_displacements[node_indices[node_id]]
+            ),
+            element_id=element_id,
+            local_node=local_node,
+            node_id=node_id,
+        )
+        for local_node, node_id in enumerate(connected, start=1)
     )
     legacy_section = FieldData(
         descriptor=legacy_descriptor,
-        source=section.source,
+        source=current_point.source,
         key=legacy_key,
-        locations=section.locations,
-        values=section.values[:, :3],
+        locations=legacy_locations,
+        values=np.asarray(legacy_values),
     )
     legacy_fields = tuple(
-        legacy_section if field is section else field
+        legacy_section if field is current_point else field
         for field in current.fields
-        if field.key.request.field_id.position is not FieldPosition.SECTION_POINT
+        if not (
+            field.key.request.field_id.variable
+            in {ResultVariable.SF, ResultVariable.SM}
+            or (
+                field.key.request.field_id.variable is ResultVariable.S
+                and field is not current_point
+            )
+        )
     )
     legacy_catalog_fields = tuple(
         (
@@ -231,15 +290,28 @@ def test_legacy_beam_archive_remains_readable_without_fabricated_points() -> Non
                 key=legacy_key,
                 descriptor=legacy_descriptor,
             )
-            if availability.key == section.key
+            if availability.key == current_point.key
             else availability
         )
         for availability in current.catalog.fields
-        if availability.key.request.field_id.position
-        is not FieldPosition.SECTION_POINT
+        if not (
+            availability.key.request.field_id.variable
+            in {ResultVariable.SF, ResultVariable.SM}
+            or (
+                availability.key.request.field_id.variable is ResultVariable.S
+                and availability.key != current_point.key
+            )
+        )
     )
     legacy = replace(
         current,
+        origin=replace(
+            current.origin,
+            provenance={
+                "beam_formulation": "legacy-section-end",
+                "beam_result_position": "SECTION_END",
+            },
+        ),
         catalog=replace(current.catalog, fields=legacy_catalog_fields),
         materialization=replace(
             current.materialization,
@@ -250,13 +322,29 @@ def test_legacy_beam_archive_remains_readable_without_fabricated_points() -> Non
     loaded = decode_result_archive(encode_result_archive(legacy))
 
     assert all(
-        field.key.request.field_id.position is not FieldPosition.SECTION_POINT
+        field.key.request.field_id.position is not FieldPosition.INTEGRATION_POINT
+        or field.key.request.field_id.variable is not ResultVariable.S
         for field in loaded.fields
     )
     assert all(
         location.section_point is None
         for field in loaded.fields
         for location in field.locations
+    )
+    assert all(
+        availability.key.request.field_id.variable
+        not in {ResultVariable.SF, ResultVariable.SM}
+        for availability in loaded.catalog.fields
+    )
+    assert loaded.origin.provenance["beam_result_position"] == "SECTION_END"
+    legacy_loaded = next(
+        field for field in loaded.fields
+        if field.key.request.field_id.position is FieldPosition.SECTION_END
+    )
+    assert legacy_loaded.key.recovery_contract == recovery_contract
+    np.testing.assert_array_equal(
+        legacy_loaded.values,
+        legacy_values,
     )
 
 

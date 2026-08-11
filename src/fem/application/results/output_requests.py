@@ -29,6 +29,8 @@ _VARIABLE_ORDER = (
     ResultVariable.UR,
     ResultVariable.RF,
     ResultVariable.RM,
+    ResultVariable.SF,
+    ResultVariable.SM,
     ResultVariable.S,
 )
 _VARIABLE_LOOKUP = {
@@ -39,6 +41,8 @@ _PRIMARY_TARGETS = {
     ResultVariable.UR: "node",
     ResultVariable.RF: "node",
     ResultVariable.RM: "node",
+    ResultVariable.SF: "element",
+    ResultVariable.SM: "element",
     ResultVariable.S: "element",
 }
 _EXECUTABLE_STRESS_POSITIONS = {
@@ -57,15 +61,13 @@ _EXECUTABLE_STRESS_POSITIONS = {
         }
     ),
     ResultModelFamily.TRUSS: frozenset({FieldPosition.CENTROID}),
-    ResultModelFamily.BEAM: frozenset(
-        {FieldPosition.SECTION_POINT, FieldPosition.SECTION_END}
-    ),
+    ResultModelFamily.BEAM: frozenset({FieldPosition.INTEGRATION_POINT}),
 }
 _DEFAULT_STRESS_POSITION = {
     ResultModelFamily.PLANE_CONTINUUM: FieldPosition.ELEMENT_NODAL,
     ResultModelFamily.SOLID_CONTINUUM: FieldPosition.ELEMENT_NODAL,
     ResultModelFamily.TRUSS: FieldPosition.CENTROID,
-    ResultModelFamily.BEAM: FieldPosition.SECTION_END,
+    ResultModelFamily.BEAM: FieldPosition.INTEGRATION_POINT,
 }
 _POSITION_LOOKUP = {
     position.value.casefold(): position for position in FieldPosition
@@ -625,7 +627,8 @@ def _position_option_is_applicable(
         target == "element"
         and bool(groups)
         and all(
-            group.canonical_variable is ResultVariable.S
+            group.canonical_variable
+            in {ResultVariable.SF, ResultVariable.SM, ResultVariable.S}
             for group in groups
         )
     )
@@ -649,7 +652,9 @@ def _project_variable(
                 "Output variable "
                 f"{group.source_variables[0]!r} is not executable."
             ),
-            remediation="Choose U, UR, RF, RM, or S for a supported target.",
+            remediation=(
+                "Choose U, UR, RF, RM, SF, SM, or S for a supported target."
+            ),
             details={
                 "source_indices": list(group.source_indices),
                 "source_variables": list(group.source_variables),
@@ -685,7 +690,32 @@ def _project_variable(
             request_index=request_index,
         )
 
-    field_id = ResultFieldId(canonical, FieldPosition.NODE)
+    if canonical in {ResultVariable.SF, ResultVariable.SM}:
+        position = FieldPosition.INTEGRATION_POINT
+        if position_value is not _ABSENT:
+            if type(position_value) is not str:
+                return (), (
+                    _position_diagnostic(
+                        group,
+                        position_value=position_value,
+                        family=capabilities.profile.family,
+                        request_index=request_index,
+                    ),
+                )
+            requested = _POSITION_LOOKUP.get(position_value.casefold())
+            if requested is not position:
+                return (), (
+                    _position_diagnostic(
+                        group,
+                        position_value=position_value,
+                        family=capabilities.profile.family,
+                        request_index=request_index,
+                    ),
+                )
+    else:
+        position = FieldPosition.NODE
+
+    field_id = ResultFieldId(canonical, position)
     entry = capabilities.entry_for(field_id)
     if entry is None:
         diagnostic = _model_family_diagnostic(
@@ -755,14 +785,12 @@ def _project_stress_variable(
             for entry in sorted(
                 capabilities.entries,
                 key=lambda value: (
-                    value.descriptor.field_id.position
-                    is FieldPosition.SECTION_POINT,
                     value.descriptor.field_id.section_point_number or 0,
                 ),
             )
             if entry.descriptor.field_id.variable is ResultVariable.S
             and entry.descriptor.field_id.position
-            in {FieldPosition.SECTION_POINT, FieldPosition.SECTION_END}
+            is FieldPosition.INTEGRATION_POINT
         )
         if not beam_entries:
             return (), (

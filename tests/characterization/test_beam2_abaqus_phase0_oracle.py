@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -97,7 +98,27 @@ def test_rect_coordinate_mapping_is_explicit_and_freezes_program_point_one() -> 
         )
 
 
-def test_program_snapshot_exports_all_nodal_dofs_and_keeps_section_end_identity(
+def test_comparator_json_writer_is_utf8_deterministic_without_trailing_space(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "oracle.json"
+    payload = {
+        "label": "矩形截面",
+        "rows": [[1, 2], [3, 4]],
+    }
+
+    COMPARE._json_write(str(target), payload)
+    first = target.read_bytes()
+    COMPARE._json_write(str(target), payload)
+
+    assert target.read_bytes() == first
+    assert first.endswith(b"\n")
+    assert b"\r\n" not in first
+    assert all(line == line.rstrip(b" \t") for line in first.splitlines())
+    assert target.read_text(encoding="utf-8")
+
+
+def test_program_snapshot_exports_nodal_dofs_and_b31_ip_identity(
     tmp_path: Path,
 ) -> None:
     source = _write_cantilever(tmp_path)
@@ -107,14 +128,51 @@ def test_program_snapshot_exports_all_nodal_dofs_and_keeps_section_end_identity(
     assert snapshot["schema"] == EXPORT.SNAPSHOT_SCHEMA
     assert snapshot["positions"] == {
         "nodal": "NODE",
-        "section_results": "SECTION_END",
-        "integration_point_available": False,
+        "section_force_results": "INTEGRATION_POINT",
+        "section_results": "INTEGRATION_POINT",
+        "integration_point_available": True,
     }
     assert snapshot["counts"] == {
         "nodes": 2,
         "elements": 1,
-        "section_result_rows": 8,
+        "section_force_result_rows": 1,
+        "section_result_rows": 4,
     }
+    assert snapshot["public_section_result_fields"] == [
+        {
+            "variable": "SF",
+            "position": "integration_point",
+            "association": "integration_point",
+            "quantity": "force",
+            "components": ["N"],
+            "section_point_number": None,
+            "recovery_contract": 3,
+            "row_count": 1,
+        },
+        {
+            "variable": "SM",
+            "position": "integration_point",
+            "association": "integration_point",
+            "quantity": "moment",
+            "components": ["My", "Mz"],
+            "section_point_number": None,
+            "recovery_contract": 3,
+            "row_count": 1,
+        },
+        *(
+            {
+                "variable": "S",
+                "position": "integration_point",
+                "association": "integration_point",
+                "quantity": "stress",
+                "components": ["S11"],
+                "section_point_number": point,
+                "recovery_contract": 3,
+                "row_count": 1,
+            }
+            for point in range(1, 5)
+        ),
+    ]
     assert tuple(row["node_id"] for row in snapshot["nodes"]) == (1, 2)
     assert all(
         len(row[field]) == 3
@@ -126,26 +184,23 @@ def test_program_snapshot_exports_all_nodal_dofs_and_keeps_section_end_identity(
         for row in snapshot["section_results"]
         if row["section_point"]["number"] == 1
     ]
-    assert len(point_one) == 2
-    assert all(row["position"] == "SECTION_END" for row in point_one)
-    assert all(row["integration_point"] is None for row in point_one)
+    assert len(point_one) == 1
+    assert all(row["position"] == "INTEGRATION_POINT" for row in point_one)
+    assert all(row["integration_point"] == 1 for row in point_one)
+    assert all(row["node_id"] is None for row in point_one)
     assert all(
         row["section_point"]["local_y"] > 0.0
         and row["section_point"]["local_z"] > 0.0
         for row in point_one
     )
-    assert set(point_one[0]["components"]) == {
-        "S11",
-        "S12",
-        "Mises",
-        "MaxPrincipal",
-        "N",
-        "VY",
-        "VZ",
-        "MY",
-        "MZ",
-        "T",
-    }
+    assert set(point_one[0]["components"]) == {"S11"}
+    force_row = snapshot["section_force_results"][0]
+    assert force_row["position"] == "INTEGRATION_POINT"
+    assert force_row["element_id"] == 1
+    assert force_row["integration_point"] == 1
+    assert force_row["section"] == point_one[0]["section"]
+    assert set(force_row["components"]) == {"N", "MY", "MZ"}
+    assert all(math.isfinite(value) for value in force_row["components"].values())
 
 
 def _oracle_for_snapshot(snapshot):
@@ -156,12 +211,13 @@ def _oracle_for_snapshot(snapshot):
         if row["section_point"]["number"] == 1
     ]
     extrapolated = []
-    for row in point_one:
+    for node_id in (1, 2):
+        row = point_one[0]
         extrapolated.append(
             {
                 "position": "ELEMENT_NODAL",
                 "element_id": row["element_id"],
-                "node_id": row["node_id"],
+                "node_id": node_id,
                 "integration_point": None,
                 "section_point": {"number": 25, "description": "Top Right Corner"},
                 "components": dict(row["components"]),
@@ -246,7 +302,7 @@ def test_comparison_never_counts_extrapolated_copies_as_integration_points(
     assert identity["odb_target_integration_point_rows"] == 1
     assert identity["odb_element_nodal_extrapolated_rows"] == 2
     contract = summary["position_contract"]
-    assert contract["formal_program_rows"] == 0
+    assert contract["formal_program_rows"] == 1
     assert contract["diagnostic_is_acceptance_evidence"] is False
     assert (
         contract[
@@ -256,23 +312,23 @@ def test_comparison_never_counts_extrapolated_copies_as_integration_points(
     )
     assert summary["metrics"]["formal_integration_point"]["S11"][
         "matched_rows"
-    ] == 0
+    ] == 1
     assert summary["metrics"]["diagnostic_section_end_vs_element_nodal"][
         "S11"
-    ]["matched_rows"] == 2
+    ]["matched_rows"] == 0
     assert all(
         metrics["diagnostic_section_end_vs_element_nodal"]["S11"][
             "matched_rows"
         ]
-        == 2
+        == 0
         for metrics in summary["metrics"]["groups"].values()
     )
     assert summary["metrics"]["global_nodal"]["U"]["vector_relative_l2"] == 0.0
     assert {
         (row["position_program"], row["position_abaqus"])
         for row in details
-        if row["comparison"] == "diagnostic_cross_position"
-    } == {("SECTION_END", "ELEMENT_NODAL")}
+        if row["comparison"] == "formal" and row["status"] == "matched"
+    } == {("INTEGRATION_POINT", "INTEGRATION_POINT")}
 
 
 def test_report_writes_are_deterministic_and_reject_data_output(tmp_path: Path) -> None:

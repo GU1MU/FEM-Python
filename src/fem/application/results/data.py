@@ -891,9 +891,13 @@ def _validate_location_identity(location: FieldLocation) -> None:
     if location.section_point is not None:
         if type(location.section_point) is not BeamSectionPoint:
             raise TypeError("section_point must be BeamSectionPoint or None")
-        if association is not FieldAssociation.ELEMENT_NODE:
+        if association not in {
+            FieldAssociation.ELEMENT_NODE,
+            FieldAssociation.INTEGRATION_POINT,
+        }:
             raise ValueError(
-                "section_point is only valid for element-node locations"
+                "section_point is only valid for element-node or "
+                "integration-point locations"
             )
 
 

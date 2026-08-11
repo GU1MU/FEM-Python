@@ -98,29 +98,32 @@ _RESULT_CASES = (
          ResultVariable.RM),
         (
             ResultFieldId(
+                ResultVariable.SF,
+                FieldPosition.INTEGRATION_POINT,
+            ),
+            ResultFieldId(
+                ResultVariable.SM,
+                FieldPosition.INTEGRATION_POINT,
+            ),
+            ResultFieldId(
                 ResultVariable.S,
-                FieldPosition.SECTION_POINT,
+                FieldPosition.INTEGRATION_POINT,
                 section_point_number=1,
             ),
             ResultFieldId(
                 ResultVariable.S,
-                FieldPosition.SECTION_POINT,
+                FieldPosition.INTEGRATION_POINT,
                 section_point_number=2,
             ),
             ResultFieldId(
                 ResultVariable.S,
-                FieldPosition.SECTION_POINT,
+                FieldPosition.INTEGRATION_POINT,
                 section_point_number=3,
             ),
             ResultFieldId(
                 ResultVariable.S,
-                FieldPosition.SECTION_POINT,
+                FieldPosition.INTEGRATION_POINT,
                 section_point_number=4,
-            ),
-            ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END),
-            ResultFieldId(
-                ResultVariable.S,
-                FieldPosition.SECTION_NODE_ENVELOPE,
             ),
         ),
     ),

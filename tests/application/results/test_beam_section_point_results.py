@@ -45,13 +45,13 @@ def _executed_provider(monkeypatch: pytest.MonkeyPatch | None = None):
     )
     calls: list[object] = []
     if monkeypatch is not None:
-        original = beam.recover_section_stress
+        original = beam.recover_integration_point_s11
 
         def counted(result, *, checkpoint=None):
             calls.append(result)
             return original(result, checkpoint=checkpoint)
 
-        monkeypatch.setattr(beam, "recover_section_stress", counted)
+        monkeypatch.setattr(beam, "recover_integration_point_s11", counted)
     outcome = execute_output_requests(
         provider,
         (OutputRequest("field", "element", ("S",)),),
@@ -59,56 +59,37 @@ def _executed_provider(monkeypatch: pytest.MonkeyPatch | None = None):
     return outcome.provider_draft, outcome, calls
 
 
-def test_s_request_recovers_once_and_publishes_four_points_plus_section(
+def test_s_request_recovers_once_and_publishes_four_integration_point_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider, outcome, calls = _executed_provider(monkeypatch)
 
     assert len(calls) == 1
     fields = outcome.eager_patch.fields
-    assert len(fields) == 5
+    assert len(fields) == 4
     point_fields = tuple(
         field
         for field in fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
-    )
-    section_fields = tuple(
-        field
-        for field in fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
     )
     assert tuple(
         field.key.request.field_id.section_point_number
         for field in point_fields
     ) == (1, 2, 3, 4)
     assert all(
-        field.descriptor.columns
-        == (
-            "S11",
-            "S12",
-            "Mises",
-            "MaxPrincipal",
-            "MidPrincipal",
-            "MinPrincipal",
-        )
+        field.descriptor.columns == ("S11",)
         for field in point_fields
-    )
-    assert len(section_fields) == 1
-    assert section_fields[0].descriptor.columns == (
-        "S11Max",
-        "S11Min",
-        "S11AbsMax",
-        "S12AbsMax",
     )
     assert all(provider.field(field.key) is field for field in fields)
 
 
-def test_four_point_keys_query_same_beam_end_without_crossing_points() -> None:
+def test_four_point_keys_query_same_beam_ip_without_crossing_points() -> None:
     provider, _outcome, _calls = _executed_provider()
     point_fields = tuple(
         field
         for field in provider.snapshot.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
 
     queried = []
@@ -118,13 +99,13 @@ def test_four_point_keys_query_same_beam_end_without_crossing_points() -> None:
             ResultQuery(
                 field.key,
                 "S11",
-                node_ids=(10,),
                 element_ids=(30,),
             )
         )
         assert len(result.records) == 1
         location = result.records[0].location
-        assert location.local_node == 1
+        assert location.local_node is None
+        assert location.integration_point == 1
         assert location.section_point is not None
         assert location.section_point.number == point_number
         queried.append(
@@ -152,12 +133,12 @@ def test_csv_and_vtk_preserve_one_selected_section_point_identity(
     field = next(
         field
         for field in provider.snapshot.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
         and field.key.request.field_id.section_point_number == 2
     )
     export = prepare_result_export_snapshot(
         provider.snapshot,
-        ScalarFieldSelection(field.key, "Mises"),
+        ScalarFieldSelection(field.key, "S11"),
     )
 
     csv_path = tmp_path / "section-point.csv"
@@ -188,21 +169,21 @@ def test_csv_and_vtk_preserve_one_selected_section_point_identity(
     assert projected_points == {location.section_point for location in field.locations}
 
 
-def test_section_csv_exports_all_four_section_components() -> None:
+def test_selected_csv_exports_ip_and_section_point_identity() -> None:
     provider, _outcome, _calls = _executed_provider()
     field = next(
         field
         for field in provider.snapshot.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number == 1
     )
-    snapshots = tuple(
-        prepare_result_export_snapshot(
-            provider.snapshot,
-            ScalarFieldSelection(field.key, component),
-        )
-        for component in field.descriptor.columns
+    snapshot = prepare_result_export_snapshot(
+        provider.snapshot,
+        ScalarFieldSelection(field.key, "S11"),
     )
 
-    header = dumps_result_components_csv(snapshots).splitlines()[0]
+    lines = dumps_result_components_csv((snapshot,)).splitlines()
 
-    assert header.endswith(",S11Max,S11Min,S11AbsMax,S12AbsMax")
+    assert lines[0].endswith(",S11")
+    assert "integration_point" in lines[0]
+    assert "section_point_number" in lines[0]

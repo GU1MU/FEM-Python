@@ -261,7 +261,7 @@ def test_registry_order_is_contextual_stable_and_unique() -> None:
         (("Quad4",), 2, (0, 2, 20, 21, 22, 23, 24)),
         (("Hex8",), 3, (0, 2, 20, 21, 22, 23, 24)),
         (("Truss2",), 3, (0, 2, 10, 20)),
-        (("Beam2",), 6, (0, 1, 2, 3, 20, 21, 22, 23, 24, 25)),
+        (("Beam2",), 6, (0, 1, 2, 3, 18, 19, 20, 21, 22, 23)),
     )
 
     for element_types, dofs, expected in expectations:
@@ -360,35 +360,64 @@ def test_truss_registry_separates_strain_and_stress_recovery() -> None:
     assert stress.descriptor.quantity is PhysicalQuantity.STRESS
 
 
-def test_beam_registry_distinguishes_section_end_from_node_envelope() -> None:
+def test_beam_registry_publishes_only_point_qualified_integration_s11() -> None:
     profile = classify_result_model(
         _model(("Beam2",), dofs_per_node=6)
     )
-    section_end = registry_entry_for(
-        profile,
-        ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END),
-    )
-    envelope = registry_entry_for(
-        profile,
-        ResultFieldId(
-            ResultVariable.S,
-            FieldPosition.SECTION_NODE_ENVELOPE,
-        ),
+    entries = tuple(
+        entry for entry in catalog_entries(profile)
+        if entry.descriptor.field_id.variable is ResultVariable.S
     )
 
-    assert section_end.recovery_kind is FieldRecoveryKind.BEAM_SECTION_END
-    assert section_end.descriptor.association is FieldAssociation.ELEMENT_NODE
-    assert envelope.recovery_kind is FieldRecoveryKind.BEAM_NODE_ENVELOPE
-    assert envelope.descriptor.association is FieldAssociation.NODE
-    assert section_end.descriptor.components == ("S11Max", "S11Min")
-    assert section_end.descriptor.derived_components == (
-        "S11AbsMax",
-        "S12AbsMax",
+    assert tuple(
+        entry.descriptor.field_id.section_point_number for entry in entries
+    ) == (1, 2, 3, 4)
+    assert all(
+        entry.descriptor.field_id.position is FieldPosition.INTEGRATION_POINT
+        for entry in entries
     )
-    assert envelope.descriptor.components == ("S11Max", "S11Min")
-    assert envelope.descriptor.derived_components == ("S11AbsMax",)
-    assert section_end.descriptor.default_component == "S11AbsMax"
-    assert envelope.descriptor.default_component == "S11AbsMax"
+    assert all(
+        entry.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_S11
+        for entry in entries
+    )
+    assert all(
+        entry.descriptor.association is FieldAssociation.INTEGRATION_POINT
+        and entry.descriptor.components == ("S11",)
+        and entry.descriptor.derived_components == ()
+        for entry in entries
+    )
+
+
+def test_beam_registry_publishes_typed_single_ip_axial_force_and_moments() -> None:
+    profile = classify_result_model(
+        _model(("Beam2",), dofs_per_node=6)
+    )
+    entries = {
+        entry.descriptor.field_id.variable: entry
+        for entry in catalog_entries(profile)
+        if entry.descriptor.field_id.variable
+        in {ResultVariable.SF, ResultVariable.SM}
+    }
+
+    assert tuple(entries) == (ResultVariable.SF, ResultVariable.SM)
+    sf = entries[ResultVariable.SF]
+    sm = entries[ResultVariable.SM]
+    assert sf.descriptor.field_id == ResultFieldId(
+        ResultVariable.SF,
+        FieldPosition.INTEGRATION_POINT,
+    )
+    assert sf.descriptor.association is FieldAssociation.INTEGRATION_POINT
+    assert sf.descriptor.quantity is PhysicalQuantity.FORCE
+    assert sf.descriptor.components == ("N",)
+    assert sf.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_SF
+    assert sm.descriptor.field_id == ResultFieldId(
+        ResultVariable.SM,
+        FieldPosition.INTEGRATION_POINT,
+    )
+    assert sm.descriptor.association is FieldAssociation.INTEGRATION_POINT
+    assert sm.descriptor.quantity is PhysicalQuantity.MOMENT
+    assert sm.descriptor.components == ("My", "Mz")
+    assert sm.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_SM
 
 
 def test_continuum_registry_maps_every_position_to_typed_association() -> None:

@@ -29,6 +29,8 @@ _FIELD_LABELS = {
     "result.field.ur.node": "转角 UR",
     "result.field.rf.node": "反力 RF",
     "result.field.rm.node": "反力矩 RM",
+    "result.field.sf.integration_point": "截面力 SF（积分点）",
+    "result.field.sm.integration_point": "截面矩 SM（积分点）",
     "result.field.le.centroid": "对数应变 LE",
     "result.field.s.element_nodal": "应力 S",
 }

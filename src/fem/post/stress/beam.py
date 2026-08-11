@@ -14,6 +14,8 @@ from ...core.result import ModelResult
 from ...elements import canonical_element_type, get_element_kernel
 from ...elements.beam_section import (
     BeamSectionPoint,
+    BeamIntegrationPointForces,
+    recover_integration_point_s11 as recover_point_s11,
     recover_section_point_stress,
     parse_beam2_section,
 )
@@ -275,6 +277,183 @@ class BeamSectionPointField:
 
 
 @dataclass(frozen=True, slots=True)
+class BeamIntegrationPointSectionResult:
+    """Constitutive section result at the sole B31 longitudinal point."""
+
+    element_id: int
+    integration_point: int
+    coordinates: tuple[float, float, float]
+    displacement: tuple[float, float, float]
+    forces: BeamIntegrationPointForces
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "element_id",
+            _integer_id("element_id", self.element_id),
+        )
+        object.__setattr__(
+            self,
+            "integration_point",
+            _integer_id("integration_point", self.integration_point),
+        )
+        if self.integration_point != 1:
+            raise ValueError("Beam2 B31 has exactly one longitudinal point")
+        object.__setattr__(
+            self,
+            "coordinates",
+            _finite_triplet("coordinates", self.coordinates),
+        )
+        object.__setattr__(
+            self,
+            "displacement",
+            _finite_triplet("displacement", self.displacement),
+        )
+        if type(self.forces) is not BeamIntegrationPointForces:
+            raise TypeError("forces must be BeamIntegrationPointForces")
+
+    @property
+    def N(self) -> float:
+        return self.forces.N
+
+    @property
+    def My(self) -> float:
+        return self.forces.My
+
+    @property
+    def Mz(self) -> float:
+        return self.forces.Mz
+
+    def values(self) -> dict[str, float]:
+        return {"N": self.N, "My": self.My, "Mz": self.Mz}
+
+
+@dataclass(frozen=True, slots=True)
+class BeamIntegrationPointSectionField:
+    """One constitutive section-result row per Beam2 element."""
+
+    rows: tuple[BeamIntegrationPointSectionResult, ...]
+
+    position: ClassVar[str] = "integration_point"
+    component_names: ClassVar[tuple[str, ...]] = ("N", "My", "Mz")
+
+    def __post_init__(self) -> None:
+        rows = tuple(self.rows)
+        if any(type(row) is not BeamIntegrationPointSectionResult for row in rows):
+            raise TypeError(
+                "rows must contain only BeamIntegrationPointSectionResult values"
+            )
+        identities = [
+            (row.element_id, row.integration_point) for row in rows
+        ]
+        if len(set(identities)) != len(identities):
+            raise ValueError("integration-point row identities must be unique")
+        object.__setattr__(self, "rows", rows)
+
+
+@dataclass(frozen=True, slots=True)
+class BeamIntegrationPointS11:
+    """One section-point S11 row at a B31 longitudinal integration point."""
+
+    element_id: int
+    integration_point: int
+    coordinates: tuple[float, float, float]
+    displacement: tuple[float, float, float]
+    section_point: BeamSectionPoint
+    s11: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "element_id",
+            _integer_id("element_id", self.element_id),
+        )
+        object.__setattr__(
+            self,
+            "integration_point",
+            _integer_id("integration_point", self.integration_point),
+        )
+        if self.integration_point != 1:
+            raise ValueError("Beam2 B31 has exactly one longitudinal point")
+        object.__setattr__(
+            self,
+            "coordinates",
+            _finite_triplet("coordinates", self.coordinates),
+        )
+        object.__setattr__(
+            self,
+            "displacement",
+            _finite_triplet("displacement", self.displacement),
+        )
+        if type(self.section_point) is not BeamSectionPoint:
+            raise TypeError("section_point must be BeamSectionPoint")
+        value = float(self.s11)
+        if not math.isfinite(value):
+            raise ValueError("s11 must be finite")
+        object.__setattr__(self, "s11", value)
+
+    def values(self) -> dict[str, float]:
+        return {"S11": self.s11}
+
+
+@dataclass(frozen=True, slots=True)
+class BeamIntegrationPointS11Field:
+    """S11 rows for one section point, one longitudinal row per Beam2."""
+
+    point_number: int
+    rows: tuple[BeamIntegrationPointS11, ...]
+
+    position: ClassVar[str] = "integration_point"
+    component_names: ClassVar[tuple[str, ...]] = ("S11",)
+
+    def __post_init__(self) -> None:
+        point_number = _integer_id("point_number", self.point_number)
+        rows = tuple(self.rows)
+        if any(type(row) is not BeamIntegrationPointS11 for row in rows):
+            raise TypeError(
+                "rows must contain only BeamIntegrationPointS11 values"
+            )
+        if any(row.section_point.number != point_number for row in rows):
+            raise ValueError("every row must match point_number")
+        identities = [
+            (row.element_id, row.integration_point) for row in rows
+        ]
+        if len(set(identities)) != len(identities):
+            raise ValueError("integration-point row identities must be unique")
+        object.__setattr__(self, "point_number", point_number)
+        object.__setattr__(self, "rows", rows)
+
+
+@dataclass(frozen=True, slots=True)
+class BeamIntegrationPointS11Recovery:
+    """All section-point S11 fields at the sole B31 longitudinal point."""
+
+    section_forces: BeamIntegrationPointSectionField
+    section_points: tuple[BeamIntegrationPointS11Field, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.section_forces) is not BeamIntegrationPointSectionField:
+            raise TypeError(
+                "section_forces must be BeamIntegrationPointSectionField"
+            )
+        fields = tuple(self.section_points)
+        if any(type(field) is not BeamIntegrationPointS11Field for field in fields):
+            raise TypeError(
+                "section_points must contain BeamIntegrationPointS11Field values"
+            )
+        numbers = tuple(field.point_number for field in fields)
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("section point field numbers must be unique")
+        object.__setattr__(self, "section_points", fields)
+
+    def point_field(self, number: int) -> BeamIntegrationPointS11Field:
+        for field in self.section_points:
+            if field.point_number == number:
+                return field
+        raise KeyError(number)
+
+
+@dataclass(frozen=True, slots=True)
 class BeamSectionStressRecovery:
     """Shared Beam2 recovery behind point and section result fields."""
 
@@ -377,6 +556,104 @@ class BeamNodeEnvelopeField:
         if len({row.node_id for row in rows}) != len(rows):
             raise ValueError("Beam node envelope rows must have unique node IDs")
         object.__setattr__(self, "rows", rows)
+
+
+def recover_integration_point_s11(
+    result: ModelResult,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> BeamIntegrationPointS11Recovery:
+    """Recover one B31 longitudinal integration-point S11 per element."""
+
+    _validate_checkpoint(checkpoint)
+    if not isinstance(result, ModelResult):
+        raise TypeError("result must be ModelResult")
+    mesh = result.model.mesh
+    if not mesh.elements:
+        raise ValueError("Beam2 integration-point recovery requires elements")
+    if _integer_id("dofs_per_node", mesh.dofs_per_node) != 6:
+        raise ValueError(
+            "Beam2 integration-point recovery requires exactly six DOFs per node"
+        )
+    lookup = _validated_node_lookup(mesh.nodes)
+    force_rows: list[BeamIntegrationPointSectionResult] = []
+    point_rows: dict[int, list[BeamIntegrationPointS11]] = {}
+    for elem in mesh.elements:
+        _run_checkpoint(checkpoint)
+        element_id = _integer_id("element id", elem.id)
+        try:
+            element_type = canonical_element_type(elem.type)
+        except NotImplementedError as error:
+            raise ValueError(
+                "Beam2 integration-point recovery requires only Beam2 elements, "
+                f"got {elem.type!r}"
+            ) from error
+        if element_type != "Beam2":
+            raise ValueError(
+                "Beam2 integration-point recovery requires only Beam2 elements, "
+                f"got {elem.type!r}"
+            )
+        node_ids = tuple(
+            _integer_id(f"element {element_id} node id", node_id)
+            for node_id in elem.node_ids
+        )
+        if len(node_ids) != 2:
+            raise ValueError(
+                f"Beam2 element {element_id} requires exactly two nodes"
+            )
+        if any(node_id not in lookup for node_id in node_ids):
+            raise ValueError(
+                f"Beam2 element {element_id} references missing mesh nodes"
+            )
+        kernel = get_element_kernel(elem.type)
+        forces = kernel.local_integration_point_forces(
+            mesh,
+            elem,
+            result.U,
+            lookup,
+        )
+        section = parse_beam2_section(elem.props)
+        nodes = tuple(lookup[node_id] for node_id in node_ids)
+        coordinates = tuple(
+            (float(getattr(nodes[0], name)) + float(getattr(nodes[1], name)))
+            / 2.0
+            for name in ("x", "y", "z")
+        )
+        endpoint_displacements = tuple(
+            _node_displacement(mesh, result.U, node_id) for node_id in node_ids
+        )
+        displacement = tuple(
+            (endpoint_displacements[0][index] + endpoint_displacements[1][index])
+            / 2.0
+            for index in range(3)
+        )
+        force_rows.append(
+            BeamIntegrationPointSectionResult(
+                element_id=element_id,
+                integration_point=1,
+                coordinates=coordinates,
+                displacement=displacement,
+                forces=forces,
+            )
+        )
+        for point_stress in recover_point_s11(section, forces):
+            point_rows.setdefault(point_stress.point.number, []).append(
+                BeamIntegrationPointS11(
+                    element_id=element_id,
+                    integration_point=1,
+                    coordinates=coordinates,
+                    displacement=displacement,
+                    section_point=point_stress.point,
+                    s11=point_stress.s11,
+                )
+            )
+    return BeamIntegrationPointS11Recovery(
+        section_forces=BeamIntegrationPointSectionField(tuple(force_rows)),
+        section_points=tuple(
+            BeamIntegrationPointS11Field(number, tuple(point_rows[number]))
+            for number in sorted(point_rows)
+        ),
+    )
 
 
 def recover_section_stress(

@@ -1,10 +1,8 @@
 """Export one FEM-Python Beam2 solve as a deterministic validation snapshot.
 
 This is the program-side companion to ``compare_frame_b31_odb.py``.  It is
-deliberately a command-line engineering tool, not a pytest helper.  The current
-Beam2 public stress recovery is located at element section ends; that identity
-is retained in the snapshot and must not be compared with Abaqus integration
-point values.
+deliberately a command-line engineering tool, not a pytest helper. Beam stress
+rows retain the B31 longitudinal integration-point and section-point identity.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +17,19 @@ import numpy as np
 
 from fem.boundary.loads import build_load_vector
 from fem.boundary.step import boundary_for_step
+from fem.application.results import (
+    FieldPosition,
+    ResultVariable,
+    catalog_entries,
+    classify_result_model,
+)
 from fem.elements.beam_section import parse_beam2_section
 from fem.io import inp
-from fem.post.stress.beam import recover_section_stress
+from fem.post.stress.beam import recover_integration_point_s11
 from fem.solvers import static_linear
 
 
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "2.1.0"
 SNAPSHOT_SCHEMA = "fem-python-b31-validation-snapshot-v1"
 SECTION_TYPE_NAMES = {
     "rectangle": "RECT",
@@ -120,33 +123,42 @@ def build_snapshot(
             }
         )
 
-    recovery = recover_section_stress(result)
-    end_by_identity = {
-        (row.element_id, row.local_node): row
-        for row in recovery.section_end.rows
-    }
+    recovery = recover_integration_point_s11(result)
     element_lookup = {int(element.id): element for element in mesh.elements}
     section_by_element = {
         element_id: parse_beam2_section(element.props)
         for element_id, element in element_lookup.items()
     }
+    section_force_results = [
+        {
+            "position": "INTEGRATION_POINT",
+            "element_id": row.element_id,
+            "integration_point": row.integration_point,
+            "section": _section_metadata(section_by_element[row.element_id]),
+            "components": {
+                "N": row.N,
+                "MY": row.My,
+                "MZ": row.Mz,
+            },
+        }
+        for row in sorted(
+            recovery.section_forces.rows,
+            key=lambda item: item.element_id,
+        )
+    ]
     section_results = []
     for point_field in sorted(
         recovery.section_points,
         key=lambda field: field.point_number,
     ):
-        for row in sorted(
-            point_field.rows,
-            key=lambda item: (item.element_id, item.local_node),
-        ):
-            end = end_by_identity[(row.element_id, row.local_node)]
+        for row in sorted(point_field.rows, key=lambda item: item.element_id):
             section_results.append(
                 {
-                    "position": "SECTION_END",
+                    "position": "INTEGRATION_POINT",
                     "element_id": row.element_id,
-                    "local_node": row.local_node,
-                    "node_id": row.node_id,
-                    "integration_point": None,
+                    "local_node": None,
+                    "node_id": None,
+                    "integration_point": row.integration_point,
                     "section": _section_metadata(
                         section_by_element[row.element_id]
                     ),
@@ -155,20 +167,31 @@ def build_snapshot(
                         "local_y": row.section_point.local_y,
                         "local_z": row.section_point.local_z,
                     },
-                    "components": {
-                        "S11": row.s11,
-                        "S12": row.s12,
-                        "Mises": row.mises,
-                        "MaxPrincipal": row.max_principal,
-                        "N": end.N,
-                        "VY": end.Vy,
-                        "VZ": end.Vz,
-                        "MY": end.My,
-                        "MZ": end.Mz,
-                        "T": end.T,
-                    },
+                    "components": {"S11": row.s11},
                 }
             )
+
+    public_section_fields = []
+    for entry in catalog_entries(classify_result_model(result.model)):
+        field_id = entry.descriptor.field_id
+        if (
+            field_id.position is not FieldPosition.INTEGRATION_POINT
+            or field_id.variable
+            not in {ResultVariable.SF, ResultVariable.SM, ResultVariable.S}
+        ):
+            continue
+        public_section_fields.append(
+            {
+                "variable": field_id.variable.value,
+                "position": field_id.position.value,
+                "association": entry.descriptor.association.value,
+                "quantity": entry.descriptor.quantity.value,
+                "components": list(entry.descriptor.components),
+                "section_point_number": field_id.section_point_number,
+                "recovery_contract": entry.recovery_contract,
+                "row_count": len(recovery.section_forces.rows),
+            }
+        )
 
     boundary = boundary_for_step(result.model, result.step)
     applied = build_load_vector(mesh, boundary)
@@ -189,12 +212,15 @@ def build_snapshot(
         },
         "positions": {
             "nodal": "NODE",
-            "section_results": "SECTION_END",
-            "integration_point_available": False,
+            "section_force_results": "INTEGRATION_POINT",
+            "section_results": "INTEGRATION_POINT",
+            "integration_point_available": True,
         },
+        "public_section_result_fields": public_section_fields,
         "counts": {
             "nodes": len(nodes),
             "elements": len(element_lookup),
+            "section_force_result_rows": len(section_force_results),
             "section_result_rows": len(section_results),
         },
         "totals": {
@@ -202,6 +228,7 @@ def build_snapshot(
             "reaction": _vector_totals(mesh, result.reactions),
         },
         "nodes": nodes,
+        "section_force_results": section_force_results,
         "section_results": section_results,
     }
 

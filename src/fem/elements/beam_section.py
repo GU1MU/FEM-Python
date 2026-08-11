@@ -230,6 +230,79 @@ class BeamSectionEndForces:
 
 
 @dataclass(frozen=True, slots=True)
+class BeamIntegrationPointForces:
+    """B31 constitutive resultants at its sole longitudinal integration point.
+
+    This type is deliberately distinct from :class:`BeamSectionEndForces`:
+    integration-point resultants come from ``D @ B @ u`` while end actions
+    retain the separate equilibrium definition ``k @ u - f_eq``.
+    """
+
+    axial_force: float
+    moment_y: float
+    moment_z: float
+    torque: float
+    shear_y: float
+    shear_z: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "axial_force",
+            "moment_y",
+            "moment_z",
+            "torque",
+            "shear_y",
+            "shear_z",
+        ):
+            value = float(getattr(self, name))
+            if not isfinite(value):
+                raise ValueError(
+                    f"Beam2 integration-point force {name} must be finite"
+                )
+            object.__setattr__(self, name, value)
+
+    @property
+    def N(self) -> float:
+        return self.axial_force
+
+    @property
+    def Vy(self) -> float:
+        return self.shear_y
+
+    @property
+    def Vz(self) -> float:
+        return self.shear_z
+
+    @property
+    def My(self) -> float:
+        return self.moment_y
+
+    @property
+    def Mz(self) -> float:
+        return self.moment_z
+
+    @property
+    def T(self) -> float:
+        return self.torque
+
+
+@dataclass(frozen=True, slots=True)
+class BeamSectionPointS11:
+    """Longitudinal stress at one integration-point section coordinate."""
+
+    point: BeamSectionPoint
+    s11: float
+
+    def __post_init__(self) -> None:
+        if type(self.point) is not BeamSectionPoint:
+            raise TypeError("point must be BeamSectionPoint")
+        value = float(self.s11)
+        if not isfinite(value):
+            raise ValueError("Beam2 integration-point S11 must be finite")
+        object.__setattr__(self, "s11", value)
+
+
+@dataclass(frozen=True, slots=True)
 class BeamSectionPointStress:
     """Stress components and invariants evaluated at one section point."""
 
@@ -461,6 +534,28 @@ def recover_section_point_stress(
         s11_min=s11_min,
         s11_abs_max=s11_abs_max,
         s12_abs_max=s12_abs_max,
+    )
+
+
+def recover_integration_point_s11(
+    section: Beam2Section,
+    forces: BeamIntegrationPointForces,
+) -> tuple[BeamSectionPointS11, ...]:
+    """Recover S11 at the real section coordinates of one B31 point."""
+
+    if not isinstance(section, Beam2Section):
+        raise TypeError("section must be Beam2Section")
+    if type(forces) is not BeamIntegrationPointForces:
+        raise TypeError("forces must be BeamIntegrationPointForces")
+    axial = forces.axial_force / section.area
+    return tuple(
+        BeamSectionPointS11(
+            point,
+            axial
+            + forces.moment_y * point.local_z / section.Iyy
+            - forces.moment_z * point.local_y / section.Izz,
+        )
+        for point in default_section_points(section)
     )
 
 

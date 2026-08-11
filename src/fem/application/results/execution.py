@@ -47,6 +47,8 @@ _OUTPUT_VARIABLE_ORDER = (
     ResultVariable.UR,
     ResultVariable.RF,
     ResultVariable.RM,
+    ResultVariable.SF,
+    ResultVariable.SM,
     ResultVariable.S,
 )
 

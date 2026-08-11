@@ -270,11 +270,9 @@ def test_section_end_recovery_includes_distributed_load_context() -> None:
     loaded_rows = beam.recover_section_end_stress(loaded).rows
 
     assert [row.s11_abs_max for row in unloaded_rows] == [0.0, 0.0]
-    assert [row.moment_z for row in loaded_rows] == pytest.approx(
-        [16.0, 16.0]
-    )
-    assert loaded_rows[0].s11_abs_max > 0.0
-    assert loaded_rows[1].s11_abs_max > 0.0
+    assert [row.moment_z for row in loaded_rows] == pytest.approx([0.0, 0.0])
+    assert [row.shear_y for row in loaded_rows] == pytest.approx([24.0, -24.0])
+    assert [row.s11_abs_max for row in loaded_rows] == pytest.approx([0.0, 0.0])
     assert [
         (row.maximum, row.minimum, row.absolute_maximum)
         for row in beam.nodal_envelope(loaded)

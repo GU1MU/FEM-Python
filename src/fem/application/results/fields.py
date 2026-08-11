@@ -37,6 +37,8 @@ class ResultVariable(str, Enum):
     UR = "UR"
     RF = "RF"
     RM = "RM"
+    SF = "SF"
+    SM = "SM"
     S = "S"
     LE = "LE"
 
@@ -60,6 +62,8 @@ _VARIABLE_POSITIONS = {
     ResultVariable.UR: frozenset({FieldPosition.NODE}),
     ResultVariable.RF: frozenset({FieldPosition.NODE}),
     ResultVariable.RM: frozenset({FieldPosition.NODE}),
+    ResultVariable.SF: frozenset({FieldPosition.INTEGRATION_POINT}),
+    ResultVariable.SM: frozenset({FieldPosition.INTEGRATION_POINT}),
     ResultVariable.S: frozenset(
         {
             FieldPosition.INTEGRATION_POINT,
@@ -90,8 +94,10 @@ _FIELD_VARIABLE_SORT_ORDER = {
     ResultVariable.UR: 1,
     ResultVariable.RF: 2,
     ResultVariable.RM: 3,
-    ResultVariable.LE: 4,
-    ResultVariable.S: 5,
+    ResultVariable.SF: 4,
+    ResultVariable.SM: 5,
+    ResultVariable.LE: 6,
+    ResultVariable.S: 7,
 }
 _POSITION_ORDER = {
     value: index for index, value in enumerate(FieldPosition)
@@ -124,8 +130,16 @@ class ResultFieldId:
             if self.section_point_number <= 0:
                 raise ValueError("section point number must be positive")
         elif self.section_point_number is not None:
+            if (
+                self.variable is ResultVariable.S
+                and self.position is FieldPosition.INTEGRATION_POINT
+                and type(self.section_point_number) is int
+                and self.section_point_number > 0
+            ):
+                return
             raise ValueError(
-                "section_point_number is only valid at section_point position"
+                "section_point_number is only valid for S at section_point or "
+                "integration_point position"
             )
 
 

@@ -81,6 +81,8 @@ def test_enum_members_are_the_canonical_wire_values() -> None:
         "UR",
         "RF",
         "RM",
+        "SF",
+        "SM",
         "S",
         "LE",
     )
@@ -104,6 +106,8 @@ def test_enum_members_are_the_canonical_wire_values() -> None:
         (ResultVariable.UR, (FieldPosition.NODE,)),
         (ResultVariable.RF, (FieldPosition.NODE,)),
         (ResultVariable.RM, (FieldPosition.NODE,)),
+        (ResultVariable.SF, (FieldPosition.INTEGRATION_POINT,)),
+        (ResultVariable.SM, (FieldPosition.INTEGRATION_POINT,)),
         (ResultVariable.LE, (FieldPosition.CENTROID,)),
         (
             ResultVariable.S,

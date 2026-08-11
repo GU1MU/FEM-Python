@@ -1850,6 +1850,12 @@ def _validate_profile_bound_catalog(
         try:
             expected = registry_entry_for(profile, item.key.request.field_id)
         except (KeyError, TypeError, ValueError) as error:
+            if _is_legacy_beam_section_field(
+                profile,
+                item.key,
+                item.descriptor,
+            ):
+                continue
             raise ResultArchiveDecodeError("catalog field is outside the profile registry") from error
         if (
             item.descriptor != expected.descriptor
@@ -1870,6 +1876,12 @@ def _validate_profile_bound_fields(
         try:
             expected = registry_entry_for(profile, field_data.key.request.field_id)
         except (KeyError, TypeError, ValueError) as error:
+            if _is_legacy_beam_section_field(
+                profile,
+                field_data.key,
+                field_data.descriptor,
+            ):
+                continue
             raise ResultArchiveDecodeError("materialized field is outside the profile registry") from error
         if (
             field_data.descriptor != expected.descriptor
@@ -1889,16 +1901,32 @@ def _is_legacy_beam_section_field(
 ) -> bool:
     """Recognize schema-v1 Beam extrema without inventing point rows."""
 
-    return (
+    if not (
         profile.family is ResultModelFamily.BEAM
-        and key.recovery_contract == 1
-        and key.request.field_id
-        == ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END)
+        and key.request.field_id.variable is ResultVariable.S
         and descriptor.field_id == key.request.field_id
         and descriptor.association is FieldAssociation.ELEMENT_NODE
         and descriptor.quantity is PhysicalQuantity.STRESS
-        and descriptor.components == ("S11Max", "S11Min")
-        and descriptor.derived_components == ("S11AbsMax",)
+    ):
+        return False
+    if key.request.field_id.position is FieldPosition.SECTION_END:
+        return (
+            descriptor.components == ("S11Max", "S11Min")
+            and (
+                key.recovery_contract == 1
+                and descriptor.derived_components == ("S11AbsMax",)
+                or key.recovery_contract == 2
+                and descriptor.derived_components
+                == ("S11AbsMax", "S12AbsMax")
+            )
+        )
+    return (
+        key.recovery_contract == 2
+        and key.request.field_id.position is FieldPosition.SECTION_POINT
+        and key.request.field_id.section_point_number is not None
+        and descriptor.components == ("S11", "S12")
+        and descriptor.derived_components
+        == ("Mises", "MaxPrincipal", "MidPrincipal", "MinPrincipal")
     )
 
 

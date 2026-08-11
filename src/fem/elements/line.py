@@ -12,6 +12,7 @@ from .beam_frame import (
 )
 from .beam_section import (
     Beam2Section,
+    BeamIntegrationPointForces,
     BeamSectionEndForces,
     parse_beam2_section,
 )
@@ -401,6 +402,61 @@ class Beam2Kernel:
                 for forces in section_forces
             ],
             dtype=float,
+        )
+
+    def local_integration_point_forces(
+        self,
+        mesh: Any,
+        elem: Any,
+        U: np.ndarray,
+        node_lookup: dict[int, Any] | None = None,
+    ) -> BeamIntegrationPointForces:
+        """Return B31 constitutive resultants at longitudinal point 1.
+
+        The calculation consumes the same midpoint strain matrix and material
+        matrix as stiffness assembly. Equivalent nodal loads belong to the
+        separate section-end equilibrium action and do not enter this result.
+        """
+
+        E, nu, section = _beam_properties(elem)
+        field = resolve_beam_frame_field(mesh, elem, node_lookup)
+        G = E / (2.0 * (1.0 + nu))
+        kGA_y, kGA_z = section.abaqus_b31_shear_rigidities(
+            G,
+            nu,
+            field.length,
+        )
+        element_displacement = np.asarray(U, dtype=float)[
+            list(mesh.element_dofs(elem))
+        ]
+        if element_displacement.shape != (12,):
+            raise ValueError(
+                f"Beam2 element {elem.id} displacement requires 12 values"
+            )
+        midpoint_frame = field.frame_at_fraction(0.5)
+        local_displacement = (
+            _beam3_transformation(midpoint_frame.rotation)
+            @ element_displacement
+        )
+        _, strain = _beam2_b31_interpolation(0.5, field.length)
+        constitutive = np.diag(
+            (
+                E * section.area,
+                G * section.J,
+                E * section.Iyy,
+                E * section.Izz,
+                kGA_y,
+                kGA_z,
+            )
+        )
+        generalized = constitutive @ (strain @ local_displacement)
+        return BeamIntegrationPointForces(
+            axial_force=generalized[0],
+            torque=generalized[1],
+            moment_y=-generalized[2],
+            moment_z=generalized[3],
+            shear_y=generalized[4],
+            shear_z=generalized[5],
         )
 
     def local_section_end_forces(

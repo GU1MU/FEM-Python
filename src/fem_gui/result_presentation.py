@@ -25,6 +25,7 @@ class _SectionPointView(Protocol):
 
 _POSITION_LABELS = {
     FieldPosition.NODE: "节点",
+    FieldPosition.INTEGRATION_POINT: "积分点",
     FieldPosition.ELEMENT_NODAL: "节点",
     FieldPosition.SECTION_END: "截面",
 }
@@ -33,6 +34,8 @@ _VARIABLE_LABELS = {
     ResultVariable.UR: "转角 UR",
     ResultVariable.RF: "反力 RF",
     ResultVariable.RM: "反力矩 RM",
+    ResultVariable.SF: "截面力 SF",
+    ResultVariable.SM: "截面矩 SM",
     ResultVariable.LE: "对数应变 LE",
     ResultVariable.S: "应力 S",
 }
@@ -52,10 +55,12 @@ def result_field_is_visible(availability: FieldAvailability) -> bool:
     field_id = availability.descriptor.field_id
     if field_id.variable is not ResultVariable.S:
         return True
-    if field_id.position in {
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_END,
-    }:
+    if field_id.section_point_number is not None:
+        return field_id.position in {
+            FieldPosition.SECTION_POINT,
+            FieldPosition.INTEGRATION_POINT,
+        }
+    if field_id.position is FieldPosition.SECTION_END:
         return True
     return field_id.position is FieldPosition.ELEMENT_NODAL
 
@@ -89,7 +94,7 @@ def result_field_position_label(
 
     if type(field_id) is not ResultFieldId:
         raise TypeError("field_id must be ResultFieldId")
-    if field_id.position is FieldPosition.SECTION_POINT:
+    if field_id.section_point_number is not None:
         if section_point_labels is not None:
             label = section_point_labels.get(field_id.section_point_number)
             if label:
@@ -147,7 +152,7 @@ def result_provider_section_point_labels(
     locations = tuple(
         location
         for field in provider.snapshot.fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
+        if field.key.request.field_id.section_point_number is not None
         for location in field.locations
     )
     labels = section_point_labels_from_locations(locations)
@@ -176,9 +181,9 @@ def result_field_is_beam_section(field_id: ResultFieldId) -> bool:
 
     if type(field_id) is not ResultFieldId:
         raise TypeError("field_id must be ResultFieldId")
-    return field_id.position in (
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_END,
+    return (
+        field_id.section_point_number is not None
+        or field_id.position is FieldPosition.SECTION_END
     )
 
 
@@ -187,7 +192,7 @@ def result_field_has_section_points(field_id: ResultFieldId) -> bool:
 
     if type(field_id) is not ResultFieldId:
         raise TypeError("field_id must be ResultFieldId")
-    return field_id.position is FieldPosition.SECTION_POINT
+    return field_id.section_point_number is not None
 
 
 def result_variable_label(variable: ResultVariable) -> str:

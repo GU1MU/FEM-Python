@@ -153,6 +153,8 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
                 ("node", "UR", None),
                 ("node", "RF", None),
                 ("node", "RM", None),
+                ("element", "SF", None),
+                ("element", "SM", None),
                 ("element", "S", None),
             ),
         ),
@@ -252,7 +254,7 @@ def test_node_variables_are_case_insensitive_collapsed_and_canonically_ordered()
             FieldPosition.ELEMENT_NODAL,
         ),
         (ResultModelFamily.TRUSS, FieldPosition.CENTROID),
-        (ResultModelFamily.BEAM, FieldPosition.SECTION_END),
+        (ResultModelFamily.BEAM, FieldPosition.INTEGRATION_POINT),
     ),
 )
 def test_stress_uses_deterministic_family_default(

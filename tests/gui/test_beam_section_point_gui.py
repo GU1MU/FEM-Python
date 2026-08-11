@@ -38,26 +38,12 @@ from tests.helpers.phase8_result_characterization import (
 )
 
 
-_POINT_COMPONENTS = (
-    "S11",
-    "S12",
-    "Mises",
-    "MaxPrincipal",
-    "MidPrincipal",
-    "MinPrincipal",
-)
-_SECTION_COMPONENTS = (
-    "S11Max",
-    "S11Min",
-    "S11AbsMax",
-    "S12AbsMax",
-)
+_POINT_COMPONENTS = ("S11",)
 _POSITION_LABELS = (
     "右上",
     "左上",
     "左下",
     "右下",
-    "截面",
 )
 
 
@@ -80,7 +66,7 @@ def _provider():
     )
     outcome = execute_output_requests(
         provider,
-        (OutputRequest("field", "element", ("S",)),),
+        (OutputRequest("field", "element", ("SF", "SM", "S")),),
     )
     return result, outcome.provider_draft
 
@@ -91,7 +77,8 @@ def _beam_fields(provider):
         for availability in provider.catalog().fields
         if availability.descriptor.field_id.variable is ResultVariable.S
         and availability.descriptor.field_id.position
-        in (FieldPosition.SECTION_POINT, FieldPosition.SECTION_END)
+        is FieldPosition.INTEGRATION_POINT
+        and availability.descriptor.field_id.section_point_number is not None
         and availability.state is not FieldState.UNAVAILABLE
     )
 
@@ -103,7 +90,7 @@ def _point_field(provider, number: int):
         if availability.descriptor.field_id
         == ResultFieldId(
             ResultVariable.S,
-            FieldPosition.SECTION_POINT,
+            FieldPosition.INTEGRATION_POINT,
             section_point_number=number,
         )
     )
@@ -144,7 +131,7 @@ def test_circle_sections_keep_numbered_section_point_names() -> None:
     ) == "截面点 1"
 
 
-def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
+def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations() -> None:
     _application()
     _result, provider = _provider()
     catalog = provider.catalog()
@@ -174,20 +161,13 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
         )
         == _POINT_COMPONENTS
     )
-    assert (
-        tuple(
-            position_items[-1].child(index).text(0)
-            for index in range(position_items[-1].childCount())
-        )
-        == _SECTION_COMPONENTS
-    )
     assert all("（" not in item.text(0) for item in position_items)
 
     stress.setExpanded(False)
     position_items[1].setExpanded(False)
     point_two_selection = ScalarFieldSelection(
         _point_field(provider, 2).key,
-        "Mises",
+        "S11",
     )
     assert tree.select_selection(point_two_selection)
     assert not stress.isExpanded()
@@ -215,7 +195,7 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     window._current_result_provider = lambda: provider
     window.result_selection = ScalarFieldSelection(
         _point_field(provider, 1).key,
-        "Mises",
+        "S11",
     )
     window._refresh_result_controls()
     stress_index = window.result_variable_combo.findData(ResultVariable.S)
@@ -233,11 +213,10 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
         2,
         3,
         4,
-        None,
     )
 
     for index, expected in enumerate(
-        (*(_POINT_COMPONENTS for _point in range(4)), _SECTION_COMPONENTS)
+        (_POINT_COMPONENTS for _point in range(4))
     ):
         window.result_position_combo.setCurrentIndex(index)
         window._populate_result_components()
@@ -252,6 +231,24 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
             )
         )
 
+    for variable, expected_components in (
+        (ResultVariable.SF, ("N",)),
+        (ResultVariable.SM, ("My", "Mz")),
+    ):
+        variable_index = window.result_variable_combo.findData(variable)
+        assert variable_index >= 0
+        window.result_variable_combo.setCurrentIndex(variable_index)
+        window._populate_result_positions()
+        window._populate_result_components()
+        assert _combo_texts(window.result_position_combo) == ("积分点",)
+        field_id = window.result_position_combo.currentData()
+        assert field_id == ResultFieldId(
+            variable,
+            FieldPosition.INTEGRATION_POINT,
+        )
+        assert field_id.section_point_number is None
+        assert _combo_texts(window.result_component_combo) == expected_components
+
     forbidden = {"Tresca", "Pressure", "MisesMax"}
     assert forbidden.isdisjoint(
         component
@@ -262,7 +259,7 @@ def test_beam_result_tree_and_ribbon_publish_five_exact_locations() -> None:
     tree.close()
 
 
-def test_beam_section_selection_batches_all_five_lazy_fields() -> None:
+def test_beam_section_selection_batches_all_four_lazy_ip_fields() -> None:
     result = make_beam_field_characterization_result()
     provider = build_result_provider(
         ResultSourceKey(
@@ -276,21 +273,17 @@ def test_beam_section_selection_batches_all_five_lazy_fields() -> None:
         result,
     )
     point_three = _point_field(provider, 3)
-    selection = ScalarFieldSelection(point_three.key, "Mises")
+    selection = ScalarFieldSelection(point_three.key, "S11")
 
     keys = FEMMainWindow._result_materialization_keys(provider, selection)
 
     field_ids = tuple(key.request.field_id for key in keys)
     assert tuple(
         result_field_id.section_point_number for result_field_id in field_ids
-    ) == (1, 2, 3, 4, None)
+    ) == (1, 2, 3, 4)
     assert tuple(result_field_id.position for result_field_id in field_ids) == (
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_POINT,
-        FieldPosition.SECTION_END,
-    )
+        FieldPosition.INTEGRATION_POINT,
+    ) * 4
     patch = provider.materialize(keys)
     assert tuple(field.key for field in patch.fields) == keys
 
@@ -319,12 +312,6 @@ def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
         for selection in dialog._component_selections
     )
 
-    section_index = dialog.position_combo.count() - 1
-    dialog.position_combo.setCurrentIndex(section_index)
-    dialog._populate_components()
-    assert tuple(
-        selection.component for selection in dialog._component_selections
-    ) == _SECTION_COMPONENTS
     dialog.close()
 
 
@@ -386,7 +373,7 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
     point_three = _point_field(provider, 3)
     payloads = []
     for availability in (point_two, point_three):
-        selection = ScalarFieldSelection(availability.key, "Mises")
+        selection = ScalarFieldSelection(availability.key, "S11")
         export = prepare_result_export_snapshot(provider.snapshot, selection)
         topology = project_scalar_field_topology(export)
         payloads.append(
@@ -399,8 +386,7 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
     assert payloads[0].topology.selection.field_key != (
         payloads[1].topology.selection.field_key
     )
-    assert payloads[1].dataset is payloads[0].dataset
-    assert payloads[1].scalar_name != payloads[0].scalar_name
+    assert payloads[1].dataset is not payloads[0].dataset
     assert {
         location.section_point.number
         for location in payloads[0].topology.point_locations
@@ -413,12 +399,8 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
     } == {3}
 
     viewport = FEMViewport()
-    assert viewport._contour_bar_args(payloads[0])["title"] == (
-        "S, Mises（左上）"
-    )
-    assert viewport._contour_bar_args(payloads[1])["title"] == (
-        "S, Mises（左下）"
-    )
+    assert viewport._contour_bar_args(payloads[0])["title"] == "S, S11"
+    assert viewport._contour_bar_args(payloads[1])["title"] == "S, S11"
     location = next(
         location
         for location in payloads[0].topology.point_locations

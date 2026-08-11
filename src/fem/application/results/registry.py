@@ -55,6 +55,9 @@ class FieldRecoveryKind(str, Enum):
     TRUSS_STRESS = "truss_stress"
     BEAM_SECTION_END = "beam_section_end"
     BEAM_SECTION_POINT = "beam_section_point"
+    BEAM_INTEGRATION_POINT_SF = "beam_integration_point_sf"
+    BEAM_INTEGRATION_POINT_SM = "beam_integration_point_sm"
+    BEAM_INTEGRATION_POINT_S11 = "beam_integration_point_s11"
     BEAM_NODE_ENVELOPE = "beam_node_envelope"
 
 
@@ -501,55 +504,52 @@ def _derived_entries(
             ),
         )
     if family is ResultModelFamily.BEAM:
+        section_forces = (
+            _entry(
+                ResultVariable.SF,
+                FieldPosition.INTEGRATION_POINT,
+                FieldAssociation.INTEGRATION_POINT,
+                PhysicalQuantity.FORCE,
+                ("N",),
+                (),
+                "result.field.sf.integration_point",
+                "N",
+                18,
+                FieldRecoveryKind.BEAM_INTEGRATION_POINT_SF,
+                recovery_contract=3,
+            ),
+            _entry(
+                ResultVariable.SM,
+                FieldPosition.INTEGRATION_POINT,
+                FieldAssociation.INTEGRATION_POINT,
+                PhysicalQuantity.MOMENT,
+                ("My", "Mz"),
+                (),
+                "result.field.sm.integration_point",
+                "My",
+                19,
+                FieldRecoveryKind.BEAM_INTEGRATION_POINT_SM,
+                recovery_contract=3,
+            ),
+        )
         section_points = tuple(
             _entry(
                 ResultVariable.S,
-                FieldPosition.SECTION_POINT,
-                FieldAssociation.ELEMENT_NODE,
+                FieldPosition.INTEGRATION_POINT,
+                FieldAssociation.INTEGRATION_POINT,
                 PhysicalQuantity.STRESS,
-                ("S11", "S12"),
-                (
-                    "Mises",
-                    "MaxPrincipal",
-                    "MidPrincipal",
-                    "MinPrincipal",
-                ),
-                f"result.field.s.section_point.{number}",
-                "Mises",
+                ("S11",),
+                (),
+                f"result.field.s.integration_point.section_point.{number}",
+                "S11",
                 19 + number,
-                FieldRecoveryKind.BEAM_SECTION_POINT,
-                recovery_contract=2,
+                FieldRecoveryKind.BEAM_INTEGRATION_POINT_S11,
+                recovery_contract=3,
                 section_point_number=number,
             )
             for number in range(1, 5)
         )
-        return section_points + (
-            _entry(
-                ResultVariable.S,
-                FieldPosition.SECTION_END,
-                FieldAssociation.ELEMENT_NODE,
-                PhysicalQuantity.STRESS,
-                ("S11Max", "S11Min"),
-                ("S11AbsMax", "S12AbsMax"),
-                "result.field.s.section_end",
-                "S11AbsMax",
-                24,
-                FieldRecoveryKind.BEAM_SECTION_END,
-                recovery_contract=2,
-            ),
-            _entry(
-                ResultVariable.S,
-                FieldPosition.SECTION_NODE_ENVELOPE,
-                FieldAssociation.NODE,
-                PhysicalQuantity.STRESS,
-                ("S11Max", "S11Min"),
-                ("S11AbsMax",),
-                "result.field.s.section_node_envelope",
-                "S11AbsMax",
-                25,
-                FieldRecoveryKind.BEAM_NODE_ENVELOPE,
-            ),
-        )
+        return section_forces + section_points
     return ()
 
 
