@@ -886,19 +886,26 @@ def test_surface_preselection_never_exposes_internal_triangulation(
         preview,
         viewport._geometry_face_pick_ids,
     )
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[object, dict[str, object]]] = []
 
     class Actor:
         def SetPickable(self, _value):
             pass
 
     class Plotter:
-        def add_mesh(self, _data, **kwargs):
-            calls.append(kwargs)
+        def add_mesh(self, data, **kwargs):
+            calls.append((data, kwargs))
             return Actor()
 
     viewport._plotter = Plotter()
     viewport._geometry_preview_surface = surface
+    viewport._geometry_preview_edges = _geometry_edge_polydata(
+        pv,
+        np.asarray(preview.points, dtype=float),
+        preview,
+        viewport._geometry_edge_pick_ids,
+        viewport._geometry_edge_body_pick_ids,
+    )
     monkeypatch.setattr(viewport_module, "_pyvista", pv)
     monkeypatch.setattr(viewport, "_remove_actor", lambda _name: None)
     monkeypatch.setattr(viewport, "_offset_highlight_actor", lambda _actor: None)
@@ -919,7 +926,17 @@ def test_surface_preselection_never_exposes_internal_triangulation(
         )
     )
 
-    assert calls[-1]["show_edges"] is False
+    surface_options = next(
+        options
+        for _data, options in calls
+        if options["name"] == "preselection"
+    )
+    assert surface_options["show_edges"] is False
+    assert {options["name"] for _data, options in calls} == (
+        {"preselection", "preselection_edges"}
+        if kind == "geometry_body"
+        else {"preselection"}
+    )
     viewport.close()
 
 
@@ -981,4 +998,120 @@ def test_surface_preselection_highlights_every_cell_of_logical_face(
 
     assert len(highlighted) == 1
     assert highlighted[0].n_cells == 2
+    viewport.close()
+
+
+def test_geometry_body_selection_highlights_surface_and_geometry_edges(
+    monkeypatch,
+) -> None:
+    _application()
+    preview = build_geometry_preview(BoxGeometry("box", 1.0, 1.0, 1.0))
+    viewport = FEMViewport()
+    viewport._geometry_preview = preview
+    viewport._install_geometry_pick_bindings(preview)
+    points = np.asarray(preview.points, dtype=float)
+    viewport._geometry_preview_surface = _geometry_surface_polydata(
+        pv,
+        points,
+        preview,
+        viewport._geometry_face_pick_ids,
+        viewport._geometry_face_body_pick_ids,
+    )
+    viewport._geometry_preview_edges = _geometry_edge_polydata(
+        pv,
+        points,
+        preview,
+        viewport._geometry_edge_pick_ids,
+        viewport._geometry_edge_body_pick_ids,
+    )
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    class Actor:
+        def SetPickable(self, _value):
+            pass
+
+    class Plotter:
+        def add_mesh(self, data, **kwargs):
+            calls.append((data, kwargs))
+            return Actor()
+
+    viewport._plotter = Plotter()
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport, "_remove_actor", lambda _name: None)
+    monkeypatch.setattr(viewport, "_offset_highlight_actor", lambda _actor: None)
+    monkeypatch.setattr(viewport, "_render", lambda: None)
+
+    viewport.highlight_geometry(LogicalEntityRef("body:domain"))
+
+    assert {options["name"] for _data, options in calls} == {
+        "geometry_selection",
+        "geometry_selection_edges",
+    }
+    surface_options = next(
+        options
+        for _data, options in calls
+        if options["name"] == "geometry_selection"
+    )
+    assert surface_options["show_edges"] is False
+    viewport.close()
+
+
+def test_mesh_body_preselection_highlights_every_element_in_the_body(
+    monkeypatch,
+) -> None:
+    _application()
+    dataset = pv.ImageData(dimensions=(3, 2, 2)).cast_to_unstructured_grid()
+    dataset.cell_data["element_id"] = np.asarray((10, 11), dtype=np.int64)
+    viewport = FEMViewport()
+    viewport._pick_grid = dataset
+    viewport._mesh_body_owner_by_element_id = {10: "P1", 11: "P1"}
+    viewport._mesh_body_element_ids_by_owner = {
+        "P1": (10, 11),
+    }
+    highlighted: list[tuple[object, dict[str, object]]] = []
+
+    class Actor:
+        def SetPickable(self, _value):
+            pass
+
+    class Plotter:
+        def add_mesh(self, data, **kwargs):
+            highlighted.append((data, kwargs))
+            return Actor()
+
+    viewport._plotter = Plotter()
+    monkeypatch.setattr(viewport_module, "_pyvista", pv)
+    monkeypatch.setattr(viewport, "_remove_actor", lambda _name: None)
+    monkeypatch.setattr(viewport, "_offset_highlight_actor", lambda _actor: None)
+    monkeypatch.setattr(viewport, "_render", lambda: None)
+
+    viewport._show_preselection(
+        PickHit(
+            "mesh_body",
+            10,
+            "model_pick_grid",
+            (100.0, 100.0),
+            (0.0, 0.0, 0.0),
+            vtk_cell_id=0,
+        )
+    )
+
+    assert {options["name"] for _data, options in highlighted} == {
+        "preselection",
+        "preselection_edges",
+    }
+    surface, surface_options = next(
+        (data, options)
+        for data, options in highlighted
+        if options["name"] == "preselection"
+    )
+    edges, _edge_options = next(
+        (data, options)
+        for data, options in highlighted
+        if options["name"] == "preselection_edges"
+    )
+    assert surface.n_cells > 0
+    assert surface_options["show_edges"] is False
+    assert "style" not in surface_options
+    assert edges.n_cells > 0
     viewport.close()

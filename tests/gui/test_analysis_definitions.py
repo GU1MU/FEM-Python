@@ -260,6 +260,117 @@ def test_displacement_dialog_creates_independent_checked_dofs():
     ] == [(2, 2, 0.25), (3, 3, -0.5)]
 
 
+def test_displacement_dialog_merges_adjacent_equal_dofs():
+    _application()
+    dialog = DisplacementDialog(
+        ["Load"],
+        _regions("surface", "FixedFace"),
+        3,
+        selected_region=RegionRef("surface", "FixedFace"),
+    )
+    for component in (1, 2, 3):
+        dialog.component_checks[component].setChecked(True)
+        dialog.component_values[component].setValue(0.0)
+
+    _step_name, boundaries = dialog.definitions()
+
+    assert boundaries == (
+        DisplacementConstraint(
+            "FixedFace",
+            1,
+            3,
+            0.0,
+            target_kind="surface",
+        ),
+    )
+
+
+def test_displacement_dialog_restores_form_after_scope_creation():
+    _application()
+    original = DisplacementDialog(
+        ["Step-1", "Step-2"],
+        _regions("surface", "OldFace"),
+        3,
+        selected_region=RegionRef("surface", "OldFace"),
+        scope_selection_kinds=("surface",),
+    )
+    original.step_combo.setCurrentText("Step-2")
+    for component in (1, 2, 3):
+        original.component_checks[component].setChecked(True)
+        original.component_values[component].setValue(0.125)
+    original.scope_pick_button.click()
+
+    restored = DisplacementDialog(
+        ["Step-1", "Step-2"],
+        _regions("surface", "OldFace", "NewFace"),
+        3,
+        selected_region=RegionRef("surface", "NewFace"),
+        scope_selection_kinds=("surface",),
+        form_state=original.form_state(),
+    )
+    step_name, boundaries = restored.definitions()
+
+    assert original.requested_scope_kind() == "surface"
+    assert restored.kind_combo.currentData() == "surface"
+    assert restored.region_combo.currentData() == RegionRef(
+        "surface",
+        "NewFace",
+    )
+    assert step_name == "Step-2"
+    assert boundaries == (
+        DisplacementConstraint(
+            "NewFace",
+            1,
+            3,
+            0.125,
+            target_kind="surface",
+        ),
+    )
+
+
+def test_load_dialog_restores_surface_load_after_scope_creation():
+    _application()
+    original = LoadDialog(
+        ["Step-1", "Step-2"],
+        _regions("node_set", "Nodes"),
+        [],
+        _regions("surface", "OldFace"),
+        3,
+        selected_region=RegionRef("surface", "OldFace"),
+        preferred_kind="surface",
+        scope_selection_kinds=("surface",),
+    )
+    original.step_combo.setCurrentText("Step-2")
+    original.load_type_combo.setCurrentIndex(
+        original.load_type_combo.findData("pressure")
+    )
+    original.value_spin.setValue(12.5)
+    original.scope_pick_button.click()
+
+    restored = LoadDialog(
+        ["Step-1", "Step-2"],
+        _regions("node_set", "Nodes"),
+        [],
+        _regions("surface", "OldFace", "NewFace"),
+        3,
+        selected_region=RegionRef("surface", "NewFace"),
+        scope_selection_kinds=("surface",),
+        form_state=original.form_state(),
+    )
+    step_name, load = restored.definition()
+
+    assert original.requested_scope_kind() == "surface"
+    assert restored.kind_combo.currentData() == "surface"
+    assert restored.region_combo.currentData() == RegionRef(
+        "surface",
+        "NewFace",
+    )
+    assert restored.load_type_combo.currentData() == "pressure"
+    assert step_name == "Step-2"
+    assert load.magnitude == 12.5
+    assert load.surface == "NewFace"
+
+
 @pytest.mark.parametrize(
     ("kind", "name"),
     (("edge", "FixedEdge"), ("surface", "FixedSurface")),
@@ -738,6 +849,69 @@ def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
         "edge",
         ("edge_load", 0, 0),
     )
+
+
+def test_analysis_manager_restores_unsaved_load_editor_state(monkeypatch):
+    _application()
+    first_step = static("Step-1")
+    first_step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
+    second_step = static("Step-2")
+    manager = AnalysisDefinitionManagerDialog(
+        [first_step, second_step],
+        [],
+        _regions("edge", "EdgeSet-1"),
+        _regions("surface", "OldFace"),
+        2,
+        load_scope_selection_kinds=("surface",),
+    )
+
+    def request_scope(dialog):
+        dialog.kind_combo.setCurrentIndex(
+            dialog.kind_combo.findData("surface")
+        )
+        dialog.step_combo.setCurrentText("Step-2")
+        dialog.load_type_combo.setCurrentIndex(
+            dialog.load_type_combo.findData("pressure")
+        )
+        dialog.value_spin.setValue(8.5)
+        dialog.scope_pick_button.click()
+        return False
+
+    monkeypatch.setattr(LoadDialog, "exec", request_scope)
+    assert not manager.edit_definition(("edge_load", 0, 0))
+    state = manager.requested_scope_dialog_state()
+
+    restored_manager = AnalysisDefinitionManagerDialog(
+        [first_step, second_step],
+        [],
+        _regions("edge", "EdgeSet-1"),
+        _regions("surface", "OldFace", "NewFace"),
+        2,
+        load_scope_selection_kinds=("surface",),
+    )
+
+    def accept_restored(dialog):
+        assert dialog.kind_combo.currentData() == "surface"
+        assert dialog.step_combo.currentText() == "Step-2"
+        assert dialog.region_combo.currentData() == RegionRef(
+            "surface",
+            "NewFace",
+        )
+        assert dialog.load_type_combo.currentData() == "pressure"
+        assert dialog.value_spin.value() == 8.5
+        return True
+
+    monkeypatch.setattr(LoadDialog, "exec", accept_restored)
+    assert restored_manager.edit_definition(
+        ("edge_load", 0, 0),
+        selected_region=RegionRef("surface", "NewFace"),
+        dialog_state=state,
+    )
+    restored_steps = restored_manager.values()
+
+    assert restored_steps[0].edge_loads == ()
+    assert restored_steps[1].surface_loads[0].surface == "NewFace"
+    assert restored_steps[1].surface_loads[0].magnitude == 8.5
 
 
 def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):

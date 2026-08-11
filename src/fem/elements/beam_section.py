@@ -369,8 +369,8 @@ def recover_section_point_stress(
     for point in default_section_points(section):
         s11 = (
             axial
-            - forces.moment_y * point.local_z / section.Iyy
-            + forces.moment_z * point.local_y / section.Izz
+            + forces.moment_y * point.local_z / section.Iyy
+            - forces.moment_z * point.local_y / section.Izz
         )
         # S12 is signed in the point's tangential transverse basis.  Circular
         # values therefore share the torque sign.  Rectangle corners lie on

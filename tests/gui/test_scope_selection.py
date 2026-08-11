@@ -22,6 +22,7 @@ from fem.geometry import (
 )
 from fem.mesh.settings import MeshSettings
 import fem_gui.main_window as main_window_module
+from fem_gui.analysis_definition_dialogs import LoadDialogState
 from fem_gui.scope_selection import build_scope_selection_topology
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -304,6 +305,46 @@ def test_completed_scope_creation_reopens_load_editor_with_new_scope(
         ),
     ]
     assert window._pending_analysis_edit is None
+    window.close()
+
+
+def test_completed_scope_creation_restores_new_load_form_and_scope(
+    monkeypatch,
+) -> None:
+    application = _application()
+    window = FEMMainWindow()
+    state = LoadDialogState(
+        "surface",
+        "Step-2",
+        "pressure",
+        "global",
+        1,
+        12.5,
+        (),
+    )
+    window._pending_analysis_selection = "load"
+    window._pending_analysis_requested_scope_kind = "surface"
+    window._pending_analysis_dialog_state = state
+    window._pending_scope_kind = "face"
+    window._pending_analysis_edit = None
+    resumed = []
+    monkeypatch.setattr(
+        window,
+        "create_load",
+        lambda selected_region, **kwargs: resumed.append(
+            (selected_region, kwargs)
+        ),
+    )
+
+    window._finish_scope_creation_from_bar("LoadedFace")
+    application.processEvents()
+
+    assert resumed == [
+        (
+            RegionRef("surface", "LoadedFace"),
+            {"dialog_state": state},
+        )
+    ]
     window.close()
 
 

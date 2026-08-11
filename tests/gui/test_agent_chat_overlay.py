@@ -387,7 +387,7 @@ def test_proposal_composer_survives_drawer_resize_and_reopen():
     host.close()
 
 
-def test_drawer_open_close_and_width_only_change_overlay_geometry():
+def test_drawer_open_close_and_resize_commit_viewport_geometry():
     application = _application()
     viewport = FEMViewport()
     host = ModelViewportOverlayHost(viewport)
@@ -419,8 +419,10 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
     host.set_drawer_open(True, animated=False)
     assert host.agent_chat_drawer.isVisible()
     assert host.chat_launcher.isHidden()
-    assert viewport.geometry() == baseline_geometry
-    assert viewport.size() == baseline_size
+    assert viewport.size() == QSize(
+        baseline_size.width() - host.DEFAULT_DRAWER_WIDTH,
+        baseline_size.height(),
+    )
 
     host.set_drawer_width(448)
     application.processEvents()
@@ -429,14 +431,43 @@ def test_drawer_open_close_and_width_only_change_overlay_geometry():
         _global_rect(host.agent_chat_drawer).right()
         == _global_rect(host).right()
     )
-    assert viewport.geometry() == baseline_geometry
-    assert viewport.size() == baseline_size
+    assert viewport.size() == QSize(
+        baseline_size.width() - 448,
+        baseline_size.height(),
+    )
 
-    host.agent_chat_drawer.resize_handle.dragDelta.emit(24)
+    handle = host.agent_chat_drawer.resize_handle
+    start = handle.rect().center()
+    QTest.mousePress(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start,
+    )
+    QTest.mouseMove(handle, start - QPoint(24, 0))
     application.processEvents()
+
+    assert host._drawer_resize_preview.isVisible()
+    assert host.agent_chat_drawer.width() == 448
+    assert viewport.size() == QSize(
+        baseline_size.width() - 448,
+        baseline_size.height(),
+    )
+
+    QTest.mouseRelease(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start - QPoint(24, 0),
+    )
+    application.processEvents()
+
+    assert host._drawer_resize_preview.isHidden()
     assert host.agent_chat_drawer.width() == 472
-    assert viewport.geometry() == baseline_geometry
-    assert viewport.size() == baseline_size
+    assert viewport.size() == QSize(
+        baseline_size.width() - 472,
+        baseline_size.height(),
+    )
 
     host.set_drawer_open(False, animated=False)
     assert viewport.geometry() == baseline_geometry
@@ -483,8 +514,10 @@ def test_native_viewport_cannot_cover_independent_tool_overlays():
     )
     application.processEvents()
     assert host.drawer_is_open
-    assert viewport.geometry() == baseline_geometry
-    assert viewport.size() == baseline_size
+    assert viewport.size() == QSize(
+        baseline_size.width() - host.DEFAULT_DRAWER_WIDTH,
+        baseline_size.height(),
+    )
 
     host.set_drawer_open(True, animated=False)
     viewport.raise_()
@@ -495,6 +528,7 @@ def test_native_viewport_cannot_cover_independent_tool_overlays():
         host.agent_chat_drawer.close_button,
         Qt.MouseButton.LeftButton,
     )
+    QTest.qWait(host.ANIMATION_DURATION_MS + 20)
     application.processEvents()
     assert not host.drawer_is_open
     assert viewport.geometry() == baseline_geometry
@@ -608,7 +642,7 @@ def test_tool_overlays_follow_host_window_lifecycle():
     host.close()
 
 
-def test_drawer_and_scope_bar_overlay_without_resizing_viewport():
+def test_drawer_resizes_viewport_while_scope_bar_remains_an_overlay():
     application = _application()
     viewport = _ViewportProbe()
     panel = ViewportPanel(viewport, _actions(viewport))
@@ -644,8 +678,7 @@ def test_drawer_and_scope_bar_overlay_without_resizing_viewport():
     application.processEvents()
 
     assert panel.size() == QSize(800, 600)
-    assert viewport.geometry() == baseline_geometry
-    assert viewport.size() == baseline_size
+    assert viewport.size() == QSize(300, baseline_size.height())
     assert panel.agent_chat_drawer.width() == 500
     assert not _global_rect(panel.agent_chat_drawer).intersects(
         _global_rect(panel.toolbar)

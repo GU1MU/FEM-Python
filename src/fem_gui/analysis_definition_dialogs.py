@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from math import isfinite
 
 from PySide6.QtCore import Qt
@@ -148,6 +148,15 @@ class StaticStepDialog(QDialog):
         return static(name)
 
 
+@dataclass(frozen=True)
+class DisplacementDialogState:
+    """Uncommitted displacement-form values retained during scope creation."""
+
+    scope_kind: str
+    step_name: str
+    components: tuple[tuple[int, bool, float], ...]
+
+
 class DisplacementDialog(QDialog):
     _COMPONENT_LABELS = ("U1", "U2", "U3", "UR1", "UR2", "UR3")
 
@@ -163,6 +172,7 @@ class DisplacementDialog(QDialog):
         labels: Sequence[str] | None = None,
         allow_scope_selection: bool = False,
         scope_selection_kinds: Sequence[str] = (),
+        form_state: DisplacementDialogState | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("位移边界条件")
@@ -253,6 +263,21 @@ class DisplacementDialog(QDialog):
                 check.setChecked(selected)
                 if selected:
                     self.component_values[component].setValue(current.value)
+        if form_state is not None:
+            kind = {
+                "node": "node_set",
+                "edge": "edge",
+                "surface": "surface",
+            }.get(form_state.scope_kind)
+            index = self.kind_combo.findData(kind)
+            if index >= 0:
+                self.kind_combo.setCurrentIndex(index)
+            self.step_combo.setCurrentText(form_state.step_name)
+            for component, checked, value in form_state.components:
+                if component not in self.component_checks:
+                    continue
+                self.component_checks[component].setChecked(checked)
+                self.component_values[component].setValue(value)
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("作用域类型", self.kind_combo)
@@ -294,6 +319,27 @@ class DisplacementDialog(QDialog):
     def requested_scope_kind(self) -> str | None:
         return self._scope_selection_request
 
+    def form_state(self) -> DisplacementDialogState:
+        """Capture the current form without requiring a valid region."""
+
+        scope_kind = {
+            "node_set": "node",
+            "edge": "edge",
+            "surface": "surface",
+        }.get(str(self.kind_combo.currentData() or ""), "node")
+        return DisplacementDialogState(
+            scope_kind,
+            self.step_combo.currentText(),
+            tuple(
+                (
+                    component,
+                    check.isChecked(),
+                    self.component_values[component].value(),
+                )
+                for component, check in self.component_checks.items()
+            ),
+        )
+
     def _refresh_regions(self) -> None:
         current = self.region_combo.currentData()
         kind = str(self.kind_combo.currentData() or "")
@@ -329,20 +375,48 @@ class DisplacementDialog(QDialog):
         step_name = self.step_combo.currentText().strip()
         if not step_name:
             raise ValueError("请选择分析步")
-        values = tuple(
-            DisplacementConstraint(
-                region.name,
-                component,
-                component,
-                self.component_values[component].value(),
-                target_kind=region.kind,
-            )
+        selected = [
+            (component, self.component_values[component].value())
             for component, check in self.component_checks.items()
             if check.isChecked()
-        )
-        if not values:
+        ]
+        if not selected:
             raise ValueError("至少勾选一个位移自由度")
-        return step_name, values
+        ranges: list[tuple[int, int, float]] = []
+        for component, value in selected:
+            if (
+                ranges
+                and component == ranges[-1][1] + 1
+                and value == ranges[-1][2]
+            ):
+                first, _last, previous_value = ranges[-1]
+                ranges[-1] = (first, component, previous_value)
+            else:
+                ranges.append((component, component, value))
+        return step_name, tuple(
+            DisplacementConstraint(
+                region.name,
+                first,
+                last,
+                value,
+                target_kind=region.kind,
+            )
+            for first, last, value in ranges
+        )
+
+
+@dataclass(frozen=True)
+class LoadDialogState:
+    """Uncommitted load-form values retained during scope creation."""
+
+    scope_kind: str
+    step_name: str
+    load_type: str
+    coordinate_system: str
+    component: int | None
+    value: float
+    vectors: tuple[tuple[str, tuple[float, ...]], ...]
+
 
 class LoadDialog(QDialog):
     _COMPONENT_LABELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
@@ -375,6 +449,7 @@ class LoadDialog(QDialog):
             Callable[[LineLoad, str], AuthoringCapability] | None
         ) = None,
         scope_selection_kinds: Sequence[str] = (),
+        form_state: LoadDialogState | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
@@ -567,6 +642,30 @@ class LoadDialog(QDialog):
                 None,
             )
             self._vector_values["gravity"] = tuple(current.acceleration)
+        if form_state is not None:
+            for kind, vector in form_state.vectors:
+                if kind in self._vector_values:
+                    self._vector_values[kind] = tuple(vector)
+            kind_index = self.kind_combo.findData(form_state.scope_kind)
+            if kind_index >= 0:
+                self.kind_combo.setCurrentIndex(kind_index)
+            self.step_combo.setCurrentText(form_state.step_name)
+            load_type_index = self.load_type_combo.findData(
+                form_state.load_type
+            )
+            if load_type_index >= 0:
+                self.load_type_combo.setCurrentIndex(load_type_index)
+            coordinate_index = self.coordinate_system_combo.findData(
+                form_state.coordinate_system
+            )
+            if coordinate_index >= 0:
+                self.coordinate_system_combo.setCurrentIndex(coordinate_index)
+            component_index = self.component_combo.findData(
+                form_state.component
+            )
+            if component_index >= 0:
+                self.component_combo.setCurrentIndex(component_index)
+            self.value_spin.setValue(form_state.value)
         layout = QVBoxLayout(self)
         layout.addLayout(self.form)
         self.buttons = _buttons(self)
@@ -596,6 +695,30 @@ class LoadDialog(QDialog):
 
     def requested_scope_kind(self) -> str | None:
         return self._scope_selection_request
+
+    def form_state(self) -> LoadDialogState:
+        """Capture every load-kind value before leaving for scope creation."""
+
+        vectors = dict(self._vector_values)
+        kind = str(self.kind_combo.currentData() or "node")
+        if kind in vectors:
+            dimensions = 3 if kind == "line" else self.spatial_dimensions
+            vectors[kind] = tuple(
+                spin.value()
+                for spin in (self.x_spin, self.y_spin, self.z_spin)[
+                    :dimensions
+                ]
+            )
+        component = self.component_combo.currentData()
+        return LoadDialogState(
+            kind,
+            self.step_combo.currentText(),
+            str(self.load_type_combo.currentData() or "traction"),
+            str(self.coordinate_system_combo.currentData() or "global"),
+            None if component is None else int(component),
+            self.value_spin.value(),
+            tuple((name, tuple(vector)) for name, vector in vectors.items()),
+        )
 
     def _set_distributed_values(
         self,
@@ -1173,7 +1296,13 @@ class AnalysisDefinitionManagerDialog(QDialog):
         self._scope_selection_request: (
             tuple[str, tuple[str, int, int | None]] | None
         ) = None
+        self._scope_selection_dialog_state: (
+            DisplacementDialogState | LoadDialogState | None
+        ) = None
         self._selected_region_override: RegionRef | None = None
+        self._dialog_state_override: (
+            DisplacementDialogState | LoadDialogState | None
+        ) = None
         self._output_view_capability = _manager_output_capability(
             output_view_capability,
             operation="output_request.view",
@@ -1467,6 +1596,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
         key: tuple[str, int, int | None],
         *,
         selected_region: RegionRef | None = None,
+        dialog_state: DisplacementDialogState | LoadDialogState | None = None,
     ) -> bool:
         """Open the existing parameter dialog and report a real change."""
         if not self.select_definition(key):
@@ -1474,12 +1604,15 @@ class AnalysisDefinitionManagerDialog(QDialog):
         if selected_region is not None and type(selected_region) is not RegionRef:
             raise TypeError("selected_region must be a RegionRef")
         self._scope_selection_request = None
+        self._scope_selection_dialog_state = None
         self._selected_region_override = selected_region
+        self._dialog_state_override = dialog_state
         previous = deepcopy(self.steps)
         try:
             self._edit()
         finally:
             self._selected_region_override = None
+            self._dialog_state_override = None
         return self.steps != previous
 
     def requested_scope_selection(
@@ -1488,6 +1621,13 @@ class AnalysisDefinitionManagerDialog(QDialog):
         """Return a viewport-scope request raised by the current editor."""
 
         return self._scope_selection_request
+
+    def requested_scope_dialog_state(
+        self,
+    ) -> DisplacementDialogState | LoadDialogState | None:
+        """Return the nested editor values saved before scope selection."""
+
+        return self._scope_selection_dialog_state
 
     @staticmethod
     def _with_existing(
@@ -1552,8 +1692,20 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 current=current,
                 labels=self.dof_labels,
                 scope_selection_kinds=self.boundary_scope_selection_kinds,
+                form_state=(
+                    self._dialog_state_override
+                    if isinstance(
+                        self._dialog_state_override,
+                        DisplacementDialogState,
+                    )
+                    else None
+                ),
             )
-            dialog.step_combo.setCurrentText(step.name)
+            if not isinstance(
+                self._dialog_state_override,
+                DisplacementDialogState,
+            ):
+                dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
                 requested_kind = dialog.requested_scope_kind()
                 if requested_kind is not None:
@@ -1561,6 +1713,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         requested_kind,
                         selected,
                     )
+                    self._scope_selection_dialog_state = dialog.form_state()
                     self.reject()
                 return
             try:
@@ -1663,8 +1816,20 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     )
                 ),
                 scope_selection_kinds=self.load_scope_selection_kinds,
+                form_state=(
+                    self._dialog_state_override
+                    if isinstance(
+                        self._dialog_state_override,
+                        LoadDialogState,
+                    )
+                    else None
+                ),
             )
-            dialog.step_combo.setCurrentText(step.name)
+            if not isinstance(
+                self._dialog_state_override,
+                LoadDialogState,
+            ):
+                dialog.step_combo.setCurrentText(step.name)
             if not dialog.exec():
                 requested_kind = dialog.requested_scope_kind()
                 if requested_kind is not None:
@@ -1672,6 +1837,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                         requested_kind,
                         selected,
                     )
+                    self._scope_selection_dialog_state = dialog.form_state()
                     self.reject()
                 return
             try:

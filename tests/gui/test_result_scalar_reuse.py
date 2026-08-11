@@ -137,6 +137,11 @@ def test_component_switch_reuses_grid_and_actor() -> None:
         installed.dataset.point_data[installed.scalar_name],
         (4.0, 5.0, 6.0),
     )
+    assert viewport._result_render_surface is not None
+    np.testing.assert_array_equal(
+        viewport._result_render_surface.point_data[installed.scalar_name],
+        (4.0, 5.0, 6.0),
+    )
     assert validate_result_render_payload(first) is first
     assert validate_result_render_payload(installed) is installed
     viewport.close()

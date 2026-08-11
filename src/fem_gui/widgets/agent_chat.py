@@ -630,6 +630,10 @@ QFrame#agentChatResizeHandle {
 QFrame#agentChatResizeHandle:hover {
     background: #8bb0c8;
 }
+QFrame#agentChatResizePreview {
+    background: #4f88ad;
+    border: none;
+}
 """.replace(
     "__AGENT_CHAT_SCROLL_UP_ARROW__",
     _AGENT_CHAT_SCROLL_UP_ARROW,
@@ -790,40 +794,45 @@ class _ChatInput(QPlainTextEdit):
 
 
 class _DrawerResizeHandle(_BoundaryFrame):
-    dragDelta = Signal(int)
+    dragStarted = Signal()
+    dragPreviewChanged = Signal(int)
+    dragFinished = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("agentChatResizeHandle")
         self.setFixedWidth(6)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self._last_global_x: int | None = None
+        self._press_global_x: int | None = None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._last_global_x = round(event.globalPosition().x())
+            self._press_global_x = round(event.globalPosition().x())
+            self.dragStarted.emit()
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if (
-            self._last_global_x is not None
+            self._press_global_x is not None
             and event.buttons() & Qt.MouseButton.LeftButton
         ):
             current_x = round(event.globalPosition().x())
-            self.dragDelta.emit(self._last_global_x - current_x)
-            self._last_global_x = current_x
+            self.dragPreviewChanged.emit(self._press_global_x - current_x)
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if (
-            self._last_global_x is not None
+            self._press_global_x is not None
             and event.button() == Qt.MouseButton.LeftButton
         ):
-            self._last_global_x = None
+            current_x = round(event.globalPosition().x())
+            delta = self._press_global_x - current_x
+            self._press_global_x = None
+            self.dragFinished.emit(delta)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -3585,10 +3594,11 @@ class AgentChatLauncher(_BoundaryToolButton):
 
 
 class ModelViewportOverlayHost(QWidget):
-    """只叠放 Qt 控件、不改变模型视口布局或计算的宿主。"""
+    """叠放 Qt 控件，并为打开的聊天框预留模型视口宽度。"""
 
     drawerOpenChanged = Signal(bool)
     drawerWidthChanged = Signal(int)
+    viewportGeometryCommitted = Signal()
 
     DEFAULT_DRAWER_WIDTH = 384
     MIN_DRAWER_WIDTH = 300
@@ -3618,6 +3628,8 @@ class ModelViewportOverlayHost(QWidget):
         base_layout.setContentsMargins(0, 0, 0, 0)
         base_layout.setSpacing(0)
         base_layout.addWidget(self.viewport)
+        self._viewport_layout = base_layout
+        self._viewport_reserved_width = 0
 
         self.agent_chat_drawer = AgentChatDrawer(
             self,
@@ -3647,6 +3659,20 @@ class ModelViewportOverlayHost(QWidget):
                 Qt.WidgetAttribute.WA_ShowWithoutActivating,
                 True,
             )
+        self._drawer_resize_preview = _BoundaryFrame(self)
+        self._drawer_resize_preview.setObjectName("agentChatResizePreview")
+        self._drawer_resize_preview.setFixedWidth(2)
+        self._drawer_resize_preview.setWindowFlags(
+            tool_flags | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self._drawer_resize_preview.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating,
+            True,
+        )
+        self._drawer_resize_preview.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
         self.chat_launcher.clicked.connect(
             lambda: self.set_drawer_open(True)
         )
@@ -3654,13 +3680,21 @@ class ModelViewportOverlayHost(QWidget):
         self.agent_chat_drawer.closeRequested.connect(
             lambda: self.set_drawer_open(False)
         )
-        self.agent_chat_drawer.resize_handle.dragDelta.connect(
-            self._resize_drawer_by
+        self.agent_chat_drawer.resize_handle.dragStarted.connect(
+            self._begin_drawer_resize
+        )
+        self.agent_chat_drawer.resize_handle.dragPreviewChanged.connect(
+            self._preview_drawer_resize
+        )
+        self.agent_chat_drawer.resize_handle.dragFinished.connect(
+            self._finish_drawer_resize
         )
 
         self._drawer_width = self.DEFAULT_DRAWER_WIDTH
         self._drawer_reveal = 0
         self._drawer_open = False
+        self._drawer_resize_initial_width: int | None = None
+        self._drawer_resize_delta = 0
         self._shutting_down = False
         self._anchor_window: QWidget | None = None
         self._animation = QPropertyAnimation(
@@ -3686,6 +3720,7 @@ class ModelViewportOverlayHost(QWidget):
 
         self.chat_launcher.hide()
         self.agent_chat_drawer.hide()
+        self._drawer_resize_preview.hide()
         self._settle_overlay_geometry()
 
     def closeEvent(self, event) -> None:
@@ -3699,6 +3734,7 @@ class ModelViewportOverlayHost(QWidget):
             self._shutting_down = True
             self._animation.stop()
             self._overlay_sync_timer.stop()
+            self._cancel_drawer_resize()
         self.agent_chat_drawer.shutdown_runtime(wait=wait)
         self.agent_chat_drawer.hide()
         self.chat_launcher.hide()
@@ -3737,7 +3773,7 @@ class ModelViewportOverlayHost(QWidget):
         *,
         animated: bool = True,
     ) -> None:
-        """拉出或收起聊天框；仅改变覆盖控件自身的状态。"""
+        """拉出或收起聊天框，并同步模型视口的可用宽度。"""
         opened = bool(opened)
         target = self._effective_drawer_width() if opened else 0
         if (
@@ -3751,6 +3787,7 @@ class ModelViewportOverlayHost(QWidget):
         self._animation.stop()
         self._drawer_open = opened
         if opened:
+            self._sync_viewport_reservation()
             self.chat_launcher.hide()
             self._sync_overlay_window_visibility()
 
@@ -3769,7 +3806,7 @@ class ModelViewportOverlayHost(QWidget):
         self._animation.start()
 
     def set_drawer_width(self, width: int) -> None:
-        """设置用户偏好宽度；宿主较窄时只裁剪聊天框自身。"""
+        """设置用户偏好宽度；打开时同步提交模型视口宽度。"""
         width = max(self.MIN_DRAWER_WIDTH, int(width))
         if width == self._drawer_width:
             return
@@ -3780,6 +3817,7 @@ class ModelViewportOverlayHost(QWidget):
         else:
             self._drawer_reveal = 0
         self._position_overlays()
+        self._sync_viewport_reservation()
         self.drawerWidthChanged.emit(self.drawer_width)
 
     def set_bottom_overlay(self, overlay: QWidget) -> None:
@@ -3815,8 +3853,49 @@ class ModelViewportOverlayHost(QWidget):
         self._bottom_overlay_visible = visible
         self._position_overlays()
 
-    def _resize_drawer_by(self, delta: int) -> None:
-        self.set_drawer_width(self._drawer_width + int(delta))
+    def _begin_drawer_resize(self) -> None:
+        self._drawer_resize_initial_width = self._drawer_width
+        self._drawer_resize_delta = 0
+        self._position_drawer_resize_preview()
+        self._drawer_resize_preview.show()
+        self._drawer_resize_preview.raise_()
+
+    def _preview_drawer_resize(self, delta: int) -> None:
+        if self._drawer_resize_initial_width is None:
+            return
+        self._drawer_resize_delta = int(delta)
+        self._position_drawer_resize_preview()
+
+    def _finish_drawer_resize(self, delta: int) -> None:
+        initial_width = self._drawer_resize_initial_width
+        if initial_width is None:
+            return
+        self._drawer_resize_initial_width = None
+        self._drawer_resize_delta = 0
+        self._drawer_resize_preview.hide()
+        self.set_drawer_width(initial_width + int(delta))
+
+    def _cancel_drawer_resize(self) -> None:
+        self._drawer_resize_initial_width = None
+        self._drawer_resize_delta = 0
+        self._drawer_resize_preview.hide()
+
+    def _position_drawer_resize_preview(self) -> None:
+        initial_width = self._drawer_resize_initial_width
+        if initial_width is None:
+            return
+        requested_width = max(
+            self.MIN_DRAWER_WIDTH,
+            initial_width + self._drawer_resize_delta,
+        )
+        preview_width = min(requested_width, max(0, self.width()))
+        host_origin = self.mapToGlobal(QPoint(0, 0))
+        self._drawer_resize_preview.setGeometry(
+            host_origin.x() + self.width() - preview_width,
+            host_origin.y(),
+            2,
+            self.height(),
+        )
 
     def _move_launcher_by(self, delta: QPoint) -> None:
         if self._launcher_position is None:
@@ -3850,11 +3929,23 @@ class ModelViewportOverlayHost(QWidget):
     def _effective_drawer_width(self) -> int:
         return min(self._drawer_width, max(0, self.width()))
 
+    def _sync_viewport_reservation(self) -> None:
+        reserved_width = (
+            self._effective_drawer_width() if self._drawer_open else 0
+        )
+        if reserved_width == self._viewport_reserved_width:
+            return
+        self._viewport_reserved_width = reserved_width
+        self._viewport_layout.setContentsMargins(0, 0, reserved_width, 0)
+        self._viewport_layout.activate()
+        self.viewportGeometryCommitted.emit()
+
     def _settle_overlay_geometry(self) -> None:
         self._animation.stop()
         self._drawer_reveal = (
             self._effective_drawer_width() if self._drawer_open else 0
         )
+        self._sync_viewport_reservation()
         self._position_overlays()
         self._animation_finished()
 
@@ -3938,6 +4029,7 @@ class ModelViewportOverlayHost(QWidget):
                     overlay_height,
                 )
             )
+        self._position_drawer_resize_preview()
         self._sync_overlay_window_visibility()
 
     def _refresh_anchor_window(self) -> None:
@@ -3962,6 +4054,7 @@ class ModelViewportOverlayHost(QWidget):
             self._anchor_window,
             self.agent_chat_drawer,
             self.chat_launcher,
+            self._drawer_resize_preview,
             self._bottom_overlay,
         }
         current = active_window
@@ -3986,6 +4079,7 @@ class ModelViewportOverlayHost(QWidget):
         if not self._overlay_windows_can_show():
             self.agent_chat_drawer.hide()
             self.chat_launcher.hide()
+            self._drawer_resize_preview.hide()
             if self._bottom_overlay is not None:
                 self._bottom_overlay.hide()
             return
@@ -4022,6 +4116,8 @@ class ModelViewportOverlayHost(QWidget):
     def _animation_finished(self) -> None:
         if self._shutting_down:
             return
+        if not self._drawer_open:
+            self._sync_viewport_reservation()
         self._sync_overlay_window_visibility()
 
     def eventFilter(self, watched: object, event: object) -> bool:
@@ -4033,6 +4129,7 @@ class ModelViewportOverlayHost(QWidget):
             }:
                 self.agent_chat_drawer.hide()
                 self.chat_launcher.hide()
+                self._drawer_resize_preview.hide()
                 if self._bottom_overlay is not None:
                     self._bottom_overlay.hide()
             elif event_type in {
@@ -4063,6 +4160,7 @@ class ModelViewportOverlayHost(QWidget):
     def hideEvent(self, event) -> None:
         self.agent_chat_drawer.hide()
         self.chat_launcher.hide()
+        self._drawer_resize_preview.hide()
         if self._bottom_overlay is not None:
             self._bottom_overlay.hide()
         super().hideEvent(event)

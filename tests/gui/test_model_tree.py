@@ -92,6 +92,64 @@ def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_inp_path):
     assert section.text(0) == "截面 1（平面应力）"
 
 
+def test_model_tree_rebuild_preserves_navigation_state(gui_inp_path):
+    _application()
+    model = read(gui_inp_path)
+    tree = ModelTree()
+    tree.set_model(model)
+    items = _items(tree)
+    mesh = next(item for item in items if item.data(0, ROLE_KIND) == "mesh")
+    analysis = next(
+        item
+        for item in items
+        if item.data(0, ROLE_KIND) == "category"
+        and item.text(0).startswith("分析 (")
+    )
+    step = next(item for item in items if item.data(0, ROLE_KIND) == "step")
+    boundaries = next(
+        step.child(index)
+        for index in range(step.childCount())
+        if step.child(index).text(0).startswith("边界条件 (")
+    )
+    material = next(
+        item for item in items if item.data(0, ROLE_KIND) == "material"
+    )
+    mesh.setExpanded(False)
+    analysis.setExpanded(True)
+    step.setExpanded(True)
+    boundaries.setExpanded(True)
+    tree.setCurrentItem(material)
+    step_name = step.text(0)
+    material_key = material.data(0, ROLE_KEY)
+    model.steps.append(AnalysisStep("Additional"))
+
+    tree.set_model(model)
+
+    refreshed = _items(tree)
+    assert not next(
+        item for item in refreshed if item.data(0, ROLE_KIND) == "mesh"
+    ).isExpanded()
+    assert next(
+        item
+        for item in refreshed
+        if item.data(0, ROLE_KIND) == "category"
+        and item.text(0).startswith("分析 (")
+    ).isExpanded()
+    refreshed_step = next(
+        item
+        for item in refreshed
+        if item.data(0, ROLE_KIND) == "step" and item.text(0) == step_name
+    )
+    assert refreshed_step.isExpanded()
+    assert next(
+        refreshed_step.child(index)
+        for index in range(refreshed_step.childCount())
+        if refreshed_step.child(index).text(0).startswith("边界条件 (")
+    ).isExpanded()
+    assert tree.currentItem().data(0, ROLE_KIND) == "material"
+    assert tree.currentItem().data(0, ROLE_KEY) == material_key
+
+
 def test_node_and_element_selection_safely_selects_mesh_summary(gui_inp_path):
     _application()
     tree = ModelTree()

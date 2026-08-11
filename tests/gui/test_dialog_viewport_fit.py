@@ -109,7 +109,7 @@ def test_wire_editor_exit_fits_after_splitter_restores(
 
 
 @pytest.mark.parametrize("result", [0, 1])
-def test_modal_dialog_fit_runs_after_exec_and_coalesces(
+def test_modal_dialog_does_not_fit_viewport_by_default(
     monkeypatch,
     result,
 ) -> None:
@@ -121,6 +121,25 @@ def test_modal_dialog_fit_runs_after_exec_and_coalesces(
     monkeypatch.setattr(dialog, "exec", lambda: result)
 
     assert window._exec_dialog(dialog) == result
+    assert fit_calls == []
+
+    app.processEvents()
+
+    assert fit_calls == []
+    window.close()
+
+
+def test_view_affecting_dialog_fit_runs_after_exec_and_coalesces(
+    monkeypatch,
+) -> None:
+    app = _application()
+    window = FEMMainWindow()
+    fit_calls = []
+    monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
+    dialog = QDialog(window)
+    monkeypatch.setattr(dialog, "exec", lambda: 1)
+
+    assert window._exec_view_dialog(dialog) == 1
     window._schedule_viewport_fit()
     assert fit_calls == []
 

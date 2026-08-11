@@ -551,7 +551,12 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     viewport._update_result_layer()
 
     rendered, options = plotter.mesh_calls[0]
-    assert rendered is payload.dataset
+    if expected_layout is ResultValueLayout.POINT:
+        assert rendered is not payload.dataset
+        assert isinstance(rendered, pyvista.PolyData)
+        assert rendered.point_data.active_normals is not None
+    else:
+        assert rendered is payload.dataset
     assert viewport._result_grid is payload.dataset
     assert viewport._pick_grid is model_pick_grid
     assert not hasattr(viewport, "_result_data")
@@ -577,8 +582,8 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert options["scalar_bar_args"]["unconstrained_font_size"]
     assert options["lighting"]
     assert options["smooth_shading"]
-    assert options["ambient"] == 0.35
-    assert options["diffuse"] == 0.65
+    assert options["ambient"] == 0.7
+    assert options["diffuse"] == 0.3
     assert options["specular"] == 0.0
     assert payload.topology.value_layout is expected_layout
     np.testing.assert_array_equal(payload.dataset.points, original_points)
@@ -706,7 +711,10 @@ def test_deformed_continuum_result_moves_surface_nodes_and_labels_together(
         if options.get("name") == "nodes"
     )
     assert not np.array_equal(model_points, displayed_points)
-    np.testing.assert_array_equal(result_data.points, displayed_points)
+    np.testing.assert_array_equal(
+        np.unique(np.asarray(result_data.points), axis=0),
+        np.unique(displayed_points, axis=0),
+    )
     np.testing.assert_array_equal(node_data.points, displayed_points)
     label_points, labels = plotter.label_calls[-1]
     np.testing.assert_array_equal(label_points, displayed_points)

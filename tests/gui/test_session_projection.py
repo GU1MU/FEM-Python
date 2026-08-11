@@ -15,7 +15,11 @@ import fem.application.definitions as definitions_module
 import fem.application.session as session_module
 import fem_gui.main_window as main_window_module
 from fem.io.inp import read
-from fem.application import RegionAssignment, describe_session_authoring
+from fem.application import (
+    DefinitionEditBatch,
+    RegionAssignment,
+    describe_session_authoring,
+)
 from fem.core.model import OutputRequest
 from fem.application.results import (
     FieldPosition,
@@ -30,6 +34,7 @@ from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import RegionAssignmentDialog
 from fem_gui.task_controller import TaskApplyStatus
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.widgets.viewport import FEMViewport
 from fem_gui.workers import TaskContext
 from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
@@ -59,6 +64,47 @@ def _window_with_imported_model(
         source_label="projection.inp",
     )
     return window
+
+
+def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
+    monkeypatch,
+) -> None:
+    window = _window_with_imported_model()
+    previous_artifact_id = window.viewport.artifact_id
+    rebound = []
+    rebuilt = []
+    original_rebind = window.viewport.rebind_model_artifact
+
+    def record_rebind(*args, **kwargs) -> None:
+        rebound.append(True)
+        original_rebind(*args, **kwargs)
+
+    monkeypatch.setattr(
+        window.viewport,
+        "rebind_model_artifact",
+        record_rebind,
+    )
+    monkeypatch.setattr(
+        FEMViewport,
+        "set_model",
+        lambda *_args, **_kwargs: rebuilt.append(True),
+    )
+    snapshot = window.document
+    batch = DefinitionEditBatch(
+        base_session_revision=snapshot.session_revision,
+        materials=snapshot.materials,
+        sections=snapshot.sections,
+        assignments=snapshot.assignments,
+        steps=snapshot.steps,
+    )
+
+    receipt = window.apply_definition_edit(batch)
+
+    assert receipt.diagnostic is None
+    assert rebound == [True]
+    assert rebuilt == []
+    assert window.viewport.artifact_id != previous_artifact_id
+    window.close()
 
 
 def _install_successful_result(

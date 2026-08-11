@@ -94,10 +94,10 @@ def test_rectangle_pure_bending_signs_follow_local_y_and_z_axes() -> None:
     )
 
     assert [row.s11 for row in about_y.point_stresses] == pytest.approx(
-        [-4.0, -4.0, 4.0, 4.0]
+        [4.0, 4.0, -4.0, -4.0]
     )
     assert [row.s11 for row in about_z.point_stresses] == pytest.approx(
-        [3.0, -3.0, -3.0, 3.0]
+        [-3.0, 3.0, 3.0, -3.0]
     )
     assert about_y.s11_max == pytest.approx(4.0)
     assert about_y.s11_min == pytest.approx(-4.0)
@@ -120,10 +120,26 @@ def test_circular_pure_bending_signs_follow_axis_intersections(
     )
 
     assert [row.s11 for row in about_y.point_stresses] == pytest.approx(
-        [0.0, -2.0, 0.0, 2.0]
+        [0.0, 2.0, 0.0, -2.0]
     )
     assert [row.s11 for row in about_z.point_stresses] == pytest.approx(
-        [2.0, 0.0, -2.0, 0.0]
+        [-2.0, 0.0, 2.0, 0.0]
+    )
+
+
+def test_rectangle_biaxial_bending_matches_abaqus_b31_section_points() -> None:
+    section = parse_beam2_section(
+        {"section_type": "rectangle", "height": 0.1, "width": 0.2}
+    )
+
+    result = recover_section_point_stress(
+        section,
+        BeamSectionEndForces(0.0, 100.0, 40.0, 0.0),
+    )
+
+    # FEM points 1..4 correspond to Abaqus RECT points 25, 21, 1, 5.
+    assert [row.s11 for row in result.point_stresses] == pytest.approx(
+        [240000.0, 360000.0, -240000.0, -360000.0]
     )
 
 

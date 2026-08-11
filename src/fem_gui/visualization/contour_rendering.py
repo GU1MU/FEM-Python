@@ -17,6 +17,10 @@ CONTOUR_EDGE_FREE = "free"
 CONTOUR_EDGE_NONE = "none"
 
 FEATURE_EDGE_ANGLE_DEGREES = 30.0
+_NORMAL_SOURCE_POINT_ID = "normal_source_point_id"
+_NORMAL_SOURCE_CELL_ID = "normal_source_cell_id"
+_SCALAR_SOURCE_POINT_ID = "scalar_source_point_id"
+_SCALAR_SOURCE_CELL_ID = "scalar_source_cell_id"
 
 
 def contour_surface_options(
@@ -36,10 +40,174 @@ def contour_surface_options(
     return {
         "lighting": True,
         "smooth_shading": not is_line_mesh,
-        "ambient": 0.35,
-        "diffuse": 0.65,
+        "ambient": 0.7,
+        "diffuse": 0.3,
         "specular": 0.0,
     }
+
+
+def build_shaded_contour_surface(
+    dataset: Any,
+    cells: tuple[tuple[int, ...], ...],
+    point_keys: tuple[tuple[int, int], ...],
+    *,
+    scalar_name: str,
+    point_scalars: bool,
+) -> Any:
+    """Build an exterior scalar surface with geometry-owned point normals."""
+
+    canonical_points: list[np.ndarray] = []
+    canonical_by_key: dict[tuple[int, int], int] = {}
+    point_to_canonical = np.empty(len(point_keys), dtype=np.int64)
+    source_points = np.asarray(dataset.points)
+    for point_index, key in enumerate(point_keys):
+        canonical_index = canonical_by_key.get(key)
+        if canonical_index is None:
+            canonical_index = len(canonical_points)
+            canonical_by_key[key] = canonical_index
+            canonical_points.append(source_points[point_index])
+        point_to_canonical[point_index] = canonical_index
+
+    canonical_cells = tuple(
+        tuple(int(point_to_canonical[index]) for index in cell)
+        for cell in cells
+    )
+    flat_cells = np.fromiter(
+        (
+            value
+            for cell in canonical_cells
+            for value in (len(cell), *cell)
+        ),
+        dtype=np.int64,
+        count=sum(len(cell) + 1 for cell in canonical_cells),
+    )
+    connected = type(dataset)(
+        flat_cells,
+        np.asarray(dataset.celltypes, dtype=np.uint8),
+        np.asarray(canonical_points, dtype=float),
+    )
+    surface = connected.extract_surface(
+        algorithm="dataset_surface",
+        pass_pointid=True,
+        pass_cellid=True,
+    )
+    if int(surface.n_faces) == 0:
+        return dataset
+
+    surface.point_data[_NORMAL_SOURCE_POINT_ID] = np.asarray(
+        surface.point_data["vtkOriginalPointIds"],
+        dtype=np.int64,
+    )
+    surface.cell_data[_NORMAL_SOURCE_CELL_ID] = np.asarray(
+        surface.cell_data["vtkOriginalCellIds"],
+        dtype=np.int64,
+    )
+    normal_surface = surface.compute_normals(
+        cell_normals=False,
+        point_normals=True,
+        split_vertices=True,
+        feature_angle=FEATURE_EDGE_ANGLE_DEGREES,
+    )
+
+    normal_faces = np.asarray(normal_surface.faces, dtype=np.int64)
+    normal_source_points = np.asarray(
+        normal_surface.point_data[_NORMAL_SOURCE_POINT_ID],
+        dtype=np.int64,
+    )
+    normal_source_cells = np.asarray(
+        normal_surface.cell_data[_NORMAL_SOURCE_CELL_ID],
+        dtype=np.int64,
+    )
+    normals = np.asarray(normal_surface.point_data.active_normals)
+    render_points: list[np.ndarray] = []
+    render_normals: list[np.ndarray] = []
+    render_source_points: list[int] = []
+    render_source_cells: list[int] = []
+    render_faces: list[int] = []
+    cursor = 0
+    cell_index = 0
+    while cursor < normal_faces.size:
+        point_count = int(normal_faces[cursor])
+        normal_point_ids = normal_faces[
+            cursor + 1 : cursor + 1 + point_count
+        ]
+        source_cell_id = int(normal_source_cells[cell_index])
+        canonical_cell = canonical_cells[source_cell_id]
+        result_cell = cells[source_cell_id]
+        first_render_point = len(render_points)
+        render_faces.extend(
+            (point_count, *range(first_render_point, first_render_point + point_count))
+        )
+        for normal_point_id in normal_point_ids:
+            normal_index = int(normal_point_id)
+            canonical_point_id = int(normal_source_points[normal_index])
+            local_node = canonical_cell.index(canonical_point_id)
+            result_point_id = result_cell[local_node]
+            render_points.append(np.asarray(normal_surface.points[normal_index]))
+            render_normals.append(normals[normal_index])
+            render_source_points.append(result_point_id)
+        render_source_cells.append(source_cell_id)
+        cursor += point_count + 1
+        cell_index += 1
+
+    rendered = type(surface)(
+        np.asarray(render_points, dtype=float),
+        faces=np.asarray(render_faces, dtype=np.int64),
+    )
+    rendered.point_data["Normals"] = np.asarray(render_normals, dtype=float)
+    rendered.GetPointData().SetNormals(
+        rendered.GetPointData().GetArray("Normals")
+    )
+    rendered.point_data[_SCALAR_SOURCE_POINT_ID] = np.asarray(
+        render_source_points,
+        dtype=np.int64,
+    )
+    rendered.cell_data[_SCALAR_SOURCE_CELL_ID] = np.asarray(
+        render_source_cells,
+        dtype=np.int64,
+    )
+    bind_shaded_contour_scalars(
+        rendered,
+        dataset,
+        scalar_name=scalar_name,
+        point_scalars=point_scalars,
+    )
+    return rendered
+
+
+def bind_shaded_contour_scalars(
+    rendered: Any,
+    dataset: Any,
+    *,
+    scalar_name: str,
+    point_scalars: bool,
+) -> bool:
+    """Bind one source scalar array onto an existing shaded surface."""
+
+    if point_scalars:
+        if _SCALAR_SOURCE_POINT_ID not in rendered.point_data:
+            return False
+        source_ids = np.asarray(
+            rendered.point_data[_SCALAR_SOURCE_POINT_ID],
+            dtype=np.int64,
+        )
+        rendered.point_data[scalar_name] = np.asarray(
+            dataset.point_data[scalar_name]
+        )[source_ids]
+        preference = "point"
+    else:
+        if _SCALAR_SOURCE_CELL_ID not in rendered.cell_data:
+            return False
+        source_ids = np.asarray(
+            rendered.cell_data[_SCALAR_SOURCE_CELL_ID],
+            dtype=np.int64,
+        )
+        rendered.cell_data[scalar_name] = np.asarray(
+            dataset.cell_data[scalar_name]
+        )[source_ids]
+        preference = "cell"
+    rendered.set_active_scalars(scalar_name, preference=preference)
+    return True
 
 
 def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
@@ -145,6 +313,8 @@ __all__ = [
     "CONTOUR_RENDER_FILLED",
     "CONTOUR_RENDER_SHADED",
     "FEATURE_EDGE_ANGLE_DEGREES",
+    "bind_shaded_contour_scalars",
+    "build_shaded_contour_surface",
     "contour_surface_options",
     "extract_contour_edges",
     "style_contour_edges",

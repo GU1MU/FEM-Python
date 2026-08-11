@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from fem.io._atomic_text import atomic_write_verified_text
+from fem.io import _atomic_text as atomic_text_module
+from fem.io._atomic_text import (
+    atomic_write_verified_text,
+    atomic_write_verified_text_stream,
+)
 
 
 def _write(
@@ -181,3 +185,49 @@ def test_invalid_utf8_is_typed_before_parent_creation(
         )
 
     assert not parent.exists()
+
+
+def test_streaming_writer_verifies_and_atomically_installs_utf8(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "result.txt"
+    target.write_text("old", encoding="utf-8")
+    observed: list[str] = []
+
+    returned = atomic_write_verified_text_stream(
+        target,
+        lambda stream: (
+            stream.write("第一行\n"),
+            stream.write("second,row\n"),
+        ),
+        before_replace=lambda: observed.append(
+            target.read_text(encoding="utf-8")
+        ),
+    )
+
+    assert returned == target
+    assert observed == ["old"]
+    assert target.read_text(encoding="utf-8") == "第一行\nsecond,row\n"
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_streaming_verification_mismatch_preserves_old_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "result.txt"
+    target.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(
+        atomic_text_module,
+        "_sha256_file",
+        lambda _path: b"incorrect-digest",
+    )
+
+    with pytest.raises(ValueError, match="byte verification failed"):
+        atomic_write_verified_text_stream(
+            target,
+            lambda stream: stream.write("new\n"),
+        )
+
+    assert target.read_text(encoding="utf-8") == "old"
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []

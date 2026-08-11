@@ -335,6 +335,40 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
     window.close()
 
 
+def test_native_geometry_module_restores_pre_mesh_geometry() -> None:
+    window = _new_window()
+    window._create_native_model("Model-1")
+    window._set_native_geometry(
+        RectangleGeometry("Plate", 2.0, 1.0),
+        "矩形",
+    )
+    task = window.session.prepare_mesh_generation()
+    model = make_static_pull_truss_model()
+    assert window._apply_session_delta(
+        window.session.accept_generated_model(task.token, model),
+        model_geometry=build_model_geometry(model),
+    )
+
+    assert window.viewport._geometry_preview is not None
+    window.ribbon.set_current("模型")
+    assert window.viewport._geometry_preview is None
+    window.ribbon.set_current("几何")
+    preview = window.viewport._geometry_preview
+    assert preview is not None
+    assert preview.faces
+    assert preview.topological_dimension == 2
+
+    for module_name in ("网格", "模型", "分析"):
+        window.ribbon.set_current(module_name)
+        assert window.viewport._geometry_preview is None
+        assert window.viewport._result_render_payload is None
+        assert window.viewport.artifact_id == window.document.artifact.artifact_id
+
+    window.ribbon.set_current("几何")
+    assert window.viewport._geometry_preview == preview
+    window.close()
+
+
 def test_definition_change_replaces_artifact_and_invalidates_check_and_result() -> None:
     window = _new_window()
     _install_imported(window)

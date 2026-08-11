@@ -6,7 +6,8 @@ import weakref
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSize
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -55,7 +56,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     _application()
     window = FEMMainWindow()
 
-    assert window.main_splitter.opaqueResize()
+    assert not window.main_splitter.opaqueResize()
     assert [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())] == [
         "项目", "几何", "网格", "模型", "分析", "结果", "视图",
     ]
@@ -108,14 +109,91 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
-def test_splitter_resize_avoids_preview_line_and_queues_viewport_render():
+def test_splitter_resize_uses_preview_line_and_queues_final_viewport_render():
     application = _application()
     window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
+    application.processEvents()
     render_calls = []
     window.viewport.render = lambda: render_calls.append(True)
+    splitter = window.main_splitter
+    handle = splitter.handle(1)
+    original_sizes = splitter.sizes()
+    start = handle.rect().center()
 
-    window.main_splitter.splitterMoved.emit(320, 1)
+    QTest.mousePress(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start,
+    )
+    QTest.mouseMove(handle, start + QPoint(60, 0))
+    application.processEvents()
 
+    assert splitter.sizes() == original_sizes
+    assert render_calls == []
+
+    QTest.mouseRelease(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start + QPoint(60, 0),
+    )
+
+    assert splitter.sizes() != original_sizes
+    assert render_calls == []
+    application.processEvents()
+    assert render_calls == [True]
+    window.close()
+
+
+def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
+    application.processEvents()
+    render_calls = []
+    window.viewport.render = lambda: render_calls.append(True)
+    host = window.viewport_panel.overlay_host
+    baseline_width = window.viewport.width()
+
+    host.set_drawer_open(True, animated=False)
+
+    assert window.viewport.width() == baseline_width - host.drawer_width
+    assert render_calls == []
+    application.processEvents()
+    assert render_calls == [True]
+
+    render_calls.clear()
+    handle = host.agent_chat_drawer.resize_handle
+    start = handle.rect().center()
+    drawer_width = host.drawer_width
+    viewport_width = window.viewport.width()
+    QTest.mousePress(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start,
+    )
+    QTest.mouseMove(handle, start - QPoint(30, 0))
+    application.processEvents()
+
+    assert host._drawer_resize_preview.isVisible()
+    assert host.drawer_width == drawer_width
+    assert window.viewport.width() == viewport_width
+    assert render_calls == []
+
+    QTest.mouseRelease(
+        handle,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+        start - QPoint(30, 0),
+    )
+
+    assert host.drawer_width == drawer_width + 30
+    assert window.viewport.width() == viewport_width - 30
     assert render_calls == []
     application.processEvents()
     assert render_calls == [True]
@@ -524,6 +602,8 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
     assert model_point is not None and not model_point.isHidden()
     assert not window.actions["select_element"].isEnabled()
     assert window.actions["select_face"].toolTip() == "选择面"
+    assert window.actions["select_body"].text() == "选择体"
+    assert window.actions["select_body"].toolTip() == "选择体"
 
     window.ribbon.set_current("模型")
     assert not geometry_face.isHidden()

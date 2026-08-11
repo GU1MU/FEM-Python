@@ -12,6 +12,7 @@ from fem_gui.visualization.contour_rendering import (
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_FILLED,
     CONTOUR_RENDER_SHADED,
+    build_shaded_contour_surface,
     contour_surface_options,
     extract_contour_edges,
     style_contour_edges,
@@ -36,8 +37,8 @@ def test_shaded_contours_use_balanced_diffuse_lighting() -> None:
 
     assert options["lighting"]
     assert options["smooth_shading"]
-    assert options["ambient"] == 0.35
-    assert options["diffuse"] == 0.65
+    assert options["ambient"] == 0.7
+    assert options["diffuse"] == 0.3
     assert options["specular"] == 0.0
 
 
@@ -166,3 +167,75 @@ def test_solid_and_bold_contour_styles_keep_original_edges() -> None:
 
     assert style_contour_edges(line, "solid") is line
     assert style_contour_edges(line, "bold") is line
+
+
+def test_shaded_surface_culls_internal_faces_without_averaging_scalars() -> None:
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, -1.0),
+        )
+    )
+    cells = ((0, 1, 2, 3), (4, 5, 6, 7))
+    grid = pyvista.UnstructuredGrid(
+        np.asarray((4, *cells[0], 4, *cells[1]), dtype=np.int64),
+        np.asarray((10, 10), dtype=np.uint8),
+        points,
+    )
+    grid.point_data["value"] = np.asarray(
+        (1.0, 2.0, 3.0, 4.0, 11.0, 13.0, 12.0, 15.0)
+    )
+    point_keys = (
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 1),
+        (0, 3),
+        (0, 2),
+        (0, 5),
+    )
+
+    shaded = build_shaded_contour_surface(
+        grid,
+        cells,
+        point_keys,
+        scalar_name="value",
+        point_scalars=True,
+    )
+
+    assert grid.extract_surface(algorithm="dataset_surface").n_cells == 8
+    assert shaded.n_cells == 6
+    assert shaded.n_points == 18
+    assert shaded.point_data.active_normals is not None
+    assert 1.0 in shaded.point_data["value"]
+    assert 11.0 in shaded.point_data["value"]
+
+
+def test_shaded_surface_preserves_cube_feature_normals() -> None:
+    grid = pyvista.ImageData(dimensions=(2, 2, 2)).cast_to_unstructured_grid()
+    grid.point_data["value"] = np.arange(grid.n_points, dtype=float)
+    cells = tuple(
+        tuple(int(value) for value in grid.get_cell(index).point_ids)
+        for index in range(grid.n_cells)
+    )
+
+    shaded = build_shaded_contour_surface(
+        grid,
+        cells,
+        tuple((0, index) for index in range(grid.n_points)),
+        scalar_name="value",
+        point_scalars=True,
+    )
+
+    origin = np.all(np.isclose(shaded.points, (0.0, 0.0, 0.0)), axis=1)
+    origin_normals = np.asarray(shaded.point_data.active_normals)[origin]
+    assert shaded.n_cells == 6
+    assert origin_normals.shape == (3, 3)
+    assert np.unique(np.round(origin_normals, 6), axis=0).shape[0] == 3

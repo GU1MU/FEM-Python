@@ -33,9 +33,15 @@ def _application() -> QApplication:
 def _wait_for_tasks(window: FEMMainWindow) -> None:
     deadline = monotonic() + 2.0
     application = _application()
-    while window.busy and monotonic() < deadline:
+    idle_cycles = 0
+    while monotonic() < deadline:
         application.processEvents()
-    application.processEvents()
+        if window.busy:
+            idle_cycles = 0
+            continue
+        idle_cycles += 1
+        if idle_cycles >= 3:
+            break
     assert not window.busy
 
 
@@ -67,6 +73,7 @@ def _assert_current_ribbon_selection(
     *,
     variable: ResultVariable,
     position: FieldPosition,
+    render_position: FieldPosition | None = None,
 ) -> ScalarFieldSelection:
     provider = window._current_result_provider()
     selection = window.result_component_combo.currentData()
@@ -83,10 +90,17 @@ def _assert_current_ribbon_selection(
     assert selection.field_key.request.field_id.position is position
     availability = provider.field_status(selection.field_key)
     assert selection.component in availability.descriptor.columns
-    assert (
+    rendered_selection = (
         window.viewport._result_render_payload.topology.selection
-        == selection
     )
+    expected_render_position = (
+        position if render_position is None else render_position
+    )
+    assert (
+        rendered_selection.field_key.request.field_id.position
+        is expected_render_position
+    )
+    assert rendered_selection.component == selection.component
     return selection
 
 
@@ -165,6 +179,34 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     window.close()
 
 
+def test_ribbon_modules_switch_between_result_contour_and_mesh(
+    gui_inp_path,
+) -> None:
+    _application()
+    window = _solved_window(gui_inp_path)
+
+    assert window.ribbon.tab_bar.tabText(
+        window.ribbon.tab_bar.currentIndex()
+    ) == "结果"
+    assert window.viewport._result_render_payload is not None
+    assert window.viewport._display.contour_enabled
+
+    for module_name in ("分析", "模型", "网格"):
+        window.ribbon.set_current(module_name)
+        assert window.viewport._result_render_payload is None
+        assert window.viewport._geometry_preview is None
+        assert window.viewport.artifact_id == window.document.artifact.artifact_id
+
+    window.ribbon.set_current("结果")
+    assert window.viewport._result_render_payload is not None
+    assert window.viewport._display.contour_enabled
+    assert (
+        window.viewport._result_render_payload.topology.selection
+        == window.result_selection
+    )
+    window.close()
+
+
 def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
@@ -199,6 +241,7 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
         window,
         variable=ResultVariable.S,
         position=FieldPosition.ELEMENT_NODAL,
+        render_position=FieldPosition.RESOLVED_NODAL,
     )
     assert element_nodal_selection.component
     assert window.result_position_combo.count() == 1
@@ -337,4 +380,45 @@ def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
     assert window.result_position_combo.count() == 1
     assert window.result_position_combo.currentText() == "节点"
     assert window.result_averaging_threshold.isHidden()
+    rendered_selection = (
+        window.viewport._result_render_payload.topology.selection
+    )
+    assert (
+        rendered_selection.field_key.request.field_id.position
+        is FieldPosition.RESOLVED_NODAL
+    )
+    assert (
+        rendered_selection.field_key.request.averaging_policy
+        .threshold_percent
+        == 75.0
+    )
+    window.close()
+
+
+def test_stress_averaging_threshold_rebuilds_only_visual_field(gui_inp_path):
+    _application()
+    window = _solved_window(gui_inp_path)
+
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
+    selected = window.result_selection
+
+    window._set_contour_options({"averaging_threshold": 25.0})
+    _wait_for_tasks(window)
+
+    assert window.result_selection == selected
+    rendered_selection = (
+        window.viewport._result_render_payload.topology.selection
+    )
+    assert (
+        rendered_selection.field_key.request.field_id.position
+        is FieldPosition.RESOLVED_NODAL
+    )
+    assert (
+        rendered_selection.field_key.request.averaging_policy
+        .threshold_percent
+        == 25.0
+    )
     window.close()

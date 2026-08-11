@@ -13,10 +13,12 @@ from PySide6.QtWidgets import QApplication, QWidget
 from fem.application import RegionRef
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.core.model import FEMModel
+from fem.geometry import LogicalEntityRef
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.widgets.viewport import (
     BEAM_FRAME_GLYPH_LIMIT,
     FEMViewport,
+    PickHit,
     _effective_line_load_vector,
 )
 
@@ -64,6 +66,99 @@ class _Plotter(QWidget):
 
     def render(self) -> None:
         self.render_count += 1
+
+
+def test_hover_reuses_preselection_for_the_same_semantic_target(
+    monkeypatch,
+) -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._plotter = SimpleNamespace(
+        height=lambda: 400,
+        _getPixelRatio=lambda: 1.0,
+        devicePixelRatioF=lambda: 1.0,
+    )
+    reference = LogicalEntityRef("body:domain")
+    viewport._geometry_pick_to_ref = {101: reference, 102: reference}
+    hits = iter(
+        (
+            PickHit(
+                "geometry_body",
+                101,
+                "geometry_surface",
+                (40.0, 50.0),
+                (0.0, 0.0, 0.0),
+                vtk_cell_id=1,
+            ),
+            PickHit(
+                "geometry_body",
+                102,
+                "geometry_surface",
+                (80.0, 90.0),
+                (0.5, 0.5, 0.0),
+                vtk_cell_id=2,
+            ),
+        )
+    )
+    shown = []
+    monkeypatch.setattr(viewport, "_resolve_pick", lambda *_args: next(hits))
+    monkeypatch.setattr(viewport, "_show_preselection", shown.append)
+
+    viewport._pending_hover_position = (40.0, 349.0)
+    viewport._update_preselection()
+    viewport._pending_hover_position = (80.0, 309.0)
+    viewport._update_preselection()
+
+    assert len(shown) == 1
+    assert viewport._hover_hit is not None
+    assert viewport._hover_hit.vtk_cell_id == 2
+    viewport._plotter = None
+    viewport.close()
+
+
+def test_mesh_body_hover_groups_elements_by_part_owner(monkeypatch) -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._plotter = SimpleNamespace(
+        height=lambda: 400,
+        _getPixelRatio=lambda: 1.0,
+        devicePixelRatioF=lambda: 1.0,
+    )
+    viewport._mesh_body_owner_by_element_id = {10: "P1", 11: "P1"}
+    hits = iter(
+        (
+            PickHit(
+                "mesh_body",
+                10,
+                "model_pick_grid",
+                (40.0, 50.0),
+                (0.0, 0.0, 0.0),
+                vtk_cell_id=1,
+            ),
+            PickHit(
+                "mesh_body",
+                11,
+                "model_pick_grid",
+                (80.0, 90.0),
+                (0.5, 0.5, 0.0),
+                vtk_cell_id=2,
+            ),
+        )
+    )
+    shown = []
+    monkeypatch.setattr(viewport, "_resolve_pick", lambda *_args: next(hits))
+    monkeypatch.setattr(viewport, "_show_preselection", shown.append)
+
+    viewport._pending_hover_position = (40.0, 349.0)
+    viewport._update_preselection()
+    viewport._pending_hover_position = (80.0, 309.0)
+    viewport._update_preselection()
+
+    assert len(shown) == 1
+    assert viewport._hover_hit is not None
+    assert viewport._hover_hit.pick_id == 11
+    viewport._plotter = None
+    viewport.close()
 
 
 class _FitPlotter:

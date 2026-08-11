@@ -71,6 +71,8 @@ from ..visualization.contour_rendering import (
     CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_SHADED,
+    bind_shaded_contour_scalars,
+    build_shaded_contour_surface,
     contour_surface_options,
     extract_contour_edges,
     style_contour_edges,
@@ -1271,6 +1273,7 @@ class FEMViewport(QWidget):
         self._plotter = None
         self._grid = None
         self._result_grid = None
+        self._result_render_surface = None
         self._result_point_index_to_node_id: dict[int, int] = {}
         self._result_point_index_to_element_id: dict[int, int] = {}
         self._result_cell_index_to_element_id: dict[int, int] = {}
@@ -1314,6 +1317,8 @@ class FEMViewport(QWidget):
             tuple[str, tuple[int, int]],
             int,
         ] = {}
+        self._mesh_body_owner_by_element_id: dict[int, str] = {}
+        self._mesh_body_element_ids_by_owner: dict[str, tuple[int, ...]] = {}
         self._mesh_scope_pick_bindings_ready = False
         self._mesh_scope_highlight_pipelines: dict[
             str,
@@ -1325,6 +1330,7 @@ class FEMViewport(QWidget):
         ] = {}
         self._mesh_scope_selected_references: set[MeshEntityRef] = set()
         self._mesh_scope_highlight_kind: str | None = None
+        self._mesh_scope_body_highlight_owners: frozenset[str] = frozenset()
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_render_payload: ResultRenderPayload | None = None
@@ -2011,6 +2017,7 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
+        self._result_render_surface = None
         self._scalar_reuse_pending = False
         self._scalar_reuse_display = None
         self._result_provenance_layout = None
@@ -4592,6 +4599,15 @@ class FEMViewport(QWidget):
         ):
             return
         topology = build_mesh_selection_topology(self._model)
+        self._mesh_body_owner_by_element_id = dict(topology.element_owners)
+        self._mesh_body_element_ids_by_owner = {
+            owner: tuple(
+                int(reference.element_id)
+                for reference in references
+                if reference.element_id is not None
+            )
+            for owner, references in topology.part_elements.items()
+        }
         edge_references = tuple(
             reference
             for reference in topology.pick_references("edge")
@@ -4663,15 +4679,20 @@ class FEMViewport(QWidget):
         self._mesh_scope_pick_to_ref.clear()
         self._mesh_scope_ref_to_pick_id.clear()
         self._mesh_scope_identity_to_pick_id.clear()
+        self._mesh_body_owner_by_element_id.clear()
+        self._mesh_body_element_ids_by_owner.clear()
         self._mesh_scope_pick_bindings_ready = False
 
     def _reset_mesh_scope_highlight_pipelines(self) -> None:
         self._mesh_scope_render_timer.stop()
         for kind in ("node", "element", "edge", "face"):
             self._remove_actor(f"mesh_scope_selection_{kind}")
+        self._remove_actor("mesh_scope_selection_body")
+        self._remove_actor("mesh_scope_selection_body_edges")
         self._mesh_scope_highlight_pipelines.clear()
         self._mesh_scope_highlight_indices.clear()
         self._mesh_scope_highlight_kind = None
+        self._mesh_scope_body_highlight_owners = frozenset()
 
     def _install_mesh_scope_highlight_pipelines(self) -> None:
         """Create all four empty selection pipelines once for the installed mesh."""
@@ -4874,14 +4895,148 @@ class FEMViewport(QWidget):
             self._render()
 
     def _clear_mesh_scope_highlight(self, *, schedule_render: bool) -> bool:
-        changed = self._mesh_scope_highlight_kind is not None
+        changed = self._mesh_scope_highlight_kind is not None or any(
+            name in self._actors
+            for name in (
+                "mesh_scope_selection_body",
+                "mesh_scope_selection_body_edges",
+            )
+        )
         for pipeline in self._mesh_scope_highlight_pipelines.values():
             changed = pipeline.clear() or changed
             pipeline.actor.SetVisibility(False)
+        self._remove_actor("mesh_scope_selection_body")
+        self._remove_actor("mesh_scope_selection_body_edges")
         self._mesh_scope_highlight_kind = None
+        self._mesh_scope_body_highlight_owners = frozenset()
         if changed and schedule_render:
             self._schedule_mesh_scope_render()
         return changed
+
+    def _mesh_body_render_data(
+        self,
+        element_ids: Iterable[int],
+    ) -> tuple[Any | None, Any | None]:
+        """Build a body surface and its geometry edges without mesh lines."""
+
+        payload = self._rendered_result_payload()
+        if payload is not None and self._result_grid is not None:
+            dataset = self._result_grid
+            ids = self._typed_result_cell_ids(dataset)
+        elif (
+            self._pick_grid is not None
+            and "element_id" in self._pick_grid.cell_data
+        ):
+            dataset = self._pick_grid
+            ids = np.asarray(dataset.cell_data["element_id"], dtype=np.int64)
+        else:
+            return None, None
+        requested = tuple(int(element_id) for element_id in element_ids)
+        cells = np.flatnonzero(np.isin(ids, requested))
+        if not len(cells):
+            return None, None
+        selected = dataset.extract_cells(cells)
+        if self._is_line_mesh():
+            return selected, None
+        connected = selected.cast_to_unstructured_grid().clean()
+        surface = connected.extract_surface(
+            algorithm="dataset_surface"
+        ).clean()
+        edges = extract_contour_edges(connected, CONTOUR_EDGE_GEOMETRY)
+        return surface, edges
+
+    def _add_mesh_body_highlight_layers(
+        self,
+        actor_name: str,
+        element_ids: Iterable[int],
+        *,
+        color: str,
+        opacity: float,
+    ) -> bool:
+        self._remove_actor(actor_name)
+        self._remove_actor(f"{actor_name}_edges")
+        if self._plotter is None:
+            return False
+        surface, edges = self._mesh_body_render_data(element_ids)
+        if surface is None or int(surface.n_cells) <= 0:
+            return False
+        surface_options: dict[str, Any] = (
+            {"style": "wireframe", "line_width": 5}
+            if self._is_line_mesh()
+            else {"opacity": opacity, "show_edges": False}
+        )
+        self._actors[actor_name] = self._plotter.add_mesh(
+            surface,
+            color=color,
+            show_scalar_bar=False,
+            name=actor_name,
+            reset_camera=False,
+            pickable=False,
+            **surface_options,
+        )
+        self._offset_highlight_actor(self._actors[actor_name])
+        if edges is not None and int(edges.n_cells) > 0:
+            edge_name = f"{actor_name}_edges"
+            self._actors[edge_name] = self._plotter.add_mesh(
+                edges,
+                color=color,
+                line_width=5,
+                lighting=False,
+                show_scalar_bar=False,
+                name=edge_name,
+                reset_camera=False,
+                pickable=False,
+            )
+            self._offset_highlight_actor(self._actors[edge_name])
+        return True
+
+    def _highlight_mesh_bodies(
+        self,
+        references: set[MeshEntityRef],
+    ) -> None:
+        owners = frozenset(
+            owner
+            for reference in references
+            if reference.element_id is not None
+            if (
+                owner := self._mesh_body_owner_by_element_id.get(
+                    int(reference.element_id)
+                )
+            )
+            is not None
+        )
+        if (
+            self._mesh_scope_highlight_kind == "body"
+            and owners == self._mesh_scope_body_highlight_owners
+            and "mesh_scope_selection_body" in self._actors
+        ):
+            return
+        element_ids = (
+            tuple(
+                element_id
+                for owner in sorted(owners)
+                for element_id in self._mesh_body_element_ids_by_owner.get(
+                    owner,
+                    (),
+                )
+            )
+            if owners
+            else tuple(
+                int(reference.element_id)
+                for reference in references
+                if reference.element_id is not None
+            )
+        )
+        self._clear_mesh_scope_highlight(schedule_render=False)
+        if self._add_mesh_body_highlight_layers(
+            "mesh_scope_selection_body",
+            element_ids,
+            color="#f5a623",
+            opacity=0.45,
+        ):
+            self._mesh_scope_highlight_kind = "body"
+            self._mesh_scope_body_highlight_owners = owners
+            self._schedule_mesh_scope_render()
 
     def set_result_render_payload(
         self,
@@ -5199,12 +5354,16 @@ class FEMViewport(QWidget):
         visual_names = {
             "selection",
             "geometry_selection",
+            "geometry_selection_edges",
             "preselection",
+            "preselection_edges",
+            "mesh_scope_selection_body",
+            "mesh_scope_selection_body_edges",
         }
         had_mesh_scope_selection = any(
             pipeline.selected_indices
             for pipeline in self._mesh_scope_highlight_pipelines.values()
-        )
+        ) or self._mesh_scope_highlight_kind == "body"
         had_visible_selection = any(
             name in visual_names or name.startswith("beam_frame_")
             for name in self._actors
@@ -5216,6 +5375,7 @@ class FEMViewport(QWidget):
         self._mesh_scope_selected_references.clear()
         self._remove_actor("selection")
         self._remove_actor("geometry_selection")
+        self._remove_actor("geometry_selection_edges")
         self._clear_mesh_scope_highlight(schedule_render=False)
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
@@ -5319,12 +5479,34 @@ class FEMViewport(QWidget):
             )
         return None
 
+    def _geometry_body_edge_data(
+        self,
+        pick_ids: Iterable[int],
+    ) -> Any | None:
+        if (
+            self._geometry_preview_edges is None
+            or "geometry_body_pick_id"
+            not in self._geometry_preview_edges.cell_data
+        ):
+            return None
+        ids = np.asarray(
+            self._geometry_preview_edges.cell_data["geometry_body_pick_id"],
+            dtype=np.int64,
+        )
+        cells = np.flatnonzero(np.isin(ids, tuple(pick_ids)))
+        return (
+            self._geometry_preview_edges.extract_cells(cells)
+            if len(cells)
+            else None
+        )
+
     def highlight_geometry_entities(
         self,
         references: Iterable[LogicalEntityRef],
     ) -> None:
         """Map logical refs back to every matching preview display cell."""
         self._remove_actor("geometry_selection")
+        self._remove_actor("geometry_selection_edges")
         self._clear_beam_frame_preview(render=False)
         raw_references = tuple(references)
         if any(
@@ -5364,6 +5546,7 @@ class FEMViewport(QWidget):
         )
         if not pick_ids:
             return
+        body_edges = None
         if kind == "geometry_point" and self._geometry_preview_points is not None:
             ids = np.asarray(
                 self._geometry_preview_points.point_data["geometry_pick_id"],
@@ -5421,6 +5604,7 @@ class FEMViewport(QWidget):
                         return
                     data = self._geometry_preview_surface.extract_cells(cells)
                 kwargs = {"opacity": 0.45}
+                body_edges = self._geometry_body_edge_data(pick_ids)
             elif (
                 self._geometry_preview is not None
                 and self._geometry_preview.topological_dimension == 1
@@ -5449,6 +5633,22 @@ class FEMViewport(QWidget):
             **kwargs,
         )
         self._offset_highlight_actor(self._actors["geometry_selection"])
+        if body_edges is not None and int(body_edges.n_cells) > 0:
+            self._actors["geometry_selection_edges"] = (
+                self._plotter.add_mesh(
+                    body_edges,
+                    color="#f5a623",
+                    line_width=5,
+                    lighting=False,
+                    show_scalar_bar=False,
+                    name="geometry_selection_edges",
+                    reset_camera=False,
+                    pickable=False,
+                )
+            )
+            self._offset_highlight_actor(
+                self._actors["geometry_selection_edges"]
+            )
         self._update_pickable_actors()
         self._render()
 
@@ -5473,9 +5673,14 @@ class FEMViewport(QWidget):
             kind = next(iter(kinds))
         else:
             kind = str(entity_kind)
-            if kind not in {"node", "element", "edge", "face"}:
+            if kind not in {"node", "element", "edge", "face", "body"}:
                 raise ValueError("unsupported mesh scope highlight kind")
         self._mesh_scope_selected_references = set(selected)
+        if kind == "body":
+            if any(reference.kind != "element" for reference in selected):
+                raise ValueError("mesh body highlight requires element references")
+            self._highlight_mesh_bodies(selected)
+            return
         pipeline = self._mesh_scope_highlight_pipelines.get(kind)
         if pipeline is None:
             return
@@ -7139,6 +7344,7 @@ class FEMViewport(QWidget):
         self._remove_actor("extrema")
         self._remove_scalar_bars()
         self._result_grid = None
+        self._result_render_surface = None
         if self._result_render_payload is not None:
             self._update_result_render_payload_layer(
                 self._result_render_payload
@@ -7176,6 +7382,35 @@ class FEMViewport(QWidget):
         base_edges = self._actors.get("element_edges")
         if base_edges is not None:
             base_edges.SetVisibility(False)
+        is_line_mesh = self._is_line_mesh()
+        render_dataset = dataset
+        if (
+            self._contour["render_mode"] == CONTOUR_RENDER_SHADED
+            and not is_line_mesh
+        ):
+            render_dataset = build_shaded_contour_surface(
+                dataset,
+                checked.topology.cells,
+                tuple(
+                    (
+                        (0, int(location.node_id))
+                        if location is not None
+                        and location.node_id is not None
+                        else (1, point_index)
+                    )
+                    for point_index, location in enumerate(
+                        checked.topology.point_locations
+                    )
+                ),
+                scalar_name=checked.scalar_name,
+                point_scalars=(
+                    checked.topology.value_layout
+                    is ResultValueLayout.POINT
+                ),
+            )
+        self._result_render_surface = (
+            render_dataset if render_dataset is not dataset else None
+        )
         kwargs: dict[str, Any] = {
             "name": "result",
             "reset_camera": False,
@@ -7184,7 +7419,7 @@ class FEMViewport(QWidget):
             **self._line_render_options(),
             **contour_surface_options(
                 str(self._contour["render_mode"]),
-                is_line_mesh=self._is_line_mesh(),
+                is_line_mesh=is_line_mesh,
             ),
         }
         if self._display.contour_enabled:
@@ -7217,7 +7452,10 @@ class FEMViewport(QWidget):
                 show_edges=self._show_edges and not self._is_line_mesh(),
                 edge_color=self._element_layer_color(palette),
             )
-        self._actors["result"] = self._plotter.add_mesh(dataset, **kwargs)
+        self._actors["result"] = self._plotter.add_mesh(
+            render_dataset,
+            **kwargs,
+        )
         if self._display.contour_enabled and self._contour["legend"]:
             self._configure_contour_bar(
                 checked,
@@ -7239,12 +7477,15 @@ class FEMViewport(QWidget):
         selected_mesh_references = set(
             self._mesh_scope_selected_references
         )
+        selected_mesh_highlight_kind = self._mesh_scope_highlight_kind
         self._install_mesh_scope_highlight_pipelines()
         if selected_mesh_references:
-            selected_kind = next(iter(selected_mesh_references)).kind
             self.highlight_mesh_entities(
                 selected_mesh_references,
-                entity_kind=selected_kind,
+                entity_kind=(
+                    selected_mesh_highlight_kind
+                    or next(iter(selected_mesh_references)).kind
+                ),
             )
         self._refresh_node_layer(render=False)
         self._refresh_labels(render=False)
@@ -7266,6 +7507,18 @@ class FEMViewport(QWidget):
             return False
 
         checked = self._consume_result_install_validation(payload)
+        if self._result_render_surface is not None and not (
+            bind_shaded_contour_scalars(
+                self._result_render_surface,
+                checked.dataset,
+                scalar_name=checked.scalar_name,
+                point_scalars=(
+                    checked.topology.value_layout
+                    is ResultValueLayout.POINT
+                ),
+            )
+        ):
+            return False
         mapper.array_name = checked.scalar_name
         mapper.scalar_visibility = True
         mapper.scalar_range = self._contour_data_range(checked)
@@ -8102,10 +8355,28 @@ class FEMViewport(QWidget):
         x, y = self._pending_hover_position
         vtk_x, vtk_y = self._qt_to_vtk_position(x, y)
         hit = self._resolve_pick(vtk_x, vtk_y)
-        if hit == self._hover_hit:
+        if self._preselection_target(hit) == self._preselection_target(
+            self._hover_hit
+        ):
+            self._hover_hit = hit
             return
         self._hover_hit = hit
         self._show_preselection(hit)
+
+    def _preselection_target(self, hit: PickHit | None) -> object:
+        """Return the semantic target that determines the hover highlight."""
+
+        if hit is None:
+            return None
+        if hit.kind.startswith("geometry_"):
+            reference = self._geometry_pick_to_ref.get(hit.pick_id)
+            if reference is not None:
+                return (hit.kind, hit.dataset_name, reference)
+        if hit.kind == "mesh_body":
+            owner = self._mesh_body_owner_by_element_id.get(hit.pick_id)
+            if owner is not None:
+                return (hit.kind, hit.dataset_name, owner)
+        return (hit.kind, hit.dataset_name, hit.pick_id)
 
     def _resolve_pick(self, x: int, y: int) -> PickHit | None:
         mode = self._selection_mode
@@ -8743,6 +9014,7 @@ class FEMViewport(QWidget):
 
     def _show_preselection(self, hit: PickHit | None) -> None:
         self._remove_actor("preselection")
+        self._remove_actor("preselection_edges")
         if hit is None or self._plotter is None or _pyvista is None:
             self._render()
             return
@@ -8756,6 +9028,25 @@ class FEMViewport(QWidget):
                     reference,
                     logical_pick_ids,
                 )
+        if hit.kind == "mesh_body":
+            owner = self._mesh_body_owner_by_element_id.get(hit.pick_id)
+            target_ids = (
+                self._mesh_body_element_ids_by_owner.get(
+                    owner,
+                    (hit.pick_id,),
+                )
+                if owner is not None
+                else (hit.pick_id,)
+            )
+            self._add_mesh_body_highlight_layers(
+                "preselection",
+                target_ids,
+                color="#38b8c8",
+                opacity=0.38,
+            )
+            self._update_pickable_actors()
+            self._render()
+            return
         if hit.kind == "geometry_point" and self._geometry_preview_points is not None:
             ids = np.asarray(
                 self._geometry_preview_points.point_data["geometry_pick_id"]
@@ -8868,7 +9159,6 @@ class FEMViewport(QWidget):
         elif hit.kind in {
             "element",
             "mesh_element",
-            "mesh_body",
             "mesh_edge",
             "mesh_face",
         }:
@@ -8904,13 +9194,33 @@ class FEMViewport(QWidget):
             **kwargs,
         )
         self._offset_highlight_actor(self._actors["preselection"])
+        if hit.kind == "geometry_body":
+            body_edges = self._geometry_body_edge_data(logical_pick_ids)
+            if body_edges is not None and int(body_edges.n_cells) > 0:
+                self._actors["preselection_edges"] = self._plotter.add_mesh(
+                    body_edges,
+                    color="#38b8c8",
+                    line_width=5,
+                    lighting=False,
+                    show_scalar_bar=False,
+                    name="preselection_edges",
+                    reset_camera=False,
+                    pickable=False,
+                )
+                self._offset_highlight_actor(
+                    self._actors["preselection_edges"]
+                )
         self._update_pickable_actors()
         self._render()
 
     def _clear_preselection(self, *, render: bool) -> None:
-        had_preselection = self._hover_hit is not None or "preselection" in self._actors
+        had_preselection = self._hover_hit is not None or any(
+            name in self._actors
+            for name in ("preselection", "preselection_edges")
+        )
         self._hover_hit = None
         self._remove_actor("preselection")
+        self._remove_actor("preselection_edges")
         if render and had_preselection:
             self._render()
 

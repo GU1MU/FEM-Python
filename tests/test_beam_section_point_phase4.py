@@ -238,7 +238,7 @@ def _independent_root_oracle(
     point_values: dict[int, tuple[float, ...]] = {}
     s11_values = []
     for number, (local_y, local_z) in enumerate(points, start=1):
-        s11 = axial - moment_y * local_z / iyy + moment_z * local_y / izz
+        s11 = axial + moment_y * local_z / iyy - moment_z * local_y / izz
         principal_span = math.sqrt(s11**2 + 4.0 * point_shear**2)
         values = (
             s11,

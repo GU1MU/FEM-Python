@@ -194,7 +194,9 @@ from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
+    DisplacementDialogState,
     LoadDialog,
+    LoadDialogState,
     OutputRequestDialog,
     StaticStepDialog,
 )
@@ -652,6 +654,10 @@ class FEMMainWindow(QMainWindow):
         self._temporary_selection_owner: str | None = None
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection: str | None = None
+        self._pending_analysis_requested_scope_kind: str | None = None
+        self._pending_analysis_dialog_state: (
+            DisplacementDialogState | LoadDialogState | None
+        ) = None
         self._pending_scope_kind: str | None = None
         self._pending_analysis_edit: (
             tuple[
@@ -1646,6 +1652,16 @@ class FEMMainWindow(QMainWindow):
             )
         try:
             delta = self.session.apply_definition_edit(batch)
+            artifact = self.document.artifact
+            if (
+                artifact is not None
+                and self.geometry is not None
+                and self.viewport.artifact_id == artifact.artifact_id
+            ):
+                return self._accepted_definition_only_command(
+                    command_id,
+                    delta,
+                )
             return self._accepted_command(command_id, delta)
         except DefinitionRejected as error:
             return self._rejected_command(
@@ -2975,6 +2991,7 @@ class FEMMainWindow(QMainWindow):
         self._sync_step_combos()
         self._refresh_result_controls()
         self._update_action_states()
+        self._project_viewport_for_module(self._current_module_name())
         self._applied_session_revision = revision
         return True
 
@@ -3040,6 +3057,8 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self._restore_temporary_selection_context()
         self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
         self._pending_local_mesh_selection = False
@@ -3641,6 +3660,9 @@ class FEMMainWindow(QMainWindow):
             authoring_bridge=self.agent_authoring_bridge,
             authoring_controller=self.agent_authoring_controller,
         )
+        self.viewport_panel.overlay_host.viewportGeometryCommitted.connect(
+            lambda: self._defer_ui(self.viewport.render)
+        )
         self.viewport_panel.agent_chat_drawer.set_project_save_handler(
             self._start_agent_project_save
         )
@@ -3673,9 +3695,9 @@ class FEMMainWindow(QMainWindow):
         splitter.addWidget(self.sketch_editor_panel)
         splitter.addWidget(self.boolean_feature_panel)
         splitter.addWidget(self.planar_boolean_panel)
-        # A non-opaque QSplitter uses a rubber-band preview that can leave a
-        # stale line over the native VTK surface after the mouse is released.
-        splitter.setOpaqueResize(True)
+        # Keep the VTK viewport at a stable size while the user drags a handle.
+        # Qt shows a rubber-band preview and commits the new layout on release.
+        splitter.setOpaqueResize(False)
         splitter.splitterMoved.connect(
             lambda _position, _index: self._defer_ui(self.viewport.render)
         )
@@ -3798,6 +3820,95 @@ class FEMMainWindow(QMainWindow):
             self.navigation.show_result()
         elif module_name in {"项目", "几何", "网格", "模型", "分析"}:
             self.navigation.show_model()
+        self._project_viewport_for_module(module_name)
+
+    def _current_module_name(self) -> str:
+        tab_bar = getattr(getattr(self, "ribbon", None), "tab_bar", None)
+        if tab_bar is None or tab_bar.currentIndex() < 0:
+            return ""
+        return tab_bar.tabText(tab_bar.currentIndex())
+
+    def _project_viewport_for_module(self, module_name: str) -> None:
+        """Project the stable geometry, mesh, or result scene for a module."""
+
+        if self._temporary_selection_context is not None or any(
+            controller is not None
+            for controller in (
+                self._wire_editor_controller,
+                self._sketch_editor_controller,
+                self._body_boolean_controller,
+                self._planar_boolean_controller,
+                self._face_sketch_controller,
+            )
+        ):
+            return
+        if module_name == "结果":
+            if (
+                self._current_result_provider() is not None
+                and type(self.result_selection) is ScalarFieldSelection
+            ):
+                self._restore_viewport_model_scene(render=False)
+                self._apply_display()
+            else:
+                self._project_mesh_or_geometry_fallback()
+            return
+        if module_name == "几何":
+            preview = self._current_native_geometry_preview()
+            if preview is not None:
+                self.viewport.show_geometry_preview(preview)
+            else:
+                self._project_mesh_or_geometry_fallback()
+            return
+        if module_name in {"网格", "模型", "分析"}:
+            self._project_mesh_or_geometry_fallback()
+
+    def _project_mesh_or_geometry_fallback(self) -> None:
+        if self.document.artifact is not None and self.geometry is not None:
+            self.actions["edges"].setChecked(self._model_edges_visible)
+            self._restore_viewport_model_scene()
+            return
+        preview = self._current_native_geometry_preview()
+        if preview is not None:
+            self.viewport.show_geometry_preview(preview)
+            return
+        self.viewport.clear_model()
+
+    def _current_native_geometry_preview(self) -> GeometryPreview | None:
+        if self.document.source_kind != "native":
+            return None
+        active = self.document.active_part
+        if (
+            active is None
+            or active.suppressed
+            or active.geometry_recipe is None
+        ):
+            return None
+        preview_key = self._native_part_preview_cache_key(self.document)
+        cached = self._geometry_preview_cache
+        preview = (
+            cached[2]
+            if (
+                cached is not None
+                and cached[0] == self.document.session_id
+                and cached[1] == preview_key
+            )
+            else build_multi_part_geometry_preview((active,))
+        )
+        suppressed_parts = tuple(
+            part
+            for part in self.document.parts
+            if part.suppressed and part.geometry_recipe is not None
+        )
+        ghost_preview = (
+            build_multi_part_geometry_preview(
+                suppressed_parts,
+                include_suppressed=True,
+            )
+            if self._show_suppressed_part_ghosts and suppressed_parts
+            else None
+        )
+        self.viewport.set_geometry_ghost_preview(ghost_preview)
+        return preview
 
     def _step_combo_changed(self, combo: QComboBox) -> None:
         step_name = combo.currentData()
@@ -7454,6 +7565,8 @@ class FEMMainWindow(QMainWindow):
             return False
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
         self._selected_geometry_refs.clear()
@@ -7805,10 +7918,17 @@ class FEMMainWindow(QMainWindow):
             ]
             | None
         ) = None,
+        dialog_state: (
+            DisplacementDialogState | LoadDialogState | None
+        ) = None,
     ) -> None:
         if self.document.model is None:
             return
         self._pending_analysis_selection = operation
+        self._pending_analysis_requested_scope_kind = (
+            None if scope_kind is None else str(scope_kind)
+        )
+        self._pending_analysis_dialog_state = dialog_state
         self._pending_analysis_edit = resume_edit
         topology = self._scope_selection_topology()
         dimension = topology.preview.topological_dimension
@@ -7842,6 +7962,8 @@ class FEMMainWindow(QMainWindow):
                 f"当前网格不支持 {default_kind} 作用域",
             )
             self._pending_analysis_selection = None
+            self._pending_analysis_requested_scope_kind = None
+            self._pending_analysis_dialog_state = None
             self._pending_analysis_edit = None
             return
         self._pending_scope_kind = default_kind
@@ -7929,10 +8051,29 @@ class FEMMainWindow(QMainWindow):
             return
         bar = self.viewport_panel.scope_creation_bar
         resumed_edit = self._pending_analysis_edit
-        selected_scope_kind = (
-            resumed_edit[1] if resumed_edit is not None else None
+        dialog_state = getattr(
+            self,
+            "_pending_analysis_dialog_state",
+            None,
+        )
+        selected_scope_kind = resumed_edit[1] if resumed_edit is not None else (
+            getattr(
+                self,
+                "_pending_analysis_requested_scope_kind",
+                None,
+            )
+            or getattr(dialog_state, "scope_kind", None)
+            or {
+                "node": "node",
+                "edge": "edge",
+                "face": "surface",
+                "body": "body",
+                "element": "line",
+            }.get(getattr(self, "_pending_scope_kind", None))
         )
         self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
         if self._scope_selection_overlay_active:
@@ -7964,19 +8105,48 @@ class FEMMainWindow(QMainWindow):
             selected_region = RegionRef(region_kind, name)
 
             def resume_definition_edit() -> None:
-                self._edit_analysis_definition_key(
-                    definition_key,
-                    selected_region=selected_region,
-                    steps=edit_steps,
-                )
+                kwargs = {
+                    "selected_region": selected_region,
+                    "steps": edit_steps,
+                }
+                if dialog_state is not None:
+                    kwargs["dialog_state"] = dialog_state
+                self._edit_analysis_definition_key(definition_key, **kwargs)
 
             callback = resume_definition_edit
-        else:
-            callback = {
-                "boundary": self.create_displacement_boundary,
-                "load": self.create_load,
-                "section": self.assign_section_to_region,
-            }.get(operation)
+        elif operation in {"boundary", "load"}:
+            region_kind = {
+                "node": "node_set",
+                "edge": "edge",
+                "surface": "surface",
+                "line": "element_set",
+                "body": "element_set",
+            }.get(str(selected_scope_kind))
+            if region_kind is None:
+                raise RuntimeError(
+                    "unsupported analysis scope kind: "
+                    f"{selected_scope_kind}"
+                )
+            selected_region = RegionRef(region_kind, name)
+
+            def resume_definition_create() -> None:
+                kwargs = {}
+                if dialog_state is not None:
+                    kwargs["dialog_state"] = dialog_state
+                if operation == "boundary":
+                    self.create_displacement_boundary(
+                        selected_region,
+                        **kwargs,
+                    )
+                else:
+                    self.create_load(selected_region, **kwargs)
+
+            callback = resume_definition_create
+        elif operation == "section":
+            def resume_section_assignment() -> None:
+                self.assign_section_to_region(name)
+
+            callback = resume_section_assignment
         if callback is not None:
             self._defer_ui(callback)
         elif operation != "scope":
@@ -8587,17 +8757,18 @@ class FEMMainWindow(QMainWindow):
         completion = receipt.completion
         if completion is not None:
             def project_opened(record: TaskCompletion) -> None:
-                if (
-                    record.state is BackgroundTaskState.SUCCEEDED
-                    and not self.import_notices
-                ):
+                if record.state is not BackgroundTaskState.SUCCEEDED:
+                    return
+                self.ribbon.set_current("几何")
+                if not self.import_notices:
                     self.status_panel.set_state(
                         "自主项目已打开，请生成网格并检查模型",
                         6000,
                     )
 
             completion.observe(project_opened)
-        self.ribbon.set_current("几何")
+        else:
+            self.ribbon.set_current("几何")
 
     def save_native_project(
         self,
@@ -9632,6 +9803,8 @@ class FEMMainWindow(QMainWindow):
     def create_displacement_boundary(
         self,
         selected_region: RegionRef | None = None,
+        *,
+        dialog_state: DisplacementDialogState | None = None,
     ) -> None:
         model = self.document.model
         if not self.session.runnable_step_names():
@@ -9705,6 +9878,7 @@ class FEMMainWindow(QMainWindow):
                 )
                 if mesh_kind in available_scope_kinds
             ),
+            form_state=dialog_state,
         )
         if not self._exec_dialog(dialog):
             requested_scope_kind = (
@@ -9716,6 +9890,11 @@ class FEMMainWindow(QMainWindow):
                 self._request_analysis_geometry_selection(
                     "boundary",
                     requested_scope_kind,
+                    dialog_state=(
+                        dialog.form_state()
+                        if hasattr(dialog, "form_state")
+                        else None
+                    ),
                 )
             return
         try:
@@ -9734,6 +9913,8 @@ class FEMMainWindow(QMainWindow):
     def create_load(
         self,
         selected_region: RegionRef | None = None,
+        *,
+        dialog_state: LoadDialogState | None = None,
     ) -> None:
         model = self.document.model
         if not self.session.runnable_step_names():
@@ -9826,6 +10007,7 @@ class FEMMainWindow(QMainWindow):
                 if self.document.model is not None
                 else ()
             ),
+            form_state=dialog_state,
         )
         if not self._exec_dialog(dialog):
             requested_scope_kind = (
@@ -9837,6 +10019,11 @@ class FEMMainWindow(QMainWindow):
                 self._request_analysis_geometry_selection(
                     "load",
                     requested_scope_kind,
+                    dialog_state=(
+                        dialog.form_state()
+                        if hasattr(dialog, "form_state")
+                        else None
+                    ),
                 )
             return
         try:
@@ -10218,16 +10405,19 @@ class FEMMainWindow(QMainWindow):
         *,
         selected_region: RegionRef | None = None,
         steps: Sequence[AnalysisStep] | None = None,
+        dialog_state: (
+            DisplacementDialogState | LoadDialogState | None
+        ) = None,
     ) -> None:
         """Edit one manager definition and resume guided scope creation."""
 
         dialog = self._analysis_manager_dialog(steps)
         if dialog is None:
             return
-        if not dialog.edit_definition(
-            definition_key,
-            selected_region=selected_region,
-        ):
+        edit_kwargs = {"selected_region": selected_region}
+        if dialog_state is not None:
+            edit_kwargs["dialog_state"] = dialog_state
+        if not dialog.edit_definition(definition_key, **edit_kwargs):
             self._begin_analysis_definition_scope_selection(dialog)
             return
         self._analysis_definitions_changed(
@@ -10256,6 +10446,7 @@ class FEMMainWindow(QMainWindow):
                 requested_kind,
                 tuple(dialog.values()),
             ),
+            dialog_state=dialog.requested_scope_dialog_state(),
         )
         return self._pending_analysis_selection is not None
 
@@ -11371,10 +11562,15 @@ class FEMMainWindow(QMainWindow):
         self.viewport.fit()
 
     def _exec_dialog(self, dialog: QDialog) -> int:
-        """Execute one FEM dialog and fit after its caller finishes projection."""
+        """Execute one FEM dialog without changing the viewport framing."""
+
+        return int(dialog.exec())
+
+    def _exec_view_dialog(self, dialog: QDialog) -> int:
+        """Execute a view-affecting dialog and restore full-model framing."""
 
         try:
-            return int(dialog.exec())
+            return self._exec_dialog(dialog)
         finally:
             self._schedule_viewport_fit()
 
@@ -11402,7 +11598,10 @@ class FEMMainWindow(QMainWindow):
         self._schedule_viewport_fit()
 
     def _toggle_edges(self, checked: bool) -> None:
-        if self._display.contour_enabled:
+        if (
+            self._current_module_name() == "结果"
+            and self._display.contour_enabled
+        ):
             self._contour_options["edges"] = bool(checked)
             if (
                 checked
@@ -11621,7 +11820,7 @@ class FEMMainWindow(QMainWindow):
                 "element": "选择单元",
                 "edge": "选择边",
                 "face": "选择面",
-                "body": "选择部件",
+                "body": "选择体",
             }
             if self._selection_context.space == "geometry"
             else {
@@ -11629,7 +11828,7 @@ class FEMMainWindow(QMainWindow):
                 "element": "选择单元",
                 "edge": "选择边",
                 "face": "选择面",
-                "body": "选择部件",
+                "body": "选择体",
             }
         )
         for selection_filter, label in labels.items():
@@ -11726,6 +11925,8 @@ class FEMMainWindow(QMainWindow):
         self.selection.clear()
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
         self.viewport_panel.scope_creation_bar.finish()
@@ -12054,7 +12255,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.highlight_mesh_entities(
             references,
             changed_references=changed_references,
-            entity_kind=reference_kind,
+            entity_kind="body" if kind == "body" else reference_kind,
         )
         labels = {
             "point": "节点",
@@ -12143,6 +12344,8 @@ class FEMMainWindow(QMainWindow):
             return
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
         self.viewport_panel.scope_creation_bar.finish()
@@ -12400,11 +12603,17 @@ class FEMMainWindow(QMainWindow):
         field_id = request.field_id
         if (
             field_id.variable is not ResultVariable.S
-            or field_id.position is not FieldPosition.RESOLVED_NODAL
+            or field_id.position not in {
+                FieldPosition.ELEMENT_NODAL,
+                FieldPosition.RESOLVED_NODAL,
+            }
         ):
             return selection
         visual_request = FieldRequest(
-            field_id=field_id,
+            field_id=ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.RESOLVED_NODAL,
+            ),
             averaging_policy=NodalAveragingPolicy(
                 threshold_percent=float(
                     self._contour_options["averaging_threshold"]
@@ -12682,18 +12891,35 @@ class FEMMainWindow(QMainWindow):
                     )
             raise
 
-    def _restore_viewport_model_scene(self) -> None:
+    def _restore_viewport_model_scene(self, *, render: bool = True) -> None:
         artifact = self.document.artifact
         geometry = self.geometry
         if artifact is None or geometry is None:
             FEMViewport.clear_model(self.viewport)
             return
+        model = (
+            self._result_archive_model_view
+            if self.document.source_kind == "result"
+            else artifact.model
+        )
+        if model is None:
+            FEMViewport.clear_model(self.viewport)
+            return
+        frame_query = None
+        if self.document.source_kind != "result":
+            def frame_query(target: RegionRef | int) -> BeamFrameReport:
+                return resolve_effective_beam_frames(model, target)
         FEMViewport.set_model(
             self.viewport,
-            artifact.model,
+            model,
             geometry,
             refresh_symbols=False,
             render=False,
+            show_edges=self._model_edges_visible,
+            show_nodes=self.actions["nodes"].isChecked(),
+            show_node_labels=self.actions["node_labels"].isChecked(),
+            show_element_labels=self.actions["element_labels"].isChecked(),
+            effective_frame_query=frame_query,
         )
         FEMViewport.set_symbol_settings(
             self.viewport,
@@ -12705,7 +12931,19 @@ class FEMMainWindow(QMainWindow):
             self.viewport,
             render=False,
         )
-        FEMViewport.render(self.viewport)
+        selected_references = set(self._selected_mesh_scope_refs)
+        if selected_references:
+            FEMViewport.highlight_mesh_entities(
+                self.viewport,
+                selected_references,
+                entity_kind=(
+                    "body"
+                    if self._selection_context.active_filter == "body"
+                    else next(iter(selected_references)).kind
+                ),
+            )
+        if render:
+            FEMViewport.render(self.viewport)
 
     def _activate_result_selection(
         self,
@@ -12893,7 +13131,7 @@ class FEMMainWindow(QMainWindow):
                 )
             )
         )
-        self._exec_dialog(dialog)
+        self._exec_view_dialog(dialog)
 
     def _apply_typed_result_display_settings(
         self,
@@ -13082,14 +13320,14 @@ class FEMMainWindow(QMainWindow):
             options["automatic_maximum"] = automatic_range[1]
         dialog = ContourSettingsDialog(options, self)
         dialog.applyRequested.connect(self._set_contour_options)
-        self._exec_dialog(dialog)
+        self._exec_view_dialog(dialog)
 
     def show_display_settings_dialog(self) -> None:
         if self._current_result_provider() is None:
             return
         dialog = DisplaySettingsDialog(dict(self._contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
-        self._exec_dialog(dialog)
+        self._exec_view_dialog(dialog)
 
     def _set_contour_options(self, options: dict[str, Any]) -> None:
         previous_threshold = float(
@@ -13130,7 +13368,7 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         dialog.applyRequested.connect(self._apply_symbol_settings)
-        self._exec_dialog(dialog)
+        self._exec_view_dialog(dialog)
 
     def show_viewport_background_dialog(self) -> None:
         """打开可实时预览的视口背景设置。"""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,14 @@ from ..icons import icon
 ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
 ROLE_INHERITED = ROLE_KEY + 1
+
+
+@dataclass(frozen=True, slots=True)
+class _TreeViewState:
+    expanded_paths: frozenset[tuple[tuple[str, str], ...]]
+    current_path: tuple[tuple[str, str], ...] | None
+    vertical_scroll: int
+
 
 _ACTIVE_PART_BACKGROUND = QColor("#d9ecff")
 _ICON_ROOT = Path(__file__).resolve().parents[1] / "resources" / "icons"
@@ -270,6 +279,7 @@ class ModelTree(QTreeWidget):
         native_parts: tuple[Any, ...] = (),
         active_part_id: str | None = None,
     ) -> None:
+        view_state = self._capture_view_state()
         self._renamable_kinds = (
             frozenset({"model", "part"})
             if part_name is not None or native_parts
@@ -611,6 +621,7 @@ class ModelTree(QTreeWidget):
             first_step_item = steps.child(0)
         if first_step_item is not None and part is None:
             first_step_item.setExpanded(True)
+        self._restore_view_state(view_state)
 
     def set_geometry_preview(
         self,
@@ -623,6 +634,7 @@ class ModelTree(QTreeWidget):
         active_part_id: str | None = None,
     ) -> None:
         """显示模型以及稳定的原生部件层级。"""
+        view_state = self._capture_view_state()
         self._renamable_kinds = frozenset({"model", "part"})
         self._non_highlightable_kinds = (
             frozenset({"model", "feature"})
@@ -686,6 +698,7 @@ class ModelTree(QTreeWidget):
             root.setExpanded(True)
             if active_item is not None:
                 self.setCurrentItem(active_item)
+            self._restore_view_state(view_state)
             return
         part = self._item(str(part_name), "part", None)
         if bodies:
@@ -718,6 +731,76 @@ class ModelTree(QTreeWidget):
         self.addTopLevelItem(root)
         root.setExpanded(True)
         part.setExpanded(True)
+        self._restore_view_state(view_state)
+
+    def _capture_view_state(self) -> _TreeViewState | None:
+        """Capture navigation state before replacing the projected items."""
+
+        if self.topLevelItemCount() != 1:
+            return None
+        root = self.topLevelItem(0)
+        if root.data(0, ROLE_KIND) != "model":
+            return None
+        expanded_paths: set[tuple[tuple[str, str], ...]] = set()
+        current_path = None
+        current = self.currentItem()
+
+        def visit(
+            item: QTreeWidgetItem,
+            parent_path: tuple[tuple[str, str], ...],
+        ) -> None:
+            nonlocal current_path
+            path = parent_path + (self._view_state_segment(item),)
+            if item.isExpanded():
+                expanded_paths.add(path)
+            if item is current:
+                current_path = path
+            for index in range(item.childCount()):
+                visit(item.child(index), path)
+
+        visit(root, ())
+        return _TreeViewState(
+            frozenset(expanded_paths),
+            current_path,
+            self.verticalScrollBar().value(),
+        )
+
+    def _restore_view_state(self, state: _TreeViewState | None) -> None:
+        """Restore expansion, selection, and scrolling after a tree rebuild."""
+
+        if state is None or self.topLevelItemCount() != 1:
+            return
+        current = None
+
+        def visit(
+            item: QTreeWidgetItem,
+            parent_path: tuple[tuple[str, str], ...],
+        ) -> None:
+            nonlocal current
+            path = parent_path + (self._view_state_segment(item),)
+            item.setExpanded(path in state.expanded_paths)
+            if path == state.current_path:
+                current = item
+            for index in range(item.childCount()):
+                visit(item.child(index), path)
+
+        visit(self.topLevelItem(0), ())
+        if current is not None:
+            self.setCurrentItem(current)
+        self.verticalScrollBar().setValue(state.vertical_scroll)
+
+    @staticmethod
+    def _view_state_segment(item: QTreeWidgetItem) -> tuple[str, str]:
+        kind = str(item.data(0, ROLE_KIND))
+        key = item.data(0, ROLE_KEY)
+        if key is not None:
+            return kind, repr(key)
+        text = item.text(0)
+        if kind == "category":
+            text = text.rsplit(" (", 1)[0]
+        elif kind in {"model", "mesh"}:
+            text = ""
+        return kind, text
 
     def select_entity(self, kind: str, key: int) -> None:
         if kind in {"node", "element"}:

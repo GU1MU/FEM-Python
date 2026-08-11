@@ -30,10 +30,12 @@ class _Plotter:
     def __init__(self) -> None:
         self.inner = pyvista.Plotter(off_screen=True)
         self.mesh_calls: list[str] = []
+        self.mesh_options: dict[str, dict[str, object]] = {}
         self.render_count = 0
 
     def add_mesh(self, dataset, **kwargs):
         self.mesh_calls.append(kwargs["name"])
+        self.mesh_options[kwargs["name"]] = dict(kwargs)
         return self.inner.add_mesh(dataset, **kwargs)
 
     def render(self) -> None:
@@ -141,6 +143,32 @@ def test_incremental_updates_do_not_extract_or_create_actors(monkeypatch) -> Non
         pipeline = viewport._mesh_scope_highlight_pipelines["node"]
         assert pipeline.selected_indices == {1}
         assert len(plotter.mesh_calls) == 4
+    finally:
+        viewport._mesh_scope_render_timer.stop()
+        plotter.close()
+        viewport._plotter = None
+        viewport.close()
+
+
+def test_body_scope_uses_surface_and_geometry_edges_without_element_wireframe() -> None:
+    viewport, plotter = _viewport_with_scope_pipelines()
+    try:
+        viewport.highlight_mesh_entities(
+            {MeshEntityRef.element(1)},
+            entity_kind="body",
+        )
+
+        assert viewport._mesh_scope_highlight_kind == "body"
+        assert not viewport._mesh_scope_highlight_pipelines[
+            "element"
+        ].selected_indices
+        assert {
+            "mesh_scope_selection_body",
+            "mesh_scope_selection_body_edges",
+        }.issubset(viewport._actors)
+        surface_options = plotter.mesh_options["mesh_scope_selection_body"]
+        assert surface_options["show_edges"] is False
+        assert "style" not in surface_options
     finally:
         viewport._mesh_scope_render_timer.stop()
         plotter.close()
@@ -274,6 +302,43 @@ def test_main_window_forwards_live_set_and_changed_refs_without_sorting() -> Non
             selected,
             {"changed_references": changed, "entity_kind": "node"},
         ),
+    ]
+
+
+def test_main_window_preserves_body_highlight_semantics() -> None:
+    selected = {MeshEntityRef.element(1, part_id="P1")}
+    calls = []
+    topology = SimpleNamespace(
+        expand=lambda _kind, _reference: tuple(selected),
+    )
+    fake = SimpleNamespace(
+        document=SimpleNamespace(model=object()),
+        _selected_mesh_scope_refs=selected,
+        _mesh_selection_topology=lambda: topology,
+        viewport_panel=SimpleNamespace(
+            scope_creation_bar=SimpleNamespace(set_selection_ready=lambda _ready: None)
+        ),
+        viewport=SimpleNamespace(
+            highlight_mesh_entities=lambda refs, **kwargs: calls.append(
+                (refs, kwargs)
+            )
+        ),
+        status_panel=SimpleNamespace(
+            set_selection_mode=lambda _mode: None,
+            set_object=lambda _label: None,
+        ),
+        actions={
+            "selected_info": SimpleNamespace(setEnabled=lambda _enabled: None)
+        },
+    )
+
+    FEMMainWindow._refresh_mesh_scope_selection(fake, "body")
+
+    assert calls == [
+        (
+            selected,
+            {"changed_references": None, "entity_kind": "body"},
+        )
     ]
 
 

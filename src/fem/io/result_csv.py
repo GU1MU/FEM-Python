@@ -9,7 +9,9 @@ import io
 import math
 from numbers import Real
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
+
+import numpy as np
 
 from fem.elements.beam_section import BeamSectionPoint
 from fem.application.results.data import (
@@ -38,7 +40,10 @@ from fem.post.fields import (
     encode_result_region_key,
 )
 
-from ._atomic_text import atomic_write_verified_text
+from ._atomic_text import (
+    atomic_write_verified_text,
+    atomic_write_verified_text_stream,
+)
 
 
 RESULT_CSV_FORMAT_NAME = "fem-python-result-field"
@@ -312,6 +317,16 @@ class _ResultCsvMetadata:
     unit_label: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedResultComponents:
+    """Validated component columns shared by string and file exporters."""
+
+    first: ResultExportSnapshot
+    selections: tuple[ScalarFieldSelection, ...]
+    components: tuple[str, ...]
+    values: tuple[np.ndarray, ...]
+
+
 def dumps_result_csv(
     snapshot: ResultExportSnapshot,
     query_result: ResultQueryResult | None = None,
@@ -452,14 +467,23 @@ def dumps_result_components_csv(
     """Serialize several components of one exact field as a wide CSV table."""
 
     _validate_checkpoint(checkpoint)
-    projected = _project_result_components_csv(
+    prepared = _prepare_result_components(
         snapshots,
         checkpoint=checkpoint,
     )
-    return _serialize_result_components_csv(
-        projected,
+    output = io.StringIO(newline="")
+    _write_result_component_rows(
+        output,
+        prepared,
         checkpoint=checkpoint,
     )
+    serialized = output.getvalue()
+    _validate_serialized_result_csv(
+        serialized,
+        label="result components CSV",
+    )
+    _invoke_checkpoint(checkpoint)
+    return serialized
 
 
 def read_result_components_csv(path: str | Path) -> ResultComponentsCsvReadback:
@@ -606,26 +630,23 @@ def write_result_components_csv(
     checkpoint: Callable[[], Any] | None = None,
     before_replace: Callable[[], Any] | None = None,
 ) -> Path:
-    """Atomically install one verified wide multi-component result CSV."""
+    """Stream one verified wide multi-component result CSV atomically."""
 
     _validate_checkpoint(checkpoint)
-    projected = _project_result_components_csv(
+    prepared = _prepare_result_components(
         snapshots,
         checkpoint=checkpoint,
     )
-    serialized = _serialize_result_components_csv(
-        projected,
-        checkpoint=checkpoint,
-    )
-    return atomic_write_verified_text(
+    return atomic_write_verified_text_stream(
         path,
-        serialized,
-        verifier=read_result_components_csv,
-        semantic_encoder=_components_semantic_identity,
-        expected_semantic=projected,
+        lambda stream: _write_result_component_rows(
+            stream,
+            prepared,
+            checkpoint=checkpoint,
+        ),
         error_type=ResultCsvEncodeError,
         mismatch_message=(
-            "temporary result components CSV semantic verification failed"
+            "temporary result components CSV byte verification failed"
         ),
         checkpoint=checkpoint,
         before_replace=before_replace,
@@ -640,14 +661,19 @@ def dumps_result_table_csv(
     """Serialize user-selected components without internal result metadata."""
 
     _validate_checkpoint(checkpoint)
-    projected = _project_result_components_csv(
+    prepared = _prepare_result_components(
         snapshots,
         checkpoint=checkpoint,
     )
-    return _serialize_result_table_csv(
-        projected,
+    output = io.StringIO(newline="")
+    _write_result_table_rows(
+        output,
+        prepared,
         checkpoint=checkpoint,
     )
+    serialized = output.getvalue()
+    _invoke_checkpoint(checkpoint)
+    return serialized
 
 
 def write_result_table_csv(
@@ -657,18 +683,20 @@ def write_result_table_csv(
     checkpoint: Callable[[], Any] | None = None,
     before_replace: Callable[[], Any] | None = None,
 ) -> Path:
-    """Atomically install a compact, analysis-oriented result table."""
+    """Stream a compact result table into a verified atomic installation."""
 
-    serialized = dumps_result_table_csv(
+    _validate_checkpoint(checkpoint)
+    prepared = _prepare_result_components(
         snapshots,
         checkpoint=checkpoint,
     )
-    return atomic_write_verified_text(
+    return atomic_write_verified_text_stream(
         path,
-        serialized,
-        verifier=lambda candidate: candidate.read_bytes(),
-        semantic_encoder=lambda value: value,
-        expected_semantic=serialized.encode("utf-8"),
+        lambda stream: _write_result_table_rows(
+            stream,
+            prepared,
+            checkpoint=checkpoint,
+        ),
         error_type=ResultCsvEncodeError,
         mismatch_message="temporary result table CSV verification failed",
         checkpoint=checkpoint,
@@ -676,11 +704,13 @@ def write_result_table_csv(
     )
 
 
-def _project_result_components_csv(
+def _prepare_result_components(
     snapshots: tuple[ResultExportSnapshot, ...],
     *,
     checkpoint: Callable[[], Any] | None,
-) -> ResultComponentsCsvReadback:
+) -> _PreparedResultComponents:
+    """Validate one field selection and copy each chosen column once."""
+
     _invoke_checkpoint(checkpoint)
     if type(snapshots) is not tuple or not snapshots:
         raise TypeError("snapshots must be a non-empty tuple")
@@ -714,70 +744,53 @@ def _project_result_components_csv(
     ):
         raise ResultCsvEncodeError("component names are invalid CSV headers")
     field_data = first.field
-    component_indexes = tuple(
-        field_data.descriptor.columns.index(component)
-        for component in components
-    )
     if not field_data.locations:
         raise ResultCsvEmptySelectionError(
             "result components CSV export requires at least one data row"
         )
-    records: list[ResultComponentsCsvRecord] = []
-    for row_index, location in enumerate(field_data.locations):
+    selected_values: list[np.ndarray] = []
+    for component in components:
         _invoke_checkpoint(checkpoint)
-        records.append(
-            ResultComponentsCsvRecord(
-                location=_csv_location(location),
-                values=tuple(
-                    float(field_data.values[row_index, component_index])
-                    for component_index in component_indexes
-                ),
-            )
-        )
-    descriptor = field_data.descriptor
-    return ResultComponentsCsvReadback(
-        source=first.source,
-        materialization_generation=first.materialization_generation,
+        selected_values.append(field_data.component_values(component))
+    return _PreparedResultComponents(
+        first=first,
         selections=selections,
-        quantity=descriptor.quantity,
-        association=descriptor.association,
-        unit_label=descriptor.unit_label,
-        records=tuple(records),
+        components=components,
+        values=tuple(selected_values),
     )
 
 
-def _serialize_result_components_csv(
-    projected: ResultComponentsCsvReadback,
+def _write_result_component_rows(
+    stream: TextIO,
+    prepared: _PreparedResultComponents,
     *,
     checkpoint: Callable[[], Any] | None = None,
-) -> str:
+) -> None:
     _invoke_checkpoint(checkpoint)
-    components = tuple(
-        selection.component for selection in projected.selections
-    )
+    components = prepared.components
     header = (*RESULT_COMPONENTS_CSV_BASE_HEADER, *components)
-    output = io.StringIO(newline="")
-    output.write("\ufeff")
+    stream.write("\ufeff")
     writer = csv.writer(
-        output,
+        stream,
         lineterminator="\n",
         quoting=csv.QUOTE_MINIMAL,
     )
     writer.writerow(header)
+    first = prepared.first
+    descriptor = first.field.descriptor
     metadata = _encode_field_metadata(
-        source=projected.source,
-        materialization_generation=projected.materialization_generation,
-        selection=projected.selections[0],
-        quantity=projected.quantity,
-        association=projected.association,
-        unit_label=projected.unit_label,
+        source=first.source,
+        materialization_generation=first.materialization_generation,
+        selection=prepared.selections[0],
+        quantity=descriptor.quantity,
+        association=descriptor.association,
+        unit_label=descriptor.unit_label,
     )
     metadata["format"] = RESULT_COMPONENTS_CSV_FORMAT_NAME
     metadata["schema"] = str(RESULT_COMPONENTS_CSV_SCHEMA_VERSION)
     metadata.pop("component")
-    for record in projected.records:
+    for row_index, location in enumerate(first.field.locations):
         _invoke_checkpoint(checkpoint)
-        location = record.location
         row = {
             **metadata,
             "node_id": _format_optional_int(location.node_id),
@@ -811,39 +824,25 @@ def _serialize_result_components_csv(
             "y": _format_float(location.coordinates[1]),
             "z": _format_float(location.coordinates[2]),
             **{
-                component: _format_float(value)
-                for component, value in zip(
+                component: _format_float(component_values[row_index])
+                for component, component_values in zip(
                     components,
-                    record.values,
+                    prepared.values,
                     strict=True,
                 )
             },
         }
         writer.writerow(tuple(row[name] for name in header))
-    serialized = output.getvalue()
-    if "\r" in serialized:
-        raise ResultCsvEncodeError(
-            "result components CSV text values must not contain carriage returns"
-        )
-    _invoke_checkpoint(checkpoint)
-    try:
-        serialized.encode("utf-8", errors="strict")
-    except UnicodeEncodeError as error:
-        raise ResultCsvEncodeError(
-            "result components CSV text must be valid strict UTF-8"
-        ) from error
-    return serialized
 
 
-def _serialize_result_table_csv(
-    projected: ResultComponentsCsvReadback,
+def _write_result_table_rows(
+    stream: TextIO,
+    prepared: _PreparedResultComponents,
     *,
     checkpoint: Callable[[], Any] | None = None,
-) -> str:
+) -> None:
     _invoke_checkpoint(checkpoint)
-    components = tuple(
-        selection.component for selection in projected.selections
-    )
+    components = prepared.components
     if any(
         component in RESULT_TABLE_CSV_BASE_HEADER
         for component in components
@@ -852,8 +851,8 @@ def _serialize_result_table_csv(
             "component names conflict with result table identity columns"
         )
     has_section_points = any(
-        record.location.section_point is not None
-        for record in projected.records
+        location.section_point is not None
+        for location in prepared.first.field.locations
     )
     identity_header = (
         (
@@ -865,17 +864,15 @@ def _serialize_result_table_csv(
         else RESULT_TABLE_CSV_BASE_HEADER
     )
     header = (*identity_header, *components)
-    output = io.StringIO(newline="")
-    output.write("\ufeff")
+    stream.write("\ufeff")
     writer = csv.writer(
-        output,
+        stream,
         lineterminator="\n",
         quoting=csv.QUOTE_MINIMAL,
     )
     writer.writerow(header)
-    for record in projected.records:
+    for row_index, location in enumerate(prepared.first.field.locations):
         _invoke_checkpoint(checkpoint)
-        location = record.location
         writer.writerow(
             (
                 _format_optional_int(location.node_id),
@@ -889,17 +886,17 @@ def _serialize_result_table_csv(
                     )
                     if has_section_points
                     and location.section_point is not None
-                    else ()
+                    else (("", "", "") if has_section_points else ())
                 ),
                 _format_float(location.coordinates[0]),
                 _format_float(location.coordinates[1]),
                 _format_float(location.coordinates[2]),
-                *(_format_float(value) for value in record.values),
+                *(
+                    _format_float(component_values[row_index])
+                    for component_values in prepared.values
+                ),
             )
         )
-    serialized = output.getvalue()
-    _invoke_checkpoint(checkpoint)
-    return serialized
 
 
 def _project_result_csv(
@@ -1074,18 +1071,26 @@ def _serialize_result_csv(
         }
         writer.writerow(tuple(row[name] for name in RESULT_CSV_HEADER))
     serialized = output.getvalue()
+    _validate_serialized_result_csv(serialized, label="result CSV")
+    _invoke_checkpoint(checkpoint)
+    return serialized
+
+
+def _validate_serialized_result_csv(
+    serialized: str,
+    *,
+    label: str,
+) -> None:
     if "\r" in serialized:
         raise ResultCsvEncodeError(
-            "result CSV text values must not contain carriage returns"
+            f"{label} text values must not contain carriage returns"
         )
-    _invoke_checkpoint(checkpoint)
     try:
         serialized.encode("utf-8", errors="strict")
     except UnicodeEncodeError as error:
         raise ResultCsvEncodeError(
-            "result CSV text must be valid strict UTF-8"
+            f"{label} text must be valid strict UTF-8"
         ) from error
-    return serialized
 
 
 def _encode_metadata(projected: ResultCsvReadback) -> dict[str, str]:
@@ -1454,12 +1459,6 @@ def _invoke_checkpoint(checkpoint: Callable[[], Any] | None) -> None:
 
 
 def _semantic_identity(value: ResultCsvReadback) -> ResultCsvReadback:
-    return value
-
-
-def _components_semantic_identity(
-    value: ResultComponentsCsvReadback,
-) -> ResultComponentsCsvReadback:
     return value
 
 

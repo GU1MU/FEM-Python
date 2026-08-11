@@ -371,6 +371,80 @@ def test_result_table_csv_keeps_only_requested_columns_and_shared_nodes(
         assert actual == expected
 
 
+def test_multi_component_exports_copy_each_column_once_and_stream_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    export, snapshot = _export(ResultVariable.U, FieldPosition.NODE)
+    components = tuple(export.field.descriptor.columns[:3])
+    snapshots = tuple(
+        prepare_result_export_snapshot(
+            snapshot,
+            ScalarFieldSelection(export.selection.field_key, component),
+        )
+        for component in components
+    )
+    component_reads: list[str] = []
+    original_component_values = FieldData.component_values
+
+    def tracked_component_values(
+        field_data: FieldData,
+        component: str,
+    ) -> np.ndarray:
+        component_reads.append(component)
+        return original_component_values(field_data, component)
+
+    monkeypatch.setattr(
+        FieldData,
+        "component_values",
+        tracked_component_values,
+    )
+    expected = dumps_result_table_csv(snapshots)
+    assert component_reads == list(components)
+
+    component_reads.clear()
+    expected_components = dumps_result_components_csv(snapshots)
+    assert component_reads == list(components)
+
+    component_reads.clear()
+
+    def reject_materialized_components(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError(
+            "component file export must not materialize the full CSV"
+        )
+
+    monkeypatch.setattr(
+        result_csv_module,
+        "dumps_result_components_csv",
+        reject_materialized_components,
+    )
+    components_target = tmp_path / "streamed-result-components.csv"
+    write_result_components_csv(components_target, snapshots)
+
+    assert component_reads == list(components)
+    assert components_target.read_text(
+        encoding="utf-8-sig"
+    ) == expected_components.removeprefix("\ufeff")
+
+    component_reads.clear()
+
+    def reject_materialized_export(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("file export must not materialize the full CSV")
+
+    monkeypatch.setattr(
+        result_csv_module,
+        "dumps_result_table_csv",
+        reject_materialized_export,
+    )
+    target = tmp_path / "streamed-result-table.csv"
+    write_result_table_csv(target, snapshots)
+
+    assert component_reads == list(components)
+    assert target.read_text(encoding="utf-8-sig") == expected.removeprefix(
+        "\ufeff"
+    )
+
+
 def test_displacement_result_table_has_only_identity_and_selected_components(
 ) -> None:
     export, snapshot = _export(ResultVariable.U, FieldPosition.NODE)
