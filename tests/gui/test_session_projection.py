@@ -107,6 +107,26 @@ def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
     window.close()
 
 
+def test_model_analysis_module_switches_reuse_the_current_viewport_scene(
+    monkeypatch,
+) -> None:
+    window = _window_with_imported_model()
+    rebuilt = []
+    original = FEMViewport.set_model
+
+    def record_rebuild(*args, **kwargs) -> None:
+        rebuilt.append(True)
+        original(*args, **kwargs)
+
+    monkeypatch.setattr(FEMViewport, "set_model", record_rebuild)
+
+    for module_name in ("网格", "模型", "分析", "网格"):
+        window.ribbon.set_current(module_name)
+
+    assert rebuilt == []
+    window.close()
+
+
 def _install_successful_result(
     window: FEMMainWindow,
     *,
@@ -200,7 +220,7 @@ def test_async_import_acceptance_and_projection_do_not_copy_on_gui_thread(
     assert outcome.status is TaskApplyStatus.ACCEPTED
     captured["on_success"](outcome.projection_value)
 
-    assert window.document.model is not model
+    assert window.document.model is model
     assert window.document.source_path == Path("worker-owned.inp")
     assert window.geometry is not None
     window.close()

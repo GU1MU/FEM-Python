@@ -48,6 +48,7 @@ from fem_gui.analysis_definition_dialogs import (
     OutputRequestDialog,
     StaticStepDialog,
 )
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 
 
@@ -72,6 +73,39 @@ def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
     window.create_static_step()
 
     assert names == ["分析步-1"]
+    window.close()
+
+
+def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    window._set_native_geometry(
+        RectangleGeometry("cached-authoring", 2.0, 1.0),
+        "矩形",
+    )
+    window._analysis_definitions_changed(
+        "测试分析步",
+        [static("Step-1")],
+    )
+    window._session_authoring_cache = None
+    calls = []
+    original = main_window_module.describe_session_authoring
+
+    def record_projection(snapshot):
+        calls.append(snapshot)
+        return original(snapshot)
+
+    monkeypatch.setattr(
+        main_window_module,
+        "describe_session_authoring",
+        record_projection,
+    )
+
+    dialog = window._analysis_manager_dialog()
+
+    assert dialog is not None
+    assert calls == [window.document]
+    dialog.close()
     window.close()
 
 

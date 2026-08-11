@@ -172,7 +172,7 @@ def test_five_selection_actions_share_one_contextual_descriptor_group() -> None:
     ]
     assert {descriptors[key].group for key in keys} == {"selection"}
     assert {descriptors[key].handler for key in keys} == {"_set_selection_filter"}
-    assert descriptors[GuiActionKey.SELECT_ELEMENT].icon_name == "select_geometry_point"
+    assert descriptors[GuiActionKey.SELECT_ELEMENT].icon_name == "select_element"
 
 
 def test_selection_context_remembers_one_filter_per_space() -> None:

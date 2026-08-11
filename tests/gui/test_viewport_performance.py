@@ -14,6 +14,7 @@ from fem.core.model import DisplacementConstraint, FEMModel, GravityLoad
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.visualization.scene import DisplayState
 from fem_gui.visualization.symbols import SymbolSettings
 from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import FEMViewport
@@ -142,6 +143,40 @@ class _ViewPlotter:
 
     def render(self) -> None:
         self.calls.append("render")
+
+
+class _ImplicitRenderPlotter(_ViewPlotter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.suppress_rendering = False
+
+    def add_mesh(self, _data, **kwargs):
+        self.render()
+        self.calls.append(("mesh", kwargs["name"]))
+        return _VisibilityActor()
+
+    def render(self) -> None:
+        if not self.suppress_rendering:
+            self.calls.append("render")
+
+
+class _CountedPoints:
+    def __init__(self, values: np.ndarray) -> None:
+        self.values = values
+        self.array_reads = 0
+
+    def __array__(self, dtype=None):
+        self.array_reads += 1
+        return np.asarray(self.values, dtype=dtype)
+
+
+class _ModifiedPointSource:
+    def __init__(self, points: _CountedPoints) -> None:
+        self.points = points
+        self.modified = 1
+
+    def GetMTime(self) -> int:
+        return self.modified
 
 
 class _VisibilityActor:
@@ -348,15 +383,15 @@ def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
 @pytest.mark.parametrize(
     ("view", "up", "direction"),
     [
-        ("top", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-        ("bottom", (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
-        ("front", (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
-        ("back", (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-        ("left", (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-        ("right", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
+        ("front", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        ("back", (0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
+        ("top", (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
+        ("bottom", (0.0, 0.0, 1.0), (0.0, -1.0, 0.0)),
+        ("left", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
+        ("right", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
         (
             "iso",
-            (-1.0, -1.0, 2.0),
+            (-1.0, 2.0, -1.0),
             tuple(np.asarray((1.0, 1.0, 1.0)) / np.sqrt(3.0)),
         ),
     ],
@@ -396,7 +431,7 @@ def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
     assert plotter.camera.orthogonalized
 
 
-def test_isometric_view_keeps_positive_z_vertical():
+def test_isometric_view_matches_abaqus_axis_projection():
     _application()
     viewport = FEMViewport()
     plotter = _ViewPlotter()
@@ -412,9 +447,9 @@ def test_isometric_view_keeps_positive_z_vertical():
     screen_up = np.asarray(plotter.camera.up, dtype=float)
     screen_up /= np.linalg.norm(screen_up)
     screen_right = np.cross(camera_to_focal, screen_up)
-    expected_up = np.asarray((-1.0, -1.0, 2.0), dtype=float)
+    expected_up = np.asarray((-1.0, 2.0, -1.0), dtype=float)
     expected_up /= np.linalg.norm(expected_up)
-    expected_right = np.asarray((-1.0, 1.0, 0.0), dtype=float)
+    expected_right = np.asarray((1.0, 0.0, -1.0), dtype=float)
     expected_right /= np.linalg.norm(expected_right)
 
     assert screen_right == pytest.approx(expected_right)
@@ -422,20 +457,20 @@ def test_isometric_view_keeps_positive_z_vertical():
 
 
 @pytest.mark.parametrize(
-    ("view", "horizontal_axis", "vertical_axis"),
+    ("view", "screen_right_axis", "screen_up_axis"),
     [
-        ("top", (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-        ("bottom", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
-        ("front", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
-        ("back", (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-        ("left", (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-        ("right", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        ("front", (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ("back", (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ("top", (1.0, 0.0, 0.0), (0.0, 0.0, -1.0)),
+        ("bottom", (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ("left", (0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+        ("right", (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
     ],
 )
-def test_coordinate_view_places_first_axis_right_and_second_axis_up(
+def test_coordinate_view_matches_abaqus_screen_axes(
     view,
-    horizontal_axis,
-    vertical_axis,
+    screen_right_axis,
+    screen_up_axis,
 ):
     _application()
     viewport = FEMViewport()
@@ -453,8 +488,8 @@ def test_coordinate_view_places_first_axis_right_and_second_axis_up(
     screen_up /= np.linalg.norm(screen_up)
     screen_right = np.cross(camera_to_focal, screen_up)
 
-    assert np.dot(screen_right, horizontal_axis) == pytest.approx(1.0)
-    assert np.dot(screen_up, vertical_axis) == pytest.approx(1.0)
+    assert np.dot(screen_right, screen_right_axis) == pytest.approx(1.0)
+    assert np.dot(screen_up, screen_up_axis) == pytest.approx(1.0)
 
 
 def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
@@ -491,6 +526,104 @@ def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
         ("mesh", "element_edges"),
         ("reset", bounds, False),
     ]
+
+
+def test_plotter_actor_mutations_render_only_at_explicit_boundary(monkeypatch):
+    _application()
+    viewport = FEMViewport()
+    plotter = _ImplicitRenderPlotter()
+    viewport._plotter = plotter
+    viewport._grid = object()
+    viewport._suppress_implicit_plotter_renders(plotter)
+    monkeypatch.setattr(viewport, "_update_pickable_actors", lambda: None)
+
+    viewport._add_element_edges_layer()
+    viewport._add_element_edges_layer()
+    assert plotter.calls == [
+        ("mesh", "element_edges"),
+        ("mesh", "element_edges"),
+    ]
+
+    viewport.render()
+
+    assert plotter.calls[-1] == "render"
+    assert plotter.calls.count("render") == 1
+    assert plotter.suppress_rendering
+
+
+def test_fit_bounds_reuses_dataset_bounds_until_vtk_mtime_changes():
+    _application()
+    viewport = FEMViewport()
+    points = _CountedPoints(np.asarray(((1.0, 2.0, 3.0), (5.0, 7.0, 11.0))))
+    source = _ModifiedPointSource(points)
+    viewport._grid = source
+
+    expected = (1.0, 5.0, 2.0, 7.0, 3.0, 11.0)
+    assert viewport._fit_bounds() == expected
+    assert viewport._fit_bounds() == expected
+    assert points.array_reads == 1
+
+    source.modified += 1
+    assert viewport._fit_bounds() == expected
+    assert points.array_reads == 2
+
+
+def test_symbol_reference_length_is_scanned_once_across_camera_changes(
+    monkeypatch,
+):
+    _application()
+    viewport = FEMViewport()
+    viewport._geometry = build_model_geometry(make_static_pull_truss_model())
+    camera = _Camera(scale=1.0)
+    viewport._plotter = _Plotter(camera)
+    scans = []
+    original = viewport_module.symbol_length
+
+    def counted(points, *args, **kwargs):
+        scans.append(1)
+        return original(points, *args, **kwargs)
+
+    monkeypatch.setattr(viewport_module, "symbol_length", counted)
+
+    first = viewport._camera_symbol_length(1.0)
+    camera.parallel_scale = 2.0
+    second = viewport._camera_symbol_length(1.0)
+
+    assert len(scans) == 1
+    assert second == pytest.approx(2.0 * first)
+
+
+def test_auto_deformation_scale_reuses_immutable_result_snapshot(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    window._display = DisplayState("deformed", True)
+    snapshot = SimpleNamespace(
+        topology=SimpleNamespace(
+            node_coordinates=np.asarray(
+                ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
+            ),
+            nodal_displacements=np.asarray(
+                ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+            ),
+        )
+    )
+    provider = SimpleNamespace(snapshot=snapshot)
+    scans = []
+    original = main_window_module.np.ptp
+
+    def counted(*args, **kwargs):
+        scans.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main_window_module.np, "ptp", counted)
+
+    first = window._result_deformation_scale(provider)
+    second = window._result_deformation_scale(provider)
+
+    assert first == pytest.approx(1.0)
+    assert second == first
+    assert len(scans) == 1
+    window.close()
 
 
 def test_large_model_base_layers_skip_hidden_element_edges(monkeypatch):

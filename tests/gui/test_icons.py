@@ -44,6 +44,10 @@ PROJECT_MODEL_ANALYSIS_BATCH = (
     "section_assign", "step_create", "step_info", "analysis_manager",
 )
 
+NEW_ACTION_RESOURCE_BATCH = (
+    "open_result", "save_result", "select_element", "sweep",
+)
+
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
@@ -63,6 +67,14 @@ def test_first_batch_icons_render_at_toolbar_and_ribbon_sizes():
                 for y in range(image.height())
                 for x in range(image.width())
             ), name
+
+
+def test_new_action_resources_use_their_dedicated_pngs():
+    _application()
+    for name in NEW_ACTION_RESOURCE_BATCH:
+        assert _PNG_FILES[name] == f"{name}.png"
+        assert (_ICON_DIR / _PNG_FILES[name]).is_file()
+        assert not icon(name).pixmap(QSize(32, 32)).isNull(), name
 
 
 def test_generated_toolbar_and_tree_icons_are_transparent_pngs():

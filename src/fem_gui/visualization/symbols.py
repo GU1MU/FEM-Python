@@ -176,17 +176,23 @@ def constraint_sample_indices(points: np.ndarray, density: str) -> np.ndarray:
 def constraint_spatial_regions(
     points: np.ndarray,
     model_points: np.ndarray,
+    *,
+    reference_axis: np.ndarray | None = None,
 ) -> tuple[np.ndarray, ...]:
     """Separate support regions divided by a large gap along the model axis."""
     points = np.asarray(points, dtype=float)
     if len(points) <= 6:
         return (np.arange(len(points), dtype=np.int64),)
-    reference = np.asarray(model_points, dtype=float)
-    centered_reference = reference - np.mean(reference, axis=0)
-    _left, _singular_values, right = np.linalg.svd(
-        centered_reference, full_matrices=False
-    )
-    projection = points @ right[0]
+    if reference_axis is None:
+        reference = np.asarray(model_points, dtype=float)
+        centered_reference = reference - np.mean(reference, axis=0)
+        _left, _singular_values, right = np.linalg.svd(
+            centered_reference, full_matrices=False
+        )
+        axis = right[0]
+    else:
+        axis = np.asarray(reference_axis, dtype=float)
+    projection = points @ axis
     order = np.argsort(projection)
     ordered_projection = projection[order]
     gaps = np.diff(ordered_projection)

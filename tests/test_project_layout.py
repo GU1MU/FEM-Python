@@ -1487,10 +1487,18 @@ def test_gui_native_region_choices_delegate_to_authoring_projection():
             node
             for node in ast.walk(functions[name])
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "describe_session_authoring"
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_session_authoring_projection"
         ]
         assert len(calls) == 1, name
+
+    projection_builder_calls = [
+        node
+        for node in ast.walk(functions["_session_authoring_projection"])
+        if isinstance(node, ast.Name)
+        and node.id == "describe_session_authoring"
+    ]
+    assert len(projection_builder_calls) == 1
 
     built_in_names = {
         "DOMAIN",

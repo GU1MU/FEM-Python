@@ -108,6 +108,27 @@ def test_prepared_import_transfers_worker_owned_model_without_second_copy(
     assert tuple(step.name for step in projection.steps) == ("Step-A",)
 
 
+def test_owned_import_transfer_moves_new_worker_model_without_copy(
+    monkeypatch,
+) -> None:
+    session = ModelSession()
+    task = session.prepare_import("owned-worker.inp")
+    source = _model("Step-A")
+
+    def unexpected_deepcopy(_value):
+        raise AssertionError("owned worker import must transfer its model")
+
+    monkeypatch.setattr(session_module, "deepcopy", unexpected_deepcopy)
+
+    prepared = session.prepare_owned_imported_model_transfer(source)
+    delta = session.accept_imported_model_transfer(task.token, prepared)
+    projection = session.projection_snapshot()
+
+    assert delta.accepted
+    assert projection.model is source
+    assert session._scope_mesh_snapshot is None
+
+
 def test_stale_prepared_import_preserves_import_cas_without_copy(
     monkeypatch,
 ) -> None:

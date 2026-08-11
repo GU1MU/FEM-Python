@@ -10,7 +10,7 @@ from ..inp import (
     InpSourceOccurrence,
     InpSourceSummary,
 )
-from .builder import build_model_with_report
+from .builder import _build_owned_model_with_report
 from .contracts import classify_keyword
 from .parser import parse_file
 
@@ -28,7 +28,7 @@ def read_with_report(path: str | Path) -> InpImportResult:
     """Read an Abaqus input file and retain source-level import notices."""
 
     deck = parse_file(path)
-    built = build_model_with_report(deck)
+    built = _build_owned_model_with_report(deck)
     return InpImportResult(
         model=built.model,
         notices=built.notices,

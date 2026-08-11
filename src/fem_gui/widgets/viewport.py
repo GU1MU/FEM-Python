@@ -56,7 +56,7 @@ from ..result_presentation import (
     section_point_labels_from_locations,
     section_point_relative_position_label,
 )
-from ..scope_selection import build_mesh_selection_topology
+from ..scope_selection import MeshSelectionTopology, build_mesh_selection_topology
 from ..sketch_constraint_ui import SketchConstraintOverlay
 from ..wire_editor import (
     intersect_ray_with_work_plane,
@@ -1320,6 +1320,9 @@ class FEMViewport(QWidget):
         self._mesh_body_owner_by_element_id: dict[int, str] = {}
         self._mesh_body_element_ids_by_owner: dict[str, tuple[int, ...]] = {}
         self._mesh_scope_pick_bindings_ready = False
+        self._mesh_selection_topology_provider: (
+            Callable[[], MeshSelectionTopology] | None
+        ) = None
         self._mesh_scope_highlight_pipelines: dict[
             str,
             _MeshScopeHighlightPipeline,
@@ -1366,6 +1369,18 @@ class FEMViewport(QWidget):
         self._beam_frame_preview_target: RegionRef | int | None = None
         self._last_symbol_scale: float | None = None
         self._last_symbol_camera_position: np.ndarray | None = None
+        self._fit_bounds_cache: (
+            tuple[object, int | None, tuple[float, float, float, float, float, float] | None]
+            | None
+        ) = None
+        self._symbol_reference_length: float | None = None
+        self._symbol_model_center: np.ndarray | None = None
+        self._constraint_reference_axis_cache: np.ndarray | None = None
+        self._constraint_sample_node_ids: dict[
+            tuple[tuple[str, str | int], str],
+            tuple[int, ...],
+        ] = {}
+        self._element_lookup_cache: dict[int, Any] | None = None
         self._updating_symbol_scale = False
         self._selection_press_position: tuple[float, float] | None = None
         self._selection_dragged = False
@@ -1402,6 +1417,7 @@ class FEMViewport(QWidget):
         self._sketch_show_profile_fill = True
         self._sketch_show_work_plane_axes = True
         self._sketch_draft_render_data: SketchDraftRenderData | None = None
+        self._last_sketch_curve_sampling: tuple[SketchDraftRenderData, float] | None = None
         self._sketch_intersection_revision: int | None = None
         self._sketch_intersection_cache: tuple[
             tuple[float, float, float], ...
@@ -1487,6 +1503,49 @@ class FEMViewport(QWidget):
     def run_id(self) -> str | None:
         """Return the Session run represented by the result cache."""
         return self._run_id
+
+    def model_scene_is_current(
+        self,
+        model: Any,
+        geometry: ModelGeometry,
+    ) -> bool:
+        """Return whether the stable base-model scene is already displayed."""
+
+        return (
+            self._model is model
+            and self._geometry is geometry
+            and self._artifact_id == geometry.artifact_id
+            and self._run_id is None
+            and self._result_render_payload is None
+            and self._geometry_preview is None
+        )
+
+    def result_scene_is_current(
+        self,
+        source: Any,
+        selection: Any,
+        *,
+        materialization_generation: int,
+        deformation_scale: float,
+        display: DisplayState,
+    ) -> bool:
+        """Return whether the requested result scene is already displayed."""
+
+        payload = self._result_render_payload
+        if payload is None:
+            return False
+        topology = payload.topology
+        return (
+            topology.source == source
+            and topology.selection == selection
+            and topology.materialization_generation
+            == int(materialization_generation)
+            and topology.deformation_scale == float(deformation_scale)
+            and self._display == display
+            and self._result_grid is payload.dataset
+            and "result" in self._actors
+            and self._geometry_preview is None
+        )
 
     @staticmethod
     def _uses_abaqus_view_modifier(modifiers: Qt.KeyboardModifier) -> bool:
@@ -1984,6 +2043,9 @@ class FEMViewport(QWidget):
         effective_frame_query: (
             Callable[[RegionRef | int], Any] | None
         ) = None,
+        mesh_selection_topology_provider: (
+            Callable[[], MeshSelectionTopology] | None
+        ) = None,
     ) -> None:
         if show_edges is not None:
             self._show_edges = bool(show_edges)
@@ -2037,10 +2099,14 @@ class FEMViewport(QWidget):
         self._overlay_undeformed = False
         self._boundary_cache.clear()
         self._effective_frame_query = effective_frame_query
+        self._mesh_selection_topology_provider = (
+            mesh_selection_topology_provider
+        )
         self._beam_frame_cache.clear()
         self._beam_frame_preview_target = None
         self._last_symbol_scale = None
         self._last_symbol_camera_position = None
+        self._clear_geometry_scan_caches()
         if is_offscreen_environment():
             self._message.setText("模型已加载（当前环境未启用三维渲染）")
             return
@@ -2050,7 +2116,6 @@ class FEMViewport(QWidget):
         self._grid = self._make_grid(geometry.points)
         self._pick_grid = self._grid
         self._add_base_layers(reset_camera=True, render=False)
-        self._install_mesh_scope_pick_bindings()
         self._install_mesh_scope_highlight_pipelines()
         if refresh_symbols:
             self.show_boundary_and_loads(render=render)
@@ -2077,6 +2142,7 @@ class FEMViewport(QWidget):
         self._effective_frame_query = effective_frame_query
         self._boundary_cache.clear()
         self._beam_frame_cache.clear()
+        self._clear_geometry_scan_caches()
 
     def clear_model(self) -> None:
         if self._sketch_authoring_active:
@@ -2087,6 +2153,7 @@ class FEMViewport(QWidget):
         self._geometry = None
         self._artifact_id = None
         self._run_id = None
+        self._mesh_selection_topology_provider = None
         self._geometry_preview = None
         self._geometry_ghost_preview = None
         self._geometry_preview_surface = None
@@ -2130,6 +2197,7 @@ class FEMViewport(QWidget):
         self._beam_frame_preview_target = None
         self._last_symbol_scale = None
         self._last_symbol_camera_position = None
+        self._clear_geometry_scan_caches()
         self._grid = None
         self._result_grid = None
         self._result_point_index_to_node_id.clear()
@@ -3124,6 +3192,15 @@ class FEMViewport(QWidget):
             or _pyvista is None
         ):
             return
+        previous_sampling = self._last_sketch_curve_sampling
+        if (
+            previous_sampling is not None
+            and previous_sampling[0] is data
+            and "sketch_draft_curves" in self._actors
+            and abs(world_per_pixel - previous_sampling[1])
+            <= 0.02 * max(previous_sampling[1], 1.0e-12)
+        ):
+            return
         point_map = {point.id: point for point in data.analytic_points}
         coordinates: list[tuple[float, float, float]] = []
         cells: list[tuple[int, ...]] = []
@@ -3186,6 +3263,7 @@ class FEMViewport(QWidget):
             reset_camera=False,
             pickable=False,
         )
+        self._last_sketch_curve_sampling = (data, world_per_pixel)
         if render:
             self._render()
 
@@ -4598,7 +4676,11 @@ class FEMViewport(QWidget):
             or _pyvista is None
         ):
             return
-        topology = build_mesh_selection_topology(self._model)
+        topology = (
+            self._mesh_selection_topology_provider()
+            if self._mesh_selection_topology_provider is not None
+            else build_mesh_selection_topology(self._model)
+        )
         self._mesh_body_owner_by_element_id = dict(topology.element_owners)
         self._mesh_body_element_ids_by_owner = {
             owner: tuple(
@@ -4669,6 +4751,7 @@ class FEMViewport(QWidget):
         if self._mesh_scope_pick_bindings_ready:
             return
         self._install_mesh_scope_pick_bindings()
+        self._install_mesh_scope_highlight_pipelines()
 
     def _clear_mesh_scope_pick_bindings(self) -> None:
         self._mesh_scope_edges = None
@@ -5350,7 +5433,7 @@ class FEMViewport(QWidget):
         if had_preselection or points_visibility_changed:
             self._render()
 
-    def clear_selection(self) -> None:
+    def clear_selection(self, *, render: bool = True) -> None:
         visual_names = {
             "selection",
             "geometry_selection",
@@ -5380,9 +5463,9 @@ class FEMViewport(QWidget):
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
         self._update_pickable_actors()
-        if had_visible_selection:
+        if had_visible_selection and render:
             self._render()
-        elif had_mesh_scope_selection:
+        elif had_mesh_scope_selection and render:
             self._schedule_mesh_scope_render()
 
     def highlight_geometry(self, reference: LogicalEntityRef) -> None:
@@ -5890,10 +5973,7 @@ class FEMViewport(QWidget):
                 self._render()
             return
         entries = entries[:BEAM_FRAME_GLYPH_LIMIT]
-        element_lookup = {
-            int(element.id): element
-            for element in self._model.mesh.elements
-        }
+        element_lookup = self._element_lookup()
         points = self._current_points()
         frame_rows: list[tuple[np.ndarray, Any]] = []
         for entry in entries:
@@ -5917,10 +5997,8 @@ class FEMViewport(QWidget):
             if render:
                 self._render()
             return
-        glyph_scale = 0.75 * symbol_length(
-            self._geometry.points,
-            self._symbol_settings.scale,
-            world_per_pixel=self._world_per_pixel(),
+        glyph_scale = 0.75 * self._camera_symbol_length(
+            self._symbol_settings.scale
         )
         axes = (
             ("x", "#dc4b4b", "local_x"),
@@ -6127,7 +6205,7 @@ class FEMViewport(QWidget):
                     renderer.GradientBackgroundOff()
                     renderer.SetBackgroundAlpha(0.0)
                 if target_size is None:
-                    plotter.render()
+                    self._render_plotter_once(plotter)
                     plotter.screenshot(
                         path,
                         scale=1,
@@ -6363,18 +6441,51 @@ class FEMViewport(QWidget):
         self._show_nodes = bool(visible)
         self._refresh_node_layer(render=render)
 
-    def set_node_labels_visible(self, visible: bool) -> None:
+    def set_node_labels_visible(
+        self,
+        visible: bool,
+        *,
+        render: bool = True,
+    ) -> None:
         self._show_node_labels = bool(visible)
-        self._refresh_labels()
+        self._refresh_labels(render=render)
 
-    def set_element_labels_visible(self, visible: bool) -> None:
+    def set_element_labels_visible(
+        self,
+        visible: bool,
+        *,
+        render: bool = True,
+    ) -> None:
         self._show_element_labels = bool(visible)
-        self._refresh_labels()
+        self._refresh_labels(render=render)
+
+    def set_labels_visible(
+        self,
+        node_labels: bool,
+        element_labels: bool,
+        *,
+        render: bool = True,
+    ) -> None:
+        """Update both label layers in one rebuild and one render."""
+
+        self._show_node_labels = bool(node_labels)
+        self._show_element_labels = bool(element_labels)
+        self._refresh_labels(render=render)
+
+    def _clear_geometry_scan_caches(self) -> None:
+        self._fit_bounds_cache = None
+        self._symbol_reference_length = None
+        self._symbol_model_center = None
+        self._constraint_reference_axis_cache = None
+        self._constraint_sample_node_ids.clear()
+        self._element_lookup_cache = None
+        self._last_sketch_curve_sampling = None
 
     def _fit_bounds(self) -> tuple[float, float, float, float, float, float] | None:
         """Return bounds for the displayed model, excluding auxiliary actors."""
 
         points: object | None = None
+        source: object | None = None
         if self._sketch_authoring_active:
             data = self._sketch_draft_render_data
             return _sketch_camera_bounds(
@@ -6388,22 +6499,34 @@ class FEMViewport(QWidget):
                 or not self._wire_draft_render_data.points
             ):
                 return None
+            source = self._wire_draft_render_data
             points = self._wire_draft_render_data.points
         elif self._geometry_preview is not None:
+            source = self._geometry_preview
             points = self._geometry_preview.points
         elif self._result_grid is not None and "result" in self._actors:
+            source = self._result_grid
             points = self._result_grid.points
         elif self._grid is not None:
+            source = self._grid
             points = self._grid.points
-        if points is None:
+        if source is None or points is None:
             return None
+
+        get_mtime = getattr(source, "GetMTime", None)
+        modified = int(get_mtime()) if callable(get_mtime) else None
+        cached = self._fit_bounds_cache
+        if cached is not None and cached[0] is source and cached[1] == modified:
+            return cached[2]
 
         values = np.asarray(points, dtype=float)
         if values.size == 0 or values.size % 3:
+            self._fit_bounds_cache = (source, modified, None)
             return None
         values = values.reshape((-1, 3))
         values = values[np.all(np.isfinite(values), axis=1)]
         if len(values) == 0:
+            self._fit_bounds_cache = (source, modified, None)
             return None
 
         minimum = np.min(values, axis=0)
@@ -6413,11 +6536,13 @@ class FEMViewport(QWidget):
             padding = reference * 1.0e-6
             minimum -= padding
             maximum += padding
-        return tuple(
+        bounds = tuple(
             float(value)
             for axis in range(3)
             for value in (minimum[axis], maximum[axis])
         )
+        self._fit_bounds_cache = (source, modified, bounds)
+        return bounds
 
     def _reset_camera_to_fit(self) -> None:
         """Frame stable display bounds without including auxiliary actors."""
@@ -6443,6 +6568,52 @@ class FEMViewport(QWidget):
     def invalidate_boundary_cache(self) -> None:
         """Drop GUI-only expanded boundary data after analysis definitions change."""
         self._boundary_cache.clear()
+        self._constraint_sample_node_ids.clear()
+
+    def _camera_symbol_length(self, multiplier: float) -> float:
+        if self._geometry is None:
+            return 1.0e-9
+        if self._symbol_reference_length is None:
+            self._symbol_reference_length = symbol_length(self._geometry.points)
+        base = self._symbol_reference_length
+        world_per_pixel = self._world_per_pixel()
+        if world_per_pixel is not None and world_per_pixel > 0.0:
+            base = float(np.clip(
+                base,
+                24.0 * world_per_pixel,
+                56.0 * world_per_pixel,
+            ))
+        return max(base * float(multiplier), 1.0e-9)
+
+    def _cached_symbol_model_center(self) -> np.ndarray:
+        if self._symbol_model_center is None:
+            self._symbol_model_center = 0.5 * (
+                np.min(self._geometry.points, axis=0)
+                + np.max(self._geometry.points, axis=0)
+            )
+        return self._symbol_model_center
+
+    def _constraint_reference_axis(self) -> np.ndarray:
+        if self._constraint_reference_axis_cache is None:
+            points = np.asarray(self._geometry.points, dtype=float)
+            centered = points - np.mean(points, axis=0)
+            _left, _singular_values, right = np.linalg.svd(
+                centered,
+                full_matrices=False,
+            )
+            self._constraint_reference_axis_cache = np.asarray(
+                right[0],
+                dtype=float,
+            )
+        return self._constraint_reference_axis_cache
+
+    def _element_lookup(self) -> dict[int, Any]:
+        if self._element_lookup_cache is None:
+            self._element_lookup_cache = {
+                int(element.id): element
+                for element in self._model.mesh.elements
+            }
+        return self._element_lookup_cache
 
     def _world_per_pixel(self) -> float | None:
         if self._plotter is None:
@@ -6484,11 +6655,7 @@ class FEMViewport(QWidget):
             or _pyvista is None
         ):
             return
-        new_scale = symbol_length(
-            self._geometry.points,
-            self._symbol_settings.scale,
-            world_per_pixel=self._world_per_pixel(),
-        )
+        new_scale = self._camera_symbol_length(self._symbol_settings.scale)
         previous = self._last_symbol_scale
         camera_position = self._camera_position()
         same_scale = previous is not None and abs(new_scale - previous) <= 0.02 * max(previous, 1.0e-12)
@@ -6551,7 +6718,7 @@ class FEMViewport(QWidget):
             for axis in range(3)
             for value in (minimum[axis] - padding, maximum[axis] + padding)
         )
-        self._plotter.reset_camera(bounds=bounds)
+        self._plotter.reset_camera(bounds=bounds, render=False)
         self._refresh_symbols_for_camera(render=False)
         self._render()
 
@@ -6560,16 +6727,16 @@ class FEMViewport(QWidget):
             return
         views = {
             # Each tuple is (focal-to-camera direction, screen-up axis).
-            # Orthographic views follow the usual 2-D convention: the first
-            # axis in the view label points right and the second points up.
-            "front": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),  # XZ
-            "back": ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),    # ZX
-            "left": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),    # YZ
-            "right": ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),  # ZY
-            "top": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),     # XY
-            "bottom": ((0.0, 0.0, -1.0), (1.0, 0.0, 0.0)), # YX
-            # Preserve the +X/+Y/+Z viewpoint and keep global +Z vertical.
-            "iso": ((1.0, 1.0, 1.0), (-1.0, -1.0, 2.0)),
+            # Match the Abaqus standard-view convention.  In particular,
+            # front/back look normal to XY, top/bottom look normal to XZ,
+            # and the isometric view projects global +Y vertically upward.
+            "front": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+            "back": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
+            "top": ((0.0, 1.0, 0.0), (0.0, 0.0, -1.0)),
+            "bottom": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+            "left": ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            "right": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+            "iso": ((1.0, 1.0, 1.0), (-1.0, 2.0, -1.0)),
         }
         direction, up = views[view]
         camera = self._plotter.camera
@@ -6626,19 +6793,12 @@ class FEMViewport(QWidget):
         except Exception:
             return
         selected_definition = get_step(self._model, selected_step)
-        glyph_scale = symbol_length(
-            self._geometry.points,
-            settings.scale,
-            world_per_pixel=self._world_per_pixel(),
-        )
+        glyph_scale = self._camera_symbol_length(settings.scale)
         self._last_symbol_scale = glyph_scale
         self._last_symbol_camera_position = self._camera_position()
         constraint_scale, constraint_radius = constraint_symbol_dimensions(glyph_scale)
         load_scale = load_symbol_length(glyph_scale)
-        model_center = 0.5 * (
-            np.min(self._geometry.points, axis=0)
-            + np.max(self._geometry.points, axis=0)
-        )
+        model_center = self._cached_symbol_model_center()
         if selected_definition is not None and selected_definition.gravity_loads:
             gravity_vector = np.zeros(3, dtype=float)
             for gravity_load in selected_definition.gravity_loads:
@@ -6683,66 +6843,80 @@ class FEMViewport(QWidget):
                 for component in range(definition.first_component - 1, definition.last_component):
                     components[component] = float(definition.value)
             for target_key, components in constraints_by_target.items():
-                try:
-                    node_ids = resolve_displacement_node_ids(
-                        self._model,
-                        representative_by_target[target_key],
-                    )
-                except (KeyError, TypeError, ValueError):
-                    continue
-                target_points = np.asarray([
-                    self._geometry.points[self._geometry.node_id_to_point_index[node_id]]
-                    for node_id in node_ids
-                ])
-                regions = constraint_spatial_regions(
-                    target_points, self._geometry.points
-                )
-                for region_indices in regions:
-                    region_node_ids = tuple(node_ids[int(index)] for index in region_indices)
-                    candidate_points = target_points[region_indices]
-                    selected = constraint_sample_indices(
-                        candidate_points, sampling_density
-                    )
-                    camera_position = self._camera_position()
-                    for selected_index in selected:
-                        node_id = region_node_ids[int(selected_index)]
-                        base = self._geometry.points[
+                sample_key = (target_key, sampling_density)
+                sampled_node_ids = self._constraint_sample_node_ids.get(sample_key)
+                if sampled_node_ids is None:
+                    try:
+                        node_ids = resolve_displacement_node_ids(
+                            self._model,
+                            representative_by_target[target_key],
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    target_points = np.asarray([
+                        self._geometry.points[
                             self._geometry.node_id_to_point_index[node_id]
                         ]
-                        display_base = base + camera_facing_offset(
-                            base, camera_position, 0.04 * constraint_scale
+                        for node_id in node_ids
+                    ])
+                    regions = constraint_spatial_regions(
+                        target_points,
+                        self._geometry.points,
+                        reference_axis=self._constraint_reference_axis(),
+                    )
+                    sampled: list[int] = []
+                    for region_indices in regions:
+                        region_node_ids = tuple(
+                            node_ids[int(index)] for index in region_indices
                         )
-                        for component, value in sorted(components.items()):
-                            name = (
-                                f"R{component - translation_count + 1}"
-                                if translation_count == 3
-                                and component >= translation_count
-                                else "R3"
-                                if component >= translation_count
-                                else f"U{component + 1}"
-                            )
-                            constraint_label_points[node_id] = display_base
-                            constraint_labels_by_node.setdefault(node_id, []).append(
-                                f"{name}={value:.6g}" if value else name
-                            )
-                            if component >= translation_count:
-                                continue
-                            outward = constraint_outward_direction(
-                                base, model_center, component
-                            )
-                            tip = display_base + 0.08 * constraint_scale * outward
-                            constraint_points.append(
-                                tip + constraint_scale * outward
-                            )
-                            constraint_vectors.append(-outward)
-                        displayed_axes = constraint_rotation_axes(
-                            tuple(sorted(components)),
-                            is_3d=is_3d,
-                            point=base,
-                            camera_position=camera_position,
+                        selected = constraint_sample_indices(
+                            target_points[region_indices],
+                            sampling_density,
                         )
-                        rotation_points.extend(display_base for _axis in displayed_axes)
-                        rotation_axes.extend(displayed_axes)
+                        sampled.extend(
+                            region_node_ids[int(index)] for index in selected
+                        )
+                    sampled_node_ids = tuple(sampled)
+                    self._constraint_sample_node_ids[sample_key] = sampled_node_ids
+                camera_position = self._camera_position()
+                for node_id in sampled_node_ids:
+                    base = self._geometry.points[
+                        self._geometry.node_id_to_point_index[node_id]
+                    ]
+                    display_base = base + camera_facing_offset(
+                        base, camera_position, 0.04 * constraint_scale
+                    )
+                    for component, value in sorted(components.items()):
+                        name = (
+                            f"R{component - translation_count + 1}"
+                            if translation_count == 3
+                            and component >= translation_count
+                            else "R3"
+                            if component >= translation_count
+                            else f"U{component + 1}"
+                        )
+                        constraint_label_points[node_id] = display_base
+                        constraint_labels_by_node.setdefault(node_id, []).append(
+                            f"{name}={value:.6g}" if value else name
+                        )
+                        if component >= translation_count:
+                            continue
+                        outward = constraint_outward_direction(
+                            base, model_center, component
+                        )
+                        tip = display_base + 0.08 * constraint_scale * outward
+                        constraint_points.append(
+                            tip + constraint_scale * outward
+                        )
+                        constraint_vectors.append(-outward)
+                    displayed_axes = constraint_rotation_axes(
+                        tuple(sorted(components)),
+                        is_3d=is_3d,
+                        point=base,
+                        camera_position=camera_position,
+                    )
+                    rotation_points.extend(display_base for _axis in displayed_axes)
+                    rotation_axes.extend(displayed_axes)
         if constraint_points:
             cloud = _pyvista.PolyData(np.asarray(constraint_points))
             cloud["directions"] = np.asarray(constraint_vectors)
@@ -6818,15 +6992,20 @@ class FEMViewport(QWidget):
                 moment_labels.append(
                     "M=" + str(tuple(float(value) for value in moment))
                 )
-        node_lookup = {int(node.id): self._geometry.points[self._geometry.node_id_to_point_index[int(node.id)]] for node in self._model.mesh.nodes}
         face_cells: list[int] = []
         edge_lines: list[int] = []
+
+        def node_point(node_id: int) -> np.ndarray:
+            return self._geometry.points[
+                self._geometry.node_id_to_point_index[int(node_id)]
+            ]
+
         def add_distributed_group(definition, members, tractions, kind: str) -> None:
             candidates: list[np.ndarray] = []
             candidate_vectors: list[np.ndarray] = []
             for member, traction in zip(members, tractions):
                 ids = member.node_ids
-                points = np.asarray([node_lookup[int(node_id)] for node_id in ids])
+                points = np.asarray([node_point(node_id) for node_id in ids])
                 candidates.append(np.mean(points, axis=0))
                 vector = np.pad(
                     np.asarray(traction.vector, dtype=float),
@@ -6878,10 +7057,7 @@ class FEMViewport(QWidget):
                     )
                     edge_offset += count
             if settings.show_line_loads:
-                element_lookup = {
-                    int(element.id): element
-                    for element in self._model.mesh.elements
-                }
+                element_lookup = self._element_lookup()
                 frame_by_element: dict[int, Any] = {}
                 for definition in selected_definition.line_loads:
                     if definition.coordinate_system != "local":
@@ -6908,7 +7084,7 @@ class FEMViewport(QWidget):
                     if element is None:
                         continue
                     points = np.asarray([
-                        node_lookup[int(node_id)]
+                        node_point(node_id)
                         for node_id in element.node_ids
                     ])
                     samples = sample_polyline(points, sampling_density)
@@ -7155,6 +7331,7 @@ class FEMViewport(QWidget):
 
     def _ensure_plotter(self) -> bool:
         if self._plotter is not None:
+            self._suppress_implicit_plotter_renders(self._plotter)
             self._stack.setCurrentWidget(self._plotter)
             self.nativeSurfaceUpdated.emit()
             return True
@@ -7173,6 +7350,7 @@ class FEMViewport(QWidget):
             pass
         try:
             self._plotter = interactor(self, **kwargs)
+            self._suppress_implicit_plotter_renders(self._plotter)
             self._apply_plotter_background()
             self._stack.addWidget(self._plotter)
             self._stack.setCurrentWidget(self._plotter)
@@ -7184,6 +7362,30 @@ class FEMViewport(QWidget):
             self._stack.setCurrentWidget(self._message)
             return False
         return True
+
+    @staticmethod
+    def _suppress_implicit_plotter_renders(plotter: Any) -> None:
+        """Keep PyVista actor mutations inside the viewport's render boundary."""
+
+        try:
+            plotter.suppress_rendering = True
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+
+    @staticmethod
+    def _render_plotter_once(plotter: Any) -> None:
+        """Temporarily open the explicit render boundary for one frame."""
+
+        try:
+            previous = bool(plotter.suppress_rendering)
+            plotter.suppress_rendering = False
+        except (AttributeError, RuntimeError, TypeError):
+            plotter.render()
+            return
+        try:
+            plotter.render()
+        finally:
+            plotter.suppress_rendering = previous
 
     def _make_grid(self, points: np.ndarray):
         grid = _pyvista.UnstructuredGrid(
@@ -9423,7 +9625,7 @@ class FEMViewport(QWidget):
         if self._plotter is not None:
             try:
                 self._update_pickable_actors()
-                self._plotter.render()
+                self._render_plotter_once(self._plotter)
             except Exception:
                 pass
             self.nativeSurfaceUpdated.emit()

@@ -301,7 +301,7 @@ class _PreparedImportedModel:
     scope_mesh_snapshot: Any | None
     consumed: bool = False
 
-    def take(self) -> tuple[Any, ModelDefinitions, Any]:
+    def take(self) -> tuple[Any, ModelDefinitions, Any | None]:
         if self.consumed:
             raise SessionStateError(
                 "prepared imported model has already been consumed"
@@ -312,10 +312,6 @@ class _PreparedImportedModel:
         if definitions is None:
             raise SessionStateError(
                 "prepared imported model has no owned definitions"
-            )
-        if scope_mesh_snapshot is None:
-            raise SessionStateError(
-                "prepared imported model has no owned scope mesh snapshot"
             )
         self.model = None
         self.definitions = None
@@ -4065,9 +4061,14 @@ class ModelSession:
         self._active_named_region_task_id = token.task_id
         self._task_data[token.task_id] = request_sequence
         model_shell = _copy_scope_task_model_shell(artifact.model)
-        if self._scope_mesh_snapshot is None:
+        if self._scope_mesh_snapshot is not None:
+            model_shell.mesh = self._scope_mesh_snapshot
+        elif artifact.source_kind == "imported":
+            # Imported topology is stable for the lifetime of its artifact.
+            # The worker copies it before applying any definition changes.
+            model_shell.mesh = artifact.model.mesh
+        else:
             raise SessionStateError("scope task mesh snapshot is unavailable")
-        model_shell.mesh = self._scope_mesh_snapshot
         return NamedRegionEditTaskSnapshot(
             token=token,
             request_sequence=request_sequence,
@@ -4672,7 +4673,25 @@ class ModelSession:
         return _PreparedImportedModel(
             model=owned_model,
             definitions=definitions_from_model(owned_model),
-            scope_mesh_snapshot=deepcopy(owned_model.mesh),
+            scope_mesh_snapshot=None,
+        )
+
+    @staticmethod
+    def prepare_owned_imported_model_transfer(model: Any) -> object:
+        """Transfer a newly built worker model without copying its mesh.
+
+        The caller gives up the model after this call.  The opaque payload can
+        still be consumed only once, while scope-edit isolation is deferred to
+        the worker that first compiles such an edit.
+        """
+
+        mesh = getattr(model, "mesh", None)
+        if mesh is not None:
+            validate_beam_frame_fields(mesh)
+        return _PreparedImportedModel(
+            model=model,
+            definitions=definitions_from_model(model),
+            scope_mesh_snapshot=None,
         )
 
     def accept_imported_model(
@@ -4726,7 +4745,11 @@ class ModelSession:
         self._definitions_explicit = True
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         self._scope_mesh_snapshot = scope_mesh_snapshot
-        self._scope_mesh_snapshot_revision = self._mesh_input_revision
+        self._scope_mesh_snapshot_revision = (
+            self._mesh_input_revision
+            if scope_mesh_snapshot is not None
+            else None
+        )
         self._artifact = self._new_artifact(owned_model, "imported")
         self._saved_project_revision = self._project_revision
         return self._emit(
@@ -6736,8 +6759,12 @@ class ModelSession:
 
     def _new_artifact(self, model: Any, source_kind: str) -> ModelArtifact:
         if (
-            self._scope_mesh_snapshot is None
-            or self._scope_mesh_snapshot_revision != self._mesh_input_revision
+            source_kind != "imported"
+            and (
+                self._scope_mesh_snapshot is None
+                or self._scope_mesh_snapshot_revision
+                != self._mesh_input_revision
+            )
         ):
             self._scope_mesh_snapshot = deepcopy(model.mesh)
             self._scope_mesh_snapshot_revision = self._mesh_input_revision

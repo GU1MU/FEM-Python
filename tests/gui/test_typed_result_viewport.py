@@ -1627,6 +1627,40 @@ def test_background_refresh_reuses_installed_typed_payload(
     viewport.close()
 
 
+def test_result_scene_current_requires_exact_projection_state() -> None:
+    _application()
+    payload = _point_payload()
+    viewport = FEMViewport()
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    viewport._actors["result"] = object()
+    viewport._display = DisplayState("deformed", True)
+    topology = payload.topology
+
+    assert viewport.result_scene_is_current(
+        topology.source,
+        topology.selection,
+        materialization_generation=topology.materialization_generation,
+        deformation_scale=topology.deformation_scale,
+        display=viewport._display,
+    )
+    assert not viewport.result_scene_is_current(
+        topology.source,
+        topology.selection,
+        materialization_generation=topology.materialization_generation,
+        deformation_scale=topology.deformation_scale,
+        display=DisplayState("undeformed", True),
+    )
+    assert not viewport.result_scene_is_current(
+        topology.source,
+        topology.selection,
+        materialization_generation=topology.materialization_generation + 1,
+        deformation_scale=topology.deformation_scale,
+        display=viewport._display,
+    )
+    viewport.close()
+
+
 def test_typed_viewport_path_has_no_engineering_or_materialization_calls() -> None:
     path = Path(__file__).parents[2] / "src" / "fem_gui" / "widgets" / "viewport.py"
     module_source = path.read_text(encoding="utf-8")

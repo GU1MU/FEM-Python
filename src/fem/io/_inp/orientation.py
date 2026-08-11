@@ -553,6 +553,7 @@ def resolve_b31_orientations(
     *,
     policy: AbaqusOrientationPolicy = DEFAULT_ABAQUS_ORIENTATION_POLICY,
     strict: bool = False,
+    _source_is_owned: bool = False,
 ) -> AbaqusOrientationResolution:
     """Resolve all structural B31 element ends from detached source data.
 
@@ -561,7 +562,29 @@ def resolve_b31_orientations(
     builder-facing convenience that raises the first deterministic diagnostic.
     """
 
-    source_deck = deck.snapshot() if isinstance(deck, AbaqusDeck) else deck
+    if (
+        topology is None
+        and isinstance(deck, AbaqusDeck)
+        and not any(
+            str(element.type).upper() == "B31"
+            for element in deck.elements
+        )
+        and not deck.normal_records
+        and not any(
+            record.extra_fields or record.normal is not None
+            for record in deck.node_records.values()
+        )
+    ):
+        result = _make_resolution((), (), (), (), policy)
+        if strict:
+            result.raise_if_invalid()
+        return result
+
+    source_deck = (
+        deck
+        if _source_is_owned or not isinstance(deck, AbaqusDeck)
+        else deck.snapshot()
+    )
     detached = _coerce_topology(source_deck, topology)
     events: list[AbaqusOrientationReportEntry] = []
     diagnostics: list[AbaqusOrientationReportEntry] = []

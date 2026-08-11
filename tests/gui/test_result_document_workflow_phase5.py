@@ -110,9 +110,9 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
     window = FEMMainWindow()
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
-    assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "reload"
+    assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "save_result"
     assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
-    assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "close"
+    assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "open_result"
     file_menu = window.findChild(QMenu, "menuFile")
     assert file_menu is not None
     file_actions = [item.objectName() for item in file_menu.actions()]

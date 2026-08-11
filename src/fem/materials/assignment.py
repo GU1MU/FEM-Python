@@ -290,6 +290,7 @@ def resolve_sections(
     missing_element_sets: list[str] = []
     missing_element_ids: list[int] = []
     incompatible_element_ids: list[int] = []
+    property_resolution_cache: dict[tuple[Any, ...], Any] = {}
 
     for assignment_index, section in enumerate(
         getattr(model, "sections", ()),
@@ -298,6 +299,12 @@ def resolve_sections(
         material_name = str(section.material)
         declared_type = str(section.section_type)
         material = getattr(model, "materials", {}).get(material_name)
+        material_signature = (
+            None
+            if material is None
+            else _freeze_signature(material.properties)
+        )
+        section_signature = _freeze_signature(section.properties)
         try:
             element_set = _section_element_set(model, element_set_name)
         except KeyError:
@@ -370,24 +377,44 @@ def resolve_sections(
             if material is None:
                 continue
 
-            try:
-                resolved = resolve_section_properties(
-                    elem.type,
-                    material.properties,
-                    declared_type,
-                    section.properties,
-                    baseline_properties=_restored_properties(
-                        model,
-                        element_id,
-                        elem,
-                    ),
-                )
-            except SectionCompatibilityError as exc:
+            baseline_properties = _restored_properties(
+                model,
+                element_id,
+                elem,
+            )
+            cache_key = (
+                str(elem.type),
+                declared_type,
+                material_signature,
+                section_signature,
+                _freeze_signature(baseline_properties),
+            )
+            if cache_key in property_resolution_cache:
+                cached = property_resolution_cache[cache_key]
+            else:
+                try:
+                    cached = resolve_section_properties(
+                        elem.type,
+                        material.properties,
+                        declared_type,
+                        section.properties,
+                        baseline_properties=baseline_properties,
+                    )
+                except (
+                    MaterialPropertyError,
+                    SectionCompatibilityError,
+                    SectionPropertyError,
+                    NotImplementedError,
+                ) as error:
+                    cached = error
+                property_resolution_cache[cache_key] = cached
+
+            if isinstance(cached, SectionCompatibilityError):
                 _append_unique(incompatible_element_ids, element_id)
                 issues.append(
                     _element_issue(
                         "definition.section.incompatible",
-                        exc,
+                        cached,
                         assignment_index,
                         element_set_name,
                         material_name,
@@ -396,11 +423,11 @@ def resolve_sections(
                     )
                 )
                 continue
-            except MaterialPropertyError as exc:
+            if isinstance(cached, MaterialPropertyError):
                 issues.append(
                     _element_issue(
                         "definition.material.invalid",
-                        exc,
+                        cached,
                         assignment_index,
                         element_set_name,
                         material_name,
@@ -409,20 +436,20 @@ def resolve_sections(
                     )
                 )
                 continue
-            except (SectionPropertyError, NotImplementedError) as exc:
-                if isinstance(exc, NotImplementedError):
+            if isinstance(cached, (SectionPropertyError, NotImplementedError)):
+                if isinstance(cached, NotImplementedError):
                     _append_unique(incompatible_element_ids, element_id)
                     code = "definition.section.incompatible"
                 else:
                     code = getattr(
-                        exc,
+                        cached,
                         "code",
                         "definition.section.invalid",
                     )
                 issues.append(
                     _element_issue(
                         code,
-                        exc,
+                        cached,
                         assignment_index,
                         element_set_name,
                         material_name,
@@ -431,6 +458,7 @@ def resolve_sections(
                     )
                 )
                 continue
+            resolved = cached
 
             applied = dict(resolved.applied_properties)
             applied["material"] = material_name
@@ -438,7 +466,7 @@ def resolve_sections(
             applied["_stress_material_signature"] = (
                 "material",
                 material_name,
-                _freeze_signature(material.properties),
+                material_signature,
             )
             applied["_stress_section_signature"] = (
                 "section",

@@ -92,12 +92,20 @@ def build_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     # Background import callers may retain or reuse the parser result.  Work on
     # an owned snapshot so source validation and set expansion cannot share
     # mutable parser state with the accepted task.
-    deck = deck.snapshot()
+    return _build_owned_model_with_report(deck.snapshot())
+
+
+def _build_owned_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
+    """Build from a fresh parser deck whose ownership is transferred here."""
+
     # Resolve source targets before constructing a canonical mesh.  This keeps
     # mixed-family and stale-set diagnostics at the Abaqus boundary instead of
     # letting a generic Mesh constructor error hide the responsible record.
     _audit_raw_targets(deck)
-    orientation_resolution = resolve_b31_orientations(deck)
+    orientation_resolution = resolve_b31_orientations(
+        deck,
+        _source_is_owned=True,
+    )
     orientation_resolution.raise_if_invalid()
     has_line_elements = _audit_line_subset(deck)
     _audit_source_mesh_capability(deck)

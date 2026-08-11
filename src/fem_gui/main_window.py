@@ -47,6 +47,7 @@ from fem.application import (
     RenameIntent,
     RevisionConflictError,
     RunStatus,
+    SessionAuthoringProjection,
     SessionDelta,
     StrictBodyBooleanPreview,
     StrictPartBooleanResult,
@@ -56,7 +57,6 @@ from fem.application import (
     TokenStatus,
     TransitionEffect,
     describe_model_capabilities,
-    describe_native_authoring_capabilities,
     describe_session_authoring,
     evaluate_authoring_candidate,
     evaluate_native_assignment_candidate,
@@ -674,6 +674,12 @@ class FEMMainWindow(QMainWindow):
         self._mesh_selection_topology_cache: (
             MeshSelectionTopology | None
         ) = None
+        self._session_authoring_cache: (
+            tuple[object, object, SessionAuthoringProjection] | None
+        ) = None
+        self._result_model_capability_cache: (
+            tuple[object, object, ModelCapabilityReport] | None
+        ) = None
         self._wire_editor_controller: WireDraftController | None = None
         self._wire_editor_original_recipe: object | None = None
         self._wire_editor_base_revision: int | None = None
@@ -722,6 +728,8 @@ class FEMMainWindow(QMainWindow):
         self.scope_background_reference_threshold = (
             _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD
         )
+        self._pending_mesh_topology_selection_filter: str | None = None
+        self._pending_mesh_topology_callback: Callable[[], None] | None = None
         self._queued_named_region_edit: (
             tuple[int, NamedRegionEditTaskSnapshot, GuiCommandCompletion] | None
         ) = None
@@ -765,6 +773,9 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._result_topology_template_cache: (
             tuple[object, ResultFieldTopologyTemplate] | None
+        ) = None
+        self._result_deformation_scale_cache: (
+            tuple[object, str, str, float, float] | None
         ) = None
         self._step_combos: list[QComboBox] = []
         self._closing = False
@@ -3119,6 +3130,9 @@ class FEMMainWindow(QMainWindow):
                 self.geometry,
                 refresh_symbols=False,
                 render=False,
+                mesh_selection_topology_provider=(
+                    self._mesh_selection_topology
+                ),
             )
             self.viewport.set_symbol_settings(
                 self._symbol_settings,
@@ -3310,7 +3324,7 @@ class FEMMainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("视图")
         view_menu.setObjectName("menuView")
         view_menu.addActions([self.actions[name] for name in (
-            "fit", "top", "bottom", "front", "back", "left", "right", "iso",
+            "fit", "front", "back", "top", "bottom", "left", "right", "iso",
         )])
         view_menu.addSeparator()
         view_menu.addActions([self.actions[name] for name in ("orthographic", "perspective")])
@@ -3437,8 +3451,8 @@ class FEMMainWindow(QMainWindow):
         self._build_analysis_ribbon_page()
         self._build_result_ribbon_page()
         self._add_ribbon_page("视图", (
-            ("视角", ("top", "bottom", "front", "back", "left", "right", "iso"),
-             ("top", "bottom", "front", "back", "left", "right", "iso")),
+            ("视角", ("front", "back", "top", "bottom", "left", "right", "iso"),
+             ("front", "back", "top", "bottom", "left", "right", "iso")),
             ("相机", ("fit", "orthographic", "perspective", "viewport_background"), ()),
             ("标注", ("nodes", "edges", "node_labels", "element_labels", "symbols"), ()),
         ))
@@ -3848,10 +3862,11 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         if module_name == "结果":
-            if (
-                self._current_result_provider() is not None
-                and type(self.result_selection) is ScalarFieldSelection
-            ):
+            provider = self._current_result_provider()
+            selection = self.result_selection
+            if provider is not None and type(selection) is ScalarFieldSelection:
+                if self._viewport_result_scene_is_current(provider, selection):
+                    return
                 self._restore_viewport_model_scene(render=False)
                 self._apply_display()
             else:
@@ -3877,6 +3892,22 @@ class FEMMainWindow(QMainWindow):
             self.viewport.show_geometry_preview(preview)
             return
         self.viewport.clear_model()
+
+    def _viewport_result_scene_is_current(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        render_provider, render_selection = (
+            self._result_visualization_provider(provider, selection)
+        )
+        return self.viewport.result_scene_is_current(
+            render_provider.source,
+            render_selection,
+            materialization_generation=render_provider.snapshot.generation,
+            deformation_scale=self._result_deformation_scale(render_provider),
+            display=self._display,
+        )
 
     def _current_native_geometry_preview(self) -> GeometryPreview | None:
         if self.document.source_kind != "native":
@@ -3936,12 +3967,21 @@ class FEMMainWindow(QMainWindow):
             combo.setEnabled(bool(names) and not self.busy)
             combo.blockSignals(False)
 
-    def _set_current_step(self, name: str) -> None:
+    def _set_current_step(
+        self,
+        name: str,
+        *,
+        refresh_viewport: bool = True,
+    ) -> None:
         if name not in self.session.runnable_step_names():
             return
         self._current_step_name = name
         self._symbol_settings = replace(self._symbol_settings, step_name=name)
-        self.viewport.set_symbol_settings(self._symbol_settings)
+        self.viewport.set_symbol_settings(
+            self._symbol_settings,
+            refresh=refresh_viewport,
+            render=refresh_viewport,
+        )
         self._sync_step_combos()
         self.status_panel.set_step(name)
         self.status_panel.set_state(f"已选择分析步：{name}", 4000)
@@ -4277,7 +4317,7 @@ class FEMMainWindow(QMainWindow):
         return valid
 
     def _update_action_states(self) -> None:
-        authoring = describe_session_authoring(self.document)
+        authoring = self._session_authoring_projection()
         selection_kind = (
             "node"
             if self.selection.node_id is not None
@@ -4587,7 +4627,7 @@ class FEMMainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _wire_editor_work_plane_changed(self, plane: str) -> None:
-        views = {"XY": "top", "XZ": "front", "YZ": "left"}
+        views = {"XY": "front", "XZ": "bottom", "YZ": "left"}
         view = views.get(str(plane).upper())
         if view is not None:
             self.viewport.set_view(view)
@@ -5261,7 +5301,7 @@ class FEMMainWindow(QMainWindow):
         self.sketch_editor_panel.begin(self.viewport)
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         self.ribbon.set_current("几何")
-        self.viewport.set_view("top")
+        self.viewport.set_view("front")
         self._schedule_viewport_fit()
         self.status_panel.set_state(
             "二维草图编辑已启动，请在 XY 工作平面绘制闭合轮廓",
@@ -6183,7 +6223,7 @@ class FEMMainWindow(QMainWindow):
             purpose="planar_boolean_tool",
         )
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
-        self.viewport.set_view("top")
+        self.viewport.set_view("front")
         cached = self._geometry_preview_cache
         source_preview = (
             cached[2]
@@ -7621,11 +7661,7 @@ class FEMMainWindow(QMainWindow):
     def _choose_mesh_scope_kind(self) -> str | None:
         if self.document.model is None:
             return None
-        topology = self._scope_selection_topology()
-        available_kinds = {
-            reference.kind
-            for reference in topology.mesh_references
-        }
+        available_kinds = self._available_scope_selection_kinds()
         kinds = [
             ("Set", "node"),
             *((("Edge", "edge"),) if "edge" in available_kinds else ()),
@@ -7663,10 +7699,117 @@ class FEMMainWindow(QMainWindow):
         if model is None:
             raise RuntimeError("mesh selection requires a generated mesh")
         if self._mesh_selection_topology_cache is None:
+            scope_topology = self._scope_selection_topology_cache
+            if scope_topology is None:
+                scope_topology = build_scope_selection_topology(
+                    model,
+                    self.document.geometry_recipe,
+                )
+                self._scope_selection_topology_cache = scope_topology
             self._mesh_selection_topology_cache = (
-                build_mesh_selection_topology(model)
+                build_mesh_selection_topology(
+                    model,
+                    scope_topology=scope_topology,
+                )
             )
         return self._mesh_selection_topology_cache
+
+    def _mesh_selection_topology_requires_background(self) -> bool:
+        """Return whether topology inference is large enough to leave the UI."""
+
+        model = self._current_gui_model()
+        return bool(
+            model is not None
+            and len(model.mesh.elements)
+            > self.scope_background_reference_threshold
+        )
+
+    def _begin_mesh_selection_topology_preparation(
+        self,
+        selection_filter: str | None,
+        *,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        """Prepare shared scope and mesh topology away from the GUI thread."""
+
+        if (
+            self.busy
+            and self.task_controller.current_task_name
+            == "准备网格选择拓扑"
+        ):
+            self._pending_mesh_topology_selection_filter = selection_filter
+            self._pending_mesh_topology_callback = on_ready
+            return
+        model = self._current_gui_model()
+        artifact = self.document.artifact
+        if model is None or artifact is None:
+            return
+        artifact_id = artifact.artifact_id
+        recipe = self.document.geometry_recipe
+
+        def workload(context: TaskContext) -> object:
+            context.report("正在分析网格作用域……")
+            scope_topology = build_scope_selection_topology(model, recipe)
+            context.checkpoint()
+            context.report("正在准备边、面和体选择……")
+            mesh_topology = build_mesh_selection_topology(
+                model,
+                scope_topology=scope_topology,
+            )
+            context.checkpoint()
+            return artifact_id, scope_topology, mesh_topology
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            result_artifact_id, _scope_topology, _mesh_topology = value
+            current_artifact = self.document.artifact
+            if (
+                current_artifact is None
+                or current_artifact.artifact_id != result_artifact_id
+            ):
+                self._pending_mesh_topology_selection_filter = None
+                self._pending_mesh_topology_callback = None
+                return TaskApplyOutcome.stale("模型已变化，已丢弃选择拓扑")
+            return TaskApplyOutcome.accepted(value)
+
+        def project_result(value: object) -> None:
+            _artifact_id, scope_topology, mesh_topology = value
+            self._scope_selection_topology_cache = scope_topology
+            self._mesh_selection_topology_cache = mesh_topology
+            requested = self._pending_mesh_topology_selection_filter
+            callback = self._pending_mesh_topology_callback
+            self._pending_mesh_topology_selection_filter = None
+            self._pending_mesh_topology_callback = None
+            self.status_panel.set_state("网格选择拓扑已就绪", 3000)
+            if callback is not None:
+                callback()
+                return
+            active_filter = self._selection_context.active_filter
+            if (
+                requested is not None
+                and self._selection_context.space == "mesh"
+                and active_filter
+                == ("point" if requested == "node" else requested)
+            ):
+                self._set_mesh_scope_selection_mode(requested)
+
+        def clear_pending(*_args: object) -> None:
+            self._pending_mesh_topology_selection_filter = None
+            self._pending_mesh_topology_callback = None
+
+        self._pending_mesh_topology_selection_filter = selection_filter
+        self._pending_mesh_topology_callback = on_ready
+        started = self._start_task(
+            workload,
+            project_result,
+            "准备网格选择拓扑失败",
+            clear_pending,
+            task_name="准备网格选择拓扑",
+            on_cancelled=clear_pending,
+            apply_result=apply_result,
+        )
+        if not started:
+            self._pending_mesh_topology_selection_filter = None
+            self._pending_mesh_topology_callback = None
 
     def _current_gui_model(self) -> object | None:
         """Return the structural model facade used by GUI-only consumers."""
@@ -7674,6 +7817,29 @@ class FEMMainWindow(QMainWindow):
         if self.document.source_kind == "result":
             return self._result_archive_model_view
         return self.document.model
+
+    def _available_scope_selection_kinds(
+        self,
+        capability_report: ModelCapabilityReport | None = None,
+    ) -> set[str]:
+        """Describe selectable scope kinds without materializing topology."""
+
+        if self.document.model is None:
+            return set()
+        report = capability_report or self._model_capability_report()
+        dimension = (
+            report.topological_dimension
+            if report is not None
+            else None
+        )
+        kinds = {"node"}
+        if dimension is not None and dimension >= 1:
+            kinds.add("edge")
+        if dimension is not None and dimension >= 2:
+            kinds.add("face")
+        if dimension is not None and dimension >= 3:
+            kinds.add("body")
+        return kinds
 
     def _start_edge_scope_selection(self) -> None:
         if self.document.model is None:
@@ -7819,12 +7985,12 @@ class FEMMainWindow(QMainWindow):
 
     def _scope_authoring_targets(
         self,
-        authoring: Any | None = None,
+        authoring: SessionAuthoringProjection | None = None,
     ) -> tuple[Any, ...]:
         projection = (
             authoring
             if authoring is not None
-            else describe_session_authoring(self.document)
+            else self._session_authoring_projection()
         )
         targets = projection.targets
         if self.document.source_kind != "native":
@@ -7839,7 +8005,7 @@ class FEMMainWindow(QMainWindow):
     def _analysis_region_names(
         self,
     ) -> tuple[list[RegionRef], list[RegionRef], list[RegionRef]]:
-        authoring = describe_session_authoring(self.document)
+        authoring = self._session_authoring_projection()
         targets = self._scope_authoring_targets(authoring)
         return tuple(
             [target.region for target in targets if target.region.kind == kind]
@@ -7848,36 +8014,66 @@ class FEMMainWindow(QMainWindow):
 
     def _analysis_element_regions(
         self,
-        capability_report: ModelCapabilityReport | None = None,
+        authoring: SessionAuthoringProjection | None = None,
     ) -> list[RegionRef]:
-        del capability_report
-        authoring = describe_session_authoring(self.document)
+        projection = authoring or self._session_authoring_projection()
         return [
             target.region
-            for target in self._scope_authoring_targets(authoring)
+            for target in self._scope_authoring_targets(projection)
             if target.region.kind == "element_set"
         ]
 
+    def _session_authoring_projection(self) -> SessionAuthoringProjection:
+        """Reuse the immutable authoring projection for one Session snapshot."""
+
+        builder = describe_session_authoring
+        cached = self._session_authoring_cache
+        if (
+            cached is not None
+            and cached[0] is self.document
+            and cached[1] is builder
+        ):
+            return cached[2]
+        projection = builder(self.document)
+        self._session_authoring_cache = (
+            self.document,
+            builder,
+            projection,
+        )
+        return projection
+
     def _model_capability_report(
         self,
+        authoring: SessionAuthoringProjection | None = None,
     ) -> ModelCapabilityReport | None:
         """Return the headless capability report for current authoring state."""
 
+        if self.document.source_kind != "result":
+            return (
+                authoring or self._session_authoring_projection()
+            ).report
         model = self._current_gui_model()
         if model is not None:
-            return describe_model_capabilities(model)
-        recipe = self.document.geometry_recipe
-        settings = self.document.mesh_settings
-        if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-            return describe_native_authoring_capabilities(
-                recipe,
-                settings,
-                named_regions=tuple(self.document.named_regions.values()),
+            builder = describe_model_capabilities
+            cached = self._result_model_capability_cache
+            if (
+                cached is not None
+                and cached[0] is model
+                and cached[1] is builder
+            ):
+                return cached[2]
+            report = builder(model)
+            self._result_model_capability_cache = (
+                model,
+                builder,
+                report,
             )
+            return report
         return None
 
     def _supported_load_regions(
         self,
+        authoring: SessionAuthoringProjection | None = None,
     ) -> tuple[
         list[RegionRef],
         list[RegionRef],
@@ -7887,8 +8083,8 @@ class FEMMainWindow(QMainWindow):
     ]:
         """Return targets filtered by the application capability report."""
 
-        authoring = describe_session_authoring(self.document)
-        targets = self._scope_authoring_targets(authoring)
+        projection = authoring or self._session_authoring_projection()
+        targets = self._scope_authoring_targets(projection)
         operations = (
             ("node_set", "load.node"),
             ("edge", "load.edge"),
@@ -7906,13 +8102,16 @@ class FEMMainWindow(QMainWindow):
             for kind, operation in operations
         )
 
-    def _supported_boundary_regions(self) -> list[RegionRef]:
+    def _supported_boundary_regions(
+        self,
+        authoring: SessionAuthoringProjection | None = None,
+    ) -> list[RegionRef]:
         """Return typed regions that can expand to constrained mesh nodes."""
 
-        authoring = describe_session_authoring(self.document)
+        projection = authoring or self._session_authoring_projection()
         return [
             target.region
-            for target in self._scope_authoring_targets(authoring)
+            for target in self._scope_authoring_targets(projection)
             if target.region.kind in {"node_set", "edge", "surface"}
             and target.operation("boundary.displacement").can_submit
         ]
@@ -7942,13 +8141,24 @@ class FEMMainWindow(QMainWindow):
         )
         self._pending_analysis_dialog_state = dialog_state
         self._pending_analysis_edit = resume_edit
-        topology = self._scope_selection_topology()
-        dimension = topology.preview.topological_dimension
+        report = self._model_capability_report()
+        dimension = (
+            report.topological_dimension
+            if report is not None
+            else None
+        )
         domain_kind = {
             1: "edge",
             2: "face",
             3: "body",
-        }[dimension]
+        }.get(dimension)
+        if domain_kind is None:
+            self._show_error("创建作用域", "当前模型缺少可选择的网格维度")
+            self._pending_analysis_selection = None
+            self._pending_analysis_requested_scope_kind = None
+            self._pending_analysis_dialog_state = None
+            self._pending_analysis_edit = None
+            return
         requested_kind = {
             "node": "node",
             "edge": "edge",
@@ -7960,10 +8170,8 @@ class FEMMainWindow(QMainWindow):
             "element": "element",
             "element_set": domain_kind,
         }.get(str(scope_kind or ""))
-        semantic_kinds = {
-            reference.kind
-            for reference in topology.mesh_references
-        }
+        semantic_kinds = self._available_scope_selection_kinds(report)
+        semantic_kinds.discard("node")
         default_kind = requested_kind or (
             domain_kind if domain_kind in semantic_kinds else "node"
         )
@@ -7980,6 +8188,21 @@ class FEMMainWindow(QMainWindow):
             return
         self._pending_scope_kind = default_kind
         if default_kind in {"edge", "face", "body"}:
+            if (
+                self._scope_selection_topology_cache is None
+                and self._mesh_selection_topology_requires_background()
+            ):
+                self._begin_mesh_selection_topology_preparation(
+                    None,
+                    on_ready=lambda: self._request_analysis_geometry_selection(
+                        operation,
+                        scope_kind,
+                        resume_edit=resume_edit,
+                        dialog_state=dialog_state,
+                    ),
+                )
+                return
+            topology = self._scope_selection_topology()
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
             self.viewport.show_geometry_preview(
@@ -8936,7 +9159,9 @@ class FEMMainWindow(QMainWindow):
             timings["VTK 显示几何构建"] = perf_counter() - started
             context.report("正在准备会话模型……")
             started = perf_counter()
-            prepared = self.session.prepare_imported_model_transfer(model)
+            prepared = self.session.prepare_owned_imported_model_transfer(
+                model
+            )
             timings["Session 模型所有权准备"] = perf_counter() - started
             context.checkpoint()
             return prepared, geometry, timings, import_result.notices
@@ -9180,6 +9405,9 @@ class FEMMainWindow(QMainWindow):
             show_node_labels=policy["show_labels"],
             show_element_labels=policy["show_labels"],
             effective_frame_query=frame_query,
+            mesh_selection_topology_provider=(
+                self._mesh_selection_topology
+            ),
         )
         self.viewport.set_edges_visible(self.actions["edges"].isChecked(), render=False)
         self.viewport.set_nodes_visible(self.actions["nodes"].isChecked(), render=False)
@@ -9646,7 +9874,7 @@ class FEMMainWindow(QMainWindow):
         selected_region_name: str | None = None,
     ) -> RegionAssignmentDialog | None:
         capability_report = self._model_capability_report()
-        regions = self._analysis_element_regions(capability_report)
+        regions = self._analysis_element_regions()
         if current is not None:
             existing = RegionRef(
                 "element_set",
@@ -9854,21 +10082,8 @@ class FEMMainWindow(QMainWindow):
             if model is not None
             else geometry_dimension(self.document.geometry_recipe)
         )
-        scope_topology = (
-            self._scope_selection_topology()
-            if self.document.model is not None
-            else None
-        )
-        available_scope_kinds = (
-            {
-                "node",
-                *(
-                    reference.kind
-                    for reference in scope_topology.mesh_references
-                ),
-            }
-            if scope_topology is not None
-            else set()
+        available_scope_kinds = self._available_scope_selection_kinds(
+            capability_report
         )
         dialog = DisplacementDialog(
             list(self.session.runnable_step_names()),
@@ -10074,7 +10289,7 @@ class FEMMainWindow(QMainWindow):
         )
 
     def create_output_request(self) -> None:
-        authoring = describe_session_authoring(self.document)
+        authoring = self._session_authoring_projection()
         capability = authoring.operation("output_request.create")
         if not capability.can_submit:
             self._show_authoring_decision_error(
@@ -10209,6 +10424,8 @@ class FEMMainWindow(QMainWindow):
         if not source_steps:
             return None
         model = self.document.model
+        authoring = self._session_authoring_projection()
+        capability_report = self._model_capability_report(authoring)
         (
             node_regions,
             edge_regions,
@@ -10216,26 +10433,11 @@ class FEMMainWindow(QMainWindow):
             line_regions,
             body_regions,
         ) = (
-            self._supported_load_regions()
+            self._supported_load_regions(authoring)
         )
-        scope_topology = (
-            self._scope_selection_topology()
-            if model is not None
-            else None
+        available_scope_kinds = self._available_scope_selection_kinds(
+            capability_report
         )
-        available_scope_kinds = (
-            {
-                "node",
-                *(
-                    reference.kind
-                    for reference in scope_topology.mesh_references
-                ),
-            }
-            if scope_topology is not None
-            else set()
-        )
-        authoring = describe_session_authoring(self.document)
-        capability_report = self._model_capability_report()
         dimensions = (
             capability_report.dofs_per_node
             if capability_report is not None
@@ -10257,7 +10459,7 @@ class FEMMainWindow(QMainWindow):
             ),
             line_regions=line_regions,
             body_regions=body_regions,
-            boundary_regions=self._supported_boundary_regions(),
+            boundary_regions=self._supported_boundary_regions(authoring),
             dof_labels=(
                 capability_report.dof_labels
                 if capability_report is not None
@@ -10352,9 +10554,9 @@ class FEMMainWindow(QMainWindow):
         if tuple(values) == current:
             return
         if self._output_collections_changed(current, values):
-            capability = describe_session_authoring(
-                self.document
-            ).operation("output_request.delete")
+            capability = self._session_authoring_projection().operation(
+                "output_request.delete"
+            )
             if not capability.can_submit:
                 self._show_authoring_decision_error(
                     "删除输出请求",
@@ -11212,6 +11414,7 @@ class FEMMainWindow(QMainWindow):
         """将一个已完成会话作业的结果接入现有后处理流程。"""
         if not job.has_result:
             return
+        selection_delta = None
         if self.document.displayed_result_run_id != job.run_id:
             projection = self.session.prepare_result_projection(job.run_id)
             if not self._apply_revision_neutral_task_receipt(
@@ -11220,8 +11423,19 @@ class FEMMainWindow(QMainWindow):
                 )
             ):
                 return
-            self._apply_session_delta(self.session.select_result(job.run_id))
-        self._set_current_step(job.step_name)
+            selection_delta = self.session.select_result(job.run_id)
+        self._set_current_step(job.step_name, refresh_viewport=False)
+        self._display = DisplayState("deformed", True)
+        self.actions["deformed"].setChecked(True)
+        self.actions["contour"].setChecked(True)
+        self.actions["symbols"].setChecked(False)
+        self.viewport.set_symbols_visible(False, render=False)
+        self.actions["node_labels"].setChecked(False)
+        self.actions["element_labels"].setChecked(False)
+        self.viewport.set_labels_visible(False, False, render=False)
+        self.viewport.hide_selection_highlight(render=False)
+        if selection_delta is not None:
+            self._apply_session_delta(selection_delta)
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -11230,18 +11444,8 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
-        self._display = DisplayState("deformed", True)
-        self._apply_scale()
-        self.actions["deformed"].setChecked(True)
-        self.actions["contour"].setChecked(True)
-        self.actions["symbols"].setChecked(False)
-        self.viewport.set_symbols_visible(False, render=False)
-        self.actions["node_labels"].setChecked(False)
-        self.actions["element_labels"].setChecked(False)
-        self.viewport.set_node_labels_visible(False)
-        self.viewport.set_element_labels_visible(False)
-        self.viewport.hide_selection_highlight(render=False)
-        self._apply_display()
+        if not self._viewport_result_scene_is_current(provider, selection):
+            self._apply_display()
         self.result_tree.set_catalog(
             f"{job.name} · {job.step_name}",
             provider.catalog(),
@@ -11902,8 +12106,22 @@ class FEMMainWindow(QMainWindow):
         reference_kind = normalized
         if self.document.model is not None:
             semantic_filter = "point" if normalized == "node" else normalized
-            reference_kind = self._mesh_selection_topology().reference_kind(
-                semantic_filter
+            report = self._model_capability_report()
+            dimension = (
+                report.topological_dimension
+                if report is not None
+                else None
+            )
+            reference_kind = (
+                "node"
+                if semantic_filter == "point"
+                else "element"
+                if semantic_filter in {"element", "body"}
+                else "element"
+                if semantic_filter == "edge" and dimension == 1
+                else "element"
+                if semantic_filter == "face" and dimension == 2
+                else semantic_filter
             )
         incompatible = (
             self._selected_mesh_scope_refs
@@ -11911,9 +12129,27 @@ class FEMMainWindow(QMainWindow):
         )
         if incompatible:
             self._selected_mesh_scope_refs.clear()
-            self.viewport.clear_selection()
+            self.viewport.clear_selection(render=False)
             self.status_panel.set_object()
-        elif (
+        if (
+            normalized in {"edge", "face", "body"}
+            and self.document.model is not None
+            and self._mesh_selection_topology_cache is None
+            and self._mesh_selection_topology_requires_background()
+        ):
+            self.selection.clear()
+            self._selected_geometry_refs.clear()
+            self.actions["selected_info"].setEnabled(False)
+            self.status_panel.set_selection_mode(f"mesh_{normalized}")
+            self._begin_mesh_selection_topology_preparation(normalized)
+            return
+        if (
+            normalized in {"edge", "face", "body"}
+            and self.document.model is not None
+            and self._mesh_selection_topology_cache is None
+        ):
+            self._mesh_selection_topology()
+        if (
             self._selected_mesh_scope_refs
             and normalized in {"edge", "face", "body"}
             and self.document.model is not None
@@ -12526,32 +12762,54 @@ class FEMMainWindow(QMainWindow):
         if shape != "deformed":
             return 0.0
         mode = self._scale_mode if scale_mode is None else scale_mode
+        requested_value = (
+            float(self._scale_value if scale_value is None else scale_value)
+            if mode == "custom"
+            else 0.0
+        )
+        cache = self._result_deformation_scale_cache
+        if (
+            cache is not None
+            and cache[0] is provider.snapshot
+            and cache[1] == shape
+            and cache[2] == mode
+            and cache[3] == requested_value
+        ):
+            return cache[4]
         if mode == "real":
-            return 1.0
-        if mode == "custom":
-            value = self._scale_value if scale_value is None else scale_value
-            scale = float(value)
+            scale = 1.0
+        elif mode == "custom":
+            scale = requested_value
             if not np.isfinite(scale) or scale < 0.0:
                 raise ValueError(
                     "custom deformation scale must be finite and non-negative"
                 )
-            return scale
-        if mode != "auto":
+        elif mode != "auto":
             raise ValueError("unknown deformation scale mode")
-        topology = provider.snapshot.topology
-        coordinates = topology.node_coordinates
-        displacements = topology.nodal_displacements
-        if len(coordinates) == 0:
-            return 1.0
-        span = float(np.linalg.norm(np.ptp(coordinates, axis=0)))
-        maximum = float(
-            np.max(np.linalg.norm(displacements, axis=1))
+        else:
+            topology = provider.snapshot.topology
+            coordinates = topology.node_coordinates
+            displacements = topology.nodal_displacements
+            if len(coordinates) == 0:
+                scale = 1.0
+            else:
+                span = float(np.linalg.norm(np.ptp(coordinates, axis=0)))
+                maximum = float(
+                    np.max(np.linalg.norm(displacements, axis=1))
+                )
+                scale = (
+                    1.0
+                    if maximum <= 0.0 or span <= 0.0
+                    else 0.1 * span / maximum
+                )
+        self._result_deformation_scale_cache = (
+            provider.snapshot,
+            shape,
+            mode,
+            requested_value,
+            scale,
         )
-        return (
-            1.0
-            if maximum <= 0.0 or span <= 0.0
-            else 0.1 * span / maximum
-        )
+        return scale
 
     def _build_result_render_payload(
         self,
@@ -12913,6 +13171,8 @@ class FEMMainWindow(QMainWindow):
         if model is None:
             FEMViewport.clear_model(self.viewport)
             return
+        if self.viewport.model_scene_is_current(model, geometry):
+            return
         frame_query = None
         if self.document.source_kind != "result":
             def frame_query(target: RegionRef | int) -> BeamFrameReport:
@@ -12928,6 +13188,9 @@ class FEMMainWindow(QMainWindow):
             show_node_labels=self.actions["node_labels"].isChecked(),
             show_element_labels=self.actions["element_labels"].isChecked(),
             effective_frame_query=frame_query,
+            mesh_selection_topology_provider=(
+                self._mesh_selection_topology
+            ),
         )
         FEMViewport.set_symbol_settings(
             self.viewport,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -50,6 +51,29 @@ def _frames(model):
     )
     assert report.passed
     return report
+
+
+def test_public_b31_import_transfers_fresh_source_deck_without_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = _write_deck(tmp_path, "single_snapshot.inp", _beam_lines())
+    inp.read_with_report(path)
+    AbaqusDeck = sys.modules["fem.io._inp.deck"].AbaqusDeck
+    original = AbaqusDeck.snapshot
+    calls = 0
+
+    def counted(self):
+        nonlocal calls
+        calls += 1
+        return original(self)
+
+    monkeypatch.setattr(AbaqusDeck, "snapshot", counted)
+
+    result = inp.read_with_report(path)
+
+    assert result.model.mesh.elements[0].type == "Beam2"
+    assert calls == 0
 
 
 def test_orientation_node_is_source_evidence_and_not_a_beam_dof(

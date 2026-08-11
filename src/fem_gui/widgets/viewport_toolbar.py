@@ -35,7 +35,7 @@ class ViewportToolBar(QToolBar):
         self.setObjectName("viewportToolbar")
         self.setMovable(False)
         self.setFloatable(False)
-        # Coordinate-plane PNGs already contain the complete axis legend.  Keep
+        # Coordinate-view pictograms already contain the complete axis legend. Keep
         # this toolbar icon-only so the QAction text cannot overlap the X/Y/Z
         # labels drawn inside the image.
         # Keep the viewport toolbar compact, but let the artwork use most of

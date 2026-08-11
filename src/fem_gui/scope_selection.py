@@ -144,14 +144,20 @@ def build_mesh_selection_topology(
     model: Any,
     *,
     feature_angle_degrees: float = 30.0,
+    scope_topology: ScopeSelectionTopology | None = None,
 ) -> MeshSelectionTopology:
     """Build exact native or deterministically inferred mesh selection groups."""
 
     mesh = model.mesh
-    dimension = _mesh_topological_dimension(mesh)
+    dimension = (
+        scope_topology.preview.topological_dimension
+        if scope_topology is not None
+        else _mesh_topological_dimension(mesh)
+    )
     node_owners, element_owners, part_elements = _mesh_part_ownership(
         model,
         dimension,
+        scope_topology=scope_topology,
     )
     metadata = getattr(model, "metadata", None)
     catalog = (
@@ -159,7 +165,11 @@ def build_mesh_selection_topology(
         if isinstance(metadata, Mapping)
         else None
     )
-    if isinstance(catalog, Mapping) and catalog:
+    if scope_topology is not None:
+        edge_groups, face_groups = _scope_mesh_topology_groups(
+            scope_topology
+        )
+    elif isinstance(catalog, Mapping) and catalog:
         edge_groups, face_groups = _native_mesh_topology_groups(
             catalog,
             dimension,
@@ -203,6 +213,8 @@ def _mesh_topological_dimension(mesh: Any) -> int:
 def _mesh_part_ownership(
     model: Any,
     dimension: int,
+    *,
+    scope_topology: ScopeSelectionTopology | None = None,
 ) -> tuple[
     dict[int, str],
     dict[int, str],
@@ -261,12 +273,21 @@ def _mesh_part_ownership(
             )
 
     elements = tuple(sorted(mesh.elements, key=lambda item: int(item.id)))
-    groups = _connected_mesh_element_groups(mesh, elements, dimension)
+    groups = _scope_planar_element_groups(
+        elements,
+        scope_topology,
+    )
+    if groups is None:
+        connected = _connected_mesh_element_groups(mesh, elements, dimension)
+        groups = tuple(
+            tuple(elements[index] for index in group)
+            for group in connected
+        )
     element_owners: dict[int, str] = {}
     part_elements: dict[str, tuple[MeshEntityRef, ...]] = {}
     for part_number, group in enumerate(groups, start=1):
         part_id = f"P{part_number}"
-        element_ids = tuple(int(elements[index].id) for index in group)
+        element_ids = tuple(int(element.id) for element in group)
         element_owners.update(
             (element_id, part_id) for element_id in element_ids
         )
@@ -287,6 +308,67 @@ def _mesh_part_ownership(
         for node in mesh.nodes:
             node_owners.setdefault(int(node.id), default_owner)
     return node_owners, element_owners, part_elements
+
+
+def _scope_planar_element_groups(
+    elements: tuple[Any, ...],
+    scope_topology: ScopeSelectionTopology | None,
+) -> tuple[tuple[Any, ...], ...] | None:
+    """Reuse inferred planar domains as imported Part connectivity groups."""
+
+    if (
+        scope_topology is None
+        or scope_topology.preview.topological_dimension != 2
+    ):
+        return None
+    element_by_id = {int(element.id): element for element in elements}
+    groups = tuple(
+        tuple(
+            element_by_id[int(reference.element_id)]
+            for reference in references
+            if reference.kind == "element"
+            and reference.element_id is not None
+            and int(reference.element_id) in element_by_id
+        )
+        for logical, references in scope_topology.mesh_references.items()
+        if logical.kind == "face"
+    )
+    groups = tuple(group for group in groups if group)
+    grouped_element_ids = tuple(
+        int(element.id)
+        for group in groups
+        for element in group
+    )
+    if (
+        set(grouped_element_ids) != set(element_by_id)
+        or len(grouped_element_ids) != len(element_by_id)
+    ):
+        return None
+    return tuple(
+        sorted(
+            groups,
+            key=lambda group: min(int(element.id) for element in group),
+        )
+    )
+
+
+def _scope_mesh_topology_groups(
+    scope_topology: ScopeSelectionTopology,
+) -> tuple[
+    tuple[tuple[MeshEntityRef, ...], ...],
+    tuple[tuple[MeshEntityRef, ...], ...],
+]:
+    """Derive mesh edge/face expansion groups from one shared scope scan."""
+
+    return tuple(
+        tuple(references)
+        for logical, references in scope_topology.mesh_references.items()
+        if logical.kind == "edge" and references
+    ), tuple(
+        tuple(references)
+        for logical, references in scope_topology.mesh_references.items()
+        if logical.kind == "face" and references
+    )
 
 
 def _connected_mesh_element_groups(

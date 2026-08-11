@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import fem.materials.assignment as assignment_module
 from fem.io.inp import read
 from fem import materials
 from fem.core.model import (
@@ -326,6 +327,36 @@ def test_resolution_preserves_order_last_match_and_uncovered_facts() -> None:
     assert model.mesh.elements[0].props == before.mesh.elements[0].props
     assert model.mesh.elements[1].props == before.mesh.elements[1].props
     assert model.metadata == before.metadata
+
+
+def test_resolution_reuses_identical_property_combinations(monkeypatch) -> None:
+    elements = tuple(_element(index, "Tet4") for index in range(1, 5))
+    model = _model(*elements)
+    model.materials["steel"] = MaterialDefinition(
+        "steel",
+        {"E": 210.0, "nu": 0.3},
+    )
+    model.element_sets["ALL"] = ElementSet("ALL", (1, 2, 3, 4))
+    model.sections = [SectionAssignment("ALL", "steel", "solid")]
+    original = assignment_module.resolve_section_properties
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        assignment_module,
+        "resolve_section_properties",
+        counted,
+    )
+
+    resolution = materials.resolve_sections(model)
+
+    assert resolution.passed
+    assert len(resolution.effective_assignments) == 4
+    assert calls == 1
 
 
 def test_resolution_aggregates_missing_and_incompatible_information() -> None:

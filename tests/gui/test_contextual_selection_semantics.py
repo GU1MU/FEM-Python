@@ -15,6 +15,7 @@ from fem.application.native_scope_materialization import (
 )
 from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.core.model import FEMModel
+import fem_gui.scope_selection as scope_selection_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.scope_selection import build_mesh_selection_topology
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -77,6 +78,125 @@ def test_imported_mesh_topology_has_stable_parts_and_whole_edges() -> None:
         and {reference.part_id for reference in group} == {"P1"}
     )
     assert first.expand("edge", whole_edge[-1]) == whole_edge
+
+
+def test_mesh_modules_defer_and_share_imported_topology_inference(
+    monkeypatch,
+) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("lazy-selection-topology.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._scope_selection_topology_cache = None
+    window._mesh_selection_topology_cache = None
+    calls = []
+    original = scope_selection_module._inferred_scope_selection_topology
+
+    def record_inference(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        scope_selection_module,
+        "_inferred_scope_selection_topology",
+        record_inference,
+    )
+
+    for module_name in ("网格", "模型", "分析"):
+        window.ribbon.set_current(module_name)
+
+    assert calls == []
+    assert window._scope_selection_topology_cache is None
+    assert window._mesh_selection_topology_cache is None
+
+    window._set_selection_filter("edge")
+
+    assert calls == [True]
+    assert window._scope_selection_topology_cache is not None
+    assert window._mesh_selection_topology_cache is not None
+    window._scope_selection_topology()
+    assert calls == [True]
+    window.close()
+
+
+def test_large_mesh_topology_is_prepared_before_enabling_edge_picks(
+    monkeypatch,
+) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("background-selection-topology.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window.scope_background_reference_threshold = 0
+    window._scope_selection_topology_cache = None
+    window._mesh_selection_topology_cache = None
+    task = {}
+
+    def capture_task(
+        workload,
+        on_success,
+        error_title,
+        on_failure=None,
+        **options,
+    ):
+        task.update(
+            workload=workload,
+            on_success=on_success,
+            error_title=error_title,
+            on_failure=on_failure,
+            **options,
+        )
+        return True
+
+    monkeypatch.setattr(window, "_start_task", capture_task)
+
+    window._set_selection_filter("edge")
+
+    assert task["task_name"] == "准备网格选择拓扑"
+    assert window._scope_selection_topology_cache is None
+    assert window._mesh_selection_topology_cache is None
+    assert window.viewport._selection_mode != "mesh_edge"
+
+    class ImmediateContext:
+        def report(self, _message):
+            return None
+
+        def checkpoint(self):
+            return None
+
+    payload = task["workload"](ImmediateContext())
+    outcome = task["apply_result"](payload)
+    task["on_success"](outcome.projection_value)
+
+    assert window._scope_selection_topology_cache is not None
+    assert window._mesh_selection_topology_cache is not None
+    assert window.viewport._selection_mode == "mesh_edge"
+    window.close()
+
+
+def test_analysis_node_selection_does_not_materialize_scope_topology() -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("node-selection-topology.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._scope_selection_topology_cache = None
+    window._mesh_selection_topology_cache = None
+
+    window._request_analysis_geometry_selection("load", "node")
+
+    assert window._scope_selection_topology_cache is None
+    assert window._mesh_selection_topology_cache is None
+    assert window._temporary_selection_owner == "analysis_scope"
+    assert window.viewport._selection_mode == "mesh_node"
+    window.close()
 
 
 def test_native_mesh_topology_uses_exact_catalog_and_numeric_part_order() -> None:

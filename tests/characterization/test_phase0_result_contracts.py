@@ -481,10 +481,10 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     )
     assert descriptors[GuiActionKey.SAVE_RESULT].text == "保存结果"
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
-    assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "reload"
+    assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "save_result"
     assert descriptors[GuiActionKey.OPEN_RESULT].text == "打开结果"
     assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
-    assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "close"
+    assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "open_result"
 
     snapshot = ModelSession().snapshot()
     states = {

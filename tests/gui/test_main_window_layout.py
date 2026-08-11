@@ -556,16 +556,39 @@ def test_analysis_page_uses_compact_workflow_groups():
     window.close()
 
 
-def test_standard_views_use_coordinate_plane_names():
+def test_standard_views_use_abaqus_names():
     _application()
     window = FEMMainWindow()
-    assert window.actions["top"].text() == "XY 视图"
-    assert window.actions["bottom"].text() == "YX 视图"
-    assert window.actions["front"].text() == "XZ 视图"
-    assert window.actions["back"].text() == "ZX 视图"
-    assert window.actions["left"].text() == "YZ 视图"
-    assert window.actions["right"].text() == "ZY 视图"
-    assert window.actions["iso"].text() == "XYZ 轴测视图"
+    assert window.actions["front"].text() == "前视图"
+    assert window.actions["back"].text() == "后视图"
+    assert window.actions["top"].text() == "俯视图"
+    assert window.actions["bottom"].text() == "仰视图"
+    assert window.actions["left"].text() == "左视图"
+    assert window.actions["right"].text() == "右视图"
+    assert window.actions["iso"].text() == "轴测视图"
+    window.close()
+
+
+def test_viewport_toolbar_keeps_isometric_view_first():
+    _application()
+    window = FEMMainWindow()
+    standard_views = {"front", "back", "top", "bottom", "left", "right", "iso"}
+    toolbar_views = [
+        action.objectName().removeprefix("action_")
+        for action in window.viewport_panel.toolbar.actions()
+        if action.objectName().removeprefix("action_") in standard_views
+    ]
+    assert toolbar_views == ["iso", "top", "front"]
+    more_views = window.viewport_panel.toolbar.findChild(
+        QToolButton,
+        "viewportMoreViews",
+    )
+    assert more_views is not None
+    assert more_views.menu() is not None
+    assert [
+        action.objectName().removeprefix("action_")
+        for action in more_views.menu().actions()
+    ] == ["bottom", "back", "left", "right"]
     window.close()
 
 
