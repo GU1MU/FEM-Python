@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import math
-from operator import attrgetter
 from typing import Any
 
 import numpy as np
@@ -393,11 +392,10 @@ def _stress_extrema(
     element_ids = _query_element_ids(result.model, query.element_set)
     type_keys = dispatch.resolve_type_keys(result.model.mesh, None)
     if type_keys == ("beam2",):
-        if element_ids is not None:
-            raise ValueError("Beam2 stress queries do not support element_set filtering")
         values = _beam_stress_values(
             result,
             query.measure,
+            element_ids,
             recovery_cache=recovery_cache,
         )
     else:
@@ -484,29 +482,37 @@ def _continuum_stress_values(
 def _beam_stress_values(
     result: Any,
     measure: str | None,
+    element_ids: set[int] | None,
     *,
     recovery_cache: dict[str, Any],
-) -> list[tuple[float, int, int | None]]:
+) -> list[tuple[float, int | None, int]]:
     canonical = _canonical_stress_measure(measure)
-    rows = recovery_cache.get("beam_nodal_envelope")
-    if rows is None:
-        rows = beam.nodal_envelope(result)
-        recovery_cache["beam_nodal_envelope"] = rows
-    if canonical in {"von_mises", "axial_stress_abs_max"}:
-        selector = attrgetter("absolute_maximum")
-    elif canonical == "axial_stress_max":
-        selector = attrgetter("maximum")
-    elif canonical == "axial_stress_min":
-        selector = attrgetter("minimum")
-    else:
+    recovery = recovery_cache.get("beam_integration_point_stress")
+    if recovery is None:
+        recovery = beam.recover_integration_point_stress(result)
+        recovery_cache["beam_integration_point_stress"] = recovery
+    selectors = {
+        "von_mises": lambda row: row.mises,
+        "s11": lambda row: row.s11,
+        "s12": lambda row: row.s12,
+        "max_principal": lambda row: row.max_principal,
+        "min_principal": lambda row: row.min_principal,
+        "axial_stress_max": lambda row: row.s11,
+        "axial_stress_min": lambda row: row.s11,
+        "axial_stress_abs_max": lambda row: abs(row.s11),
+    }
+    selector = selectors.get(canonical)
+    if selector is None:
         raise ValueError(
             f"stress measure {measure!r} is unsupported for Beam2; available "
-            "measures: von_mises, axial_stress_max, axial_stress_min, "
-            "axial_stress_abs_max"
+            "measures: von_mises, s11, s12, max_principal, min_principal, "
+            "axial_stress_max, axial_stress_min, axial_stress_abs_max"
         )
     return [
-        (float(selector(row)), int(row.node_id), None)
-        for row in rows
+        (float(selector(row)), None, int(row.element_id))
+        for field in recovery.section_points
+        for row in field.rows
+        if element_ids is None or row.element_id in element_ids
     ]
 
 

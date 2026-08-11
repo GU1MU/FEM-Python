@@ -11,7 +11,7 @@ from fem.elements import (
     get_element_kernel,
     resolve_beam_frame,
 )
-from fem.elements.beam_section import axial_stress_extrema, parse_beam2_section
+from fem.elements.beam_section import parse_beam2_section
 from fem.post.stress import beam as beam_stress
 
 
@@ -226,38 +226,6 @@ def test_beam2_square_section_torsion_matches_abaqus_default_rect_coefficient():
 def test_beam2_standard_sections_reject_invalid_contracts(props, message):
     with pytest.raises((KeyError, ValueError), match=message):
         parse_beam2_section(props)
-
-
-@pytest.mark.parametrize(
-    ("props", "forces", "expected"),
-    [
-        (
-            {"section_type": "solid_circle", "radius": 2.0},
-            (10.0, 3.0, 4.0),
-            (5.0 / np.pi, 0.0, 5.0 / np.pi),
-        ),
-        (
-            {
-                "section_type": "hollow_circle",
-                "outer_radius": 2.0,
-                "inner_radius": 1.0,
-            },
-            (6.0 * np.pi, 45.0 * np.pi / 4.0, 15.0 * np.pi),
-            (12.0, -8.0, 12.0),
-        ),
-        (
-            {"section_type": "rectangle", "height": 4.0, "width": 2.0},
-            (16.0, 32.0 / 3.0, 8.0 / 3.0),
-            (5.0, -1.0, 5.0),
-        ),
-    ],
-)
-def test_beam2_section_axial_stress_extrema_include_axial_and_biaxial_bending(
-    props, forces, expected
-):
-    section = parse_beam2_section(props)
-
-    assert axial_stress_extrema(section, *forces) == pytest.approx(expected)
 
 
 def _beam_result(mesh, U, step=None):

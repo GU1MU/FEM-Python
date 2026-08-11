@@ -7,7 +7,7 @@ from pathlib import Path
 from fem.elements.beam_section import (
     BeamIntegrationPointForces,
     parse_beam2_section,
-    recover_integration_point_s11,
+    recover_integration_point_stress,
 )
 
 
@@ -119,7 +119,7 @@ def main():
                 for row in oracle["steps"][step]["rows"]
                 if row["section"] == profile
             ]
-            actual_rows = recover_integration_point_s11(
+            actual_rows = recover_integration_point_stress(
                 section,
                 BeamIntegrationPointForces(
                     0.0, 0.0, 0.0, torque, 0.0, 0.0
@@ -177,7 +177,7 @@ def main():
             for row in t_rows
             if row["element_id"] == element_id
         )
-        actual = recover_integration_point_s11(
+        actual = recover_integration_point_stress(
             parse_beam2_section(
                 {
                     "section_type": "rectangle",
@@ -196,7 +196,7 @@ def main():
             for row in holdout["rows"]
             if row["aspect_ratio"] == ratio
         )
-        actual = recover_integration_point_s11(
+        actual = recover_integration_point_stress(
             parse_beam2_section(
                 {
                     "section_type": "rectangle",

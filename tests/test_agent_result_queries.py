@@ -252,14 +252,14 @@ def test_beam_stress_queries_reuse_one_canonical_recovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = make_beam_field_characterization_result()
-    original = beam.nodal_envelope
+    original = beam.recover_integration_point_stress
     calls: list[object] = []
 
     def counted(value):
         calls.append(value)
         return original(value)
 
-    monkeypatch.setattr(beam, "nodal_envelope", counted)
+    monkeypatch.setattr(beam, "recover_integration_point_stress", counted)
 
     summary = query_results(
         result,

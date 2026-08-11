@@ -1108,12 +1108,15 @@ def _build_import_notices(
             message=(
                 "The supported Abaqus B31 input subset maps to the solver's "
                 "linear, small-deformation, static Timoshenko Beam2 "
-                "formulation, including transverse shear deformation. This "
-                "does not claim full Abaqus B31 numerical equivalence: "
-                "nonlinear and dynamic or mass behavior, Abaqus "
-                "element-length slenderness compensation, user-defined "
-                "transverse shear stiffness, warping or a seventh degree of "
-                "freedom, and PIPE or arbitrary sections remain unsupported."
+                "formulation, including transverse shear deformation, "
+                "element-length slenderness compensation, deterministic "
+                "orientation, and integration-point resultants and point "
+                "stress for RECT, CIRC, and THICK PIPE sections. Remaining "
+                "unsupported boundaries are nonlinear, dynamic, and mass "
+                "behavior; B31H; user-defined transverse shear stiffness; "
+                "warping or a seventh degree of freedom; thin-wall PIPE and "
+                "arbitrary sections; follower or nonuniform line loads; and "
+                "curved elements."
             ),
             locations=tuple(locations),
         ),

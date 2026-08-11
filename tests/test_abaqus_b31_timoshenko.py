@@ -41,15 +41,20 @@ def test_inline_b31_reports_linear_timoshenko_support_boundary(tmp_path) -> None
     assert "static" in message
     assert "timoshenko" in message
     assert "transverse shear deformation" in message
+    assert "element-length slenderness compensation" in message
+    assert "integration-point" in message
+    assert "rect, circ, and thick pipe" in message
     assert "euler" not in message
     assert "bernoulli" not in message
     for unsupported_boundary in (
         "nonlinear",
         "dynamic",
-        "slenderness compensation",
+        "b31h",
         "user-defined transverse shear stiffness",
         "seventh degree of freedom",
-        "pipe",
+        "thin-wall pipe",
         "arbitrary sections",
+        "nonuniform line loads",
+        "curved elements",
     ):
         assert unsupported_boundary in message

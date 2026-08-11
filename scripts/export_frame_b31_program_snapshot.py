@@ -25,7 +25,7 @@ from fem.application.results import (
 )
 from fem.elements.beam_section import parse_beam2_section
 from fem.io import inp
-from fem.post.stress.beam import recover_integration_point_s11
+from fem.post.stress.beam import recover_integration_point_stress
 from fem.solvers import static_linear
 
 
@@ -123,7 +123,7 @@ def build_snapshot(
             }
         )
 
-    recovery = recover_integration_point_s11(result)
+    recovery = recover_integration_point_stress(result)
     element_lookup = {int(element.id): element for element in mesh.elements}
     section_by_element = {
         element_id: parse_beam2_section(element.props)

@@ -25,7 +25,7 @@ from fem.elements import (
     get_element_kernel,
     resolve_beam_frame,
 )
-from fem.post.stress.beam import recover_section_end_stress
+from fem.post.stress.beam import recover_integration_point_stress
 from fem.solvers import static_linear
 
 
@@ -150,12 +150,21 @@ def test_constant_field_preserves_stiffness_load_solution_and_stress() -> None:
     np.testing.assert_array_equal(legacy_result.U, contract_result.U)
     np.testing.assert_array_equal(legacy_result.reactions, contract_result.reactions)
 
-    legacy_stress = recover_section_end_stress(legacy_result)
-    contract_stress = recover_section_end_stress(contract_result)
+    legacy_stress = recover_integration_point_stress(legacy_result)
+    contract_stress = recover_integration_point_stress(contract_result)
     np.testing.assert_array_equal(
-        [row.values() for row in legacy_stress.rows],
-        [row.values() for row in contract_stress.rows],
+        [row.values() for row in legacy_stress.section_forces.rows],
+        [row.values() for row in contract_stress.section_forces.rows],
     )
+    for legacy_field, contract_field in zip(
+        legacy_stress.section_points,
+        contract_stress.section_points,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(
+            [row.values() for row in legacy_field.rows],
+            [row.values() for row in contract_field.rows],
+        )
 
 
 def test_public_report_keeps_element_field_and_uses_its_endpoint_frames() -> None:
@@ -382,7 +391,7 @@ def test_kink_and_branch_assemblies_keep_independent_end_frames() -> None:
     assert np.all(np.isfinite(result.U))
 
 
-def test_local_p1_p2_loads_and_section_recovery_share_field_effective_load() -> None:
+def test_local_p1_p2_loads_and_internal_end_actions_share_effective_frame() -> None:
     field = _twisted_field()
     mesh = _beam_mesh(field=field)
     elem = mesh.elements[0]
@@ -424,23 +433,18 @@ def test_local_p1_p2_loads_and_section_recovery_share_field_effective_load() -> 
         np.zeros(mesh.num_dofs),
         np.zeros(mesh.num_dofs),
     )
-    recovered = recover_section_end_stress(result)
-    expected_actions = kernel.local_end_actions(
+    start, end = kernel.local_section_end_actions(
         mesh,
         elem,
         result.U,
         p1 + p2,
     )
-    np.testing.assert_allclose(
-        [
-            (row.axial_force, row.moment_y, row.moment_z)
-            for row in recovered.rows
-        ],
-        expected_actions,
-        rtol=1.0e-10,
-        atol=1.0e-10,
+    assert (start.N, start.T, start.My, start.Mz) == pytest.approx((0.0,) * 4)
+    assert (end.N, end.T, end.My, end.Mz) == pytest.approx((0.0,) * 4)
+    assert all(
+        np.isfinite(value) and value != 0.0
+        for value in (start.Vy, start.Vz, end.Vy, end.Vz)
     )
-    assert all(np.isfinite(row.s11_abs_max) for row in recovered.rows)
 
 
 def test_invalid_field_is_rejected_before_kernel_and_session_install() -> None:

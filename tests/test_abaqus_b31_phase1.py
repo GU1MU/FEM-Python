@@ -338,9 +338,3 @@ def test_rotated_and_reversed_connectivity_stiffness_is_covariant() -> None:
         rtol=1.0e-10,
         atol=np.max(np.abs(stiffness)) * 1.0e-12,
     )
-
-
-def test_old_exact_static_bending_interpolation_is_not_production_api() -> None:
-    from fem.elements import line
-
-    assert not hasattr(line, "_beam2_bending_interpolation")

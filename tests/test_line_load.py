@@ -247,7 +247,7 @@ def test_beam_gravity_uses_rho_area_then_the_b31_line_load_path():
     )
 
 
-def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
+def test_inclined_global_line_loads_do_not_enter_constitutive_stress_without_strain():
     model = _beam_model(
         inclined=True,
         orientation=(0.0, 1.0, 0.0),
@@ -255,7 +255,6 @@ def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     mesh = model.mesh
     elem = mesh.elements[0]
     frame = resolve_beam_frame(mesh, elem)
-    length = frame.length
     rotation = frame.rotation
     first_local = np.array([2.0, 3.0, 4.0])
     second_local = np.array([-1.0, 2.0, -2.0])
@@ -292,15 +291,7 @@ def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     ]
     assert np.allclose(multi_values, local_values)
 
-    section = parse_beam2_section(elem.props)
-    qx = combined_local[0]
-    axial = qx * length / (2.0 * section.area)
-    increment = 0.0
-    expected = [
-        (axial + increment, axial - increment, axial + increment),
-        (-axial + increment, -axial - increment, axial + increment),
-    ]
-    assert np.allclose(multi_values, expected)
+    assert np.allclose(multi_values, np.zeros((2, 3)))
 
 
 def test_line_load_preserves_global_resultant_and_moment_about_arbitrary_origin():
@@ -391,7 +382,7 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
 
     result = static_linear.solve(model, step)
 
-    end_actions = get_element_kernel("Beam2").local_end_actions(
+    end_action_rows = get_element_kernel("Beam2").local_section_end_actions(
         mesh,
         elem,
         result.U,
@@ -399,7 +390,7 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
     moment_y = -force_z * length
     moment_z = force_y * length
     assert np.allclose(
-        end_actions,
+        [(row.N, row.My, row.Mz) for row in end_action_rows],
         [
             (axial_force, moment_y, moment_z),
             (axial_force, 0.0, 0.0),
@@ -410,8 +401,8 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
     section = parse_beam2_section(elem.props)
     axial_stress = axial_force / section.area
     increment = (
-        abs(moment_y / section.Iyy) * section.height / 2.0
-        + abs(moment_z / section.Izz) * section.width / 2.0
+        abs(0.5 * moment_y / section.Iyy) * section.height / 2.0
+        + abs(0.5 * moment_z / section.Izz) * section.width / 2.0
     )
     rows = beam_stress.nodal_envelope(result)
     recovered = [
@@ -425,13 +416,17 @@ def test_inclined_cantilever_solution_recovers_combined_axial_and_biaxial_bendin
                 axial_stress - increment,
                 axial_stress + increment,
             ),
-            (axial_stress, axial_stress, axial_stress),
+            (
+                axial_stress + increment,
+                axial_stress - increment,
+                axial_stress + increment,
+            ),
         ],
         atol=1e-10,
     )
 
 
-def test_explicit_orientation_local_end_actions_follow_reversal_convention():
+def test_explicit_orientation_section_end_actions_follow_reversal_convention():
     model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
     reversed_model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
     reversed_model.mesh.elements[0].node_ids = [2, 1]
@@ -453,19 +448,23 @@ def test_explicit_orientation_local_end_actions_follow_reversal_convention():
         "local",
     )
 
-    actions = kernel.local_end_actions(
+    action_rows = kernel.local_section_end_actions(
         model.mesh,
         model.mesh.elements[0],
         displacement,
         local_load,
     )
-    reversed_actions = kernel.local_end_actions(
+    reversed_action_rows = kernel.local_section_end_actions(
         reversed_model.mesh,
         reversed_model.mesh.elements[0],
         displacement,
         reversed_local_load,
     )
 
+    actions = np.asarray([(row.N, row.My, row.Mz) for row in action_rows])
+    reversed_actions = np.asarray(
+        [(row.N, row.My, row.Mz) for row in reversed_action_rows]
+    )
     assert reversed_actions == pytest.approx(
         actions[::-1] * action_component_reversal,
         abs=1e-12,

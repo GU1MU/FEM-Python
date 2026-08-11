@@ -45,13 +45,13 @@ def _executed_provider(monkeypatch: pytest.MonkeyPatch | None = None):
     )
     calls: list[object] = []
     if monkeypatch is not None:
-        original = beam.recover_integration_point_s11
+        original = beam.recover_integration_point_stress
 
         def counted(result, *, checkpoint=None):
             calls.append(result)
             return original(result, checkpoint=checkpoint)
 
-        monkeypatch.setattr(beam, "recover_integration_point_s11", counted)
+        monkeypatch.setattr(beam, "recover_integration_point_stress", counted)
     outcome = execute_output_requests(
         provider,
         (OutputRequest("field", "element", ("S",)),),

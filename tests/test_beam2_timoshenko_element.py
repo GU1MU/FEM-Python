@@ -189,7 +189,7 @@ def test_uniform_line_load_preserves_balance_and_b31_discrete_response() -> None
         local_load[6:],
     )
     reaction = kernel.stiffness(mesh, element) @ displacement - local_load
-    start_forces, end_forces = kernel.local_section_end_forces(
+    start_forces, end_forces = kernel.local_section_end_actions(
         mesh,
         element,
         displacement,

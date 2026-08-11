@@ -29,7 +29,7 @@ from fem.core.model import (
 from fem.elements.beam_section import (
     BeamIntegrationPointForces,
     parse_beam2_section,
-    recover_integration_point_s11,
+    recover_integration_point_stress,
 )
 from fem.io.result_csv import dumps_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
@@ -84,7 +84,7 @@ def test_positive_and_negative_torsion_match_abaqus_2023_section_points(
     section = parse_beam2_section(properties)
 
     for sign in (1.0, -1.0):
-        stresses = recover_integration_point_s11(
+        stresses = recover_integration_point_stress(
             section,
             BeamIntegrationPointForces(0.0, 0.0, 0.0, sign * 500.0, 0.0, 0.0),
         )
@@ -112,7 +112,7 @@ def test_transverse_section_forces_follow_abaqus_missing_point_stress_semantics(
     shear_y: float,
     shear_z: float,
 ) -> None:
-    stresses = recover_integration_point_s11(
+    stresses = recover_integration_point_stress(
         parse_beam2_section(properties),
         BeamIntegrationPointForces(0.0, 0.0, 0.0, 0.0, shear_y, shear_z),
     )
@@ -126,7 +126,7 @@ def test_invariants_are_recomputed_from_each_same_point_tensor() -> None:
     section = parse_beam2_section(
         {"section_type": "rectangle", "width": 0.2, "height": 0.4}
     )
-    stresses = recover_integration_point_s11(
+    stresses = recover_integration_point_stress(
         section,
         BeamIntegrationPointForces(700.0, 120.0, -80.0, 500.0, 1000.0, -1500.0),
     )
@@ -174,7 +174,7 @@ def test_no_shear_cases_preserve_exact_uniaxial_invariants(
     moment_y: float,
     moment_z: float,
 ) -> None:
-    stresses = recover_integration_point_s11(
+    stresses = recover_integration_point_stress(
         parse_beam2_section(
             {"section_type": "rectangle", "width": 0.2, "height": 0.4}
         ),
@@ -208,7 +208,7 @@ def test_default_rect_5x5_corner_owner_matches_frozen_aspect_ratio_matrix() -> N
     )
 
     for aspect_ratio, expected in oracle:
-        stresses = recover_integration_point_s11(
+        stresses = recover_integration_point_stress(
             parse_beam2_section(
                 {
                     "section_type": "rectangle",

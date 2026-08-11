@@ -43,15 +43,11 @@ from fem.elements import (
     BeamFrameField,
     get_element_kernel,
 )
-from fem.elements.beam_section import (
-    axial_stress_extrema,
-    parse_beam2_section,
-)
 from fem.io import load_result_archive, save_result_archive
 from fem.io.result_csv import dumps_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.post.stress import beam as beam_stress
-from fem.post.stress.beam import recover_integration_point_s11
+from fem.post.stress.beam import recover_integration_point_stress
 from fem.solvers import static_linear
 from fem_gui.result_presentation import (
     result_provider_section_point_labels,
@@ -558,7 +554,7 @@ def test_sf_sm_and_s_share_one_constitutive_recovery(
         ),
         result,
     )
-    original = beam_stress.recover_integration_point_s11
+    original = beam_stress.recover_integration_point_stress
     calls = 0
 
     def counted(*args, **kwargs):
@@ -568,7 +564,7 @@ def test_sf_sm_and_s_share_one_constitutive_recovery(
 
     monkeypatch.setattr(
         beam_stress,
-        "recover_integration_point_s11",
+        "recover_integration_point_stress",
         counted,
     )
     outcome = execute_output_requests(
@@ -596,26 +592,26 @@ def _best_batch_time(action, *, repeats: int) -> float:
     return best
 
 
-def _legacy_three_component_workload(result) -> float:
+def _section_resultant_workload(result) -> float:
     mesh = result.model.mesh
     element = mesh.elements[0]
     kernel = get_element_kernel("Beam2")
-    end_actions = kernel.local_end_actions(mesh, element, result.U)
-    section = parse_beam2_section(element.props)
-    values = tuple(
-        axial_stress_extrema(
-            section,
-            float(axial_force),
-            float(moment_y),
-            float(moment_z),
+    forces = kernel.local_integration_point_forces(mesh, element, result.U)
+    return sum(
+        abs(value)
+        for value in (
+            forces.N,
+            forces.Vy,
+            forces.Vz,
+            forces.T,
+            forces.My,
+            forces.Mz,
         )
-        for axial_force, moment_y, moment_z in end_actions
     )
-    return sum(abs(component) for row in values for component in row)
 
 
 def _four_point_workload(result) -> float:
-    recovered = recover_integration_point_s11(result)
+    recovered = recover_integration_point_stress(result)
     point_values = sum(
         abs(component)
         for field in recovered.section_points
@@ -655,11 +651,11 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     stress_fields = _stress_fields(provider)
 
     value_bytes = sum(field.values.nbytes for field in stress_fields)
-    legacy_three_component_bytes = 2 * 3 * np.dtype(float).itemsize
-    byte_ratio = value_bytes / legacy_three_component_bytes
+    section_resultant_bytes = 6 * np.dtype(float).itemsize
+    byte_ratio = value_bytes / section_resultant_bytes
 
-    legacy_three_component_seconds = _best_batch_time(
-        lambda: _legacy_three_component_workload(result),
+    section_resultant_seconds = _best_batch_time(
+        lambda: _section_resultant_workload(result),
         repeats=30,
     )
     four_point_materialization_seconds = _best_batch_time(
@@ -672,7 +668,7 @@ def test_four_point_data_and_operation_budgets_are_bounded(
         for field in stress_fields
         if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
     )
-    legacy_switch_seconds = _best_batch_time(
+    base_switch_seconds = _best_batch_time(
         lambda: _export_switch_checksum(
             prepare_result_export_snapshot(
                 provider.snapshot,
@@ -698,17 +694,17 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     )
 
     metrics = {
-        "legacy_section_value_bytes": legacy_three_component_bytes,
+        "section_resultant_value_bytes": section_resultant_bytes,
         "four_point_section_value_bytes": value_bytes,
         "four_point_value_byte_ratio": byte_ratio,
-        "legacy_three_component_materialization_seconds_30": (
-            legacy_three_component_seconds
+        "section_resultant_materialization_seconds_30": (
+            section_resultant_seconds
         ),
         "four_point_materialization_seconds_30": (four_point_materialization_seconds),
         "four_point_materialization_time_ratio": (
-            four_point_materialization_seconds / legacy_three_component_seconds
+            four_point_materialization_seconds / section_resultant_seconds
         ),
-        "legacy_switch_seconds_1200": legacy_switch_seconds,
+        "base_switch_seconds_1200": base_switch_seconds,
         "four_point_switch_seconds_1200": four_point_switch_seconds,
     }
     request.node.user_properties.extend(metrics.items())
@@ -716,11 +712,11 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     assert value_bytes == 4 * len(_POINT_COLUMNS) * np.dtype(float).itemsize
     assert byte_ratio <= 10.0
     assert four_point_materialization_seconds <= max(
-        12.0 * legacy_three_component_seconds,
+        12.0 * section_resultant_seconds,
         0.5,
     )
     assert four_point_switch_seconds <= max(
-        10.0 * legacy_switch_seconds,
+        10.0 * base_switch_seconds,
         0.25,
     )
     assert four_point_materialization_seconds < 2.0

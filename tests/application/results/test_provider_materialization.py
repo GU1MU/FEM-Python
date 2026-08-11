@@ -707,7 +707,7 @@ def test_beam_one_integration_recovery_materializes_requested_section_points(
         FieldPosition.INTEGRATION_POINT,
         section_point_number=4,
     )
-    original = _materializers.beam.recover_integration_point_s11
+    original = _materializers.beam.recover_integration_point_stress
     calls = []
 
     def counted_recover(result, *, checkpoint=None):
@@ -716,7 +716,7 @@ def test_beam_one_integration_recovery_materializes_requested_section_points(
 
     monkeypatch.setattr(
         _materializers.beam,
-        "recover_integration_point_s11",
+        "recover_integration_point_stress",
         counted_recover,
     )
 

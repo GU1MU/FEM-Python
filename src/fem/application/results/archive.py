@@ -529,6 +529,14 @@ class ResultArchiveSnapshot:
             "step_name": source.step_name,
             "run_id": source.run_id,
         }
+        for name in (
+            "beam_formulation",
+            "beam_result_position",
+            "beam_recovery_contract",
+        ):
+            value = getattr(record.provenance, name)
+            if value is not None:
+                provenance[name] = value
         resolved_run = run or ResultArchiveRun(
             name=getattr(record.result, "name", None) or source.run_id,
             step_name=source.step_name,

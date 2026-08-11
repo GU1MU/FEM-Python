@@ -39,23 +39,6 @@
       ]
     },
     {
-      "id": "post.beam.nodal_envelope",
-      "symbol": "fem.post.stress.beam.nodal_envelope",
-      "visibility": "public",
-      "current_callers": [
-        "src/fem_agent/tools/results.py",
-        "src/fem/post/stress/beam.py"
-      ],
-      "target_batch": "Batch 1",
-      "disposition": "retain_numeric_kernel_and_add_section_end_provenance",
-      "known_divergences": [
-        "the current envelope drops source element and beam-end provenance"
-      ],
-      "golden_tests": [
-        "tests/post/test_beam_recovery.py::test_canonical_node_envelope_omits_isolated_nodes_and_keeps_shared_extrema"
-      ]
-    },
-    {
       "id": "post.stress.canonical_csv",
       "symbol": "fem.post.stress.export.csv",
       "visibility": "public",

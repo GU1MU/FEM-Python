@@ -277,7 +277,7 @@ def test_beam2_direct_nodal_export_requires_result_load_context(tmp_path):
     assert path.exists()
 
 
-def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
+def test_beam2_nodal_stress_csv_does_not_invent_isolated_node_rows(tmp_path):
     mesh = Mesh3D(
         nodes=[
             Node3D(1, 0.0, 0.0, 0.0),
@@ -305,5 +305,8 @@ def test_beam2_nodal_stress_csv_contains_every_mesh_node_once(tmp_path):
     stress_path = tmp_path / "line_result_nodal_stress.csv"
     with stress_path.open(encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
-    assert [int(row["node_id"]) for row in rows] == [1, 2, 3]
-    assert float(rows[2]["axial_stress_abs_max"]) == pytest.approx(0.0)
+    assert [int(row["node_id"]) for row in rows] == [1, 2]
+    assert all(
+        float(row["axial_stress_abs_max"]) == pytest.approx(0.0)
+        for row in rows
+    )

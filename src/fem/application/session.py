@@ -134,6 +134,8 @@ from .runs import (
     ResultRecord,
     RunStatus,
     advance_result_record,
+    archived_b31_result_provenance,
+    b31_result_provenance,
     detached_result_record,
     result_record_provider,
     utc_now,
@@ -1848,6 +1850,7 @@ class ModelSession:
             model_revision=candidate_model_revision,
             step_name=rebound.run.step_name,
             run_id=candidate_run_id,
+            **archived_b31_result_provenance(rebound.origin.provenance),
         )
         record = ResultRecord(
             result_id=candidate_result_id,
@@ -5527,6 +5530,7 @@ class ModelSession:
             model_revision=self._model_revision,
             step_name=str(token.step_name),
             run_id=run.run_id,
+            **b31_result_provenance(bundle.result.model),
         )
         provider = bundle._provider
         record = ResultRecord(

@@ -10,10 +10,9 @@ from fem.elements import (
     BEAM_FRAME_FIELD_KEY,
     BeamFrameField,
     BeamIntegrationPointForces,
-    BeamSectionEndForces,
     get_element_kernel,
 )
-from fem.post.stress.beam import recover_integration_point_s11
+from fem.post.stress.beam import recover_integration_point_stress
 
 
 E = 210.0e9
@@ -75,7 +74,7 @@ def test_b31_single_point_recovers_constitutive_n_my_mz_and_s11(
     mz: float,
 ) -> None:
     result = _prescribed_result(axial=axial, my=my, mz=mz)
-    field = recover_integration_point_s11(result)
+    field = recover_integration_point_stress(result)
 
     assert len(field.section_points) == 4
     assert all(len(point_field.rows) == 1 for point_field in field.section_points)
@@ -110,7 +109,7 @@ def test_b31_single_point_recovers_constitutive_n_my_mz_and_s11(
 
 
 def test_rect_point_one_is_positive_y_positive_z_and_abaqus_point_25() -> None:
-    row = recover_integration_point_s11(
+    row = recover_integration_point_stress(
         _prescribed_result(axial=1.0, my=2.0, mz=3.0)
     ).point_field(1).rows[0]
 
@@ -134,10 +133,10 @@ def test_integration_point_recovery_does_not_consume_section_end_actions(
 
     monkeypatch.setattr(
         type(kernel),
-        "local_section_end_forces",
+        "local_section_end_actions",
         forbidden,
     )
-    recovered = recover_integration_point_s11(result)
+    recovered = recover_integration_point_stress(result)
     forces = kernel.local_integration_point_forces(
         result.model.mesh,
         result.model.mesh.elements[0],
@@ -151,7 +150,6 @@ def test_integration_point_recovery_does_not_consume_section_end_actions(
         for field in recovered.section_points
         for row in field.rows
     )
-    assert type(BeamSectionEndForces(1.0, 2.0, 3.0, 4.0)) is BeamSectionEndForces
 
 
 def test_phase4_test_has_no_product_data_dependency() -> None:

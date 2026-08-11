@@ -298,15 +298,21 @@ def _order_invariance_projection(model):
             element_load.coordinate_system,
             node_lookup,
         )
+        end_actions = kernel.local_section_end_actions(
+            owned.mesh,
+            element,
+            displacement,
+            equivalent_load,
+            node_lookup,
+        )
         recovered.append(
             (
                 int(element.id),
-                kernel.local_end_actions(
-                    owned.mesh,
-                    element,
-                    displacement,
-                    equivalent_load,
-                    node_lookup,
+                np.asarray(
+                    [
+                        (row.N, row.Vy, row.Vz, row.T, row.My, row.Mz)
+                        for row in end_actions
+                    ]
                 ),
             )
         )

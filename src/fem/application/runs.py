@@ -25,6 +25,11 @@ from .results._ownership import (
 from .results.provider import ResultProvider, restore_result_provider
 
 
+B31_BEAM_FORMULATION = "abaqus-b31-linear-timoshenko-v1"
+B31_RESULT_POSITION = "INTEGRATION_POINT"
+B31_RECOVERY_CONTRACT = 4
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -80,6 +85,61 @@ class ResultProvenance:
     model_revision: int
     step_name: str
     run_id: str
+    beam_formulation: str | None = None
+    beam_result_position: str | None = None
+    beam_recovery_contract: int | None = None
+
+    def __post_init__(self) -> None:
+        formulation_values = (
+            self.beam_formulation,
+            self.beam_result_position,
+            self.beam_recovery_contract,
+        )
+        if all(value is None for value in formulation_values):
+            return
+        if any(value is None for value in formulation_values):
+            raise ValueError("Beam result provenance must be complete")
+        if type(self.beam_formulation) is not str or not self.beam_formulation.strip():
+            raise ValueError("beam_formulation must be a nonblank string")
+        if (
+            type(self.beam_result_position) is not str
+            or not self.beam_result_position.strip()
+        ):
+            raise ValueError("beam_result_position must be a nonblank string")
+        if (
+            type(self.beam_recovery_contract) is not int
+            or self.beam_recovery_contract < 1
+        ):
+            raise ValueError("beam_recovery_contract must be a positive integer")
+
+
+def b31_result_provenance(model: object) -> dict[str, object]:
+    """Return the formulation identity for a result containing Beam2."""
+
+    mesh = getattr(model, "mesh", None)
+    elements = getattr(mesh, "elements", ())
+    if not any(str(getattr(element, "type", "")).casefold() == "beam2" for element in elements):
+        return {}
+    return {
+        "beam_formulation": B31_BEAM_FORMULATION,
+        "beam_result_position": B31_RESULT_POSITION,
+        "beam_recovery_contract": B31_RECOVERY_CONTRACT,
+    }
+
+
+def archived_b31_result_provenance(
+    provenance: Mapping[str, object],
+) -> dict[str, object]:
+    """Keep complete B31 archive provenance without relabelling legacy data."""
+
+    keys = (
+        "beam_formulation",
+        "beam_result_position",
+        "beam_recovery_contract",
+    )
+    if not all(key in provenance for key in keys):
+        return {}
+    return {key: provenance[key] for key in keys}
 
 
 @dataclass(frozen=True, slots=True, eq=False)

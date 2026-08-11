@@ -283,7 +283,7 @@ def _materialize_beam(
         raise ValueError("Beam materialization received a non-Beam target")
     check_cancellation(cancellation)
     checkpoint = _checkpoint_for_cancellation(cancellation)
-    integration_point = beam.recover_integration_point_s11(
+    integration_point = beam.recover_integration_point_stress(
         result,
         checkpoint=checkpoint,
     )

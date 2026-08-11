@@ -13,7 +13,7 @@ from .beam_frame import (
 from .beam_section import (
     Beam2Section,
     BeamIntegrationPointForces,
-    BeamSectionEndForces,
+    BeamSectionEndActions,
     parse_beam2_section,
 )
 
@@ -380,30 +380,6 @@ class Beam2Kernel:
         frame = field.as_constant_frame()
         return _beam3_transformation(frame.rotation) @ global_force
 
-    def local_end_actions(
-        self,
-        mesh: Any,
-        elem: Any,
-        U: np.ndarray,
-        equivalent_local_load: np.ndarray | None = None,
-        node_lookup: dict[int, Any] | None = None,
-    ) -> np.ndarray:
-        """Return tension-positive (N, My, Mz) at both Beam2 ends."""
-        section_forces = self.local_section_end_forces(
-            mesh,
-            elem,
-            U,
-            equivalent_local_load,
-            node_lookup,
-        )
-        return np.asarray(
-            [
-                (forces.axial_force, forces.moment_y, forces.moment_z)
-                for forces in section_forces
-            ],
-            dtype=float,
-        )
-
     def local_integration_point_forces(
         self,
         mesh: Any,
@@ -459,14 +435,14 @@ class Beam2Kernel:
             shear_z=generalized[5],
         )
 
-    def local_section_end_forces(
+    def local_section_end_actions(
         self,
         mesh: Any,
         elem: Any,
         U: np.ndarray,
         equivalent_local_load: np.ndarray | None = None,
         node_lookup: dict[int, Any] | None = None,
-    ) -> tuple[BeamSectionEndForces, BeamSectionEndForces]:
+    ) -> tuple[BeamSectionEndActions, BeamSectionEndActions]:
         """Return local ``(N, Vy, Vz, My, Mz, T)`` at both Beam2 ends."""
         E, nu, section = _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
@@ -507,19 +483,19 @@ class Beam2Kernel:
             end_force = field.end.rotation @ action[6:9]
             end_moment = field.end.rotation @ action[9:12]
             return (
-                BeamSectionEndForces(
-                    -start_force[0],
-                    -start_moment[1],
-                    -start_moment[2],
-                    -start_moment[0],
+                BeamSectionEndActions(
+                    axial_force=-start_force[0],
+                    moment_y=-start_moment[1],
+                    moment_z=-start_moment[2],
+                    torque=-start_moment[0],
                     shear_y=-start_force[1],
                     shear_z=-start_force[2],
                 ),
-                BeamSectionEndForces(
-                    end_force[0],
-                    end_moment[1],
-                    end_moment[2],
-                    end_moment[0],
+                BeamSectionEndActions(
+                    axial_force=end_force[0],
+                    moment_y=end_moment[1],
+                    moment_z=end_moment[2],
+                    torque=end_moment[0],
                     shear_y=end_force[1],
                     shear_z=end_force[2],
                 ),
@@ -550,19 +526,19 @@ class Beam2Kernel:
             )
         action = local_stiffness @ local_displacement - local_load
         return (
-            BeamSectionEndForces(
-                -action[0],
-                -action[4],
-                -action[5],
-                -action[3],
+            BeamSectionEndActions(
+                axial_force=-action[0],
+                moment_y=-action[4],
+                moment_z=-action[5],
+                torque=-action[3],
                 shear_y=-action[1],
                 shear_z=-action[2],
             ),
-            BeamSectionEndForces(
-                action[6],
-                action[10],
-                action[11],
-                action[9],
+            BeamSectionEndActions(
+                axial_force=action[6],
+                moment_y=action[10],
+                moment_z=action[11],
+                torque=action[9],
                 shear_y=action[7],
                 shear_z=action[8],
             ),

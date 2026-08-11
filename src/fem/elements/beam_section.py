@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cosh, hypot, isfinite, pi, sqrt
+from math import cosh, isfinite, pi, sqrt
 import operator
 from typing import Any, Mapping
 
@@ -175,20 +175,15 @@ class BeamSectionPoint:
 
 
 @dataclass(frozen=True, slots=True)
-class BeamSectionEndForces:
-    """Tension-positive Beam2 resultants at one element-end section.
-
-    The first four fields retain the historical positional constructor order.
-    Transverse shear resultants are appended so existing
-    ``BeamSectionEndForces(N, My, Mz, T)`` callers remain valid.
-    """
+class BeamSectionEndActions:
+    """Tension-positive internal equilibrium actions at one Beam2 end."""
 
     axial_force: float
     moment_y: float
     moment_z: float
     torque: float
-    shear_y: float = 0.0
-    shear_z: float = 0.0
+    shear_y: float
+    shear_z: float
 
     def __post_init__(self) -> None:
         for name in (
@@ -233,7 +228,7 @@ class BeamSectionEndForces:
 class BeamIntegrationPointForces:
     """B31 constitutive resultants at its sole longitudinal integration point.
 
-    This type is deliberately distinct from :class:`BeamSectionEndForces`:
+    This type is deliberately distinct from :class:`BeamSectionEndActions`:
     integration-point resultants come from ``D @ B @ u`` while end actions
     retain the separate equilibrium definition ``k @ u - f_eq``.
     """
@@ -287,7 +282,7 @@ class BeamIntegrationPointForces:
 
 
 @dataclass(frozen=True, slots=True)
-class BeamSectionPointS11:
+class BeamSectionPointStress:
     """Abaqus B31 stress tensor at one integration-point section coordinate.
 
     Abaqus 2023 publishes ``S11``, ``S22`` and ``S12`` for the supported
@@ -337,55 +332,6 @@ class BeamSectionPointS11:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class BeamSectionPointStress:
-    """Stress components and invariants evaluated at one section point."""
-
-    point: BeamSectionPoint
-    s11: float
-    s22: float
-    s12: float
-    mises: float
-    max_principal: float
-    mid_principal: float
-    min_principal: float
-
-    def values(self) -> dict[str, float]:
-        """Return the canonical point-stress component mapping."""
-
-        return {
-            "S11": self.s11,
-            "S22": self.s22,
-            "S12": self.s12,
-            "Mises": self.mises,
-            "MaxPrincipal": self.max_principal,
-            "MidPrincipal": self.mid_principal,
-            "MinPrincipal": self.min_principal,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class BeamSectionStress:
-    """Point stresses and true-section extrema for one Beam2 section end."""
-
-    forces: BeamSectionEndForces
-    point_stresses: tuple[BeamSectionPointStress, ...]
-    s11_max: float
-    s11_min: float
-    s11_abs_max: float
-    s12_abs_max: float
-
-    def section_values(self) -> dict[str, float]:
-        """Return the canonical section-level stress component mapping."""
-
-        return {
-            "S11Max": self.s11_max,
-            "S11Min": self.s11_min,
-            "S11AbsMax": self.s11_abs_max,
-            "S12AbsMax": self.s12_abs_max,
-        }
-
-
 def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
     """Validate a standard Beam2 section and derive its stiffness properties."""
     if "section_type" not in props:
@@ -431,39 +377,6 @@ def parse_beam2_section(props: Mapping[str, Any]) -> Beam2Section:
     )
 
 
-def axial_stress_extrema(
-    section: Beam2Section,
-    axial_force: float,
-    moment_y: float,
-    moment_z: float,
-) -> tuple[float, float, float]:
-    """Return maximum, minimum, and maximum-absolute longitudinal stress."""
-    forces = (float(axial_force), float(moment_y), float(moment_z))
-    if not all(isfinite(value) for value in forces):
-        raise ValueError("Beam2 axial force and bending moments must be finite")
-    axial = forces[0] / section.area
-    if section.section_type in {"solid_circle", "hollow_circle"}:
-        outer_radius = (
-            section.radius
-            if section.section_type == "solid_circle"
-            else section.outer_radius
-        )
-        assert outer_radius is not None
-        increment = outer_radius * hypot(
-            forces[1] / section.Iyy,
-            forces[2] / section.Izz,
-        )
-    else:
-        assert section.height is not None and section.width is not None
-        increment = (
-            abs(forces[1] / section.Iyy) * section.height / 2.0
-            + abs(forces[2] / section.Izz) * section.width / 2.0
-        )
-    maximum = axial + increment
-    minimum = axial - increment
-    return maximum, minimum, max(abs(maximum), abs(minimum))
-
-
 def default_section_points(
     section: Beam2Section,
 ) -> tuple[BeamSectionPoint, ...]:
@@ -505,58 +418,10 @@ def default_section_points(
     )
 
 
-def recover_section_point_stress(
-    section: Beam2Section,
-    forces: BeamSectionEndForces,
-) -> BeamSectionStress:
-    """Recover point stresses and true-section extrema from end resultants."""
-
-    if not isinstance(section, Beam2Section):
-        raise TypeError("section must be Beam2Section")
-    if not isinstance(forces, BeamSectionEndForces):
-        raise TypeError("forces must be BeamSectionEndForces")
-
-    point_stresses = tuple(
-        BeamSectionPointStress(**stress)
-        for stress in _abaqus_b31_point_stresses(
-            section,
-            forces.axial_force,
-            forces.moment_y,
-            forces.moment_z,
-            forces.torque,
-        )
-    )
-
-    s11_max, s11_min, s11_abs_max = axial_stress_extrema(
-        section,
-        forces.axial_force,
-        forces.moment_y,
-        forces.moment_z,
-    )
-    if section.section_type == "rectangle":
-        s12_abs_max = _rectangle_torsion_shear_abs_max(section, forces.torque)
-    else:
-        outer_radius = (
-            section.radius
-            if section.section_type == "solid_circle"
-            else section.outer_radius
-        )
-        assert outer_radius is not None
-        s12_abs_max = abs(forces.torque) * outer_radius / section.J
-    return BeamSectionStress(
-        forces=forces,
-        point_stresses=point_stresses,
-        s11_max=s11_max,
-        s11_min=s11_min,
-        s11_abs_max=s11_abs_max,
-        s12_abs_max=s12_abs_max,
-    )
-
-
-def recover_integration_point_s11(
+def recover_integration_point_stress(
     section: Beam2Section,
     forces: BeamIntegrationPointForces,
-) -> tuple[BeamSectionPointS11, ...]:
+) -> tuple[BeamSectionPointStress, ...]:
     """Recover the Abaqus-published stress tensor at one B31 point."""
 
     if not isinstance(section, Beam2Section):
@@ -564,7 +429,7 @@ def recover_integration_point_s11(
     if type(forces) is not BeamIntegrationPointForces:
         raise TypeError("forces must be BeamIntegrationPointForces")
     return tuple(
-        BeamSectionPointS11(**stress)
+        BeamSectionPointStress(**stress)
         for stress in _abaqus_b31_point_stresses(
             section,
             forces.axial_force,
