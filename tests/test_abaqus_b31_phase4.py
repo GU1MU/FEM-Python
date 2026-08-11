@@ -178,7 +178,6 @@ def test_kink_and_branch_keep_shared_nodes_and_report_generated_groups(
     assert result.model.mesh.num_elements == 4
     assert tuple(notice.code for notice in result.notices) == (
         "abaqus.b31.linear_timoshenko_support_boundary",
-        "abaqus.b31.nodal_normal_generation_approximation",
     )
     report = _frame_report(result.model)
     assert len(report.frames) == 4
@@ -277,9 +276,8 @@ def test_official_pairwise_twenty_degree_group_is_averaged_publicly(
             atol=1e-12,
         )
     assert not np.allclose(local_z[2], _generated_normal(10.0))
-    assert any(
-        notice.code == "abaqus.b31.nodal_normal_generation_approximation"
-        for notice in result.notices
+    assert tuple(notice.code for notice in result.notices) == (
+        "abaqus.b31.linear_timoshenko_support_boundary",
     )
     effective = _frame_report(result.model)
     assert all(

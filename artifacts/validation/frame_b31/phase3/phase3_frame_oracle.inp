@@ -1,0 +1,27 @@
+*Include, input=phase3_frame_sources.inp
+*Step, name=GX
+*Static
+*Boundary
+FIXED, 1, 6, 0.
+*Cload, op=NEW
+TIPS, 1, 1.
+*Output, field
+*Element Output
+SF
+*End Step
+*Step, name=GY
+*Static
+*Cload, op=NEW
+TIPS, 2, 1.
+*Output, field
+*Element Output
+SF
+*End Step
+*Step, name=GZ
+*Static
+*Cload, op=NEW
+TIPS, 3, 1.
+*Output, field
+*Element Output
+SF
+*End Step

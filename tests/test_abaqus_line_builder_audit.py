@@ -349,7 +349,7 @@ def test_parallel_orientation_locations_cover_all_source_evidence(
     ]
 
 
-def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
+def test_kinked_frame_does_not_emit_retired_approximation_notice(
     tmp_path,
 ) -> None:
     lines = [
@@ -373,10 +373,4 @@ def test_kinked_frame_notice_is_structured_and_does_not_recommend_disconnect(
         notice.code for notice in result.notices
     ) == (
         "abaqus.b31.linear_timoshenko_support_boundary",
-        "abaqus.b31.nodal_normal_generation_approximation",
     )
-    notice = result.notices[1]
-    assert notice.locations
-    assert "element-end normals" in notice.message.casefold()
-    assert "connectivity" in notice.message.casefold()
-    assert "disconnect" not in notice.message.casefold()

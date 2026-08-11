@@ -44,7 +44,6 @@ STANDARD_FIXTURES = (
 )
 B31_NOTICE_CODES = (
     "abaqus.b31.linear_timoshenko_support_boundary",
-    "abaqus.b31.nodal_normal_generation_approximation",
 )
 
 

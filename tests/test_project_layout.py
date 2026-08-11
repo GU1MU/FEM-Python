@@ -1818,14 +1818,11 @@ def test_abaqus_formulation_notice_has_one_adapter_owner():
 
 
 def test_b31_source_frame_validation_has_one_adapter_implementation():
-    frame_notice_code = "abaqus.b31.nodal_normal_generation_approximation"
     definitions = []
-    code_occurrences = []
     legacy_definitions = []
 
     candidate_tokens = (
         "_validate_b31_frames",
-        frame_notice_code,
         "_audit_b31_topology",
     )
     for path in _python_files(SRC_ROOT):
@@ -1839,12 +1836,6 @@ def test_b31_source_frame_validation_has_one_adapter_implementation():
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name == "_validate_b31_frames"
         )
-        code_occurrences.extend(
-            (path.relative_to(PROJECT_ROOT), node.lineno)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant)
-            and node.value == frame_notice_code
-        )
         legacy_definitions.extend(
             (path.relative_to(PROJECT_ROOT), node.lineno)
             for node in ast.walk(tree)
@@ -1855,18 +1846,33 @@ def test_b31_source_frame_validation_has_one_adapter_implementation():
     expected_path = Path("src/fem/io/_inp/builder.py")
     assert len(definitions) == 1
     assert definitions[0][0] == expected_path
-    assert len(code_occurrences) == 1
-    assert code_occurrences[0][0] == expected_path
     assert legacy_definitions == []
 
 
+def test_b31_equivalent_normal_resolution_has_no_approximation_notice():
+    retired_code = "abaqus.b31.nodal_normal_generation_approximation"
+
+    assert all(retired_code not in _source(path) for path in _python_files(SRC_ROOT))
+
+
 def test_production_has_no_beam_slenderness_gate():
+    # Phase 1's Abaqus B31 numerical shear correction is a stiffness owner,
+    # not an aspect-ratio capability gate.  Keep that explicit compensation
+    # legal while rejecting names that imply import rejection or formulation
+    # switching based on a geometric slenderness threshold.
+    numeric_owner = SRC_ROOT / "fem" / "elements" / "beam_section.py"
+    numeric_source = _source(numeric_owner)
+    assert "ABAQUS_B31_SLENDERNESS_COMPENSATION" in numeric_source
+    assert "slenderness_compensation" in numeric_source
+
     suspicious_name_fragments = (
         "beam_aspect_ratio",
         "beam_slender",
         "length_to_depth",
         "length_to_section",
-        "slenderness",
+        "slenderness_gate",
+        "slenderness_limit",
+        "slenderness_threshold",
     )
     offenders = []
 

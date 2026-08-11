@@ -65,7 +65,6 @@ from .errors import (
 )
 from .orientation import (
     AbaqusOrientationResolution,
-    AbaqusOrientationResolutionReport,
     resolve_b31_orientations,
 )
 
@@ -114,7 +113,7 @@ def _build_owned_model_with_report(deck: AbaqusDeck) -> AbaqusBuildResult:
     section_resolution = _validate_declared_sections(model, deck)
     if has_line_elements:
         _validate_line_model(model, deck, section_resolution)
-    notices = _build_import_notices(deck, orientation_resolution.report)
+    notices = _build_import_notices(deck)
     return AbaqusBuildResult(model=model, notices=notices)
 
 
@@ -122,12 +121,18 @@ def _build_model(deck: AbaqusDeck) -> FEMModel:
     """Build a FEMModel from a parsed Abaqus input deck."""
     mesh = _build_mesh(deck)
     orientation_only_nodes = _orientation_only_node_ids(deck)
+    canonical_b31_order = any(
+        str(element.type).upper() == "B31" for element in deck.elements
+    )
     node_sets = {
         name: NodeSet(
             name,
             tuple(
                 node_id
-                for node_id in _unique_ids(ids)
+                for node_id in _source_ids(
+                    ids,
+                    canonical=canonical_b31_order,
+                )
                 if node_id not in orientation_only_nodes
             ),
         )
@@ -135,7 +140,10 @@ def _build_model(deck: AbaqusDeck) -> FEMModel:
         if deck.node_set_scopes.get(name, "model") != "part"
     }
     element_sets = {
-        name: ElementSet(name, _unique_ids(ids))
+        name: ElementSet(
+            name,
+            _source_ids(ids, canonical=canonical_b31_order),
+        )
         for name, ids in deck.element_sets.items()
     }
     visible_element_sets = {
@@ -1078,7 +1086,6 @@ def _validate_b31_frames(
 
 def _build_import_notices(
     deck: AbaqusDeck,
-    orientation_report: AbaqusOrientationResolutionReport | None = None,
 ) -> tuple[AbaqusImportNotice, ...]:
     locations: list[AbaqusSourceLocation] = []
     seen: set[tuple[object, ...]] = set()
@@ -1095,7 +1102,7 @@ def _build_import_notices(
         locations.append(location)
     if not any(str(element.type).upper() == "B31" for element in deck.elements):
         return ()
-    notices: list[AbaqusImportNotice] = [
+    return (
         AbaqusImportNotice(
             code="abaqus.b31.linear_timoshenko_support_boundary",
             message=(
@@ -1110,30 +1117,7 @@ def _build_import_notices(
             ),
             locations=tuple(locations),
         ),
-    ]
-    generated_shared_groups = bool(
-        orientation_report
-        and any(
-            len(group.identities) > 1 or group.split_reason
-            for group in orientation_report.groups
-        )
     )
-    if generated_shared_groups:
-        notices.append(
-            AbaqusImportNotice(
-                code="abaqus.b31.nodal_normal_generation_approximation",
-                message=(
-                    "The source does not provide nodal-normal records. The "
-                    "orientation resolver generated element-end normals from "
-                    "the detached topology and preserved shared-node source "
-                    "connectivity, but this Beam2 projection does not claim "
-                    "numerical equivalence to Abaqus nodal-normal generation "
-                    "or averaging."
-                ),
-                locations=tuple(locations),
-            )
-        )
-    return tuple(notices)
 
 
 def _section_location(
@@ -1225,6 +1209,11 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
         raise ValueError("Abaqus deck has no elements")
 
     orientation_only_nodes = _orientation_only_node_ids(deck)
+    source_elements = (
+        tuple(sorted(deck.elements, key=lambda item: int(item.id)))
+        if any(str(element.type).upper() == "B31" for element in deck.elements)
+        else tuple(deck.elements)
+    )
     mesh_nodes = {
         node_id: coordinates
         for node_id, coordinates in deck.nodes.items()
@@ -1243,7 +1232,7 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
                 _element_type(element),
                 _element_props(element),
             )
-            for element in deck.elements
+            for element in source_elements
         ]
         return Mesh2D(nodes2d, elements2d)
 
@@ -1258,7 +1247,7 @@ def _build_mesh(deck: AbaqusDeck) -> Any:
             _element_type(element),
             _element_props(element),
         )
-        for element in deck.elements
+        for element in source_elements
     ]
     element_types = {element.type for element in elements3d}
     if element_types == {"Beam2"}:
@@ -2342,6 +2331,14 @@ def _unique_ids(ids: Any) -> tuple[int, ...]:
             seen.add(value)
             result.append(value)
     return tuple(result)
+
+
+def _source_ids(ids: Any, *, canonical: bool) -> tuple[int, ...]:
+    """Return canonical identities for B31 or legacy source order otherwise."""
+
+    if canonical:
+        return tuple(sorted(set(map(int, ids))))
+    return _unique_ids(ids)
 
 
 def _is_internal_element_set(name: str) -> bool:

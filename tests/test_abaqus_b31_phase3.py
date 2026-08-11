@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
 
 from fem.application import RegionRef, resolve_effective_beam_frames
+from fem.assemble import assemble_global_stiffness
+from fem.boundary.loads import build_load_vector
+from fem.boundary.step import boundary_for_step
+from fem.elements import get_element_kernel
 from fem.io import inp
+from fem.materials import apply_sections
+from fem.solvers.static_linear import solve
 
 
 def _write_deck(tmp_path: Path, name: str, lines: tuple[str, ...]) -> Path:
@@ -189,6 +197,189 @@ def test_element_end_normal_variation_reaches_the_core_frame_field(
     field = result.model.mesh.elements[0].props["beam_frame_field"]
     assert not field.is_constant
     assert _frames(result.model).frame_fields[0] == field
+
+
+def test_default_n1_and_generated_normal_are_equivalent_without_old_notice(
+    tmp_path: Path,
+) -> None:
+    path = _write_deck(
+        tmp_path,
+        "default_n1.inp",
+        _beam_lines(section_n1=""),
+    )
+
+    result = inp.read_with_report(path)
+    frame = _frames(result.model).frames[0]
+
+    assert frame.local_y == pytest.approx((0.0, 0.0, -1.0))
+    assert frame.local_z == pytest.approx((0.0, 1.0, 0.0))
+    assert tuple(notice.code for notice in result.notices) == (
+        "abaqus.b31.linear_timoshenko_support_boundary",
+    )
+
+
+def _order_invariance_lines(*, permuted: bool) -> tuple[str, ...]:
+    nodes = (
+        "1, 0., 0., 0.",
+        "2, 1., 0., 0.",
+        "3, 0.984807753012208, 0.17364817766693, 0.",
+        "4, 0.766044443118978, 0.642787609686539, 0.",
+    )
+    elements = (
+        "10, 1, 2",
+        "20, 1, 3",
+        "30, 1, 4",
+    )
+    if permuted:
+        nodes = (nodes[2], nodes[0], nodes[3], nodes[1])
+        elements = (elements[2], elements[0], elements[1])
+        beam_set = "20, 30, 10"
+    else:
+        beam_set = "10, 20, 30"
+    return (
+        "*Heading",
+        "Phase 3 order invariance",
+        "*Node",
+        *nodes,
+        "*Element, type=B31",
+        *elements,
+        "*Elset, elset=BEAMS",
+        beam_set,
+        "*Nset, nset=FIXED",
+        "1",
+        "*Material, name=STEEL",
+        "*Elastic",
+        "210000., 0.3",
+        "*Beam Section, elset=BEAMS, material=STEEL, section=RECT",
+        "0.2, 0.1",
+        "0., 0., 1.",
+        "*Step, name=LOAD",
+        "*Static",
+        "*Boundary",
+        "FIXED, 1, 6, 0.",
+        "*Dload",
+        "BEAMS, P1, 2.5",
+        "*End Step",
+    )
+
+
+def _order_invariance_projection(model):
+    owned = deepcopy(model)
+    apply_sections(owned)
+    boundary = boundary_for_step(owned, "LOAD")
+    stiffness = assemble_global_stiffness(owned.mesh)
+    load = build_load_vector(owned.mesh, boundary)
+    displacement = solve(owned, "LOAD").U
+    dofs = np.concatenate(
+        [
+            np.asarray(owned.mesh.node_dofs(node.id), dtype=int)
+            for node in sorted(owned.mesh.nodes, key=lambda item: item.id)
+        ]
+    )
+    node_lookup = {node.id: node for node in owned.mesh.nodes}
+    resolved_loads = {item.elem_id: item for item in boundary.line_loads}
+    recovered = []
+    frame_fields = []
+    for element in sorted(owned.mesh.elements, key=lambda item: item.id):
+        field = element.props["beam_frame_field"]
+        frame_fields.append(
+            (
+                int(element.id),
+                field.start.rotation.copy(),
+                field.end.rotation.copy(),
+            )
+        )
+        element_load = resolved_loads[int(element.id)]
+        kernel = get_element_kernel(element.type)
+        equivalent_load = kernel.local_line_load(
+            owned.mesh,
+            element,
+            element_load.vector,
+            element_load.coordinate_system,
+            node_lookup,
+        )
+        recovered.append(
+            (
+                int(element.id),
+                kernel.local_end_actions(
+                    owned.mesh,
+                    element,
+                    displacement,
+                    equivalent_load,
+                    node_lookup,
+                ),
+            )
+        )
+    return (
+        frame_fields,
+        stiffness[np.ix_(dofs, dofs)],
+        load[dofs],
+        displacement[dofs],
+        recovered,
+    )
+
+
+def test_node_element_and_set_permutations_are_identity_deterministic(
+    tmp_path: Path,
+) -> None:
+    forward = inp.read(
+        _write_deck(
+            tmp_path,
+            "forward.inp",
+            _order_invariance_lines(permuted=False),
+        )
+    )
+    permuted = inp.read(
+        _write_deck(
+            tmp_path,
+            "permuted.inp",
+            _order_invariance_lines(permuted=True),
+        )
+    )
+
+    expected = _order_invariance_projection(forward)
+    actual = _order_invariance_projection(permuted)
+
+    for expected_field, actual_field in zip(expected[0], actual[0], strict=True):
+        assert expected_field[0] == actual_field[0]
+        np.testing.assert_array_equal(expected_field[1], actual_field[1])
+        np.testing.assert_array_equal(expected_field[2], actual_field[2])
+    np.testing.assert_array_equal(expected[1], actual[1])
+    np.testing.assert_array_equal(expected[2], actual[2])
+    np.testing.assert_array_equal(expected[3], actual[3])
+    for expected_action, actual_action in zip(expected[4], actual[4], strict=True):
+        assert expected_action[0] == actual_action[0]
+        np.testing.assert_array_equal(expected_action[1], actual_action[1])
+
+
+def test_b31_canonical_ordering_does_not_change_non_beam_set_order(
+    tmp_path: Path,
+) -> None:
+    path = _write_deck(
+        tmp_path,
+        "truss_unsorted_set.inp",
+        (
+            "*Heading",
+            "Phase 3 non-B31 ordering boundary",
+            "*Node",
+            "1, 0., 0., 0.",
+            "2, 1., 0., 0.",
+            "3, 2., 0., 0.",
+            "*Element, type=T3D2, elset=BAR",
+            "1, 1, 2",
+            "*Nset, nset=ORDERED, unsorted",
+            "3, 1, 2",
+            "*Material, name=STEEL",
+            "*Elastic",
+            "210000., 0.3",
+            "*Solid Section, elset=BAR, material=STEEL",
+            "0.1",
+        ),
+    )
+
+    model = inp.read(path)
+
+    assert model.node_sets["ORDERED"].node_ids == (3, 1, 2)
 
 
 def test_malformed_orientation_source_fails_through_public_error_family(

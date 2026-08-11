@@ -27,8 +27,6 @@ from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
 
 
-FRAME_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
-
 # Abaqus 2023, one 2 m B31 element, integrated 0.2 x 0.1 RECT section,
 # E=210 GPa, nu=0.3, n1=(0, 1, 0), node 1 ENCASTRE.  Each static step
 # uses *DLOAD, OP=NEW so the two local transverse directions are independent.
@@ -141,7 +139,6 @@ def test_noncollinear_two_span_b31_imports_and_solves(tmp_path) -> None:
     assert np.linalg.norm(displacement) > 0.0
     assert tuple(notice.code for notice in result.notices) == (
         "abaqus.b31.linear_timoshenko_support_boundary",
-        FRAME_NOTICE,
     )
 
 
@@ -176,7 +173,9 @@ def test_t_junction_preserves_shared_node_and_solves(tmp_path) -> None:
         tuple(element.node_ids) for element in result.model.mesh.elements
     ) == ((1, 2), (2, 3), (2, 4))
     assert np.all(np.isfinite(result_value.U))
-    assert any(notice.code == FRAME_NOTICE for notice in result.notices)
+    assert tuple(notice.code for notice in result.notices) == (
+        "abaqus.b31.linear_timoshenko_support_boundary",
+    )
 
 
 def _mixed_connectivity_load_model(

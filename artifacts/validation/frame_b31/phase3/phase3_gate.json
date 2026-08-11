@@ -1,0 +1,72 @@
+{
+  "gates": {
+    "frame_direction_cosine_max_absolute": {
+      "actual": 5.473399511402022e-14,
+      "passed": true,
+      "threshold": 1e-10
+    },
+    "roof_ridge_rotation_vector_relative_l2": {
+      "actual": 3.47288883051102e-07,
+      "passed": true,
+      "threshold": 0.15
+    },
+    "rotation_vector_relative_l2": {
+      "actual": 1.4614298763103917e-07,
+      "passed": true,
+      "threshold": 0.05
+    },
+    "translation_significant_node_max_vector_relative": {
+      "actual": 1.6505458597956975e-07,
+      "passed": true,
+      "threshold": 0.03
+    },
+    "translation_vector_relative_l2": {
+      "actual": 1.194358530347734e-07,
+      "passed": true,
+      "threshold": 0.01
+    },
+    "u2_max_absolute_mm": {
+      "actual": 2.9929920707490653e-08,
+      "passed": true,
+      "threshold": 0.01
+    },
+    "u2_relative_l2": {
+      "actual": 8.42046955189345e-07,
+      "passed": true,
+      "threshold": 0.15
+    },
+    "ur1_max_absolute_rad": {
+      "actual": 3.5015181997378325e-11,
+      "passed": true,
+      "threshold": 5e-05
+    },
+    "ur3_max_absolute_rad": {
+      "actual": 9.573445114858517e-12,
+      "passed": true,
+      "threshold": 5e-05
+    }
+  },
+  "matched_nodes": 117,
+  "notice_codes": [
+    "abaqus.b31.linear_timoshenko_support_boundary"
+  ],
+  "passed": true,
+  "phase2_to_phase3_max_u_ur_absolute_change": 0.0,
+  "residual_error_owner": {
+    "conclusion": "Displacement and rotation gates pass; remaining mismatch is Phase 4/5 integration-point result recovery.",
+    "diagnostic_section_end_s11_significant_relative_l2": 0.6660046147535622,
+    "formal_integration_point_rows": 0
+  },
+  "ridge_node_ids": [
+    5,
+    14,
+    23,
+    32,
+    41,
+    50,
+    59,
+    68,
+    77
+  ],
+  "target_integration_points": 276
+}

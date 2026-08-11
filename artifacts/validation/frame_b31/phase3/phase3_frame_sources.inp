@@ -1,0 +1,77 @@
+*Heading
+Phase 3 B31 orientation sources shared by oracle and program
+*Preprint, echo=NO, model=YES, history=NO, contact=NO
+*Node
+1011, 0., 0., 0.
+1012, 1., 0., 0.
+1021, 0., 10., 0.
+1022, 1., 10., 0.
+1023, 0., 10., 1.
+1031, 0., 20., 0., 0., 1., 0.
+1032, 1., 20., 0., 0., 1., 0.
+1041, 0., 30., 0., 0., 1., 0.
+1042, 1., 30., 0., 0., 1., 0.
+1051, 1., 40., 0.
+1052, 0., 40., 0.
+2000, 0., 50., 0.
+2001, 1., 50., 0.
+2002, 0.984807753012208, 50.17364817766693, 0.
+2003, 0.9659258262890683, 50.25881904510252, 0.
+3000, 0., 60., 0.
+3001, 1., 60., 0.
+3002, 0.984807753012208, 60.17364817766693, 0.
+3003, 0.8660254037844387, 60.5, 0.
+4000, 0., 70., 0.
+4001, 1., 70., 0.
+4002, 0.984807753012208, 70.17364817766693, 0.
+4003, 0.766044443118978, 70.64278760968654, 0.
+*Element, type=B31
+101, 1011, 1012
+102, 1021, 1022, 1023
+103, 1031, 1032
+104, 1041, 1042
+105, 1051, 1052
+201, 2000, 2001
+202, 2000, 2002
+203, 2000, 2003
+301, 3000, 3001
+302, 3000, 3002
+303, 3000, 3003
+401, 4000, 4001
+402, 4000, 4002
+403, 4000, 4003
+*Elset, elset=DEFAULT
+101
+*Elset, elset=ORIENTATION_NODE
+102
+*Elset, elset=NODE_NORMAL
+103
+*Elset, elset=ELEMENT_NORMAL
+104
+*Elset, elset=GENERATED
+105, 201, 202, 203, 301, 302, 303, 401, 402, 403
+*Nset, nset=FIXED
+1011, 1021, 1031, 1041, 1051, 2000, 3000, 4000
+*Nset, nset=TIPS
+1012, 1022, 1032, 1042, 1052, 2001, 2002, 2003, 3001, 3002, 3003, 4001, 4002, 4003
+*Material, name=STEEL
+*Elastic
+210000., 0.3
+*Beam Section, elset=DEFAULT, material=STEEL, section=RECT
+0.2, 0.1
+
+*Beam Section, elset=ORIENTATION_NODE, material=STEEL, section=RECT
+0.2, 0.1
+0., 1., 0.
+*Beam Section, elset=NODE_NORMAL, material=STEEL, section=RECT
+0.2, 0.1
+0., 1., 0.
+*Beam Section, elset=ELEMENT_NORMAL, material=STEEL, section=RECT
+0.2, 0.1
+0., 1., 0.
+*Beam Section, elset=GENERATED, material=STEEL, section=RECT
+0.2, 0.1
+0., 0., 1.
+*Normal, type=ELEMENT
+104, 1041, 0., 0., 1.
+104, 1042, 0., 0., 1.

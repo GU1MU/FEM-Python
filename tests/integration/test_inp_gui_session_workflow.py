@@ -46,7 +46,6 @@ MIXED_PLATE = (
     / "MixedPlateCps3Cps4_PerforatedJob.inp"
 )
 B31_NOTICE = "abaqus.b31.linear_timoshenko_support_boundary"
-B31_NORMAL_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
 PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
     "open_inp_path",
@@ -405,7 +404,6 @@ def test_imported_b31_public_edit_candidates_check_and_solve() -> None:
 
     assert tuple(notice.code for notice in window.import_notices) == (
         B31_NOTICE,
-        B31_NORMAL_NOTICE,
     )
     projection = describe_session_authoring(window.document)
     assert projection.report.canonical_element_types == ("Beam2",)
@@ -480,7 +478,6 @@ def test_imported_b31_public_edit_candidates_check_and_solve() -> None:
     )
     assert tuple(notice.code for notice in window.import_notices) == (
         B31_NOTICE,
-        B31_NORMAL_NOTICE,
     )
 
     require_accepted(

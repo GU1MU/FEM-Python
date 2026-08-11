@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "case": "default-n1",
+      "element_id": 101,
+      "max_direction_cosine_absolute_error": 2.498001805406602e-16
+    },
+    {
+      "case": "orientation-node-over-section-n1",
+      "element_id": 102,
+      "max_direction_cosine_absolute_error": 1.6930901125533637e-15
+    },
+    {
+      "case": "node-normal-over-generated-normal",
+      "element_id": 103,
+      "max_direction_cosine_absolute_error": 2.498001805406602e-16
+    },
+    {
+      "case": "element-normal-over-node-normal",
+      "element_id": 104,
+      "max_direction_cosine_absolute_error": 1.0547118733938987e-15
+    },
+    {
+      "case": "reversed-connectivity",
+      "element_id": 105,
+      "max_direction_cosine_absolute_error": 1.6930901125533637e-15
+    },
+    {
+      "case": "averaged-normal-0deg",
+      "element_id": 201,
+      "max_direction_cosine_absolute_error": 1.6930901125533637e-15
+    },
+    {
+      "case": "averaged-normal-10deg",
+      "element_id": 202,
+      "max_direction_cosine_absolute_error": 1.1685097334179773e-14
+    },
+    {
+      "case": "averaged-normal-15deg",
+      "element_id": 203,
+      "max_direction_cosine_absolute_error": 2.8074764735208646e-14
+    },
+    {
+      "case": "non-clique-split-0deg",
+      "element_id": 301,
+      "max_direction_cosine_absolute_error": 1.6930901125533637e-15
+    },
+    {
+      "case": "non-clique-split-10deg",
+      "element_id": 302,
+      "max_direction_cosine_absolute_error": 1.1685097334179773e-14
+    },
+    {
+      "case": "non-clique-split-30deg",
+      "element_id": 303,
+      "max_direction_cosine_absolute_error": 2.942091015256665e-14
+    },
+    {
+      "case": "disjoint-group-0deg",
+      "element_id": 401,
+      "max_direction_cosine_absolute_error": 1.6930901125533637e-15
+    },
+    {
+      "case": "disjoint-group-10deg",
+      "element_id": 402,
+      "max_direction_cosine_absolute_error": 1.8707257964933888e-14
+    },
+    {
+      "case": "disjoint-group-40deg",
+      "element_id": 403,
+      "max_direction_cosine_absolute_error": 5.473399511402022e-14
+    }
+  ],
+  "inputs": {
+    "abaqus_oracle": {
+      "path": "abaqus_frame_oracle.json",
+      "sha256": "cfaf3d3c9a694b732c3c10e239b9cf08e6feb927217372cdf69895ad2dc74c99"
+    },
+    "inp": {
+      "path": "phase3_frame_sources.inp",
+      "sha256": "a47b27210833efd2ca17d1ec17a0c499bf3580febbb743c5442d39dcbf1585a6"
+    }
+  },
+  "max_direction_cosine_absolute_error": 5.473399511402022e-14,
+  "notices": [
+    "abaqus.b31.linear_timoshenko_support_boundary"
+  ],
+  "passed": true,
+  "threshold": 1e-10
+}

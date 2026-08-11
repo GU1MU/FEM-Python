@@ -18,9 +18,6 @@ STANDARD = (
     / "abaqus_standard"
 )
 B31_NOTICE = "abaqus.b31.linear_timoshenko_support_boundary"
-FRAME_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
-
-
 @pytest.mark.parametrize(
     "fixture_name",
     (
@@ -76,7 +73,7 @@ def test_multiple_b31_elements_do_not_duplicate_formulation_notice():
     assert len(result.model.mesh.elements) == 2
     codes = tuple(notice.code for notice in result.notices)
     assert codes.count(B31_NOTICE) == 1
-    assert set(codes) <= {B31_NOTICE, FRAME_NOTICE}
+    assert codes == (B31_NOTICE,)
 
 
 @pytest.mark.parametrize(

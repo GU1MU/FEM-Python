@@ -1,0 +1,11 @@
+comparison,component,element_id,absolute_error
+diagnostic_cross_position,Mises,93,7599129.466817403
+diagnostic_cross_position,S11,93,7599086.466817403
+diagnostic_cross_position,S11,93,7599086.09966965
+diagnostic_cross_position,Mises,93,7599043.09966965
+diagnostic_cross_position,Mises,77,7514843.061620318
+diagnostic_cross_position,S11,77,7514842.23269406
+diagnostic_cross_position,S11,77,7514842.061620318
+diagnostic_cross_position,Mises,77,7514841.23269406
+diagnostic_cross_position,Mises,61,7437263.539494496
+diagnostic_cross_position,S11,61,7437252.539494496

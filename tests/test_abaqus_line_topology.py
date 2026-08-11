@@ -15,9 +15,6 @@ STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
-FRAME_NOTICE_CODE = "abaqus.b31.nodal_normal_generation_approximation"
-
-
 def _single_section_deck(
     nodes: tuple[tuple[int, float, float, float], ...],
     elements: tuple[tuple[int, int, int], ...],
@@ -45,16 +42,12 @@ def _single_section_deck(
     ]
 
 
-def _assert_frame_approximation_notice(result: abaqus.InpImportResult) -> None:
-    notices = [
-        notice for notice in result.notices if notice.code == FRAME_NOTICE_CODE
-    ]
-    assert len(notices) == 1
-    notice = notices[0]
-    assert notice.locations
-    assert "element-end normals" in notice.message.casefold()
-    assert "connectivity" in notice.message.casefold()
-    assert "disconnect" not in notice.message.casefold()
+def _assert_no_frame_approximation_notice(
+    result: abaqus.InpImportResult,
+) -> None:
+    assert tuple(notice.code for notice in result.notices) == (
+        "abaqus.b31.linear_timoshenko_support_boundary",
+    )
 
 
 @pytest.mark.parametrize(
@@ -154,7 +147,7 @@ def test_kinked_shared_node_uses_independent_element_frames(
     assert frames.passed
     assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
     assert frames.frames[1].local_x == pytest.approx((0.0, 1.0, 0.0))
-    _assert_frame_approximation_notice(result)
+    _assert_no_frame_approximation_notice(result)
 
 
 def test_branching_shared_node_preserves_one_shared_global_dof_identity(
@@ -189,7 +182,7 @@ def test_branching_shared_node_preserves_one_shared_global_dof_identity(
     assert frames.element_ids == (1, 2, 3)
     assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
     assert frames.frames[2].local_x == pytest.approx((0.0, 1.0, 0.0))
-    _assert_frame_approximation_notice(result)
+    _assert_no_frame_approximation_notice(result)
 
 
 def test_closed_b31_loop_preserves_connectivity_and_builds(
@@ -215,7 +208,7 @@ def test_closed_b31_loop_preserves_connectivity_and_builds(
     assert tuple(
         tuple(element.node_ids) for element in result.model.mesh.elements
     ) == ((1, 2), (2, 3), (3, 1))
-    _assert_frame_approximation_notice(result)
+    _assert_no_frame_approximation_notice(result)
 
 
 def test_reversed_element_connectivity_preserves_source_order_and_frame_direction(
@@ -246,7 +239,7 @@ def test_reversed_element_connectivity_preserves_source_order_and_frame_directio
     assert frames.passed
     assert frames.frames[0].local_x == pytest.approx((1.0, 0.0, 0.0))
     assert frames.frames[1].local_x == pytest.approx((-1.0, 0.0, 0.0))
-    _assert_frame_approximation_notice(result)
+    _assert_no_frame_approximation_notice(result)
 
 
 def test_shared_node_allows_assignment_scoped_section_orientations(
@@ -293,7 +286,7 @@ def test_shared_node_allows_assignment_scoped_section_orientations(
     assert right_frames.frames[0].source == "explicit"
     assert left_frames.frames[0].local_y == pytest.approx((0.0, 1.0, 0.0))
     assert right_frames.frames[0].local_y == pytest.approx((0.0, 0.0, 1.0))
-    _assert_frame_approximation_notice(result)
+    _assert_no_frame_approximation_notice(result)
 
 
 def test_orientation_parallel_to_later_target_element_fails_transactionally(
