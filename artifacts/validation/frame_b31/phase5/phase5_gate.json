@@ -1,0 +1,226 @@
+{
+  "abaqus_release": "Abaqus/Standard 2023",
+  "invariant_recompute": {
+    "abaqus_maximum_absolute_difference_pa": 0.15105161583051085,
+    "abaqus_maximum_relative_to_output": 7.952129578078936e-08,
+    "program_maximum_absolute_difference_pa": 0.0,
+    "program_maximum_relative_to_output": 0.0
+  },
+  "portal": {
+    "components": {
+      "MaxPrincipal": {
+        "all_row_mae_pa": 3.5414669339720297,
+        "maximum_absolute_error_pa": 128.6981625842236,
+        "maximum_significant_relative_l2": 1.7637131332713852e-06,
+        "rows": 1104
+      },
+      "Mises": {
+        "all_row_mae_pa": 5.580646174230933,
+        "maximum_absolute_error_pa": 218.52806674494786,
+        "maximum_significant_relative_l2": 2.4385994486845605e-06,
+        "rows": 1104
+      },
+      "S12": {
+        "all_row_mae_pa": 37.265604917486336,
+        "maximum_absolute_error_pa": 275.6220142068778,
+        "maximum_significant_relative_l2": 1.1618234480568477e-07,
+        "rows": 1104
+      }
+    },
+    "rows_by_program_section_point": {
+      "1": 276,
+      "2": 276,
+      "3": 276,
+      "4": 276
+    },
+    "s13_published": false,
+    "section_stress_rows": 1104
+  },
+  "public_integration_point_resultants": {
+    "fields": {
+      "SF": {
+        "abaqus_mapping": {
+          "SF1": "N",
+          "SF2": "Vy",
+          "SF3": "Vz"
+        },
+        "association": "integration_point",
+        "components": [
+          "N",
+          "Vy",
+          "Vz"
+        ],
+        "position": "integration_point",
+        "quantity": "force",
+        "recovery_contract": 4,
+        "row_count": 276,
+        "section_point_number": null
+      },
+      "SM": {
+        "abaqus_mapping": {
+          "SM1": "T",
+          "SM2": "My",
+          "SM3": "Mz"
+        },
+        "association": "integration_point",
+        "components": [
+          "T",
+          "My",
+          "Mz"
+        ],
+        "position": "integration_point",
+        "quantity": "moment",
+        "recovery_contract": 4,
+        "row_count": 276,
+        "section_point_number": null
+      }
+    },
+    "row_identity": {
+      "integration_points": [
+        1
+      ],
+      "row_count": 276,
+      "section_point_number": null,
+      "unique_element_integration_point_count": 276
+    }
+  },
+  "pure_transverse_shear": {
+    "VY_POS": {
+      "abaqus_maximum_absolute_s12": 1.01613700093095e-11,
+      "program_semantic_value": 0.0,
+      "s13_published": false
+    },
+    "VZ_POS": {
+      "abaqus_maximum_absolute_s12": 5.08068500465475e-12,
+      "program_semantic_value": 0.0,
+      "s13_published": false
+    }
+  },
+  "rect_default_5x5": {
+    "calibration_maximum_relative_error": 0.004994828105389748,
+    "calibration_ratios": [
+      1.0,
+      1.25,
+      1.4999999999999998,
+      2.0,
+      2.0,
+      2.9999999999999996,
+      4.0,
+      5.999999999999999,
+      10.0,
+      20.0
+    ],
+    "holdout": [
+      {
+        "abaqus_s12": 62392.2890625,
+        "aspect_ratio": 1.37,
+        "program_s12": 62460.29279968626,
+        "relative_error": 0.0010899381671690626
+      },
+      {
+        "abaqus_s12": 27190.595703125,
+        "aspect_ratio": 5.0,
+        "program_s12": 27258.21651637505,
+        "relative_error": 0.0024869191535321507
+      },
+      {
+        "abaqus_s12": 13568.37890625,
+        "aspect_ratio": 13.0,
+        "program_s12": 13554.573041737567,
+        "relative_error": 0.0010175028725114316
+      }
+    ],
+    "holdout_maximum_relative_error": 0.0024869191535321507
+  },
+  "schema": "fem-python.abaqus-b31-phase5-gate.v2",
+  "section_point_mapping": {
+    "CIRC": [
+      7,
+      11,
+      15,
+      3
+    ],
+    "RECT": [
+      25,
+      21,
+      1,
+      5
+    ],
+    "THICK PIPE": [
+      8,
+      14,
+      20,
+      2
+    ]
+  },
+  "tensor_contract": {
+    "all_labels_exact": true,
+    "component_labels_by_step": {
+      "COMBINED": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "T_NEG": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "T_POS": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "VY_POS": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "VZ_POS": [
+        "S11",
+        "S22",
+        "S12"
+      ]
+    },
+    "maximum_absolute_s22": 0.0,
+    "s13_published": false
+  },
+  "torsion_oracle": {
+    "CIRC": {
+      "T_NEG": {
+        "maximum_relative_error": 3.513491571610723e-08,
+        "rows": 4,
+        "sign_match": true
+      },
+      "T_POS": {
+        "maximum_relative_error": 3.513491571610723e-08,
+        "rows": 4,
+        "sign_match": true
+      }
+    },
+    "RECT": {
+      "T_NEG": {
+        "maximum_relative_error": 0.0003951114002458118,
+        "rows": 4,
+        "sign_match": true
+      },
+      "T_POS": {
+        "maximum_relative_error": 0.0003951114002458118,
+        "rows": 4,
+        "sign_match": true
+      }
+    },
+    "THICK PIPE": {
+      "T_NEG": {
+        "maximum_relative_error": 1.0591222193371549e-08,
+        "rows": 4,
+        "sign_match": true
+      },
+      "T_POS": {
+        "maximum_relative_error": 1.0591222193371549e-08,
+        "rows": 4,
+        "sign_match": true
+      }
+    }
+  }
+}

@@ -82,7 +82,7 @@ def test_end_force_contract_preserves_legacy_four_position_constructor() -> None
         },
     ),
 )
-def test_section_point_stress_identity_does_not_consume_transverse_shear(
+def test_section_point_stress_follows_abaqus_missing_transverse_shear_semantics(
     section_props: dict[str, float | str],
 ) -> None:
     section = parse_beam2_section(section_props)
@@ -218,6 +218,7 @@ def test_stress_recovery_retains_shear_source_actions_without_new_stress_fields(
         field.component_names
         == (
             "S11",
+            "S22",
             "S12",
             "Mises",
             "MaxPrincipal",

@@ -1,0 +1,4386 @@
+{
+  "abaqus_release": "Abaqus/Standard 2023",
+  "instance": "PART-1-1",
+  "schema": "fem-python.abaqus-b31-phase5-shear-oracle.v1",
+  "section_by_element": {
+    "10": "RECT",
+    "20": "CIRC",
+    "30": "THICK PIPE",
+    "40": "RECT SQUARE",
+    "50": "RECT WIDE",
+    "60": "RECT ASPECT 4",
+    "70": "RECT ASPECT 10",
+    "80": "RECT ASPECT 1.25",
+    "90": "RECT ASPECT 1.5",
+    "100": "RECT ASPECT 3",
+    "110": "RECT ASPECT 6",
+    "120": "RECT ASPECT 20"
+  },
+  "steps": {
+    "COMBINED": {
+      "component_labels": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "rows": [
+        {
+          "components": {
+            "MaxPrincipal": 118927.4296875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16427.43359375,
+            "Mises": 127934.6171875,
+            "S11": 102500.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3003.32421875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -650503.3125,
+            "Mises": 652010.1875,
+            "S11": -647500.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 667925.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2924.98779296875,
+            "Mises": 669392.25,
+            "S11": 665000.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 18818.20703125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -103818.203125,
+            "Mises": 114394.1328125,
+            "S11": -85000.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6602.8994140625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -239764.890625,
+            "Mises": 243133.578125,
+            "S11": -233161.984375,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = -90.0000",
+            "number": 3
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9695.8583984375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -163280.375,
+            "Mises": 168337.84375,
+            "S11": -153584.515625,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 0.0000",
+            "number": 7
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 250619.75,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6316.91357421875,
+            "Mises": 253837.171875,
+            "S11": 244302.84375,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 90.0000",
+            "number": 11
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 173832.640625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9107.28515625,
+            "Mises": 178560.5625,
+            "S11": 164725.359375,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 180.0000",
+            "number": 15
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5363.12744140625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -188921.828125,
+            "Mises": 191659.6875,
+            "S11": -183558.703125,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = -90.0000, (1-fraction = 0.000000, 2-fraction = -0.750000)",
+            "number": 2
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7926.65478515625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -127823.3828125,
+            "Mises": 131965.375,
+            "S11": -119896.7265625,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 0.0000, (1-fraction = 0.750000, 2-fraction = 0.000000)",
+            "number": 8
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 203394.65625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4981.50634765625,
+            "Mises": 205930.609375,
+            "S11": 198413.15625,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 90.0000, (1-fraction = 0.000000, 2-fraction = 0.750000)",
+            "number": 14
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 141891.921875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7140.7294921875,
+            "Mises": 145593.671875,
+            "S11": 134751.1875,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 180.0000, (1-fraction = -0.750000, 2-fraction = 0.000000)",
+            "number": 20
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 23275.177734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -380775.1875,
+            "Mises": 392930.125,
+            "S11": -357500.0,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 4759.06396484375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1862259.125,
+            "Mises": 1864643.0,
+            "S11": -1857500.0,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1897171.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4671.486328125,
+            "Mises": 1899511.5,
+            "S11": 1892500.0,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 413911.84375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -21411.83203125,
+            "Mises": 425022.4375,
+            "S11": 392500.0,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5258.751953125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -371508.75,
+            "Mises": 374165.84375,
+            "S11": -366250.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2626.34033203125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -743876.3125,
+            "Mises": 745193.0,
+            "S11": -741250.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 761316.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2566.177490234375,
+            "Mises": 762602.5,
+            "S11": 758750.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 388775.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5025.1982421875,
+            "Mises": 391312.0,
+            "S11": 383750.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 128750.1171875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7187.619140625,
+            "Mises": 132490.234375,
+            "S11": 121562.5,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3600.275634765625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -257037.78125,
+            "Mises": 258856.703125,
+            "S11": -253437.5,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 265670.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3483.2841796875,
+            "Mises": 267429.4375,
+            "S11": 262187.5,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7680.1904296875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -120492.6875,
+            "Mises": 124510.5625,
+            "S11": -112812.5,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69631.890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4131.8896484375,
+            "Mises": 71787.078125,
+            "S11": 65500.0,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3277.7255859375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -87777.7265625,
+            "Mises": 89461.6328125,
+            "S11": -84500.0,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 91156.2421875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3156.243408203125,
+            "Mises": 92774.640625,
+            "S11": 88000.0,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 4337.109375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -66337.109375,
+            "Mises": 68608.5546875,
+            "S11": -62000.0,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34374.0078125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -140374.0,
+            "Mises": 160348.53125,
+            "S11": -106000.0,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3684.259765625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1309684.25,
+            "Mises": 1311530.25,
+            "S11": -1306000.0,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1337607.375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3607.349365234375,
+            "Mises": 1339414.625,
+            "S11": 1334000.0,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 163510.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -29510.19140625,
+            "Mises": 180087.890625,
+            "S11": 134000.0,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 62784.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -51117.390625,
+            "Mises": 98813.875,
+            "S11": 11666.6669921875,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3236.64208984375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -991569.9375,
+            "Mises": 993192.25,
+            "S11": -988333.3125,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1014829.125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3162.46044921875,
+            "Mises": 1016414.0625,
+            "S11": 1011666.6875,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 62784.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -51117.390625,
+            "Mises": 98813.875,
+            "S11": 11666.6669921875,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 139536.03125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -8702.697265625,
+            "Mises": 144084.625,
+            "S11": 130833.3359375,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3260.609375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -372427.25,
+            "Mises": 374068.21875,
+            "S11": -369166.65625,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 383995.71875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3162.37841796875,
+            "Mises": 385586.65625,
+            "S11": 380833.34375,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9442.1220703125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -128608.7890625,
+            "Mises": 133580.359375,
+            "S11": -119166.6640625,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 102516.65625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5849.99560546875,
+            "Mises": 105563.296875,
+            "S11": 96666.6640625,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3816.249755859375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -157149.578125,
+            "Mises": 159092.046875,
+            "S11": -153333.328125,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 162849.359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3682.679931640625,
+            "Mises": 164721.5625,
+            "S11": 159166.671875,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6181.74072265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -97015.078125,
+            "Mises": 100248.9921875,
+            "S11": -90833.3359375,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 37769.6875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2207.1884765625,
+            "Mises": 38920.25,
+            "S11": 35562.5,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2011.2734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -41448.7734375,
+            "Mises": 42490.12890625,
+            "S11": -39437.5,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 43120.78515625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1933.2861328125,
+            "Mises": 44119.20703125,
+            "S11": 41187.5,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2307.96630859375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -36120.46484375,
+            "Mises": 37328.0,
+            "S11": -33812.5,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        }
+      ]
+    },
+    "T_NEG": {
+      "component_labels": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "rows": [
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 8.710665869160472e-12,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 2.877795918232451e-11,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 1.6122204266055817e-11,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": -8.27973193479048e-12,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 4.389490073503088e-12,
+            "S12": -39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = -90.0000",
+            "number": 3
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 2.059202981741226e-11,
+            "S12": -39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 0.0000",
+            "number": 7
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 3.04073433099461e-12,
+            "S12": -39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 90.0000",
+            "number": 11
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 1.210701135699599e-12,
+            "S12": -39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 180.0000",
+            "number": 15
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": 2.3278280344984914e-12,
+            "S12": -31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = -90.0000, (1-fraction = 0.000000, 2-fraction = -0.750000)",
+            "number": 2
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": 1.6692886656288763e-11,
+            "S12": -31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 0.0000, (1-fraction = 0.750000, 2-fraction = 0.000000)",
+            "number": 8
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": -5.944312316680245e-12,
+            "S12": -31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 90.0000, (1-fraction = 0.000000, 2-fraction = 0.750000)",
+            "number": 14
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": 7.780074327834452e-13,
+            "S12": -31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 180.0000, (1-fraction = -0.750000, 2-fraction = 0.000000)",
+            "number": 20
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 9.965789044691364e-13,
+            "S12": -94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 7.305649835087635e-11,
+            "S12": -94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 8.408117084524047e-12,
+            "S12": -94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 8.046803501304822e-11,
+            "S12": -94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 3.3931399356923464e-11,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 2.8435797553433284e-12,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 3.3931399356923464e-11,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 2.8435797553433284e-12,
+            "S12": -44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -3.8622494959172915e-12,
+            "S12": -30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -6.272041479932211e-12,
+            "S12": -30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -2.009364896693455e-12,
+            "S12": -30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -4.419156880708375e-12,
+            "S12": -30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": -2.0346085927158697e-12,
+            "S12": -16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": -2.0276998396323576e-12,
+            "S12": -16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": 2.1343816471175447e-12,
+            "S12": -16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": 2.141290400201057e-12,
+            "S12": -16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": -1.891868606218594e-12,
+            "S12": -69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": -6.593273843558123e-11,
+            "S12": -69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": 6.481197523111604e-11,
+            "S12": -69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": 7.711043717613386e-13,
+            "S12": -69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -3.3449736036583744e-11,
+            "S12": -56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -3.4468580767388346e-11,
+            "S12": -56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -1.4920889176983643e-11,
+            "S12": -56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -1.5939737377235197e-11,
+            "S12": -56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": -1.7329135088700598e-12,
+            "S12": -34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": 2.3404500559820463e-11,
+            "S12": -34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": -2.0261759284267988e-11,
+            "S12": -34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": 4.8756545675820995e-12,
+            "S12": -34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": -2.466912524951015e-12,
+            "S12": -24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": -1.533617091827033e-12,
+            "S12": -24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": 3.554962314106236e-12,
+            "S12": -24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": 4.488257855650435e-12,
+            "S12": -24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": -1.301126903701516e-13,
+            "S12": -9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": 2.746545666679895e-14,
+            "S12": -9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": -2.459179778216414e-13,
+            "S12": -9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": -8.833983078469082e-14,
+            "S12": -9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        }
+      ]
+    },
+    "T_POS": {
+      "component_labels": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "rows": [
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": -2.9103830456733704e-11,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 0.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 0.0,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": -2.9103830456733704e-11,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": -2.9103830456733704e-11,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = -90.0000",
+            "number": 3
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 1.8706456522687986e-11,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 0.0000",
+            "number": 7
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": 2.9103830456733704e-11,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 90.0000",
+            "number": 11
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 39788.734375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -39788.734375,
+            "Mises": 68916.109375,
+            "S11": -4.333951600377084e-12,
+            "S12": 39788.734375,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 180.0000",
+            "number": 15
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": 0.0,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = -90.0000, (1-fraction = 0.000000, 2-fraction = -0.750000)",
+            "number": 2
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": 4.189902331336315e-12,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 0.0000, (1-fraction = 0.750000, 2-fraction = 0.000000)",
+            "number": 8
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": -2.9103830456733704e-11,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 90.0000, (1-fraction = 0.000000, 2-fraction = 0.750000)",
+            "number": 14
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 31830.98828125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -31830.98828125,
+            "Mises": 55132.890625,
+            "S11": -5.3371400181301265e-12,
+            "S12": 31830.98828125,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 180.0000, (1-fraction = -0.750000, 2-fraction = 0.000000)",
+            "number": 20
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": -2.3283064365386963e-10,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": -2.3283064365386963e-10,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 2.3283064365386963e-10,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 94141.4375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -94141.4375,
+            "Mises": 163057.75,
+            "S11": 2.3283064365386963e-10,
+            "S12": 94141.4375,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": -1.1641532182693481e-10,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": -1.7462298274040222e-10,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 1.7462298274040222e-10,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 44200.3671875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -44200.3671875,
+            "Mises": 76557.28125,
+            "S11": 1.1641532182693481e-10,
+            "S12": 44200.3671875,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -7.275957614183426e-12,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -7.275957614183426e-12,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -7.275957614183426e-12,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 30420.5,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -30420.5,
+            "Mises": 52689.8515625,
+            "S11": -7.275957614183426e-12,
+            "S12": 30420.5,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": -2.7284841053187847e-12,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": -2.7284841053187847e-12,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": 2.7284841053187847e-12,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 16962.0546875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -16962.0546875,
+            "Mises": 29379.140625,
+            "S11": 2.7284841053187847e-12,
+            "S12": 16962.0546875,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": -1.1641532182693481e-10,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": -1.7462298274040222e-10,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": 1.7462298274040222e-10,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 69463.78125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -69463.78125,
+            "Mises": 120314.796875,
+            "S11": 1.1641532182693481e-10,
+            "S12": 69463.78125,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": 0.0,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": 0.0,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -1.1641532182693481e-10,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 56651.1875,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -56651.1875,
+            "Mises": 98122.734375,
+            "S11": -1.1641532182693481e-10,
+            "S12": 56651.1875,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": 1.4551915228366852e-11,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": 2.9103830456733704e-11,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": -2.9103830456733704e-11,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 34847.37890625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -34847.37890625,
+            "Mises": 60357.4296875,
+            "S11": -1.4551915228366852e-11,
+            "S12": 34847.37890625,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": -3.637978807091713e-12,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": -3.637978807091713e-12,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": 3.637978807091713e-12,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 24489.22265625,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -24489.22265625,
+            "Mises": 42416.578125,
+            "S11": 3.637978807091713e-12,
+            "S12": 24489.22265625,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": 4.547473508864641e-13,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": 4.547473508864641e-13,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": -4.547473508864641e-13,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9130.43359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9130.43359375,
+            "Mises": 15814.375,
+            "S11": -4.547473508864641e-13,
+            "S12": 9130.43359375,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        }
+      ]
+    },
+    "VY_POS": {
+      "component_labels": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "rows": [
+        {
+          "components": {
+            "MaxPrincipal": 375000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4.042850919511895e-31,
+            "Mises": 375000.0,
+            "S11": 375000.0,
+            "S12": 3.893673306953199e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 4.042850919511895e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -375000.0,
+            "Mises": 375000.0,
+            "S11": -375000.0,
+            "S12": 3.893673306953199e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 375000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4.042850919511895e-31,
+            "Mises": 375000.0,
+            "S11": 375000.0,
+            "S12": 3.893673306953199e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 4.042850919511895e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -375000.0,
+            "Mises": 375000.0,
+            "S11": -375000.0,
+            "S12": 3.893673306953199e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.0517215353819664e-12,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9.817564816660962e-11,
+            "Mises": 9.8705717210823e-11,
+            "S11": -9.71239269564883e-11,
+            "S12": 1.01613700093095e-11,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = -90.0000",
+            "number": 3
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6.48760527715772e-28,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -159154.9375,
+            "Mises": 159154.9375,
+            "S11": -159154.9375,
+            "S12": 1.01613700093095e-11,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 0.0000",
+            "number": 7
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.250759579055684e-13,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.176286456074706e-10,
+            "Mises": 3.177913210361538e-10,
+            "S11": -3.1730357230586037e-10,
+            "S12": 1.01613700093095e-11,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 90.0000",
+            "number": 11
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 159154.9375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6.48760527715772e-28,
+            "Mises": 159154.9375,
+            "S11": 159154.9375,
+            "S12": 1.01613700093095e-11,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 180.0000",
+            "number": 15
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.2572072289468439e-12,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6.772870458915392e-11,
+            "Mises": 6.836597954418266e-11,
+            "S11": -6.64714949749623e-11,
+            "S12": 9.22762213861894e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = -90.0000, (1-fraction = 0.000000, 2-fraction = -0.750000)",
+            "number": 2
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6.6875875833105715e-28,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -127323.953125,
+            "Mises": 127323.953125,
+            "S11": -127323.953125,
+            "S12": 9.22762213861894e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 0.0000, (1-fraction = 0.750000, 2-fraction = 0.000000)",
+            "number": 8
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.557121773783284e-13,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.3937615778457655e-10,
+            "Mises": 2.395542098021508e-10,
+            "S11": -2.3902044232748665e-10,
+            "S12": 9.22762213861894e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 90.0000, (1-fraction = 0.000000, 2-fraction = 0.750000)",
+            "number": 14
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 127323.953125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6.6875875833105715e-28,
+            "Mises": 127323.953125,
+            "S11": 127323.953125,
+            "S12": 9.22762213861894e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 180.0000, (1-fraction = -0.750000, 2-fraction = 0.000000)",
+            "number": 20
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 750000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.2924909305725144e-31,
+            "Mises": 750000.0,
+            "S11": 750000.0,
+            "S12": 4.1465266008115786e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.2924909305725144e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -750000.0,
+            "Mises": 750000.0,
+            "S11": -750000.0,
+            "S12": 4.1465266008115786e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 750000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.2924909305725144e-31,
+            "Mises": 750000.0,
+            "S11": 750000.0,
+            "S12": 4.1465266008115786e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.2924909305725144e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -750000.0,
+            "Mises": 750000.0,
+            "S11": -750000.0,
+            "S12": 4.1465266008115786e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.0214254597559473e-31,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": 1.9468366534765996e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.0214254597559473e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": 1.9468366534765996e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.0214254597559473e-31,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": 1.9468366534765996e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.0214254597559473e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": 1.9468366534765996e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.5319995940933438e-30,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": 5.359570209514941e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.5319995940933438e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": 5.359570209514941e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.5319995940933438e-30,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": 5.359570209514941e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.5319995940933438e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": 5.359570209514941e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 75000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.6233745080547958e-31,
+            "Mises": 75000.0,
+            "S11": 75000.0,
+            "S12": 1.1034178264016439e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.6233745080547958e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -75000.0,
+            "Mises": 75000.0,
+            "S11": -75000.0,
+            "S12": 1.1034178264016439e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 75000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.6233745080547958e-31,
+            "Mises": 75000.0,
+            "S11": 75000.0,
+            "S12": 1.1034178264016439e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.6233745080547958e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -75000.0,
+            "Mises": 75000.0,
+            "S11": -75000.0,
+            "S12": 1.1034178264016439e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 600000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.317514734521671e-33,
+            "Mises": 600000.0,
+            "S11": 600000.0,
+            "S12": 5.648458859929678e-14,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.317514734521671e-33,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -600000.0,
+            "Mises": 600000.0,
+            "S11": -600000.0,
+            "S12": 5.648458859929678e-14,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 600000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.317514734521671e-33,
+            "Mises": 600000.0,
+            "S11": 600000.0,
+            "S12": 5.648458859929678e-14,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.317514734521671e-33,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -600000.0,
+            "Mises": 600000.0,
+            "S11": -600000.0,
+            "S12": 5.648458859929678e-14,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 500000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.8862907467348522e-31,
+            "Mises": 499999.96875,
+            "S11": 500000.0,
+            "S12": -3.071067163594454e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.8862907467348522e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -500000.0,
+            "Mises": 499999.96875,
+            "S11": -500000.0,
+            "S12": -3.071067163594454e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 500000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.8862907467348522e-31,
+            "Mises": 499999.96875,
+            "S11": 500000.0,
+            "S12": -3.071067163594454e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.8862907467348522e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -500000.0,
+            "Mises": 499999.96875,
+            "S11": -500000.0,
+            "S12": -3.071067163594454e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 250000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.709798769712406e-31,
+            "Mises": 249999.984375,
+            "S11": 250000.0,
+            "S12": -3.778160510142792e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.709798769712406e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -250000.0,
+            "Mises": 249999.984375,
+            "S11": -250000.0,
+            "S12": -3.778160510142792e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 250000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.709798769712406e-31,
+            "Mises": 249999.984375,
+            "S11": 250000.0,
+            "S12": -3.778160510142792e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.709798769712406e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -250000.0,
+            "Mises": 249999.984375,
+            "S11": -250000.0,
+            "S12": -3.778160510142792e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 125000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.2559034338043005e-30,
+            "Mises": 124999.9921875,
+            "S11": 125000.0,
+            "S12": -5.310253647396179e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.2559034338043005e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -125000.0,
+            "Mises": 124999.9921875,
+            "S11": -125000.0,
+            "S12": -5.310253647396179e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 125000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.2559034338043005e-30,
+            "Mises": 124999.9921875,
+            "S11": 125000.0,
+            "S12": -5.310253647396179e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 2.2559034338043005e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -125000.0,
+            "Mises": 124999.9921875,
+            "S11": -125000.0,
+            "S12": -5.310253647396179e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 37500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.763002860202594e-31,
+            "Mises": 37500.0,
+            "S11": 37500.0,
+            "S12": 1.187908278688088e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.763002860202594e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -37500.0,
+            "Mises": 37500.0,
+            "S11": -37500.0,
+            "S12": 1.187908278688088e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 37500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.763002860202594e-31,
+            "Mises": 37500.0,
+            "S11": 37500.0,
+            "S12": 1.187908278688088e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.763002860202594e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -37500.0,
+            "Mises": 37500.0,
+            "S11": -37500.0,
+            "S12": 1.187908278688088e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        }
+      ]
+    },
+    "VZ_POS": {
+      "component_labels": [
+        "S11",
+        "S22",
+        "S12"
+      ],
+      "rows": [
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.274844230812105e-31,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": -3.144889947417906e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 187500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.274844230812105e-31,
+            "Mises": 187500.0,
+            "S11": 187500.0,
+            "S12": -3.144889947417906e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.274844230812105e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": -3.144889947417906e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.274844230812105e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -187500.0,
+            "Mises": 187500.0,
+            "S11": -187500.0,
+            "S12": -3.144889947417906e-13,
+            "S22": 0.0
+          },
+          "element_id": 10,
+          "integration_point": 1,
+          "section": "RECT",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 159154.9375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.62190131928943e-28,
+            "Mises": 159154.9375,
+            "S11": 159154.9375,
+            "S12": -5.08068500465475e-12,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = -90.0000",
+            "number": 3
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 8.760614456093663e-11,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -2.946524046889415e-13,
+            "Mises": 8.77538458565752e-11,
+            "S11": 8.731149137020111e-11,
+            "S12": -5.08068500465475e-12,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 0.0000",
+            "number": 7
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.62190131928943e-28,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -159154.9375,
+            "Mises": 159154.9375,
+            "S11": -159154.9375,
+            "S12": -5.08068500465475e-12,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 90.0000",
+            "number": 11
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 8.061064158846817e-14,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.2022273721565853e-10,
+            "Mises": 3.2026306606702803e-10,
+            "S11": -3.2014213502407074e-10,
+            "S12": -5.08068500465475e-12,
+            "S22": 0.0
+          },
+          "element_id": 20,
+          "integration_point": 1,
+          "section": "CIRC",
+          "section_point": {
+            "description": "Rel. radius = 1.0000, Angle = 180.0000",
+            "number": 15
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 127323.953125,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.3927210725853176e-28,
+            "Mises": 127323.953125,
+            "S11": 127323.953125,
+            "S12": -4.2110182528476425e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = -90.0000, (1-fraction = 0.000000, 2-fraction = -0.750000)",
+            "number": 2
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 4.405822928710279e-11,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -4.0248270753544257e-13,
+            "Mises": 4.426084151964993e-11,
+            "S11": 4.3655745685100555e-11,
+            "S12": -4.2110182528476425e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 0.0000, (1-fraction = 0.750000, 2-fraction = 0.000000)",
+            "number": 8
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.3927210725853176e-28,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -127323.953125,
+            "Mises": 127323.953125,
+            "S11": -127323.953125,
+            "S12": -4.2110182528476425e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 90.0000, (1-fraction = 0.000000, 2-fraction = 0.750000)",
+            "number": 14
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.5212372919508332e-13,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.1656745013688408e-10,
+            "Mises": 1.1664358368079775e-10,
+            "S11": -1.1641532182693481e-10,
+            "S12": -4.2110182528476425e-12,
+            "S22": 0.0
+          },
+          "element_id": 30,
+          "integration_point": 1,
+          "section": "THICK PIPE",
+          "section_point": {
+            "description": "Angle = 180.0000, (1-fraction = -0.750000, 2-fraction = 0.000000)",
+            "number": 20
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 750000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.982180559103024e-31,
+            "Mises": 750000.0,
+            "S11": 750000.0,
+            "S12": -6.69823517398388e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 750000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -5.982180559103024e-31,
+            "Mises": 750000.0,
+            "S11": 750000.0,
+            "S12": -6.69823517398388e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.982180559103024e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -750000.0,
+            "Mises": 750000.0,
+            "S11": -750000.0,
+            "S12": -6.69823517398388e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 5.982180559103024e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -750000.0,
+            "Mises": 750000.0,
+            "S11": -750000.0,
+            "S12": -6.69823517398388e-13,
+            "S22": 0.0
+          },
+          "element_id": 40,
+          "integration_point": 1,
+          "section": "RECT SQUARE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 375000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.054968846162421e-30,
+            "Mises": 375000.0,
+            "S11": 375000.0,
+            "S12": -6.289779894835812e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 375000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.054968846162421e-30,
+            "Mises": 375000.0,
+            "S11": 375000.0,
+            "S12": -6.289779894835812e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.054968846162421e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -375000.0,
+            "Mises": 375000.0,
+            "S11": -375000.0,
+            "S12": -6.289779894835812e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.054968846162421e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -375000.0,
+            "Mises": 375000.0,
+            "S11": -375000.0,
+            "S12": -6.289779894835812e-13,
+            "S22": 0.0
+          },
+          "element_id": 50,
+          "integration_point": 1,
+          "section": "RECT WIDE",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 46875.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9.994257976905872e-31,
+            "Mises": 46875.0,
+            "S11": 46875.0,
+            "S12": -2.1644418570811175e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 46875.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -9.994257976905872e-31,
+            "Mises": 46875.0,
+            "S11": 46875.0,
+            "S12": -2.1644418570811175e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9.994257976905872e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -46875.0,
+            "Mises": 46875.0,
+            "S11": -46875.0,
+            "S12": -2.1644418570811175e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 9.994257976905872e-31,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -46875.0,
+            "Mises": 46875.0,
+            "S11": -46875.0,
+            "S12": -2.1644418570811175e-13,
+            "S22": 0.0
+          },
+          "element_id": 60,
+          "integration_point": 1,
+          "section": "RECT ASPECT 4",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6.766878991808e-30,
+            "Mises": 7500.0,
+            "S11": 7500.0,
+            "S12": -2.2528113814528072e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7500.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -6.766878991808e-30,
+            "Mises": 7500.0,
+            "S11": 7500.0,
+            "S12": -2.2528113814528072e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6.766878991808e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7500.0,
+            "Mises": 7500.0,
+            "S11": -7500.0,
+            "S12": -2.2528113814528072e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 6.766878991808e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7500.0,
+            "Mises": 7500.0,
+            "S11": -7500.0,
+            "S12": -2.2528113814528072e-13,
+            "S22": 0.0
+          },
+          "element_id": 70,
+          "integration_point": 1,
+          "section": "RECT ASPECT 10",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 480000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.773243572565708e-30,
+            "Mises": 480000.0,
+            "S11": 480000.0,
+            "S12": -9.225816725161318e-13,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 480000.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.773243572565708e-30,
+            "Mises": 480000.0,
+            "S11": 480000.0,
+            "S12": -9.225816725161318e-13,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.773243572565708e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -480000.0,
+            "Mises": 480000.0,
+            "S11": -480000.0,
+            "S12": -9.225816725161318e-13,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.773243572565708e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -480000.0,
+            "Mises": 480000.0,
+            "S11": -480000.0,
+            "S12": -9.225816725161318e-13,
+            "S22": 0.0
+          },
+          "element_id": 80,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.25",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 333333.34375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.0394247671439835e-30,
+            "Mises": 333333.34375,
+            "S11": 333333.34375,
+            "S12": -5.886212199081309e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 333333.34375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.0394247671439835e-30,
+            "Mises": 333333.34375,
+            "S11": 333333.34375,
+            "S12": -5.886212199081309e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.0394247671439835e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -333333.34375,
+            "Mises": 333333.34375,
+            "S11": -333333.34375,
+            "S12": -5.886212199081309e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.0394247671439835e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -333333.34375,
+            "Mises": 333333.34375,
+            "S11": -333333.34375,
+            "S12": -5.886212199081309e-13,
+            "S22": 0.0
+          },
+          "element_id": 90,
+          "integration_point": 1,
+          "section": "RECT ASPECT 1.5",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 83333.3359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.5731686036037745e-30,
+            "Mises": 83333.3359375,
+            "S11": 83333.3359375,
+            "S12": -3.620737336253871e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 83333.3359375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1.5731686036037745e-30,
+            "Mises": 83333.3359375,
+            "S11": 83333.3359375,
+            "S12": -3.620737336253871e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.5731686036037745e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -83333.3359375,
+            "Mises": 83333.3359375,
+            "S11": -83333.3359375,
+            "S12": -3.620737336253871e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1.5731686036037745e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -83333.3359375,
+            "Mises": 83333.3359375,
+            "S11": -83333.3359375,
+            "S12": -3.620737336253871e-13,
+            "S22": 0.0
+          },
+          "element_id": 100,
+          "integration_point": 1,
+          "section": "RECT ASPECT 3",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 20833.333984375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.107742436285871e-30,
+            "Mises": 20833.333984375,
+            "S11": 20833.333984375,
+            "S12": -2.5444967313714706e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 20833.333984375,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -3.107742436285871e-30,
+            "Mises": 20833.333984375,
+            "S11": 20833.333984375,
+            "S12": -2.5444967313714706e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.107742436285871e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -20833.333984375,
+            "Mises": 20833.333984375,
+            "S11": -20833.333984375,
+            "S12": -2.5444967313714706e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 3.107742436285871e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -20833.333984375,
+            "Mises": 20833.333984375,
+            "S11": -20833.333984375,
+            "S12": -2.5444967313714706e-13,
+            "S22": 0.0
+          },
+          "element_id": 110,
+          "integration_point": 1,
+          "section": "RECT ASPECT 6",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1875.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7.842856178968769e-30,
+            "Mises": 1875.0,
+            "S11": 1875.0,
+            "S12": -1.2126564130025136e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Left Corner",
+            "number": 1
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 1875.0,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -7.842856178968769e-30,
+            "Mises": 1875.0,
+            "S11": 1875.0,
+            "S12": -1.2126564130025136e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Bottom Right Corner",
+            "number": 5
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7.842856178968769e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1875.0,
+            "Mises": 1875.0,
+            "S11": -1875.0,
+            "S12": -1.2126564130025136e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Left Corner",
+            "number": 21
+          }
+        },
+        {
+          "components": {
+            "MaxPrincipal": 7.842856178968769e-30,
+            "MidPrincipal": 0.0,
+            "MinPrincipal": -1875.0,
+            "Mises": 1875.0,
+            "S11": -1875.0,
+            "S12": -1.2126564130025136e-13,
+            "S22": 0.0
+          },
+          "element_id": 120,
+          "integration_point": 1,
+          "section": "RECT ASPECT 20",
+          "section_point": {
+            "description": "Top Right Corner",
+            "number": 25
+          }
+        }
+      ]
+    }
+  }
+}

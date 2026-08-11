@@ -84,8 +84,22 @@ def test_b31_single_point_recovers_constitutive_n_my_mz_and_s11(
     assert {(row.element_id, row.integration_point) for row in rows} == {(7, 1)}
     assert (section_row.element_id, section_row.integration_point) == (7, 1)
     assert section_row.N == pytest.approx(axial)
+    assert section_row.Vy == pytest.approx(0.0, abs=1.0e-8)
+    assert section_row.Vz == pytest.approx(0.0, abs=1.0e-8)
+    assert section_row.T == pytest.approx(0.0, abs=1.0e-8)
     assert section_row.My == pytest.approx(my)
     assert section_row.Mz == pytest.approx(mz)
+    assert section_row.values() == pytest.approx(
+        {
+            "N": axial,
+            "Vy": 0.0,
+            "Vz": 0.0,
+            "T": 0.0,
+            "My": my,
+            "Mz": mz,
+        },
+        abs=1.0e-8,
+    )
     for row in rows:
         expected = (
             axial / AREA

@@ -36,7 +36,7 @@ def _section(section_type: str):
         ),
         (
             "hollow_circle",
-            ((1, 2.0, 0.0), (2, 0.0, 2.0), (3, -2.0, 0.0), (4, 0.0, -2.0)),
+            ((1, 1.5, 0.0), (2, 0.0, 1.5), (3, -1.5, 0.0), (4, 0.0, -1.5)),
         ),
     ],
 )
@@ -119,11 +119,12 @@ def test_circular_pure_bending_signs_follow_axis_intersections(
         BeamSectionEndForces(0.0, 0.0, section.Izz, 0.0),
     )
 
+    point_radius = 2.0 if section_type == "solid_circle" else 1.5
     assert [row.s11 for row in about_y.point_stresses] == pytest.approx(
-        [0.0, 2.0, 0.0, -2.0]
+        [0.0, point_radius, 0.0, -point_radius]
     )
     assert [row.s11 for row in about_z.point_stresses] == pytest.approx(
-        [-2.0, 0.0, 2.0, 0.0]
+        [-point_radius, 0.0, point_radius, 0.0]
     )
 
 
@@ -144,7 +145,7 @@ def test_rectangle_biaxial_bending_matches_abaqus_b31_section_points() -> None:
 
 
 @pytest.mark.parametrize("section_type", ("solid_circle", "hollow_circle"))
-def test_circular_pure_torsion_matches_outer_radius_solution(
+def test_circular_pure_torsion_matches_abaqus_section_point_radius(
     section_type: str,
 ) -> None:
     section = _section(section_type)
@@ -156,11 +157,14 @@ def test_circular_pure_torsion_matches_outer_radius_solution(
     )
 
     assert [row.s11 for row in result.point_stresses] == [0.0] * 4
-    assert [row.s12 for row in result.point_stresses] == pytest.approx([5.0] * 4)
+    expected = 5.0 if section_type == "solid_circle" else 3.75
+    assert [row.s12 for row in result.point_stresses] == pytest.approx(
+        [expected] * 4
+    )
     assert result.s12_abs_max == pytest.approx(5.0)
 
 
-def test_rectangle_torsion_has_zero_corner_shear_and_nonzero_true_maximum() -> None:
+def test_rectangle_torsion_publishes_abaqus_default_corner_shear() -> None:
     section = _section("rectangle")
 
     result = recover_section_point_stress(
@@ -168,8 +172,10 @@ def test_rectangle_torsion_has_zero_corner_shear_and_nonzero_true_maximum() -> N
         BeamSectionEndForces(0.0, 0.0, 0.0, 9.0),
     )
 
-    assert [row.s12 for row in result.point_stresses] == [0.0] * 4
-    assert result.s12_abs_max > 0.0
+    assert [row.s12 for row in result.point_stresses] == pytest.approx(
+        [0.7959209626164752] * 4
+    )
+    assert result.s12_abs_max > max(abs(row.s12) for row in result.point_stresses)
     negative = recover_section_point_stress(
         section,
         BeamSectionEndForces(0.0, 0.0, 0.0, -9.0),
@@ -177,7 +183,7 @@ def test_rectangle_torsion_has_zero_corner_shear_and_nonzero_true_maximum() -> N
     assert negative.s12_abs_max == pytest.approx(result.s12_abs_max)
 
 
-def test_square_torsion_maximum_matches_saint_venant_series_benchmark() -> None:
+def test_square_torsion_separates_abaqus_point_value_from_true_maximum() -> None:
     section = parse_beam2_section(
         {"section_type": "rectangle", "height": 2.0, "width": 2.0}
     )
@@ -187,8 +193,13 @@ def test_square_torsion_maximum_matches_saint_venant_series_benchmark() -> None:
         BeamSectionEndForces(0.0, 0.0, 0.0, 8.0),
     )
 
-    # For a square of side a: tau_max = 4.80387553775 T / a^3.
-    assert result.s12_abs_max == pytest.approx(4.803875537753306)
+    # Abaqus 2023 integrated RECT, default 5x5 section model.
+    assert [row.s12 for row in result.point_stresses] == pytest.approx(
+        [1.506263] * 4,
+        rel=1.0e-6,
+    )
+    # The section summary retains the true Saint-Venant boundary maximum.
+    assert result.s12_abs_max == pytest.approx(4.795132425895154)
 
 
 def test_combined_stress_invariants_are_derived_independently_per_point() -> None:
@@ -205,13 +216,25 @@ def test_combined_stress_invariants_are_derived_independently_per_point() -> Non
 
     assert len({row.s11 for row in result.point_stresses}) > 1
     for row in result.point_stresses:
-        span = np.sqrt(row.s11**2 + 4.0 * row.s12**2)
-        assert row.mises == pytest.approx(np.sqrt(row.s11**2 + 3.0 * row.s12**2))
+        span = np.sqrt((row.s11 - row.s22) ** 2 + 4.0 * row.s12**2)
+        assert row.mises == pytest.approx(
+            np.sqrt(
+                row.s11**2
+                - row.s11 * row.s22
+                + row.s22**2
+                + 3.0 * row.s12**2
+            )
+        )
+        plane = (
+            (row.s11 + row.s22 + span) / 2.0,
+            (row.s11 + row.s22 - span) / 2.0,
+        )
+        principals = sorted((*plane, 0.0), reverse=True)
         assert (
             row.max_principal,
             row.mid_principal,
             row.min_principal,
-        ) == pytest.approx(((row.s11 + span) / 2.0, 0.0, (row.s11 - span) / 2.0))
+        ) == pytest.approx(principals)
         assert row.max_principal >= row.mid_principal >= row.min_principal
 
     sampled_abs_max = max(abs(row.s11) for row in result.point_stresses)

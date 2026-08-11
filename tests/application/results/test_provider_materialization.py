@@ -732,7 +732,15 @@ def test_beam_one_integration_recovery_materializes_requested_section_points(
         assert (location.element_id, location.integration_point) == (30, 1)
         assert location.section_point is not None
         assert location.section_point.number == number
-        assert field.descriptor.columns == ("S11",)
+        assert field.descriptor.columns == (
+            "S11",
+            "S22",
+            "S12",
+            "Mises",
+            "MaxPrincipal",
+            "MidPrincipal",
+            "MinPrincipal",
+        )
         assert field.descriptor.association is FieldAssociation.INTEGRATION_POINT
 
 

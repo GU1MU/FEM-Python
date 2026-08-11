@@ -1,0 +1,153 @@
+*Heading
+Phase 5 Abaqus B31 section-point shear oracle
+*Preprint, echo=NO, model=YES, history=NO, contact=NO
+*Node
+1, 0., 0., 0.
+2, 2., 0., 0.
+3, 0., 2., 0.
+4, 2., 2., 0.
+5, 0., 4., 0.
+6, 2., 4., 0.
+7, 0., 6., 0.
+8, 2., 6., 0.
+9, 0., 8., 0.
+10, 2., 8., 0.
+11, 0., 10., 0.
+12, 2., 10., 0.
+13, 0., 12., 0.
+14, 2., 12., 0.
+15, 0., 14., 0.
+16, 2., 14., 0.
+17, 0., 16., 0.
+18, 2., 16., 0.
+19, 0., 18., 0.
+20, 2., 18., 0.
+21, 0., 20., 0.
+22, 2., 20., 0.
+23, 0., 22., 0.
+24, 2., 22., 0.
+*Element, type=B31
+10, 1, 2
+20, 3, 4
+30, 5, 6
+40, 7, 8
+50, 9, 10
+60, 11, 12
+70, 13, 14
+80, 15, 16
+90, 17, 18
+100, 19, 20
+110, 21, 22
+120, 23, 24
+*Elset, elset=RECT
+10
+*Elset, elset=CIRC
+20
+*Elset, elset=THICK_PIPE
+30
+*Elset, elset=RECT_SQUARE
+40
+*Elset, elset=RECT_WIDE
+50
+*Elset, elset=RECT_ASPECT4
+60
+*Elset, elset=RECT_ASPECT10
+70
+*Elset, elset=RECT_ASPECT1_25
+80
+*Elset, elset=RECT_ASPECT1_5
+90
+*Elset, elset=RECT_ASPECT3
+100
+*Elset, elset=RECT_ASPECT6
+110
+*Elset, elset=RECT_ASPECT20
+120
+*Nset, nset=FIXED
+1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23
+*Nset, nset=TIPS
+2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24
+*Material, name=STEEL
+*Elastic
+210000000000., 0.3
+*Beam Section, elset=RECT, material=STEEL, section=RECT
+0.2, 0.4
+0., 1., 0.
+*Beam Section, elset=CIRC, material=STEEL, section=CIRC
+0.2
+0., 1., 0.
+*Beam Section, elset=THICK_PIPE, material=STEEL, section=THICK PIPE
+0.2, 0.1
+0., 1., 0.
+*Beam Section, elset=RECT_SQUARE, material=STEEL, section=RECT
+0.2, 0.2
+0., 1., 0.
+*Beam Section, elset=RECT_WIDE, material=STEEL, section=RECT
+0.4, 0.2
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT4, material=STEEL, section=RECT
+0.2, 0.8
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT10, material=STEEL, section=RECT
+0.2, 2.0
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT1_25, material=STEEL, section=RECT
+0.2, 0.25
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT1_5, material=STEEL, section=RECT
+0.2, 0.3
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT3, material=STEEL, section=RECT
+0.2, 0.6
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT6, material=STEEL, section=RECT
+0.2, 1.2
+0., 1., 0.
+*Beam Section, elset=RECT_ASPECT20, material=STEEL, section=RECT
+0.2, 4.0
+0., 1., 0.
+*Boundary
+FIXED, 1, 6, 0.
+*Step, name=VY_POS
+*Static
+*Cload, op=NEW
+TIPS, 2, 1000.
+*Output, field
+*Element Output
+S, SF, SM
+*End Step
+*Step, name=VZ_POS
+*Static
+*Cload, op=NEW
+TIPS, 3, 1000.
+*Output, field
+*Element Output
+S, SF, SM
+*End Step
+*Step, name=T_POS
+*Static
+*Cload, op=NEW
+TIPS, 4, 500.
+*Output, field
+*Element Output
+S, SF, SM
+*End Step
+*Step, name=T_NEG
+*Static
+*Cload, op=NEW
+TIPS, 4, -500.
+*Output, field
+*Element Output
+S, SF, SM
+*End Step
+*Step, name=COMBINED
+*Static
+*Cload, op=NEW
+TIPS, 1, 700.
+TIPS, 2, 1000.
+TIPS, 3, -1500.
+TIPS, 4, 500.
+*Output, field
+*Element Output
+S, SF, SM
+*End Step

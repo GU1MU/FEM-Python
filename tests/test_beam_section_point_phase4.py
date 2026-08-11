@@ -49,6 +49,7 @@ from fem.elements.beam_section import (
 )
 from fem.io import load_result_archive, save_result_archive
 from fem.io.result_csv import dumps_result_csv
+from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.post.stress import beam as beam_stress
 from fem.post.stress.beam import recover_integration_point_s11
 from fem.solvers import static_linear
@@ -65,6 +66,12 @@ _LOCAL_Z_FORCE = -2.0
 _TORQUE = 1.5
 _POINT_COLUMNS = (
     "S11",
+    "S22",
+    "S12",
+    "Mises",
+    "MaxPrincipal",
+    "MidPrincipal",
+    "MinPrincipal",
 )
 _SECTION_CASES = (
     ("rectangle", {"height": 0.4, "width": 0.2}),
@@ -208,11 +215,16 @@ def _independent_integration_point_oracle(
         )
         area = math.pi * (outer_radius**2 - inner_radius**2)
         iyy = izz = math.pi * (outer_radius**4 - inner_radius**4) / 4.0
+        point_radius = (
+            outer_radius
+            if section_type == "solid_circle"
+            else (outer_radius + inner_radius) / 2.0
+        )
         points = (
-            (outer_radius, 0.0),
-            (0.0, outer_radius),
-            (-outer_radius, 0.0),
-            (0.0, -outer_radius),
+            (point_radius, 0.0),
+            (0.0, point_radius),
+            (-point_radius, 0.0),
+            (0.0, -point_radius),
         )
 
     axial = _AXIAL_FORCE / area
@@ -320,7 +332,7 @@ def test_inline_sections_complete_solve_query_csv_archive_and_gui_contract(
         assert point_number is not None
         row = _integration_point_row(field)
         np.testing.assert_allclose(
-            field.values[row],
+            field.values[row, :1],
             point_oracle[point_number],
             rtol=2.0e-10,
             atol=1.0e-8,
@@ -410,7 +422,7 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
     tmp_path: Path,
 ) -> None:
     _application()
-    _result, provider, outcome = _solve_and_request_stress(
+    result, provider, outcome = _solve_and_request_stress(
         "rectangle",
         {"height": 0.4, "width": 0.2},
     )
@@ -418,9 +430,9 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
     sm = _field(provider, ResultVariable.SM)
 
     assert sf.descriptor.quantity is PhysicalQuantity.FORCE
-    assert sf.descriptor.columns == ("N",)
+    assert sf.descriptor.columns == ("N", "Vy", "Vz")
     assert sm.descriptor.quantity is PhysicalQuantity.MOMENT
-    assert sm.descriptor.columns == ("My", "Mz")
+    assert sm.descriptor.columns == ("T", "My", "Mz")
     assert sf.key.request.field_id.section_point_number is None
     assert sm.key.request.field_id.section_point_number is None
     assert len(sf.locations) == len(sm.locations) == 1
@@ -431,15 +443,31 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
         for field in (sf, sm)
         for location in field.locations
     )
-    assert sf.values[0] == pytest.approx((_AXIAL_FORCE,))
-    assert sm.values[0] == pytest.approx(
+    owner = get_element_kernel("Beam2").local_integration_point_forces(
+        result.model.mesh,
+        result.model.mesh.elements[0],
+        result.U,
+    )
+    assert (owner.N, owner.Vy, owner.Vz, owner.T) == pytest.approx(
+        (_AXIAL_FORCE, _LOCAL_Y_FORCE, _LOCAL_Z_FORCE, _TORQUE)
+    )
+    assert sf.values[0] == pytest.approx((owner.N, owner.Vy, owner.Vz))
+    assert sm.values[0] == pytest.approx((owner.T, owner.My, owner.Mz))
+    assert (owner.My, owner.Mz) == pytest.approx(
         (
             -_LOCAL_Z_FORCE * _LENGTH / 2.0,
             _LOCAL_Y_FORCE * _LENGTH / 2.0,
         )
     )
 
-    for field, component in ((sf, "N"), (sm, "My"), (sm, "Mz")):
+    for field, component in (
+        (sf, "N"),
+        (sf, "Vy"),
+        (sf, "Vz"),
+        (sm, "T"),
+        (sm, "My"),
+        (sm, "Mz"),
+    ):
         queried = provider.query(
             ResultQuery(field.key, component, element_ids=(10,))
         )
@@ -460,6 +488,14 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
         assert csv_row["field_position"] == "integration_point"
         assert csv_row["integration_point"] == "1"
         assert csv_row["section_point_number"] == ""
+        vtk_path = tmp_path / f"{field.descriptor.field_id.variable.value}-{component}.vtk"
+        write_result_vtk(vtk_path, export)
+        vtk = read_result_vtk(vtk_path)
+        assert vtk.quantity is field.descriptor.quantity
+        assert vtk.selection.component == component
+        assert vtk.values == pytest.approx((queried.records[0].value,))
+        assert vtk.cell_locations[0].integration_point == 1
+        assert vtk.cell_locations[0].section_point is None
 
     archive_path = tmp_path / "typed-section-forces.femres"
     save_result_archive(
@@ -492,8 +528,8 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
         for index in range(step.childCount())
     }
     for label, expected_components in (
-        ("截面力 SF（积分点）", ("N",)),
-        ("截面矩 SM（积分点）", ("My", "Mz")),
+        ("截面力 SF（积分点）", ("N", "Vy", "Vz")),
+        ("截面矩 SM（积分点）", ("T", "My", "Mz")),
     ):
         item = variables[label]
         assert "积分点" in item.text(0)
@@ -677,7 +713,7 @@ def test_four_point_data_and_operation_budgets_are_bounded(
     }
     request.node.user_properties.extend(metrics.items())
 
-    assert value_bytes == 4 * np.dtype(float).itemsize
+    assert value_bytes == 4 * len(_POINT_COLUMNS) * np.dtype(float).itemsize
     assert byte_ratio <= 10.0
     assert four_point_materialization_seconds <= max(
         12.0 * legacy_three_component_seconds,

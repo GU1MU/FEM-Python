@@ -38,7 +38,15 @@ from tests.helpers.phase8_result_characterization import (
 )
 
 
-_POINT_COMPONENTS = ("S11",)
+_POINT_COMPONENTS = (
+    "S11",
+    "S22",
+    "S12",
+    "Mises",
+    "MaxPrincipal",
+    "MidPrincipal",
+    "MinPrincipal",
+)
 _POSITION_LABELS = (
     "右上",
     "左上",
@@ -232,8 +240,8 @@ def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations() -> None:
         )
 
     for variable, expected_components in (
-        (ResultVariable.SF, ("N",)),
-        (ResultVariable.SM, ("My", "Mz")),
+        (ResultVariable.SF, ("N", "Vy", "Vz")),
+        (ResultVariable.SM, ("T", "My", "Mz")),
     ):
         variable_index = window.result_variable_combo.findData(variable)
         assert variable_index >= 0

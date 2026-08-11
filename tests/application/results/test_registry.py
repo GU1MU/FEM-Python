@@ -360,7 +360,7 @@ def test_truss_registry_separates_strain_and_stress_recovery() -> None:
     assert stress.descriptor.quantity is PhysicalQuantity.STRESS
 
 
-def test_beam_registry_publishes_only_point_qualified_integration_s11() -> None:
+def test_beam_registry_publishes_point_qualified_b31_stress_tensor() -> None:
     profile = classify_result_model(
         _model(("Beam2",), dofs_per_node=6)
     )
@@ -382,13 +382,19 @@ def test_beam_registry_publishes_only_point_qualified_integration_s11() -> None:
     )
     assert all(
         entry.descriptor.association is FieldAssociation.INTEGRATION_POINT
-        and entry.descriptor.components == ("S11",)
-        and entry.descriptor.derived_components == ()
+        and entry.descriptor.components == ("S11", "S22", "S12")
+        and entry.descriptor.derived_components
+        == (
+            "Mises",
+            "MaxPrincipal",
+            "MidPrincipal",
+            "MinPrincipal",
+        )
         for entry in entries
     )
 
 
-def test_beam_registry_publishes_typed_single_ip_axial_force_and_moments() -> None:
+def test_beam_registry_publishes_all_typed_single_ip_resultants() -> None:
     profile = classify_result_model(
         _model(("Beam2",), dofs_per_node=6)
     )
@@ -408,7 +414,9 @@ def test_beam_registry_publishes_typed_single_ip_axial_force_and_moments() -> No
     )
     assert sf.descriptor.association is FieldAssociation.INTEGRATION_POINT
     assert sf.descriptor.quantity is PhysicalQuantity.FORCE
-    assert sf.descriptor.components == ("N",)
+    # Abaqus SF1/SF2/SF3 map to project-local N/Vy/Vz.
+    assert sf.descriptor.components == ("N", "Vy", "Vz")
+    assert sf.recovery_contract == 4
     assert sf.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_SF
     assert sm.descriptor.field_id == ResultFieldId(
         ResultVariable.SM,
@@ -416,7 +424,10 @@ def test_beam_registry_publishes_typed_single_ip_axial_force_and_moments() -> No
     )
     assert sm.descriptor.association is FieldAssociation.INTEGRATION_POINT
     assert sm.descriptor.quantity is PhysicalQuantity.MOMENT
-    assert sm.descriptor.components == ("My", "Mz")
+    # Abaqus SM1/SM2/SM3 map to project-local T/My/Mz.
+    assert sm.descriptor.components == ("T", "My", "Mz")
+    assert sm.descriptor.default_component == "T"
+    assert sm.recovery_contract == 4
     assert sm.recovery_kind is FieldRecoveryKind.BEAM_INTEGRATION_POINT_SM
 
 

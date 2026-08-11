@@ -345,30 +345,27 @@ def test_inline_b31_solve_s_fields_and_femres_round_trip(tmp_path: Path) -> None
         field
         for field in materialized.snapshot.fields
         if field.key.request.field_id.variable is ResultVariable.S
-        and field.key.request.field_id.position
-        in (FieldPosition.SECTION_POINT, FieldPosition.SECTION_END)
+        and field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
 
-    assert len(stress_fields) == 5
-    point_fields = tuple(
-        field
-        for field in stress_fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_POINT
-    )
-    section_field = next(
-        field
-        for field in stress_fields
-        if field.key.request.field_id.position is FieldPosition.SECTION_END
-    )
+    assert len(stress_fields) == 4
     assert tuple(
         field.key.request.field_id.section_point_number
-        for field in point_fields
+        for field in stress_fields
     ) == (1, 2, 3, 4)
     assert all(
-        field.descriptor.components == ("S11", "S12")
-        for field in point_fields
+        field.descriptor.components == ("S11", "S22", "S12")
+        and field.descriptor.derived_components
+        == (
+            "Mises",
+            "MaxPrincipal",
+            "MidPrincipal",
+            "MinPrincipal",
+        )
+        and field.key.recovery_contract == 4
+        for field in stress_fields
     )
-    assert section_field.descriptor.components == ("S11Max", "S11Min")
     assert all(np.all(np.isfinite(field.values)) for field in stress_fields)
 
     archive_path = tmp_path / "inline_b31_acceptance.femres"
@@ -381,8 +378,8 @@ def test_inline_b31_solve_s_fields_and_femres_round_trip(tmp_path: Path) -> None
         field
         for field in loaded.fields
         if field.key.request.field_id.variable is ResultVariable.S
-        and field.key.request.field_id.position
-        in (FieldPosition.SECTION_POINT, FieldPosition.SECTION_END)
+        and field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number is not None
     )
     assert tuple(field.key for field in loaded_stress) == tuple(
         field.key for field in stress_fields

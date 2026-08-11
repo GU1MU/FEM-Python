@@ -164,6 +164,7 @@ class BeamSectionPointEndStress:
     displacement: tuple[float, float, float]
     section_point: BeamSectionPoint
     s11: float
+    s22: float
     s12: float
     mises: float
     max_principal: float
@@ -187,6 +188,7 @@ class BeamSectionPointEndStress:
             raise TypeError("section_point must be BeamSectionPoint")
         for name in (
             "s11",
+            "s22",
             "s12",
             "mises",
             "max_principal",
@@ -201,6 +203,7 @@ class BeamSectionPointEndStress:
     def values(self) -> dict[str, float]:
         return {
             "S11": self.s11,
+            "S22": self.s22,
             "S12": self.s12,
             "Mises": self.mises,
             "MaxPrincipal": self.max_principal,
@@ -251,6 +254,7 @@ class BeamSectionPointField:
     position: ClassVar[str] = "section_point"
     component_names: ClassVar[tuple[str, ...]] = (
         "S11",
+        "S22",
         "S12",
         "Mises",
         "MaxPrincipal",
@@ -278,7 +282,11 @@ class BeamSectionPointField:
 
 @dataclass(frozen=True, slots=True)
 class BeamIntegrationPointSectionResult:
-    """Constitutive section result at the sole B31 longitudinal point."""
+    """Constitutive resultants at the sole B31 longitudinal point.
+
+    The public project names map to Abaqus B31 resultants as
+    ``SF1/SF2/SF3 = N/Vy/Vz`` and ``SM1/SM2/SM3 = T/My/Mz``.
+    """
 
     element_id: int
     integration_point: int
@@ -317,6 +325,18 @@ class BeamIntegrationPointSectionResult:
         return self.forces.N
 
     @property
+    def Vy(self) -> float:
+        return self.forces.Vy
+
+    @property
+    def Vz(self) -> float:
+        return self.forces.Vz
+
+    @property
+    def T(self) -> float:
+        return self.forces.T
+
+    @property
     def My(self) -> float:
         return self.forces.My
 
@@ -325,7 +345,14 @@ class BeamIntegrationPointSectionResult:
         return self.forces.Mz
 
     def values(self) -> dict[str, float]:
-        return {"N": self.N, "My": self.My, "Mz": self.Mz}
+        return {
+            "N": self.N,
+            "Vy": self.Vy,
+            "Vz": self.Vz,
+            "T": self.T,
+            "My": self.My,
+            "Mz": self.Mz,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +362,14 @@ class BeamIntegrationPointSectionField:
     rows: tuple[BeamIntegrationPointSectionResult, ...]
 
     position: ClassVar[str] = "integration_point"
-    component_names: ClassVar[tuple[str, ...]] = ("N", "My", "Mz")
+    component_names: ClassVar[tuple[str, ...]] = (
+        "N",
+        "Vy",
+        "Vz",
+        "T",
+        "My",
+        "Mz",
+    )
 
     def __post_init__(self) -> None:
         rows = tuple(self.rows)
@@ -353,7 +387,7 @@ class BeamIntegrationPointSectionField:
 
 @dataclass(frozen=True, slots=True)
 class BeamIntegrationPointS11:
-    """One section-point S11 row at a B31 longitudinal integration point."""
+    """One section-point stress row at a B31 longitudinal integration point."""
 
     element_id: int
     integration_point: int
@@ -361,6 +395,12 @@ class BeamIntegrationPointS11:
     displacement: tuple[float, float, float]
     section_point: BeamSectionPoint
     s11: float
+    s22: float
+    s12: float
+    mises: float
+    max_principal: float
+    mid_principal: float
+    min_principal: float
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -387,24 +427,49 @@ class BeamIntegrationPointS11:
         )
         if type(self.section_point) is not BeamSectionPoint:
             raise TypeError("section_point must be BeamSectionPoint")
-        value = float(self.s11)
-        if not math.isfinite(value):
-            raise ValueError("s11 must be finite")
-        object.__setattr__(self, "s11", value)
+        for name in (
+            "s11",
+            "s22",
+            "s12",
+            "mises",
+            "max_principal",
+            "mid_principal",
+            "min_principal",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+            object.__setattr__(self, name, value)
 
     def values(self) -> dict[str, float]:
-        return {"S11": self.s11}
+        return {
+            "S11": self.s11,
+            "S22": self.s22,
+            "S12": self.s12,
+            "Mises": self.mises,
+            "MaxPrincipal": self.max_principal,
+            "MidPrincipal": self.mid_principal,
+            "MinPrincipal": self.min_principal,
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class BeamIntegrationPointS11Field:
-    """S11 rows for one section point, one longitudinal row per Beam2."""
+    """Stress rows for one section point, one longitudinal row per Beam2."""
 
     point_number: int
     rows: tuple[BeamIntegrationPointS11, ...]
 
     position: ClassVar[str] = "integration_point"
-    component_names: ClassVar[tuple[str, ...]] = ("S11",)
+    component_names: ClassVar[tuple[str, ...]] = (
+        "S11",
+        "S22",
+        "S12",
+        "Mises",
+        "MaxPrincipal",
+        "MidPrincipal",
+        "MinPrincipal",
+    )
 
     def __post_init__(self) -> None:
         point_number = _integer_id("point_number", self.point_number)
@@ -563,7 +628,7 @@ def recover_integration_point_s11(
     *,
     checkpoint: Callable[[], None] | None = None,
 ) -> BeamIntegrationPointS11Recovery:
-    """Recover one B31 longitudinal integration-point S11 per element."""
+    """Recover one B31 longitudinal integration-point stress per element."""
 
     _validate_checkpoint(checkpoint)
     if not isinstance(result, ModelResult):
@@ -645,6 +710,12 @@ def recover_integration_point_s11(
                     displacement=displacement,
                     section_point=point_stress.point,
                     s11=point_stress.s11,
+                    s22=point_stress.s22,
+                    s12=point_stress.s12,
+                    mises=point_stress.mises,
+                    max_principal=point_stress.max_principal,
+                    mid_principal=point_stress.mid_principal,
+                    min_principal=point_stress.min_principal,
                 )
             )
     return BeamIntegrationPointS11Recovery(
@@ -781,6 +852,7 @@ def recover_section_stress(
                         displacement=displacement,
                         section_point=point_stress.point,
                         s11=point_stress.s11,
+                        s22=point_stress.s22,
                         s12=point_stress.s12,
                         mises=point_stress.mises,
                         max_principal=point_stress.max_principal,

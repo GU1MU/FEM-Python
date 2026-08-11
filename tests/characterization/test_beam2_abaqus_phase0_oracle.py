@@ -144,9 +144,9 @@ def test_program_snapshot_exports_nodal_dofs_and_b31_ip_identity(
             "position": "integration_point",
             "association": "integration_point",
             "quantity": "force",
-            "components": ["N"],
+            "components": ["N", "Vy", "Vz"],
             "section_point_number": None,
-            "recovery_contract": 3,
+            "recovery_contract": 4,
             "row_count": 1,
         },
         {
@@ -154,9 +154,9 @@ def test_program_snapshot_exports_nodal_dofs_and_b31_ip_identity(
             "position": "integration_point",
             "association": "integration_point",
             "quantity": "moment",
-            "components": ["My", "Mz"],
+            "components": ["T", "My", "Mz"],
             "section_point_number": None,
-            "recovery_contract": 3,
+            "recovery_contract": 4,
             "row_count": 1,
         },
         *(
@@ -165,9 +165,9 @@ def test_program_snapshot_exports_nodal_dofs_and_b31_ip_identity(
                 "position": "integration_point",
                 "association": "integration_point",
                 "quantity": "stress",
-                "components": ["S11"],
+                "components": ["S11", "S22", "S12"],
                 "section_point_number": point,
-                "recovery_contract": 3,
+                "recovery_contract": 4,
                 "row_count": 1,
             }
             for point in range(1, 5)
@@ -193,13 +193,28 @@ def test_program_snapshot_exports_nodal_dofs_and_b31_ip_identity(
         and row["section_point"]["local_z"] > 0.0
         for row in point_one
     )
-    assert set(point_one[0]["components"]) == {"S11"}
+    assert set(point_one[0]["components"]) == {
+        "S11",
+        "S22",
+        "S12",
+        "Mises",
+        "MaxPrincipal",
+        "MidPrincipal",
+        "MinPrincipal",
+    }
     force_row = snapshot["section_force_results"][0]
     assert force_row["position"] == "INTEGRATION_POINT"
     assert force_row["element_id"] == 1
     assert force_row["integration_point"] == 1
     assert force_row["section"] == point_one[0]["section"]
-    assert set(force_row["components"]) == {"N", "MY", "MZ"}
+    assert set(force_row["components"]) == {
+        "N",
+        "VY",
+        "VZ",
+        "T",
+        "MY",
+        "MZ",
+    }
     assert all(math.isfinite(value) for value in force_row["components"].values())
 
 

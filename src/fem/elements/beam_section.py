@@ -288,18 +288,53 @@ class BeamIntegrationPointForces:
 
 @dataclass(frozen=True, slots=True)
 class BeamSectionPointS11:
-    """Longitudinal stress at one integration-point section coordinate."""
+    """Abaqus B31 stress tensor at one integration-point section coordinate.
+
+    Abaqus 2023 publishes ``S11``, ``S22`` and ``S12`` for the supported
+    integrated sections.  It does not publish ``S13`` for B31, so this record
+    deliberately has no ``s13`` member.
+    """
 
     point: BeamSectionPoint
     s11: float
+    s22: float
+    s12: float
+    mises: float
+    max_principal: float
+    mid_principal: float
+    min_principal: float
 
     def __post_init__(self) -> None:
         if type(self.point) is not BeamSectionPoint:
             raise TypeError("point must be BeamSectionPoint")
-        value = float(self.s11)
-        if not isfinite(value):
-            raise ValueError("Beam2 integration-point S11 must be finite")
-        object.__setattr__(self, "s11", value)
+        for name in (
+            "s11",
+            "s22",
+            "s12",
+            "mises",
+            "max_principal",
+            "mid_principal",
+            "min_principal",
+        ):
+            value = float(getattr(self, name))
+            if not isfinite(value):
+                raise ValueError(
+                    f"Beam2 integration-point {name} must be finite"
+                )
+            object.__setattr__(self, name, value)
+
+    def values(self) -> dict[str, float]:
+        """Return only the stress components Abaqus B31 actually publishes."""
+
+        return {
+            "S11": self.s11,
+            "S22": self.s22,
+            "S12": self.s12,
+            "Mises": self.mises,
+            "MaxPrincipal": self.max_principal,
+            "MidPrincipal": self.mid_principal,
+            "MinPrincipal": self.min_principal,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +343,7 @@ class BeamSectionPointStress:
 
     point: BeamSectionPoint
     s11: float
+    s22: float
     s12: float
     mises: float
     max_principal: float
@@ -319,6 +355,7 @@ class BeamSectionPointStress:
 
         return {
             "S11": self.s11,
+            "S22": self.s22,
             "S12": self.s12,
             "Mises": self.mises,
             "MaxPrincipal": self.max_principal,
@@ -451,11 +488,10 @@ def default_section_points(
             (half_y, -half_z),
         )
     else:
-        radius = (
-            section.radius
-            if section.section_type == "solid_circle"
-            else section.outer_radius
-        )
+        radius = section.radius
+        if section.section_type == "hollow_circle":
+            assert section.outer_radius is not None and section.inner_radius is not None
+            radius = (section.outer_radius + section.inner_radius) / 2.0
         assert radius is not None
         coordinates = (
             (radius, 0.0),
@@ -480,41 +516,16 @@ def recover_section_point_stress(
     if not isinstance(forces, BeamSectionEndForces):
         raise TypeError("forces must be BeamSectionEndForces")
 
-    axial = forces.axial_force / section.area
-    circle = section.section_type in {"solid_circle", "hollow_circle"}
-    circle_s12 = 0.0
-    if circle:
-        radius = (
-            section.radius
-            if section.section_type == "solid_circle"
-            else section.outer_radius
+    point_stresses = tuple(
+        BeamSectionPointStress(**stress)
+        for stress in _abaqus_b31_point_stresses(
+            section,
+            forces.axial_force,
+            forces.moment_y,
+            forces.moment_z,
+            forces.torque,
         )
-        assert radius is not None
-        circle_s12 = forces.torque * radius / section.J
-
-    point_stresses = []
-    for point in default_section_points(section):
-        s11 = (
-            axial
-            + forces.moment_y * point.local_z / section.Iyy
-            - forces.moment_z * point.local_y / section.Izz
-        )
-        # S12 is signed in the point's tangential transverse basis.  Circular
-        # values therefore share the torque sign.  Rectangle corners lie on
-        # two traction-free edges and have zero Saint-Venant shear.
-        s12 = circle_s12 if circle else 0.0
-        principal_span = sqrt(s11**2 + 4.0 * s12**2)
-        point_stresses.append(
-            BeamSectionPointStress(
-                point=point,
-                s11=s11,
-                s12=s12,
-                mises=sqrt(s11**2 + 3.0 * s12**2),
-                max_principal=(s11 + principal_span) / 2.0,
-                mid_principal=0.0,
-                min_principal=(s11 - principal_span) / 2.0,
-            )
-        )
+    )
 
     s11_max, s11_min, s11_abs_max = axial_stress_extrema(
         section,
@@ -522,14 +533,19 @@ def recover_section_point_stress(
         forces.moment_y,
         forces.moment_z,
     )
-    s12_abs_max = (
-        abs(circle_s12)
-        if circle
-        else _rectangle_torsion_shear_abs_max(section, forces.torque)
-    )
+    if section.section_type == "rectangle":
+        s12_abs_max = _rectangle_torsion_shear_abs_max(section, forces.torque)
+    else:
+        outer_radius = (
+            section.radius
+            if section.section_type == "solid_circle"
+            else section.outer_radius
+        )
+        assert outer_radius is not None
+        s12_abs_max = abs(forces.torque) * outer_radius / section.J
     return BeamSectionStress(
         forces=forces,
-        point_stresses=tuple(point_stresses),
+        point_stresses=point_stresses,
         s11_max=s11_max,
         s11_min=s11_min,
         s11_abs_max=s11_abs_max,
@@ -541,22 +557,104 @@ def recover_integration_point_s11(
     section: Beam2Section,
     forces: BeamIntegrationPointForces,
 ) -> tuple[BeamSectionPointS11, ...]:
-    """Recover S11 at the real section coordinates of one B31 point."""
+    """Recover the Abaqus-published stress tensor at one B31 point."""
 
     if not isinstance(section, Beam2Section):
         raise TypeError("section must be Beam2Section")
     if type(forces) is not BeamIntegrationPointForces:
         raise TypeError("forces must be BeamIntegrationPointForces")
-    axial = forces.axial_force / section.area
     return tuple(
-        BeamSectionPointS11(
-            point,
-            axial
-            + forces.moment_y * point.local_z / section.Iyy
-            - forces.moment_z * point.local_y / section.Izz,
+        BeamSectionPointS11(**stress)
+        for stress in _abaqus_b31_point_stresses(
+            section,
+            forces.axial_force,
+            forces.moment_y,
+            forces.moment_z,
+            forces.torque,
         )
-        for point in default_section_points(section)
     )
+
+
+def _abaqus_b31_point_stresses(
+    section: Beam2Section,
+    axial_force: float,
+    moment_y: float,
+    moment_z: float,
+    torque: float,
+) -> tuple[dict[str, float | BeamSectionPoint], ...]:
+    """Return Abaqus B31 point components and invariants from one resultant."""
+
+    axial = float(axial_force) / section.area
+    s12 = _abaqus_b31_torsional_s12(section, float(torque))
+    records = []
+    for point in default_section_points(section):
+        s11 = (
+            axial
+            + float(moment_y) * point.local_z / section.Iyy
+            - float(moment_z) * point.local_y / section.Izz
+        )
+        s22 = 0.0
+        plane_span = sqrt((s11 - s22) ** 2 + 4.0 * s12**2)
+        plane_principals = (
+            (s11 + s22 + plane_span) / 2.0,
+            (s11 + s22 - plane_span) / 2.0,
+        )
+        principals = sorted((*plane_principals, 0.0), reverse=True)
+        records.append(
+            {
+                "point": point,
+                "s11": s11,
+                "s22": s22,
+                "s12": s12,
+                "mises": sqrt(
+                    s11**2 - s11 * s22 + s22**2 + 3.0 * s12**2
+                ),
+                "max_principal": principals[0],
+                "mid_principal": principals[1],
+                "min_principal": principals[2],
+            }
+        )
+    return tuple(records)
+
+
+def _abaqus_b31_torsional_s12(
+    section: Beam2Section,
+    torque: float,
+) -> float:
+    """Return Abaqus 2023 integrated-section S12 at a public B31 point.
+
+    CIRC uses its outer radius and THICK PIPE uses its wall mid-surface.
+    Abaqus' default integrated RECT uses a fixed 5x5 section model.  The
+    symmetric polynomial below reproduces its corner extrapolation over the
+    frozen aspect-ratio oracle while retaining the exact square limit.
+    Transverse section forces do not enter this output: Abaqus publishes them
+    as SF2/SF3 and does not add their distribution to B31 ``S`` records.
+    """
+
+    if section.section_type == "solid_circle":
+        assert section.radius is not None
+        stress_arm = section.radius
+    elif section.section_type == "hollow_circle":
+        assert section.outer_radius is not None and section.inner_radius is not None
+        stress_arm = (section.outer_radius + section.inner_radius) / 2.0
+    else:
+        assert section.height is not None and section.width is not None
+        long_side = max(section.height, section.width)
+        short_side = min(section.height, section.width)
+        transformed = (long_side - short_side) / (long_side + short_side)
+        coefficients = (
+            -5.537075914236544,
+            10.076094870642018,
+            -5.405459502910721,
+            1.5302081883537826,
+            0.11260135105997468,
+            0.21213203435596428,
+        )
+        dimensionless_arm = 0.0
+        for coefficient in coefficients:
+            dimensionless_arm = dimensionless_arm * transformed + coefficient
+        stress_arm = short_side * dimensionless_arm
+    return torque * stress_arm / section.J
 
 
 def _positive_dimension(props: Mapping[str, Any], name: str) -> float:

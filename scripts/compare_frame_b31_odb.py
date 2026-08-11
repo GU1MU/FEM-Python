@@ -46,7 +46,16 @@ DEFAULT_GROUPS = (
     ("roof_bracing", "ROOF_BRACING"),
 )
 NODE_FIELDS = ("U", "UR", "RF", "RM")
-STRESS_COMPONENTS = ("S11", "S12", "S13", "Mises", "MaxPrincipal")
+STRESS_COMPONENTS = (
+    "S11",
+    "S22",
+    "S12",
+    "S13",
+    "Mises",
+    "MaxPrincipal",
+    "MidPrincipal",
+    "MinPrincipal",
+)
 SECTION_COMPONENTS = ("N", "VY", "VZ", "T", "MY", "MZ")
 RECT_POINT_BY_SIGNS = {
     (-1, -1): 1,

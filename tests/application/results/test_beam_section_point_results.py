@@ -77,7 +77,16 @@ def test_s_request_recovers_once_and_publishes_four_integration_point_fields(
         for field in point_fields
     ) == (1, 2, 3, 4)
     assert all(
-        field.descriptor.columns == ("S11",)
+        field.descriptor.columns
+        == (
+            "S11",
+            "S22",
+            "S12",
+            "Mises",
+            "MaxPrincipal",
+            "MidPrincipal",
+            "MinPrincipal",
+        )
         for field in point_fields
     )
     assert all(provider.field(field.key) is field for field in fields)

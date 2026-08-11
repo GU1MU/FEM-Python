@@ -1,0 +1,179 @@
+{
+  "abaqus_release": "Abaqus/Standard 2023",
+  "component_labels": [
+    "S11",
+    "S22",
+    "S12"
+  ],
+  "rows": [
+    {
+      "aspect_ratio": 1.37,
+      "components": {
+        "S11": 1.268357950138152e-27,
+        "S12": 62392.2890625,
+        "S22": 0.0
+      },
+      "element_id": 10,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Left Corner",
+        "number": 1
+      }
+    },
+    {
+      "aspect_ratio": 1.37,
+      "components": {
+        "S11": 1.268357950138152e-27,
+        "S12": 62392.2890625,
+        "S22": 0.0
+      },
+      "element_id": 10,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Right Corner",
+        "number": 5
+      }
+    },
+    {
+      "aspect_ratio": 1.37,
+      "components": {
+        "S11": -1.268357950138152e-27,
+        "S12": 62392.2890625,
+        "S22": 0.0
+      },
+      "element_id": 10,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Left Corner",
+        "number": 21
+      }
+    },
+    {
+      "aspect_ratio": 1.37,
+      "components": {
+        "S11": -1.268357950138152e-27,
+        "S12": 62392.2890625,
+        "S22": 0.0
+      },
+      "element_id": 10,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Right Corner",
+        "number": 25
+      }
+    },
+    {
+      "aspect_ratio": 5.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 27190.595703125,
+        "S22": 0.0
+      },
+      "element_id": 20,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Left Corner",
+        "number": 1
+      }
+    },
+    {
+      "aspect_ratio": 5.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 27190.595703125,
+        "S22": 0.0
+      },
+      "element_id": 20,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Right Corner",
+        "number": 5
+      }
+    },
+    {
+      "aspect_ratio": 5.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 27190.595703125,
+        "S22": 0.0
+      },
+      "element_id": 20,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Left Corner",
+        "number": 21
+      }
+    },
+    {
+      "aspect_ratio": 5.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 27190.595703125,
+        "S22": 0.0
+      },
+      "element_id": 20,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Right Corner",
+        "number": 25
+      }
+    },
+    {
+      "aspect_ratio": 13.0,
+      "components": {
+        "S11": -0.0,
+        "S12": 13568.37890625,
+        "S22": 0.0
+      },
+      "element_id": 30,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Left Corner",
+        "number": 1
+      }
+    },
+    {
+      "aspect_ratio": 13.0,
+      "components": {
+        "S11": -0.0,
+        "S12": 13568.37890625,
+        "S22": 0.0
+      },
+      "element_id": 30,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Bottom Right Corner",
+        "number": 5
+      }
+    },
+    {
+      "aspect_ratio": 13.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 13568.37890625,
+        "S22": 0.0
+      },
+      "element_id": 30,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Left Corner",
+        "number": 21
+      }
+    },
+    {
+      "aspect_ratio": 13.0,
+      "components": {
+        "S11": 0.0,
+        "S12": 13568.37890625,
+        "S22": 0.0
+      },
+      "element_id": 30,
+      "integration_point": 1,
+      "section_point": {
+        "description": "Top Right Corner",
+        "number": 25
+      }
+    }
+  ],
+  "schema": "fem-python.abaqus-b31-phase5-rect-holdout.v1"
+}

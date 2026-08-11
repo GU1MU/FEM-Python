@@ -29,7 +29,7 @@ from fem.post.stress.beam import recover_integration_point_s11
 from fem.solvers import static_linear
 
 
-SCRIPT_VERSION = "2.1.0"
+SCRIPT_VERSION = "2.2.0"
 SNAPSHOT_SCHEMA = "fem-python-b31-validation-snapshot-v1"
 SECTION_TYPE_NAMES = {
     "rectangle": "RECT",
@@ -137,6 +137,9 @@ def build_snapshot(
             "section": _section_metadata(section_by_element[row.element_id]),
             "components": {
                 "N": row.N,
+                "VY": row.Vy,
+                "VZ": row.Vz,
+                "T": row.T,
                 "MY": row.My,
                 "MZ": row.Mz,
             },
@@ -167,7 +170,7 @@ def build_snapshot(
                         "local_y": row.section_point.local_y,
                         "local_z": row.section_point.local_z,
                     },
-                    "components": {"S11": row.s11},
+                    "components": row.values(),
                 }
             )
 
