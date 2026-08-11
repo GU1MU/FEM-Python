@@ -6,8 +6,7 @@ from fem.elements import get_element_kernel, resolve_beam_frame
 from fem.elements.beam_frame import BeamFrameField
 from fem.elements.beam_section import parse_beam2_section
 from fem.elements.line import (
-    _beam2_shear_flexibilities,
-    _beam2_variable_line_load,
+    _beam2_integrated_line_load,
     _beam2_variable_stiffness,
 )
 
@@ -165,7 +164,7 @@ def test_constant_and_zero_variation_frame_paths_match() -> None:
     assert integrated == pytest.approx(closed_form, rel=1.0e-12, abs=1.0e-5)
 
 
-def test_uniform_line_load_preserves_balance_and_timoshenko_response() -> None:
+def test_uniform_line_load_preserves_balance_and_b31_discrete_response() -> None:
     length = 0.6
     mesh = _beam_mesh(length=length)
     element = mesh.elements[0]
@@ -198,7 +197,7 @@ def test_uniform_line_load_preserves_balance_and_timoshenko_response() -> None:
     )
 
     expected_tip = (
-        load_per_length * length**4 / (12.0 * elastic_modulus * section.Izz)
+        load_per_length * length**4 / (8.0 * elastic_modulus * section.Izz)
         + load_per_length * length**2 / (2.0 * kGA_y)
     )
     assert local_load[1] + local_load[7] == pytest.approx(
@@ -222,7 +221,7 @@ def test_uniform_line_load_preserves_balance_and_timoshenko_response() -> None:
     )
 
 
-def test_body_force_and_line_load_share_timoshenko_interpolation() -> None:
+def test_body_force_and_line_load_share_b31_interpolation() -> None:
     mesh = _beam_mesh()
     element = mesh.elements[0]
     kernel = get_element_kernel("Beam2")
@@ -245,25 +244,13 @@ def test_constant_load_and_zero_variation_integration_paths_match() -> None:
     element = mesh.elements[0]
     kernel = get_element_kernel("Beam2")
     field = BeamFrameField.constant(resolve_beam_frame(mesh, element))
-    section = parse_beam2_section(element.props)
-    elastic_modulus, _, kGA_y, kGA_z = _section_rigidities(mesh)
-    phi_y, phi_z = _beam2_shear_flexibilities(
-        field.length,
-        elastic_modulus,
-        section.Iyy,
-        section.Izz,
-        kGA_y,
-        kGA_z,
-    )
     vector = (3.0, -4.0, 2.0)
 
     closed_form = kernel.line_load(mesh, element, vector, "local")
-    integrated = _beam2_variable_line_load(
+    integrated = _beam2_integrated_line_load(
         field,
         vector,
         "local",
-        phi_y,
-        phi_z,
     )
 
     assert integrated == pytest.approx(closed_form, rel=1.0e-12, abs=1.0e-12)

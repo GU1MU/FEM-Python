@@ -11,6 +11,7 @@ from fem.core.model import (
     DisplacementConstraint,
     ElementSet,
     FEMModel,
+    GravityLoad,
     LineLoad,
     NodalLoad,
 )
@@ -124,8 +125,8 @@ def test_public_line_load_set_wins_over_same_named_internal_set():
     ("vector", "expected"),
     [
         ((2.0, 0.0, 0.0), (4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
-        ((0.0, 3.0, 0.0), (0.0, 6.0, 0.0, 0.0, 0.0, 4.0, 0.0, 6.0, 0.0, 0.0, 0.0, -4.0)),
-        ((0.0, 0.0, 3.0), (0.0, 0.0, 6.0, 0.0, -4.0, 0.0, 0.0, 0.0, 6.0, 0.0, 4.0, 0.0)),
+        ((0.0, 3.0, 0.0), (0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0)),
+        ((0.0, 0.0, 3.0), (0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0)),
     ],
     ids=["local-x", "local-y", "local-z"],
 )
@@ -219,6 +220,33 @@ def test_multiple_line_loads_accumulate_without_area_density_or_gravity_scaling(
     assert _step_force(model, combined) == pytest.approx(2.5 * _step_force(model, first))
 
 
+def test_beam_gravity_uses_rho_area_then_the_b31_line_load_path():
+    model = _beam_model(inclined=True, orientation=(0.0, 1.0, 0.0))
+    element = model.mesh.elements[0]
+    section = parse_beam2_section(element.props)
+    acceleration = np.array((1.25, -2.5, 0.75))
+    gravity = AnalysisStep(
+        "gravity",
+        gravity_loads=(GravityLoad(acceleration),),
+    )
+    equivalent_line = AnalysisStep(
+        "line",
+        line_loads=(
+            LineLoad(
+                10,
+                element.props["rho"] * section.area * acceleration,
+                "global",
+            ),
+        ),
+    )
+
+    assert _step_force(model, gravity) == pytest.approx(
+        _step_force(model, equivalent_line),
+        rel=1.0e-12,
+        abs=1.0e-12,
+    )
+
+
 def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     model = _beam_model(
         inclined=True,
@@ -265,14 +293,9 @@ def test_inclined_global_line_loads_accumulate_in_recovered_stress_envelope():
     assert np.allclose(multi_values, local_values)
 
     section = parse_beam2_section(elem.props)
-    qx, qy, qz = combined_local
+    qx = combined_local[0]
     axial = qx * length / (2.0 * section.area)
-    moment_y = -qz * length**2 / 12.0
-    moment_z = qy * length**2 / 12.0
-    increment = (
-        abs(moment_y / section.Iyy) * section.height / 2.0
-        + abs(moment_z / section.Izz) * section.width / 2.0
-    )
+    increment = 0.0
     expected = [
         (axial + increment, axial - increment, axial + increment),
         (-axial + increment, -axial - increment, axial + increment),
@@ -298,11 +321,15 @@ def test_line_load_preserves_global_resultant_and_moment_about_arbitrary_origin(
         + force[9:12]
     )
 
-    assert force[:3] + force[6:9] == pytest.approx(resultant)
-    assert assembled_moment == pytest.approx(np.cross((start + end) / 2.0 - origin, resultant))
+    expected_moment = np.cross((start + end) / 2.0 - origin, resultant)
+    force_error = np.linalg.norm(force[:3] + force[6:9] - resultant)
+    moment_error = np.linalg.norm(assembled_moment - expected_moment)
+
+    assert force_error <= 1.0e-12 * max(1.0, np.linalg.norm(resultant))
+    assert moment_error <= 1.0e-12 * max(1.0, np.linalg.norm(expected_moment))
 
 
-def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactions():
+def test_uniform_transverse_line_load_cantilever_matches_b31_discrete_response():
     model = _beam_model()
     q = 12.0
     model.steps.append(
@@ -328,11 +355,11 @@ def test_uniform_transverse_line_load_cantilever_matches_closed_form_and_reactio
     )
 
     expected_tip = (
-        q * length**4 / (12.0 * E * Izz)
+        q * length**4 / (8.0 * E * Izz)
         + q * length**2 / (2.0 * shear_y)
     )
     assert result.U[mesh.global_dof(2, 1)] == pytest.approx(expected_tip)
-    assert result.U[mesh.global_dof(2, 5)] == pytest.approx(q * length**3 / (6.0 * E * Izz))
+    assert result.U[mesh.global_dof(2, 5)] == pytest.approx(q * length**3 / (4.0 * E * Izz))
     assert result.reactions[mesh.global_dof(1, 1)] == pytest.approx(-q * length)
     assert result.reactions[mesh.global_dof(1, 5)] == pytest.approx(-q * length**2 / 2.0)
 
@@ -445,7 +472,7 @@ def test_explicit_orientation_local_end_actions_follow_reversal_convention():
     )
 
 
-def test_fixed_beam_uniform_line_load_recovers_bending_stress_with_zero_displacement():
+def test_fixed_beam_first_order_line_load_does_not_invent_end_moments():
     model = _beam_model()
     q = 12.0
     step = AnalysisStep(
@@ -461,11 +488,8 @@ def test_fixed_beam_uniform_line_load_recovers_bending_stress_with_zero_displace
 
     rows = beam_stress.nodal_envelope(result)
 
-    section = parse_beam2_section(model.mesh.elements[0].props)
-    moment = q * 4.0**2 / 12.0
-    increment = abs(moment / section.Izz) * section.width / 2.0
     assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
-        [(increment, -increment, increment), (increment, -increment, increment)]
+        [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)]
     )
 
 

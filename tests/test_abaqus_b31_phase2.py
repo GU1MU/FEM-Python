@@ -29,6 +29,22 @@ from tests.helpers.file_builders import write_inp
 
 FRAME_NOTICE = "abaqus.b31.nodal_normal_generation_approximation"
 
+# Abaqus 2023, one 2 m B31 element, integrated 0.2 x 0.1 RECT section,
+# E=210 GPa, nu=0.3, n1=(0, 1, 0), node 1 ENCASTRE.  Each static step
+# uses *DLOAD, OP=NEW so the two local transverse directions are independent.
+_ABAQUS_DLOAD_ORACLE = {
+    "P1": {
+        "record": "BEAM, P1, 500.0",
+        "tip": (1, 9.036414849106222e-05, 5, 7.142857066355646e-05),
+        "reaction": (1, -1000.0, 5, -1000.0),
+    },
+    "P2": {
+        "record": "BEAM, P2, -300.0",
+        "tip": (2, -2.155630209017545e-04, 4, 1.714285754133016e-04),
+        "reaction": (2, 600.0, 4, -600.0),
+    },
+}
+
 
 def _b31_deck(
     nodes: tuple[tuple[int, float, float, float], ...],
@@ -195,6 +211,83 @@ def _materialized_load_vector(model: FEMModel) -> np.ndarray:
         materialized.mesh,
         boundary_for_step(materialized, "LOAD"),
     )
+
+
+@pytest.mark.parametrize("direction", tuple(_ABAQUS_DLOAD_ORACLE))
+def test_one_element_transverse_dload_matches_abaqus_2023_oracle(
+    tmp_path,
+    direction: str,
+) -> None:
+    oracle = _ABAQUS_DLOAD_ORACLE[direction]
+    model = _read_deck(
+        tmp_path,
+        f"minimal_{direction.lower()}_oracle.inp",
+        _b31_deck(
+            ((1, 0.0, 0.0, 0.0), (2, 2.0, 0.0, 0.0)),
+            ((1, 1, 2),),
+            orientation=(0.0, 1.0, 0.0),
+            fixed_nodes=(1,),
+            dloads=(oracle["record"],),
+        ),
+    ).model
+
+    result = solve(model, "LOAD")
+    translation, expected_translation, rotation, expected_rotation = oracle["tip"]
+    force, expected_force, moment, expected_moment = oracle["reaction"]
+
+    assert result.U[model.mesh.global_dof(2, translation)] == pytest.approx(
+        expected_translation,
+        rel=1.0e-2,
+    )
+    assert result.U[model.mesh.global_dof(2, rotation)] == pytest.approx(
+        expected_rotation,
+        rel=1.0e-2,
+    )
+    assert result.reactions[model.mesh.global_dof(1, force)] == pytest.approx(
+        expected_force,
+        rel=1.0e-12,
+        abs=1.0e-12,
+    )
+    assert result.reactions[model.mesh.global_dof(1, moment)] == pytest.approx(
+        expected_moment,
+        rel=1.0e-12,
+        abs=1.0e-12,
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_direction"),
+    (
+        ("PX", (1.0, 0.0, 0.0)),
+        ("PY", (0.0, 1.0, 0.0)),
+        ("PZ", (0.0, 0.0, 1.0)),
+        ("P1", (0.0, 1.0, 0.0)),
+        ("P2", (0.0, 0.0, 1.0)),
+    ),
+)
+def test_all_constant_b31_dload_labels_use_first_order_translation_interpolation(
+    tmp_path,
+    label: str,
+    expected_direction: tuple[float, float, float],
+) -> None:
+    magnitude = 7.0
+    length = 2.0
+    model = _read_deck(
+        tmp_path,
+        f"constant_{label.lower()}.inp",
+        _b31_deck(
+            ((1, 0.0, 0.0, 0.0), (2, length, 0.0, 0.0)),
+            ((1, 1, 2),),
+            orientation=(0.0, 1.0, 0.0),
+            dloads=(f"BEAM, {label}, {magnitude}",),
+        ),
+    ).model
+
+    force = _materialized_load_vector(model).reshape(2, 6)
+    expected_force = magnitude * length / 2.0 * np.asarray(expected_direction)
+
+    np.testing.assert_allclose(force[:, :3], np.tile(expected_force, (2, 1)))
+    np.testing.assert_allclose(force[:, 3:], np.zeros((2, 3)), atol=1.0e-15)
 
 
 def test_global_and_local_dloads_preserve_mixed_connectivity_and_signs(

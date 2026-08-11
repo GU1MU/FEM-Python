@@ -1,0 +1,1114 @@
+{
+  "baseline_abs_midpoint_at_least_3knm_count": 62,
+  "baseline_midpoint_bias": {
+    "maximum": -2674.378397889039,
+    "maximum_absolute": 3884.9276025691292,
+    "mean": -3592.325681265998,
+    "median": -3733.861779559457,
+    "minimum": -3884.9276025691292
+  },
+  "baseline_same_sign_3_6_to_3_8_knm_count": 16,
+  "element_count": 72,
+  "inputs": {
+    "baseline": {
+      "path": "D:\\gu1mu\\Code\\projects\\FEM-Python\\artifacts\\validation\\frame_b31\\program_snapshot.json",
+      "sha256": "2acdffd0bb3bb91d7ecd542953b1b55da1ffdd95f55b090eca2e2ed25b96c96d"
+    },
+    "phase2": {
+      "path": "D:\\gu1mu\\Code\\projects\\FEM-Python\\artifacts\\validation\\frame_b31\\phase2\\program_snapshot.json",
+      "sha256": "899bb651b87eac051955563e83f154b9010f05197f3842713718ef7249b9fec8"
+    }
+  },
+  "phase2_abs_midpoint_at_least_3knm_count": 0,
+  "phase2_midpoint_bias": {
+    "maximum": 82.68733230315775,
+    "maximum_absolute": 82.68733230315775,
+    "mean": 23.987915278235178,
+    "median": 17.0968452708762,
+    "minimum": -4.952600481159756
+  },
+  "phase2_same_sign_3_6_to_3_8_knm_count": 0,
+  "rows": [
+    {
+      "baseline_end_mz": [
+        -3484.088201011298,
+        -3856.0249312959895
+      ],
+      "baseline_midpoint_bias": -3670.056566153644,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 109,
+      "phase2_end_mz": [
+        -57.83585598315221,
+        58.462816233734145
+      ],
+      "phase2_midpoint_bias": 0.3134801252909689,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3778.0923144520953,
+        -3739.596842366049
+      ],
+      "baseline_midpoint_bias": -3758.844578409072,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 110,
+      "phase2_end_mz": [
+        -45.76776863821478,
+        41.45343453200361
+      ],
+      "phase2_midpoint_bias": -2.157167053105585,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3743.788172314082,
+        -3755.950074854825
+      ],
+      "baseline_midpoint_bias": -3749.8691235844535,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 111,
+      "phase2_end_mz": [
+        -25.879819072474202,
+        19.673506022323934
+      ],
+      "phase2_midpoint_bias": -3.103156525075134,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3738.1667123959496,
+        -3767.088378794143
+      ],
+      "baseline_midpoint_bias": -3752.6275455950463,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 112,
+      "phase2_end_mz": [
+        1.5693341779848637,
+        -9.618509967332763
+      ],
+      "phase2_midpoint_bias": -4.0245878946739495,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3726.325777906891,
+        -3775.7680558853162
+      ],
+      "baseline_midpoint_bias": -3751.0469168961035,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 113,
+      "phase2_end_mz": [
+        28.89395200828214,
+        -34.36018475545526
+      ],
+      "phase2_midpoint_bias": -2.733116373586558,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3719.184267431474,
+        -3782.399440339358
+      ],
+      "baseline_midpoint_bias": -3750.791853885416,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 114,
+      "phase2_end_mz": [
+        55.71645826048746,
+        -64.19978043301872
+      ],
+      "phase2_midpoint_bias": -4.24166108626563,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3705.7999973836418,
+        -3806.3878365013893
+      ],
+      "baseline_midpoint_bias": -3756.0939169425155,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 115,
+      "phase2_end_mz": [
+        76.68239371112789,
+        -77.52995410750222
+      ],
+      "phase2_midpoint_bias": -0.42378019818716695,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3834.509314740773,
+        -3502.176319793163
+      ],
+      "baseline_midpoint_bias": -3668.3428172669683,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 116,
+      "phase2_end_mz": [
+        84.17165849404154,
+        -81.32396898316328
+      ],
+      "phase2_midpoint_bias": 1.4238447554391271,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -2235.492904870525,
+        -4126.669974888309
+      ],
+      "baseline_midpoint_bias": -3181.0814398794173,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 117,
+      "phase2_end_mz": [
+        -98.38038274206747,
+        143.47102881254477
+      ],
+      "phase2_midpoint_bias": 22.545323035238653,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3910.4072168828125,
+        -3728.331570068802
+      ],
+      "baseline_midpoint_bias": -3819.3693934758076,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 118,
+      "phase2_end_mz": [
+        81.10218485263886,
+        -35.587186367591585
+      ],
+      "phase2_midpoint_bias": 22.757499242523636,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3754.012003879381,
+        -3718.9793618447247
+      ],
+      "baseline_midpoint_bias": -3736.495682862053,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 119,
+      "phase2_end_mz": [
+        -23.5522467081214,
+        20.08063290945256
+      ],
+      "phase2_midpoint_bias": -1.7358068993344205,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3707.2700383705264,
+        -3780.297624383168
+      ],
+      "baseline_midpoint_bias": -3743.783831376847,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 120,
+      "phase2_end_mz": [
+        37.51529132568294,
+        -22.693829134710086
+      ],
+      "phase2_midpoint_bias": 7.410731095486426,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3812.4948415372446,
+        -3678.92575319741
+      ],
+      "baseline_midpoint_bias": -3745.7102973673273,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 121,
+      "phase2_end_mz": [
+        -43.52170673614046,
+        53.47684435188921
+      ],
+      "phase2_midpoint_bias": 4.977568807874377,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3731.549316311152,
+        -3737.849169397436
+      ],
+      "baseline_midpoint_bias": -3734.699242854294,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 122,
+      "phase2_end_mz": [
+        22.01873585876956,
+        -21.674430791205396
+      ],
+      "phase2_midpoint_bias": 0.17215253378208217,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3819.0950574489875,
+        -3814.8325169288332
+      ],
+      "baseline_midpoint_bias": -3816.9637871889104,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 123,
+      "phase2_end_mz": [
+        -107.68658617507299,
+        154.04869145112025
+      ],
+      "phase2_midpoint_bias": 23.18105263802363,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4147.346961944906,
+        -2166.1325001712685
+      ],
+      "baseline_midpoint_bias": -3156.7397310580873,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 124,
+      "phase2_end_mz": [
+        123.32308331813601,
+        -40.75179664541429
+      ],
+      "phase2_midpoint_bias": 41.28564333636086,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -1885.4310290466515,
+        -3935.5487058024414
+      ],
+      "baseline_midpoint_bias": -2910.4898674245464,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 125,
+      "phase2_end_mz": [
+        -327.06480532403657,
+        420.8222216981303
+      ],
+      "phase2_midpoint_bias": 46.87870818704687,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3936.9987685941364,
+        -3777.4202129997107
+      ],
+      "baseline_midpoint_bias": -3857.2094907969235,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 126,
+      "phase2_end_mz": [
+        146.06890617695717,
+        -64.45592445420334
+      ],
+      "phase2_midpoint_bias": 40.806490861376915,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3916.5389089642163,
+        -3525.230739937932
+      ],
+      "baseline_midpoint_bias": -3720.884824451074,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 127,
+      "phase2_end_mz": [
+        -155.77677510543253,
+        166.61407168663754
+      ],
+      "phase2_midpoint_bias": 5.418648290602505,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3596.4610523507677,
+        -3879.663762816836
+      ],
+      "baseline_midpoint_bias": -3738.062407583802,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 128,
+      "phase2_end_mz": [
+        108.4641068508754,
+        -78.71848968075756
+      ],
+      "phase2_midpoint_bias": 14.87280858505892,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3948.4432529186583,
+        -3517.605379610581
+      ],
+      "baseline_midpoint_bias": -3733.0243162646198,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 129,
+      "phase2_end_mz": [
+        -127.48813159771089,
+        166.12989551109786
+      ],
+      "phase2_midpoint_bias": 19.320881956693484,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3563.7103572320216,
+        -3888.113600788404
+      ],
+      "baseline_midpoint_bias": -3725.9119790102127,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 130,
+      "phase2_end_mz": [
+        151.27300109428143,
+        -150.42143009279062
+      ],
+      "phase2_midpoint_bias": 0.42578550074540544,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3949.14369530066,
+        -3740.976037195724
+      ],
+      "baseline_midpoint_bias": -3845.059866248192,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 131,
+      "phase2_end_mz": [
+        -206.52446951668207,
+        304.48960584673296
+      ],
+      "phase2_midpoint_bias": 48.98256816502544,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3949.9175340670395,
+        -1824.2720895132793
+      ],
+      "baseline_midpoint_bias": -2887.0948117901594,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 132,
+      "phase2_end_mz": [
+        406.64019303495843,
+        -276.05735796998124
+      ],
+      "phase2_midpoint_bias": 65.2914175324886,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -1455.9926128674147,
+        -4012.530509706467
+      ],
+      "baseline_midpoint_bias": -2734.261561286941,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 133,
+      "phase2_end_mz": [
+        -250.47990168660544,
+        393.58955485637125
+      ],
+      "phase2_midpoint_bias": 71.5548265848829,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3870.0913414490865,
+        -3883.916564901893
+      ],
+      "baseline_midpoint_bias": -3877.0039531754896,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 134,
+      "phase2_end_mz": [
+        253.60573080998438,
+        -142.41659000512664
+      ],
+      "phase2_midpoint_bias": 55.59457040242887,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4003.616006652978,
+        -3417.004998292649
+      ],
+      "baseline_midpoint_bias": -3710.3105024728134,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 135,
+      "phase2_end_mz": [
+        -238.12088710188254,
+        255.9267252124082
+      ],
+      "phase2_midpoint_bias": 8.902919055262828,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3429.703381773205,
+        -4027.4718526299625
+      ],
+      "baseline_midpoint_bias": -3728.5876172015837,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 136,
+      "phase2_end_mz": [
+        221.0742973491615,
+        -168.7748256105333
+      ],
+      "phase2_midpoint_bias": 26.1497358693141,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4002.6817220309717,
+        -3450.8645404829917
+      ],
+      "baseline_midpoint_bias": -3726.7731312569817,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 137,
+      "phase2_end_mz": [
+        -155.38997974507583,
+        209.90746656913325
+      ],
+      "phase2_midpoint_bias": 27.258743412028707,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3327.0746222228668,
+        -4107.287355273227
+      ],
+      "baseline_midpoint_bias": -3717.1809887480467,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 138,
+      "phase2_end_mz": [
+        336.9775653979341,
+        -328.3700439249369
+      ],
+      "phase2_midpoint_bias": 4.303760736498589,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3926.494467385534,
+        -3827.5717654372406
+      ],
+      "baseline_midpoint_bias": -3877.0331164113873,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 139,
+      "phase2_end_mz": [
+        -192.16954543152315,
+        300.11912821914666
+      ],
+      "phase2_midpoint_bias": 53.974791393811756,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3790.1138511459526,
+        -1665.2521723835112
+      ],
+      "baseline_midpoint_bias": -2727.683011764732,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 140,
+      "phase2_end_mz": [
+        586.3269291888791,
+        -438.2114777536772
+      ],
+      "phase2_midpoint_bias": 74.05772571760099,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -1416.853574821835,
+        -3931.9032209562433
+      ],
+      "baseline_midpoint_bias": -2674.378397889039,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 141,
+      "phase2_end_mz": [
+        -309.94564085467573,
+        475.3203054609912
+      ],
+      "phase2_midpoint_bias": 82.68733230315775,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3826.461526441883,
+        -3941.230201621231
+      ],
+      "baseline_midpoint_bias": -3883.845864031557,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 142,
+      "phase2_end_mz": [
+        331.56909837308194,
+        -211.46341062584543
+      ],
+      "phase2_midpoint_bias": 60.05284387361826,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4103.7480407396,
+        -3313.671141941741
+      ],
+      "baseline_midpoint_bias": -3708.70959134067,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 143,
+      "phase2_end_mz": [
+        -326.57092144162016,
+        343.0449729711727
+      ],
+      "phase2_midpoint_bias": 8.237025764776263,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3382.523758271735,
+        -4062.717933850898
+      ],
+      "baseline_midpoint_bias": -3722.6208460613166,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 144,
+      "phase2_end_mz": [
+        260.77591620820385,
+        -194.63995572276326
+      ],
+      "phase2_midpoint_bias": 33.067980242720296,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4058.7214205582536,
+        -3388.5083057105917
+      ],
+      "baseline_midpoint_bias": -3723.6148631344226,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 145,
+      "phase2_end_mz": [
+        -189.13158836583898,
+        249.94474973069737
+      ],
+      "phase2_midpoint_bias": 30.406580682429194,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3311.311551335923,
+        -4104.7544652247125
+      ],
+      "baseline_midpoint_bias": -3708.0330082803175,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 146,
+      "phase2_end_mz": [
+        340.18487522430223,
+        -318.9990355562004
+      ],
+      "phase2_midpoint_bias": 10.592919834050917,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3932.4914593532853,
+        -3837.363745784973
+      ],
+      "baseline_midpoint_bias": -3884.9276025691292,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 147,
+      "phase2_end_mz": [
+        -190.43165175319882,
+        306.6881366183661
+      ],
+      "phase2_midpoint_bias": 58.12824243258365,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3931.897137441793,
+        -1421.4637949004177
+      ],
+      "baseline_midpoint_bias": -2676.6804661711053,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 148,
+      "phase2_end_mz": [
+        463.9641237332071,
+        -309.75246858553874
+      ],
+      "phase2_midpoint_bias": 77.10582757383418,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -1727.0189460036986,
+        -3732.458040169144
+      ],
+      "baseline_midpoint_bias": -2729.7384930864214,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 149,
+      "phase2_end_mz": [
+        -503.5077547067376,
+        662.4805971840833
+      ],
+      "phase2_midpoint_bias": 79.48642123867285,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3815.864148944153,
+        -3928.151871811299
+      ],
+      "baseline_midpoint_bias": -3872.008010377726,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 150,
+      "phase2_end_mz": [
+        322.9029111175405,
+        -204.69076104831038
+      ],
+      "phase2_midpoint_bias": 59.10607503461506,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4120.697327320862,
+        -3314.9311729818023
+      ],
+      "baseline_midpoint_bias": -3717.814250151332,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 151,
+      "phase2_end_mz": [
+        -353.1262556624388,
+        357.22752421454425
+      ],
+      "phase2_midpoint_bias": 2.050634276052733,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3448.907678892889,
+        -4003.717440225659
+      ],
+      "baseline_midpoint_bias": -3726.312559559274,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 152,
+      "phase2_end_mz": [
+        216.38721532263662,
+        -158.15447497506466
+      ],
+      "phase2_midpoint_bias": 29.11637017378598,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4032.8756513154535,
+        -3426.0857238595877
+      ],
+      "baseline_midpoint_bias": -3729.4806875875206,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 153,
+      "phase2_end_mz": [
+        -174.83089386937354,
+        222.27183927589795
+      ],
+      "phase2_midpoint_bias": 23.720472703262203,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3419.552368955187,
+        -3999.8238244604804
+      ],
+      "baseline_midpoint_bias": -3709.6880967078337,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 154,
+      "phase2_end_mz": [
+        249.11447804882118,
+        -227.31214819871457
+      ],
+      "phase2_midpoint_bias": 10.901164925053308,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3881.7791315955806,
+        -3863.807676334984
+      ],
+      "baseline_midpoint_bias": -3872.7934039652823,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 155,
+      "phase2_end_mz": [
+        -131.79294572193248,
+        248.9086298227703
+      ],
+      "phase2_midpoint_bias": 58.55784205041891,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3983.552497910136,
+        -1494.8722346956406
+      ],
+      "baseline_midpoint_bias": -2739.2123663028883,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 156,
+      "phase2_end_mz": [
+        412.7502166418344,
+        -275.7585402492841
+      ],
+      "phase2_midpoint_bias": 68.49583819627514,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -1893.8899802441542,
+        -3891.1492588143597
+      ],
+      "baseline_midpoint_bias": -2892.519619529257,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 157,
+      "phase2_end_mz": [
+        -328.8815424817785,
+        470.55726387971663
+      ],
+      "phase2_midpoint_bias": 70.83786069896905,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3721.8386873518925,
+        -3953.4444217822115
+      ],
+      "baseline_midpoint_bias": -3837.641554567052,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 158,
+      "phase2_end_mz": [
+        334.56369371263645,
+        -223.0516575714737
+      ],
+      "phase2_midpoint_bias": 55.756018070581376,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3891.135036832868,
+        -3561.6159814193293
+      ],
+      "baseline_midpoint_bias": -3726.3755091260987,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 159,
+      "phase2_end_mz": [
+        -159.89244943088306,
+        157.69413215119857
+      ],
+      "phase2_midpoint_bias": -1.0991586398422442,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3512.382347094232,
+        -3953.300294220497
+      ],
+      "baseline_midpoint_bias": -3732.8413206573646,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 160,
+      "phase2_end_mz": [
+        176.33132897202813,
+        -135.15588848764673
+      ],
+      "phase2_midpoint_bias": 20.5877202421907,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3880.393049432651,
+        -3597.6724197340814
+      ],
+      "baseline_midpoint_bias": -3739.032734583366,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 161,
+      "phase2_end_mz": [
+        -80.56954745674739,
+        106.3178820918547
+      ],
+      "phase2_midpoint_bias": 12.874167317553656,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3520.4566706581377,
+        -3920.9394688274974
+      ],
+      "baseline_midpoint_bias": -3720.6980697428176,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 162,
+      "phase2_end_mz": [
+        169.0775123444255,
+        -155.72146327689006
+      ],
+      "phase2_midpoint_bias": 6.6780245337677115,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3771.729099172461,
+        -3930.908941910466
+      ],
+      "baseline_midpoint_bias": -3851.3190205414635,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 163,
+      "phase2_end_mz": [
+        -55.22085284613968,
+        145.65550540581353
+      ],
+      "phase2_midpoint_bias": 45.217326279836925,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3872.789338418754,
+        -1965.689231460116
+      ],
+      "baseline_midpoint_bias": -2919.239284939435,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 164,
+      "phase2_end_mz": [
+        475.86481849405027,
+        -386.19627249914447
+      ],
+      "phase2_midpoint_bias": 44.8342729974529,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -2261.9036785239905,
+        -4089.731461627206
+      ],
+      "baseline_midpoint_bias": -3175.8175700755983,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 165,
+      "phase2_end_mz": [
+        -63.87142974382641,
+        153.80310241679626
+      ],
+      "phase2_midpoint_bias": 44.96583633648493,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3799.1979513939023,
+        -3822.1985489304393
+      ],
+      "baseline_midpoint_bias": -3810.6982501621706,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 166,
+      "phase2_end_mz": [
+        168.25424712702898,
+        -113.54288429353346
+      ],
+      "phase2_midpoint_bias": 27.355681416747757,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3736.7673168607043,
+        -3733.6574897685637
+      ],
+      "baseline_midpoint_bias": -3735.212403314634,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 167,
+      "phase2_end_mz": [
+        -22.55277402725551,
+        21.039187607074382
+      ],
+      "phase2_midpoint_bias": -0.7567932100905637,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3680.169879416698,
+        -3811.592279221141
+      ],
+      "baseline_midpoint_bias": -3745.8810793189195,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 168,
+      "phase2_end_mz": [
+        54.13974223860714,
+        -43.498354852718876
+      ],
+      "phase2_midpoint_bias": 5.320693692944133,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3778.8911013556444,
+        -3710.2389499435585
+      ],
+      "baseline_midpoint_bias": -3744.5650256496015,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 169,
+      "phase2_end_mz": [
+        -22.49998937956343,
+        34.7869659466005
+      ],
+      "phase2_midpoint_bias": 6.143488283518536,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3720.2559751031945,
+        -3753.2460388817562
+      ],
+      "baseline_midpoint_bias": -3736.7510069924756,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 170,
+      "phase2_end_mz": [
+        18.181659998160285,
+        -20.99783611652265
+      ],
+      "phase2_midpoint_bias": -1.408088059181182,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3725.5587919047,
+        -3902.6691623491197
+      ],
+      "baseline_midpoint_bias": -3814.11397712691,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 171,
+      "phase2_end_mz": [
+        -31.95354701433098,
+        83.45354001641545
+      ],
+      "phase2_midpoint_bias": 25.749996501042233,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -4063.5793042659725,
+        -2342.126974727209
+      ],
+      "baseline_midpoint_bias": -3202.8531394965908,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 172,
+      "phase2_end_mz": [
+        179.44444567146775,
+        -137.00494371091781
+      ],
+      "phase2_midpoint_bias": 21.219750980274966,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3543.0669860811713,
+        -3805.3016404519535
+      ],
+      "baseline_midpoint_bias": -3674.1843132665626,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 173,
+      "phase2_end_mz": [
+        -101.478215497814,
+        104.10865812313887
+      ],
+      "phase2_midpoint_bias": 1.3152213126624304,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3824.747230204441,
+        -3687.444402869899
+      ],
+      "baseline_midpoint_bias": -3756.0958165371703,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 174,
+      "phase2_end_mz": [
+        -97.71353310626282,
+        96.66072474333858
+      ],
+      "phase2_midpoint_bias": -0.5264041814621194,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3799.026917162114,
+        -3704.3713075308083
+      ],
+      "baseline_midpoint_bias": -3751.6991123464613,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 175,
+      "phase2_end_mz": [
+        -81.98953110721439,
+        72.08433014489488
+      ],
+      "phase2_midpoint_bias": -4.952600481159756,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3787.2349759028175,
+        -3716.271906997791
+      ],
+      "baseline_midpoint_bias": -3751.7534414503043,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 176,
+      "phase2_end_mz": [
+        -47.03291585783072,
+        40.570685442040954
+      ],
+      "phase2_midpoint_bias": -3.2311152078948844,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3773.99165279322,
+        -3733.1101023980495
+      ],
+      "baseline_midpoint_bias": -3753.550877595635,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 177,
+      "phase2_end_mz": [
+        -17.69438601634686,
+        8.089514547887926
+      ],
+      "phase2_midpoint_bias": -4.8024357342294675,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3757.589050026149,
+        -3743.6360143878746
+      ],
+      "baseline_midpoint_bias": -3750.612532207012,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 178,
+      "phase2_end_mz": [
+        16.897189283385007,
+        -24.056708114781447
+      ],
+      "phase2_midpoint_bias": -3.57975941569822,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3737.7395931786,
+        -3780.478881151938
+      ],
+      "baseline_midpoint_bias": -3759.109237165269,
+      "baseline_same_sign_3_6_to_3_8_knm": true,
+      "element_id": 179,
+      "phase2_end_mz": [
+        42.15063535063706,
+        -47.22800663312887
+      ],
+      "phase2_midpoint_bias": -2.5386856412459053,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    },
+    {
+      "baseline_end_mz": [
+        -3842.3469358267416,
+        -3509.528017893985
+      ],
+      "baseline_midpoint_bias": -3675.9374768603634,
+      "baseline_same_sign_3_6_to_3_8_knm": false,
+      "element_id": 180,
+      "phase2_end_mz": [
+        60.70012144558105,
+        -60.67430375809142
+      ],
+      "phase2_midpoint_bias": 0.012908843744813936,
+      "phase2_same_sign_3_6_to_3_8_knm": false
+    }
+  ],
+  "schema": "fem-python-b31-phase2-purlin-bias-v1"
+}

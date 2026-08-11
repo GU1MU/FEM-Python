@@ -27,9 +27,7 @@ def _required_float_props(elem: Any, *names: str) -> tuple[float, ...]:
         ) from exc
 
     for name, value in zip(names, values):
-        if name in {"E", "area"} and (
-            not np.isfinite(value) or value <= 0.0
-        ):
+        if name in {"E", "area"} and (not np.isfinite(value) or value <= 0.0):
             raise ValueError(
                 f"Element {elem.id} property {name} must be finite and > 0, "
                 f"got {elem.props[name]!r}"
@@ -55,7 +53,9 @@ def _validate_optional_rho(elem: Any) -> None:
         )
 
 
-def _body_vector_3d(vector: tuple[float, float, float], element_type: str) -> np.ndarray:
+def _body_vector_3d(
+    vector: tuple[float, float, float], element_type: str
+) -> np.ndarray:
     """Return a validated three-component body-force vector."""
     bvec = np.asarray(vector, dtype=float)
     if bvec.shape != (3,):
@@ -127,22 +127,6 @@ def _beam2_local_stiffness(
     return length * (strain.T @ constitutive @ strain)
 
 
-def _beam2_shear_flexibilities(
-    length: float,
-    E: float,
-    Iyy: float,
-    Izz: float,
-    kGA_y: float,
-    kGA_z: float,
-) -> tuple[float, float]:
-    """Return transverse ``(phi_y, phi_z)`` flexibility parameters."""
-
-    return (
-        12.0 * E * Izz / (kGA_y * length**2),
-        12.0 * E * Iyy / (kGA_z * length**2),
-    )
-
-
 def _beam2_b31_interpolation(
     fraction: float,
     length: float,
@@ -204,54 +188,14 @@ def _beam2_variable_stiffness(
     return transformation.T @ local_stiffness @ transformation
 
 
-def _beam2_legacy_line_load_shape_matrix(
-    fraction: float,
-    length: float,
-    phi_y: float,
-    phi_z: float,
-) -> np.ndarray:
-    """Return the pre-Phase-2 translational load interpolation."""
-
-    def bending(phi: float) -> np.ndarray:
-        r = float(fraction)
-        denominator = 1.0 + phi
-        return np.array(
-            (
-                2.0 * r**3 - 3.0 * r**2 - phi * r + denominator,
-                length
-                * (
-                    r**3
-                    - (2.0 + phi / 2.0) * r**2
-                    + (1.0 + phi / 2.0) * r
-                ),
-                -2.0 * r**3 + 3.0 * r**2 + phi * r,
-                length
-                * (
-                    r**3
-                    - (1.0 - phi / 2.0) * r**2
-                    - phi * r / 2.0
-                ),
-            ),
-            dtype=float,
-        ) / denominator
-
-    shape = np.zeros((3, 12), dtype=float)
-    shape[0, (0, 6)] = (1.0 - float(fraction), float(fraction))
-    shape[1, (1, 5, 7, 11)] = bending(phi_y)
-    shape[2, (2, 4, 8, 10)] = bending(phi_z) * (1.0, -1.0, 1.0, -1.0)
-    return shape
-
-
-def _beam2_variable_line_load(
+def _beam2_integrated_line_load(
     field: BeamFrameField,
     vector: tuple[float, float, float],
     coordinate_system: str,
-    phi_y: float,
-    phi_z: float,
     *,
     scale: float = 1.0,
 ) -> np.ndarray:
-    """Integrate one line load using the field's frame samples."""
+    """Integrate a constant line load from the B31 translation interpolation."""
     line_vector = _body_vector_3d(vector, "line load")
     if coordinate_system not in {"global", "local"}:
         raise ValueError(
@@ -259,19 +203,15 @@ def _beam2_variable_line_load(
             f"got {coordinate_system!r}"
         )
 
-    def contribution(_fraction: float, frame: BeamFrame) -> np.ndarray:
-        shape = _beam2_legacy_line_load_shape_matrix(
-            _fraction,
-            field.length,
-            phi_y,
-            phi_z,
-        )
+    def contribution(fraction: float, frame: BeamFrame) -> np.ndarray:
+        interpolation, _ = _beam2_b31_interpolation(fraction, field.length)
+        translation = interpolation[:3]
         local_vector = (
             frame.rotation @ line_vector
             if coordinate_system == "global"
             else line_vector
         )
-        local_force = shape.T @ (scale * local_vector)
+        local_force = translation.T @ (scale * local_vector)
         return _beam3_transformation(frame.rotation).T @ local_force
 
     return np.asarray(field.integrate(contribution), dtype=float)
@@ -294,6 +234,7 @@ def _beam_properties(elem: Any) -> tuple[float, float, Beam2Section]:
 
 class Truss2Kernel:
     """Two-node spatial truss element kernel."""
+
     canonical_type = "Truss2"
     aliases = ()
     edge_node_indices = ((0, 1),)
@@ -344,6 +285,7 @@ class Truss2Kernel:
 
 class Beam2Kernel:
     """Two-node spatial linear-static Timoshenko beam element kernel."""
+
     canonical_type = "Beam2"
     aliases = ()
     edge_node_indices = ((0, 1),)
@@ -384,37 +326,15 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 body-force vector."""
-        E, nu, section = _beam_properties(elem)
+        _, _, section = _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
         global_vector = _body_vector_3d(vector, "Beam2")
-        G = E / (2.0 * (1.0 + nu))
-        kGA_y, kGA_z = section.effective_shear_rigidities(G, nu)
-        phi_y, phi_z = _beam2_shear_flexibilities(
-            field.length,
-            E,
-            section.Iyy,
-            section.Izz,
-            kGA_y,
-            kGA_z,
+        return _beam2_integrated_line_load(
+            field,
+            tuple(float(value) for value in global_vector),
+            "global",
+            scale=section.area,
         )
-        if not field.is_constant:
-            return _beam2_variable_line_load(
-                field,
-                tuple(float(value) for value in global_vector),
-                "global",
-                phi_y,
-                phi_z,
-                scale=section.area,
-            )
-        frame = field.as_constant_frame()
-        local_line_load = section.area * (frame.rotation @ global_vector)
-        local_force = _beam2_consistent_line_load(
-            frame.length,
-            local_line_load,
-            phi_y,
-            phi_z,
-        )
-        return _beam3_transformation(frame.rotation).T @ local_force
 
     def line_load(
         self,
@@ -425,39 +345,13 @@ class Beam2Kernel:
         node_lookup: dict[int, Any] | None = None,
     ) -> np.ndarray:
         """Return the consistent Beam2 force for a constant line load."""
-        E, nu, section = _beam_properties(elem)
+        _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
-        G = E / (2.0 * (1.0 + nu))
-        kGA_y, kGA_z = section.effective_shear_rigidities(G, nu)
-        phi_y, phi_z = _beam2_shear_flexibilities(
-            field.length,
-            E,
-            section.Iyy,
-            section.Izz,
-            kGA_y,
-            kGA_z,
-        )
-        if not field.is_constant:
-            return _beam2_variable_line_load(
-                field,
-                vector,
-                coordinate_system,
-                phi_y,
-                phi_z,
-            )
-        frame = field.as_constant_frame()
-        local_vector = _beam2_local_line_vector(
+        return _beam2_integrated_line_load(
+            field,
             vector,
             coordinate_system,
-            frame,
         )
-        local_force = _beam2_consistent_line_load(
-            frame.length,
-            local_vector,
-            phi_y,
-            phi_z,
-        )
-        return _beam3_transformation(frame.rotation).T @ local_force
 
     def local_line_load(
         self,
@@ -473,38 +367,17 @@ class Beam2Kernel:
         this keeps recovery on the same interpolation owner as assembly.
         Constant fields retain the historical local-vector convention.
         """
-        E, nu, section = _beam_properties(elem)
+        _beam_properties(elem)
         field = resolve_beam_frame_field(mesh, elem, node_lookup)
-        G = E / (2.0 * (1.0 + nu))
-        kGA_y, kGA_z = section.effective_shear_rigidities(G, nu)
-        phi_y, phi_z = _beam2_shear_flexibilities(
-            field.length,
-            E,
-            section.Iyy,
-            section.Izz,
-            kGA_y,
-            kGA_z,
-        )
-        if not field.is_constant:
-            return _beam2_variable_line_load(
-                field,
-                vector,
-                coordinate_system,
-                phi_y,
-                phi_z,
-            )
-        frame = field.as_constant_frame()
-        local_vector = _beam2_local_line_vector(
+        global_force = _beam2_integrated_line_load(
+            field,
             vector,
             coordinate_system,
-            frame,
         )
-        return _beam2_consistent_line_load(
-            frame.length,
-            local_vector,
-            phi_y,
-            phi_z,
-        )
+        if not field.is_constant:
+            return global_force
+        frame = field.as_constant_frame()
+        return _beam3_transformation(frame.rotation) @ global_force
 
     def local_end_actions(
         self,
@@ -547,13 +420,9 @@ class Beam2Kernel:
             nu,
             field.length,
         )
-        element_displacement = np.asarray(U, dtype=float)[
-            list(mesh.element_dofs(elem))
-        ]
+        element_displacement = np.asarray(U, dtype=float)[list(mesh.element_dofs(elem))]
         if element_displacement.shape != (12,):
-            raise ValueError(
-                f"Beam2 element {elem.id} displacement requires 12 values"
-            )
+            raise ValueError(f"Beam2 element {elem.id} displacement requires 12 values")
         if not field.is_constant:
             local_load = (
                 np.zeros(12, dtype=float)
@@ -642,61 +511,3 @@ class Beam2Kernel:
                 shear_z=action[8],
             ),
         )
-
-
-def _beam2_consistent_line_load(
-    length: float,
-    vector: np.ndarray,
-    phi_y: float,
-    phi_z: float,
-) -> np.ndarray:
-    """Return the exact Timoshenko nodal forces for a constant line load."""
-
-    qx, qy, qz = vector
-    y_denominator = 1.0 + phi_y
-    z_denominator = 1.0 + phi_z
-    y_force_integral = length * (0.5 + phi_y / 2.0) / y_denominator
-    y_moment_integral = length**2 * (1.0 + phi_y) / (
-        12.0 * y_denominator
-    )
-    z_force_integral = length * (0.5 + phi_z / 2.0) / z_denominator
-    z_moment_integral = length**2 * (1.0 + phi_z) / (
-        12.0 * z_denominator
-    )
-    return np.array(
-        [
-            qx * length / 2.0,
-            qy * y_force_integral,
-            qz * z_force_integral,
-            0.0,
-            -qz * z_moment_integral,
-            qy * y_moment_integral,
-            qx * length / 2.0,
-            qy * y_force_integral,
-            qz * z_force_integral,
-            0.0,
-            qz * z_moment_integral,
-            -qy * y_moment_integral,
-        ],
-        dtype=float,
-    )
-
-
-def _beam2_local_line_vector(
-    vector: tuple[float, float, float],
-    coordinate_system: str,
-    frame: BeamFrame,
-) -> np.ndarray:
-    """Return one validated constant line-load vector in local components."""
-
-    line_vector = _body_vector_3d(vector, "line load")
-    if coordinate_system not in {"global", "local"}:
-        raise ValueError(
-            "line load coordinate_system must be 'global' or 'local', "
-            f"got {coordinate_system!r}"
-        )
-    return (
-        frame.rotation @ line_vector
-        if coordinate_system == "global"
-        else line_vector
-    )
