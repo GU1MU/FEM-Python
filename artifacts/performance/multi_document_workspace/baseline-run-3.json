@@ -1,0 +1,179 @@
+{
+  "hardware": {
+    "cpu_count": 18,
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel"
+  },
+  "phase": 0,
+  "runtime": {
+    "errors": {},
+    "versions": {
+      "pyside6": "6.11.1",
+      "python": "3.13.11",
+      "python_implementation": "CPython",
+      "pyvista": "0.48.4",
+      "qt": "6.11.1",
+      "vtk": "9.6.2"
+    }
+  },
+  "scenarios": {
+    "20000_elements": {
+      "elements": 20000,
+      "errors": {},
+      "gui": {
+        "available": true,
+        "errors": {},
+        "object_counts": {
+          "plotter_after_cleanup": 0,
+          "plotter_before": 0,
+          "plotter_live": 0,
+          "viewport_after_cleanup": 0,
+          "viewport_before": 0,
+          "viewport_live": 1
+        },
+        "spy_calls": {
+          "FEMViewport.render": 1,
+          "ModelTree.clear": 2,
+          "ResultTree.clear": 2,
+          "render": 1
+        },
+        "timings_seconds": {
+          "render_seconds": 3.920000744983554e-05,
+          "viewport_set_model_seconds": 0.0002545999886933714
+        },
+        "tracemalloc_peak_bytes": {
+          "render_peak_bytes": 448,
+          "viewport_set_model_peak_bytes": 600
+        }
+      },
+      "nodes": 20306,
+      "object_counts": {
+        "plotter_after_cleanup": 0,
+        "plotter_before": 0,
+        "plotter_live": 0,
+        "viewport_after_cleanup": 0,
+        "viewport_before": 0,
+        "viewport_live": 1
+      },
+      "spy_calls": {
+        "FEMViewport.render": 1,
+        "ModelTree.clear": 2,
+        "ResultTree.clear": 2,
+        "geometry_builder": 1,
+        "render": 1
+      },
+      "timings_seconds": {
+        "geometry_construction_seconds": 0.23239200000534765,
+        "inspection_construction_seconds": 0.0752065999986371,
+        "model_construction_seconds": 0.3318020000006072
+      },
+      "tracemalloc_peak_bytes": {
+        "geometry_construction_peak_bytes": 11149532,
+        "inspection_construction_peak_bytes": 3558504,
+        "model_construction_peak_bytes": 16482348
+      }
+    },
+    "5000_elements": {
+      "elements": 5000,
+      "errors": {},
+      "gui": {
+        "available": true,
+        "errors": {},
+        "object_counts": {
+          "plotter_after_cleanup": 0,
+          "plotter_before": 0,
+          "plotter_live": 0,
+          "viewport_after_cleanup": 0,
+          "viewport_before": 0,
+          "viewport_live": 1
+        },
+        "spy_calls": {
+          "FEMViewport.render": 1,
+          "ModelTree.clear": 2,
+          "ResultTree.clear": 2,
+          "render": 1
+        },
+        "timings_seconds": {
+          "render_seconds": 3.2500000088475645e-05,
+          "viewport_set_model_seconds": 0.000267999988864176
+        },
+        "tracemalloc_peak_bytes": {
+          "render_peak_bytes": 448,
+          "viewport_set_model_peak_bytes": 600
+        }
+      },
+      "nodes": 5183,
+      "object_counts": {
+        "plotter_after_cleanup": 0,
+        "plotter_before": 0,
+        "plotter_live": 0,
+        "viewport_after_cleanup": 0,
+        "viewport_before": 0,
+        "viewport_live": 1
+      },
+      "spy_calls": {
+        "FEMViewport.render": 1,
+        "ModelTree.clear": 2,
+        "ResultTree.clear": 2,
+        "geometry_builder": 1,
+        "render": 1
+      },
+      "timings_seconds": {
+        "geometry_construction_seconds": 0.05758870000136085,
+        "inspection_construction_seconds": 0.018642900002305396,
+        "model_construction_seconds": 0.07966980000492185
+      },
+      "tracemalloc_peak_bytes": {
+        "geometry_construction_peak_bytes": 2781116,
+        "inspection_construction_peak_bytes": 899496,
+        "model_construction_peak_bytes": 4105096
+      }
+    },
+    "empty_document": {
+      "available": true,
+      "errors": {},
+      "object_counts": {
+        "plotter_after_cleanup": 0,
+        "plotter_before": 0,
+        "plotter_live": 0,
+        "viewport_after_cleanup": 0,
+        "viewport_before": 0,
+        "viewport_live": 1
+      },
+      "spy_calls": {
+        "FEMViewport.render": 1,
+        "ModelTree.clear": 2,
+        "ResultTree.clear": 2,
+        "render": 1
+      },
+      "timings_seconds": {
+        "render_seconds": 3.15000070258975e-05,
+        "viewport_clear_model_seconds": 0.00021869999181944877
+      },
+      "tracemalloc_peak_bytes": {
+        "render_peak_bytes": 448,
+        "viewport_clear_model_peak_bytes": 835
+      }
+    },
+    "medium_result_archive": {
+      "archive_bytes": 121267,
+      "elements": 5000,
+      "errors": {},
+      "spy_calls": {
+        "archive_loader": 1
+      },
+      "timings_seconds": {
+        "archive_encode_seconds": 0.18189120000170078,
+        "archive_fixture_construction_seconds": 2.561077899998054,
+        "archive_load_seconds": 1.2836249000101816
+      },
+      "tracemalloc_peak_bytes": {
+        "archive_encode_peak_bytes": 2488570,
+        "archive_fixture_construction_peak_bytes": 16037907,
+        "archive_load_peak_bytes": 10880212
+      }
+    }
+  },
+  "schema": "phase-0-multi-document-workspace-baseline-v1"
+}
