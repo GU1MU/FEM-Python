@@ -239,3 +239,35 @@ def test_shaded_surface_preserves_cube_feature_normals() -> None:
     assert shaded.n_cells == 6
     assert origin_normals.shape == (3, 3)
     assert np.unique(np.round(origin_normals, 6), axis=0).shape[0] == 3
+
+
+def test_shaded_surface_supports_quadratic_hex_without_generated_provenance() -> None:
+    points = np.asarray(
+        (
+            (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+            (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+            (0.5, 0, 0), (1, 0.5, 0), (0.5, 1, 0), (0, 0.5, 0),
+            (0.5, 0, 1), (1, 0.5, 1), (0.5, 1, 1), (0, 0.5, 1),
+            (0, 0, 0.5), (1, 0, 0.5), (1, 1, 0.5), (0, 1, 0.5),
+        ),
+        dtype=float,
+    )
+    cell = tuple(range(20))
+    dataset = pyvista.UnstructuredGrid(
+        np.asarray((20, *cell), dtype=np.int64),
+        np.asarray((25,), dtype=np.uint8),
+        points,
+    )
+    dataset.point_data["value"] = np.arange(20, dtype=float)
+
+    shaded = build_shaded_contour_surface(
+        dataset,
+        (cell,),
+        tuple((0, index + 1) for index in range(20)),
+        scalar_name="value",
+        point_scalars=True,
+    )
+
+    assert shaded.n_cells > 0
+    assert shaded.point_data.active_normals is not None
+    assert set(np.asarray(shaded.point_data["value"])) <= set(range(20))

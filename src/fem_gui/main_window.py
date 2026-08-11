@@ -3393,8 +3393,8 @@ class FEMMainWindow(QMainWindow):
         self._add_ribbon_page("几何", (
             (
                 "创建",
-                ("geometry_create", "geometry_face_sketch"),
-                ("geometry_create", "geometry_face_sketch"),
+                ("geometry_create",),
+                ("geometry_create",),
             ),
             (
                 "特征",
@@ -3403,13 +3403,10 @@ class FEMMainWindow(QMainWindow):
                     "geometry_sweep",
                     "geometry_move",
                     "geometry_rotate",
+                    "geometry_fuse",
+                    "geometry_cut",
                 ),
                 ("geometry_extrude", "geometry_sweep"),
-            ),
-            (
-                "布尔",
-                ("geometry_fuse", "geometry_cut"),
-                (),
             ),
             (
                 "选择",
@@ -4248,7 +4245,7 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         self._contour_options["averaging_threshold"] = threshold
-        self.viewport.set_contour_options(
+        self.viewport.set_contour_metadata(
             {"averaging_threshold": threshold}
         )
         self._apply_result_averaging_threshold()
@@ -11056,39 +11053,34 @@ class FEMMainWindow(QMainWindow):
             item.code == "static.stiffness.skipped_large_model"
             for item in report.warnings
         )
-        warnings = "；".join(
-            f"[{item.code}] {item.message}"
+        output_warning_messages = {
+            "output.request.kind_unsupported": "当前输出请求的类型暂不支持执行。",
+            "output.request.target_unsupported": "当前输出请求的目标暂不支持执行。",
+            "output.request.variables_empty": "当前输出请求未指定任何结果变量。",
+            "output.request.variable_unsupported": "当前输出请求包含暂不支持的结果变量。",
+            "output.request.model_family_unsupported": "当前模型类型暂不支持所请求的结果变量。",
+            "output.request.position_unsupported": "当前模型类型暂不支持所请求的结果位置。",
+            "output.request.metadata_unsupported": "当前输出请求包含暂不支持的设置。",
+            "output.request.frequency_unsupported": "当前输出请求的输出频率暂不支持。",
+        }
+        warning_messages = tuple(dict.fromkeys(
+            output_warning_messages.get(item.code, item.message)
             for item in report.warnings
-        )
+        ))
         self._show_information("模型检查", [
-            ("模型名称", facts.model_name or "未命名模型"),
-            ("当前分析步", facts.step_name or "—"),
             ("分析类型", facts.procedure or "线性静力"),
             ("节点数", facts.node_count),
             ("单元数", facts.element_count),
             ("总自由度数", facts.dof_count),
-            ("材料数量", facts.material_count),
-            ("截面数量", facts.section_count),
-            ("位移边界条件数量", facts.displacement_count),
-            ("节点力数量", facts.nodal_load_count),
-            ("面力数量", facts.surface_load_count),
-            ("边力数量", facts.edge_load_count),
-            ("梁单元边力数量", facts.line_load_count),
-            ("体力数量", facts.body_load_count),
-            ("重力数量", facts.gravity_load_count),
             (
                 "数值稳定性",
                 (
                     "已检查"
                     if report.numerical_stability_checked
-                    else (
-                        "已跳过（大模型快速检查）"
-                        if stiffness_skipped
-                        else "未执行"
-                    )
+                    else ("已跳过" if stiffness_skipped else "未执行")
                 ),
             ),
-            ("警告/限制", warnings or "无"),
+            ("警告/限制", "；".join(warning_messages) or "无"),
             ("检查结果", "通过"),
         ])
 
@@ -12456,6 +12448,17 @@ class FEMMainWindow(QMainWindow):
             and semantic_filter in {"point", "element"}
         ):
             return (reference,)
+        if semantic_filter == "element" and reference.element_id is not None:
+            owner = self.viewport._mesh_body_owner_by_element_id.get(
+                int(reference.element_id)
+            )
+            if owner is not None:
+                return (
+                    MeshEntityRef.element(
+                        int(reference.element_id),
+                        part_id=owner,
+                    ),
+                )
         return self._mesh_selection_topology().expand(
             semantic_filter,
             reference,
@@ -13642,7 +13645,16 @@ class FEMMainWindow(QMainWindow):
             show_edges = bool(self._contour_options["edges"])
             self.actions["edges"].setChecked(show_edges)
             self.viewport.set_edges_visible(show_edges, render=False)
-        self.viewport.set_contour_options(self._contour_options)
+        self.viewport.set_contour_metadata(
+            {"averaging_threshold": threshold}
+        )
+        self.viewport.set_contour_options(
+            {
+                key: value
+                for key, value in self._contour_options.items()
+                if key != "averaging_threshold"
+            }
+        )
         if threshold != previous_threshold:
             self._apply_result_averaging_threshold()
 

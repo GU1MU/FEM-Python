@@ -216,9 +216,15 @@ def build_result_archive_geometry(
         cell_array=np.asarray(flat, dtype=np.int64),
         cell_types=np.asarray(cell_types, dtype=np.uint8),
         node_id_to_point_index=node_id_to_point_index,
-        point_index_to_node_id={index: node_id for index, node_id in node_id_to_point_index.items()},
+        point_index_to_node_id={
+            index: node_id
+            for node_id, index in node_id_to_point_index.items()
+        },
         element_id_to_cell_index=element_id_to_cell_index,
-        cell_index_to_element_id={index: element_id for index, element_id in element_id_to_cell_index.items()},
+        cell_index_to_element_id={
+            index: element_id
+            for element_id, index in element_id_to_cell_index.items()
+        },
         artifact_id=artifact_id,
     )
 

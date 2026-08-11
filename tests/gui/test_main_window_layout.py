@@ -347,6 +347,11 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_vtk"] not in result_actions
     assert window.actions["display_settings"] in result_menu.actions()
     assert window.actions["display_settings"] in result_actions
+    for name in ("undeformed", "deformed", "contour"):
+        postprocessing_action = window.actions[name]
+        assert postprocessing_action in result_menu.actions()
+        assert postprocessing_action in result_actions
+        assert postprocessing_action not in window.viewport_panel.toolbar.actions()
     assert window.actions["field"] not in result_menu.actions()
     assert window.actions["field"] not in result_actions
     window.close()
@@ -410,12 +415,32 @@ def test_geometry_and_model_pages_reuse_five_semantic_selection_actions():
         for label in geometry_page.findChildren(QLabel)
         if label.objectName() == "ribbonGroupTitle"
     ]
-    assert geometry_group_titles == ["创建", "特征", "布尔", "选择"]
+    assert geometry_group_titles == ["创建", "特征", "选择"]
+    feature_title = next(
+        label
+        for label in geometry_page.findChildren(QLabel)
+        if label.objectName() == "ribbonGroupTitle" and label.text() == "特征"
+    )
+    feature_actions = {
+        button.defaultAction()
+        for button in feature_title.parentWidget().findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    assert feature_actions == {
+        window.actions[name]
+        for name in (
+            "geometry_extrude",
+            "geometry_sweep",
+            "geometry_move",
+            "geometry_rotate",
+            "geometry_fuse",
+            "geometry_cut",
+        )
+    }
     assert geometry_actions == {
         window.actions[name]
         for name in (
             "geometry_create",
-            "geometry_face_sketch",
             "geometry_extrude",
             "geometry_sweep",
             "geometry_move",

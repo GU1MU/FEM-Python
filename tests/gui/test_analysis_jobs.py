@@ -177,7 +177,60 @@ def test_current_step_information_and_model_check_reuse_existing_services(monkey
     )
     assert window.check_current_model()
     assert reported[0][0] == "模型检查"
+    assert [label for label, _value in reported[0][1]] == [
+        "分析类型",
+        "节点数",
+        "单元数",
+        "总自由度数",
+        "数值稳定性",
+        "警告/限制",
+        "检查结果",
+    ]
+    assert ("数值稳定性", "已检查") in reported[0][1]
     assert ("检查结果", "通过") in reported[0][1]
+    window.close()
+
+
+def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    reported: list[tuple[str, list[tuple[str, object]]]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_information",
+        lambda title, rows: reported.append((title, list(rows))),
+    )
+    facts = SimpleNamespace(
+        procedure="static",
+        node_count=10,
+        element_count=4,
+        dof_count=30,
+    )
+    report = SimpleNamespace(
+        facts=facts,
+        numerical_stability_checked=False,
+        warnings=(
+            SimpleNamespace(
+                code="output.request.target_unsupported",
+                message="Output target 'preselect' is not executable.",
+            ),
+            SimpleNamespace(
+                code="output.request.kind_unsupported",
+                message="Output kind 'history' is not executable.",
+            ),
+        ),
+    )
+
+    window._show_model_check_report(report)
+
+    warning_text = dict(reported[0][1])["警告/限制"]
+    assert warning_text == (
+        "当前输出请求的目标暂不支持执行。；"
+        "当前输出请求的类型暂不支持执行。"
+    )
+    assert "output.request" not in warning_text
+    assert "preselect" not in warning_text
+    assert "history" not in warning_text
     window.close()
 
 
@@ -454,6 +507,16 @@ def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
         "model.capability.sampled_large_model",
         "static.stiffness.skipped_large_model",
     }
+    reported: list[tuple[str, list[tuple[str, object]]]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_information",
+        lambda title, rows: reported.append((title, list(rows))),
+    )
+    window._show_model_check_report(validation.report)
+    assert dict(reported[0][1])["数值稳定性"] == "已跳过"
+    assert "大模型快速检查" not in str(reported[0][1])
+    assert "model.capability.sampled_large_model" not in str(reported[0][1])
     window.close()
 
 

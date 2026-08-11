@@ -160,7 +160,7 @@ def reuse_result_render_dataset(
     *,
     candidate_validated: bool = False,
 ) -> tuple[ResultRenderPayload, bool]:
-    """Rebind a component-only payload to the currently rendered dataset."""
+    """Rebind a layout-compatible payload to the rendered VTK dataset."""
 
     checked_current = validate_result_render_payload(current)
     checked_candidate = (
@@ -170,7 +170,14 @@ def reuse_result_render_dataset(
     )
     if type(checked_candidate) is not ResultRenderPayload:
         raise TypeError("candidate must be exactly ResultRenderPayload")
-    if not _has_reusable_geometry(checked_current, checked_candidate):
+    geometry_matches = _has_reusable_geometry(
+        checked_current,
+        checked_candidate,
+    )
+    if not geometry_matches and not _has_reusable_layout(
+        checked_current,
+        checked_candidate.topology,
+    ):
         return checked_candidate, False
 
     topology = checked_candidate.topology
@@ -185,6 +192,11 @@ def reuse_result_render_dataset(
             ),
         )
         return checked_candidate, True
+    if not geometry_matches:
+        dataset.points = np.asarray(
+            checked_candidate.dataset.points,
+            dtype=float,
+        ).copy()
     source_values = (
         checked_candidate.dataset.point_data[checked_candidate.scalar_name]
         if topology.value_layout is ResultValueLayout.POINT
@@ -215,20 +227,34 @@ def _has_reusable_topology(
 ) -> bool:
     current_topology = current.topology
     return (
+        _has_reusable_layout(current, candidate_topology)
+        and current_topology.deformation_scale
+        == candidate_topology.deformation_scale
+        and np.array_equal(
+            np.asarray(current.dataset.points),
+            candidate_topology.points,
+        )
+    )
+
+
+def _has_reusable_layout(
+    current: ResultRenderPayload,
+    candidate_topology: ResultFieldTopology,
+) -> bool:
+    current_topology = current.topology
+    return (
         current_topology.source == candidate_topology.source
         and current_topology.materialization_generation
         == candidate_topology.materialization_generation
-        and current_topology.deformation_scale
-        == candidate_topology.deformation_scale
         and current_topology.value_layout is candidate_topology.value_layout
         and current_topology.cells == candidate_topology.cells
         and current_topology.cell_kinds == candidate_topology.cell_kinds
         and current_topology.canonical_element_types
         == candidate_topology.canonical_element_types
-        and np.array_equal(
-            np.asarray(current.dataset.points),
-            candidate_topology.points,
-        )
+        and current_topology.point_locations
+        == candidate_topology.point_locations
+        and current_topology.cell_locations
+        == candidate_topology.cell_locations
     )
 
 

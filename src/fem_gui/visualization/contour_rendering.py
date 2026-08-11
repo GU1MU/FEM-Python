@@ -86,22 +86,23 @@ def build_shaded_contour_surface(
         np.asarray(dataset.celltypes, dtype=np.uint8),
         np.asarray(canonical_points, dtype=float),
     )
+    connected.point_data[_NORMAL_SOURCE_POINT_ID] = np.arange(
+        connected.n_points,
+        dtype=np.int64,
+    )
+    connected.cell_data[_NORMAL_SOURCE_CELL_ID] = np.arange(
+        connected.n_cells,
+        dtype=np.int64,
+    )
     surface = connected.extract_surface(
         algorithm="dataset_surface",
-        pass_pointid=True,
-        pass_cellid=True,
+        pass_pointid=False,
+        pass_cellid=False,
+        nonlinear_subdivision=0,
     )
     if int(surface.n_faces) == 0:
         return dataset
 
-    surface.point_data[_NORMAL_SOURCE_POINT_ID] = np.asarray(
-        surface.point_data["vtkOriginalPointIds"],
-        dtype=np.int64,
-    )
-    surface.cell_data[_NORMAL_SOURCE_CELL_ID] = np.asarray(
-        surface.cell_data["vtkOriginalCellIds"],
-        dtype=np.int64,
-    )
     normal_surface = surface.compute_normals(
         cell_normals=False,
         point_normals=True,
@@ -207,6 +208,28 @@ def bind_shaded_contour_scalars(
         )[source_ids]
         preference = "cell"
     rendered.set_active_scalars(scalar_name, preference=preference)
+    return True
+
+
+def update_shaded_contour_geometry(rendered: Any, dataset: Any) -> bool:
+    """Move an existing split shaded surface onto updated source points."""
+
+    if _SCALAR_SOURCE_POINT_ID not in rendered.point_data:
+        return False
+    source_ids = np.asarray(
+        rendered.point_data[_SCALAR_SOURCE_POINT_ID],
+        dtype=np.int64,
+    )
+    source_points = np.asarray(dataset.points)
+    if source_ids.size and int(np.max(source_ids)) >= len(source_points):
+        return False
+    rendered.points = source_points[source_ids]
+    rendered.compute_normals(
+        cell_normals=False,
+        point_normals=True,
+        split_vertices=False,
+        inplace=True,
+    )
     return True
 
 

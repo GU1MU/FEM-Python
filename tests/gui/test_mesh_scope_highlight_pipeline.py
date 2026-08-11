@@ -18,6 +18,7 @@ from fem_gui.widgets import viewport as viewport_module
 from fem_gui.widgets.viewport import (
     FEMViewport,
     _MeshScopeHighlightPipeline,
+    _positive_id_indices,
 )
 from tests.helpers.mesh_builders import make_selection_hex_mesh
 
@@ -174,6 +175,41 @@ def test_body_scope_uses_surface_and_geometry_edges_without_element_wireframe() 
         plotter.close()
         viewport._plotter = None
         viewport.close()
+
+
+def test_body_surface_is_reused_for_hover_and_selection(monkeypatch) -> None:
+    viewport, plotter = _viewport_with_scope_pipelines()
+    calls = 0
+    original = pyvista.DataSet.extract_cells
+
+    def record_extract(dataset, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(dataset, *args, **kwargs)
+
+    monkeypatch.setattr(pyvista.DataSet, "extract_cells", record_extract)
+    try:
+        first = viewport._mesh_body_render_data((1,))
+        second = viewport._mesh_body_render_data((1,))
+
+        assert second[0] is first[0]
+        assert second[1] is first[1]
+        assert calls == 1
+    finally:
+        viewport._mesh_scope_render_timer.stop()
+        plotter.close()
+        viewport._plotter = None
+        viewport.close()
+
+
+def test_result_provenance_ids_are_grouped_in_one_pass() -> None:
+    identifiers = np.tile(np.arange(1, 50_001, dtype=np.int64), 3)
+
+    grouped = _positive_id_indices(identifiers)
+
+    assert len(grouped) == 50_000
+    assert grouped[1] == (0, 50_000, 100_000)
+    assert grouped[50_000] == (49_999, 99_999, 149_999)
 
 
 def test_scope_render_requests_are_coalesced_and_keep_final_selection() -> None:
@@ -340,6 +376,25 @@ def test_main_window_preserves_body_highlight_semantics() -> None:
             {"changed_references": None, "entity_kind": "body"},
         )
     ]
+
+
+def test_element_pick_uses_loaded_owner_map_without_topology_rebuild() -> None:
+    fake = SimpleNamespace(
+        document=SimpleNamespace(model=object()),
+        _pending_analysis_selection=None,
+        viewport=SimpleNamespace(_mesh_body_owner_by_element_id={7: "P2"}),
+        _mesh_selection_topology=lambda: (_ for _ in ()).throw(
+            AssertionError("element pick must not rebuild topology")
+        ),
+    )
+
+    expanded = FEMMainWindow._expand_mesh_selection_reference(
+        fake,
+        "element",
+        MeshEntityRef.element(7),
+    )
+
+    assert expanded == (MeshEntityRef.element(7, part_id="P2"),)
 
 
 def test_completed_scope_clears_persistent_viewport_selection() -> None:

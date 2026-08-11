@@ -147,6 +147,79 @@ def test_component_switch_reuses_grid_and_actor() -> None:
     viewport.close()
 
 
+def test_shape_change_reuses_result_actor_surface_and_selection_pipelines() -> None:
+    _application()
+    first = _payload("S11", (1.0, 2.0, 3.0))
+    topology = first.topology
+    moved_topology = ResultFieldTopology(
+        source=topology.source,
+        materialization_generation=topology.materialization_generation,
+        selection=topology.selection,
+        deformation_scale=2.0,
+        points=topology.points + np.asarray((0.0, 0.0, 0.25)),
+        cells=topology.cells,
+        cell_kinds=topology.cell_kinds,
+        canonical_element_types=topology.canonical_element_types,
+        values=topology.values,
+        value_layout=topology.value_layout,
+        point_locations=topology.point_locations,
+        cell_locations=topology.cell_locations,
+    )
+    moved = build_result_render_payload(moved_topology)
+    viewport = FEMViewport()
+    viewport._plotter = pyvista.Plotter(off_screen=True)
+    viewport._display = DisplayState("deformed", True)
+    viewport.set_result_render_payload(first)
+    viewport._update_result_layer()
+    rendered_grid = viewport._result_grid
+    rendered_actor = viewport._actors["result"]
+    rendered_surface = viewport._result_render_surface
+    pipeline_actors = {
+        kind: pipeline.actor
+        for kind, pipeline in viewport._mesh_scope_highlight_pipelines.items()
+    }
+
+    viewport.set_result_render_payload(moved)
+    viewport.set_display("undeformed", True)
+
+    assert viewport._result_grid is rendered_grid
+    assert viewport._actors["result"] is rendered_actor
+    assert viewport._result_render_surface is rendered_surface
+    assert {
+        kind: pipeline.actor
+        for kind, pipeline in viewport._mesh_scope_highlight_pipelines.items()
+    } == pipeline_actors
+    np.testing.assert_array_equal(
+        viewport._result_grid.points,
+        moved_topology.points,
+    )
+    assert viewport._rendered_display == DisplayState("undeformed", True)
+    viewport.close()
+
+
+def test_contour_toggle_reuses_result_actor() -> None:
+    _application()
+    payload = _payload("S11", (1.0, 2.0, 3.0))
+    viewport = FEMViewport()
+    viewport._plotter = pyvista.Plotter(off_screen=True)
+    viewport._display = DisplayState("deformed", True)
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+    rendered_actor = viewport._actors["result"]
+
+    viewport.set_display("deformed", False)
+    assert viewport._actors["result"] is rendered_actor
+    assert not rendered_actor.mapper.scalar_visibility
+    assert "result_edges" not in viewport._actors
+
+    viewport.set_display("deformed", True)
+    assert viewport._actors["result"] is rendered_actor
+    assert rendered_actor.mapper.scalar_visibility
+    assert rendered_actor.mapper.array_name == payload.scalar_name
+    assert "result_edges" in viewport._actors
+    viewport.close()
+
+
 def test_failed_component_switch_can_restore_exact_previous_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

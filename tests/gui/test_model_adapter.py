@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
+from fem.application.results import (
+    ResultArchiveModelProjection,
+    ResultSourceKey,
+    ResultTopologyProjection,
+)
 from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import FEMModel
-from fem_gui.visualization.model_adapter import build_model_geometry
+from fem.post.fields import ResultRegionKey, make_result_region_signature
+from fem_gui.visualization.model_adapter import (
+    build_model_geometry,
+    build_result_archive_geometry,
+)
 
 
 @pytest.mark.parametrize(
@@ -59,3 +69,29 @@ def test_mixed_mesh_keeps_connectivity_and_bidirectional_ids():
     assert geometry.cells == ((0, 1, 2), (1, 3, 4, 2))
     assert geometry.element_id_to_cell_index == {70: 0, 90: 1}
     assert geometry.cell_index_to_element_id == {0: 70, 1: 90}
+
+
+def test_archive_geometry_keeps_inverse_node_and_element_maps() -> None:
+    source = ResultSourceKey(
+        "result-1", "session-1", "artifact-1", 1, "Step-1", "run-1"
+    )
+    signature = make_result_region_signature({})
+    projection = ResultArchiveModelProjection(
+        ResultTopologyProjection(
+            source=source,
+            node_ids=(10, 20, 30),
+            node_coordinates=np.asarray(
+                ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+            ),
+            nodal_displacements=np.zeros((3, 3)),
+            element_ids=(99,),
+            element_types=("Tri3",),
+            connectivity=((10, 20, 30),),
+            element_region_keys=(ResultRegionKey(signature, signature),),
+        )
+    )
+
+    geometry = build_result_archive_geometry(projection)
+
+    assert geometry.point_index_to_node_id == {0: 10, 1: 20, 2: 30}
+    assert geometry.cell_index_to_element_id == {0: 99}

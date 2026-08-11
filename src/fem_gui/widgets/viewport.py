@@ -76,6 +76,7 @@ from ..visualization.contour_rendering import (
     contour_surface_options,
     extract_contour_edges,
     style_contour_edges,
+    update_shaded_contour_geometry,
 )
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
 from ..visualization.scene import DisplayState
@@ -110,6 +111,20 @@ _TYPED_RESULT_GRID_NAME = "typed_result_grid"
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
 _GRAVITY_SYMBOL_COLOR = "#FFD400"
+
+
+def _positive_id_indices(values: np.ndarray) -> dict[int, tuple[int, ...]]:
+    """Group positive integer IDs in one linear pass."""
+
+    grouped: dict[int, list[int]] = {}
+    for index, value in enumerate(np.asarray(values).ravel()):
+        identifier = int(value)
+        if identifier > 0:
+            grouped.setdefault(identifier, []).append(index)
+    return {
+        identifier: tuple(indices)
+        for identifier, indices in grouped.items()
+    }
 
 
 class _SelectionRubberBand:
@@ -1331,6 +1346,10 @@ class FEMViewport(QWidget):
             tuple[str, tuple[int, int]],
             tuple[int, ...],
         ] = {}
+        self._mesh_body_render_cache: dict[
+            tuple[int, int, tuple[int, ...]],
+            tuple[Any | None, Any | None],
+        ] = {}
         self._mesh_scope_selected_references: set[MeshEntityRef] = set()
         self._mesh_scope_highlight_kind: str | None = None
         self._mesh_scope_body_highlight_owners: frozenset[str] = frozenset()
@@ -1338,6 +1357,7 @@ class FEMViewport(QWidget):
         self._pick_locators: dict[int, tuple[int, Any]] = {}
         self._result_render_payload: ResultRenderPayload | None = None
         self._scalar_reuse_pending = False
+        self._geometry_reuse_pending = False
         self._scalar_reuse_display: DisplayState | None = None
         # Runtime revalidation follows VTK Modified notifications. Full
         # representation validation still runs unconditionally on install/render.
@@ -1357,6 +1377,7 @@ class FEMViewport(QWidget):
         self._show_node_labels = False
         self._show_element_labels = False
         self._display = DisplayState()
+        self._rendered_display: DisplayState | None = None
         self._overlay_undeformed = False
         self._symbol_settings = SymbolSettings()
         self._symbol_sampling_density_override: str | None = None
@@ -2081,6 +2102,7 @@ class FEMViewport(QWidget):
         self._result_render_payload = None
         self._result_render_surface = None
         self._scalar_reuse_pending = False
+        self._geometry_reuse_pending = False
         self._scalar_reuse_display = None
         self._result_provenance_layout = None
         self._result_render_validated_mtime = None
@@ -2096,6 +2118,7 @@ class FEMViewport(QWidget):
         self._pending_hover_position = None
         self._hover_timer.stop()
         self._display = DisplayState()
+        self._rendered_display = None
         self._overlay_undeformed = False
         self._boundary_cache.clear()
         self._effective_frame_query = effective_frame_query
@@ -2175,7 +2198,9 @@ class FEMViewport(QWidget):
         self._pick_locators.clear()
         self._result_render_payload = None
         self._scalar_reuse_pending = False
+        self._geometry_reuse_pending = False
         self._scalar_reuse_display = None
+        self._rendered_display = None
         self._result_provenance_layout = None
         self._result_render_validated_mtime = None
         self._result_install_validation = None
@@ -4774,6 +4799,7 @@ class FEMViewport(QWidget):
         self._remove_actor("mesh_scope_selection_body_edges")
         self._mesh_scope_highlight_pipelines.clear()
         self._mesh_scope_highlight_indices.clear()
+        self._mesh_body_render_cache.clear()
         self._mesh_scope_highlight_kind = None
         self._mesh_scope_body_highlight_owners = frozenset()
 
@@ -4824,24 +4850,18 @@ class FEMViewport(QWidget):
                 else None
             )
             element_dataset = (
-                result_dataset.copy(deep=True)
+                result_dataset.copy(deep=False)
                 if bool(np.any(cell_ids > 0))
                 else None
             )
-            for node_id in np.unique(node_ids[node_ids > 0]):
+            for node_id, indices in _positive_id_indices(node_ids).items():
                 self._mesh_scope_highlight_indices[
                     ("node", (int(node_id), -1))
-                ] = tuple(
-                    int(index)
-                    for index in np.flatnonzero(node_ids == node_id)
-                )
-            for element_id in np.unique(cell_ids[cell_ids > 0]):
+                ] = indices
+            for element_id, indices in _positive_id_indices(cell_ids).items():
                 self._mesh_scope_highlight_indices[
                     ("element", (int(element_id), -1))
-                ] = tuple(
-                    int(index)
-                    for index in np.flatnonzero(cell_ids == element_id)
-                )
+                ] = indices
         sources = {
             "node": (node_dataset, vtk.vtkDataObject.FIELD_ASSOCIATION_POINTS),
             "element": (
@@ -5014,19 +5034,28 @@ class FEMViewport(QWidget):
             ids = np.asarray(dataset.cell_data["element_id"], dtype=np.int64)
         else:
             return None, None
-        requested = tuple(int(element_id) for element_id in element_ids)
+        requested = tuple(sorted({int(element_id) for element_id in element_ids}))
+        points_mtime = int(dataset.GetPoints().GetMTime())
+        cache_key = (id(dataset), points_mtime, requested)
+        cached = self._mesh_body_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
         cells = np.flatnonzero(np.isin(ids, requested))
         if not len(cells):
             return None, None
         selected = dataset.extract_cells(cells)
         if self._is_line_mesh():
-            return selected, None
+            rendered = (selected, None)
+            self._mesh_body_render_cache[cache_key] = rendered
+            return rendered
         connected = selected.cast_to_unstructured_grid().clean()
         surface = connected.extract_surface(
             algorithm="dataset_surface"
         ).clean()
         edges = extract_contour_edges(connected, CONTOUR_EDGE_GEOMETRY)
-        return surface, edges
+        rendered = (surface, edges)
+        self._mesh_body_render_cache[cache_key] = rendered
+        return rendered
 
     def _add_mesh_body_highlight_layers(
         self,
@@ -5143,6 +5172,10 @@ class FEMViewport(QWidget):
             and "result" in self._actors
         )
         if can_reuse:
+            geometry_changed = not np.array_equal(
+                np.asarray(current.dataset.points),
+                np.asarray(checked.dataset.points),
+            )
             checked, reused = _reuse_result_render_dataset(
                 current,
                 checked,
@@ -5150,8 +5183,10 @@ class FEMViewport(QWidget):
             )
         else:
             reused = False
+            geometry_changed = False
         self._result_render_payload = checked
         self._scalar_reuse_pending = reused
+        self._geometry_reuse_pending = reused and geometry_changed
         self._scalar_reuse_display = (
             self._display if reused else None
         )
@@ -5337,12 +5372,13 @@ class FEMViewport(QWidget):
             self._mesh_scope_edge_cells = ()
             return
         coordinates: dict[int, np.ndarray] = {}
+        result_points = np.asarray(payload.dataset.points)
         for index, location in enumerate(payload.topology.point_locations):
             if location is None or location.node_id is None:
                 continue
             coordinates.setdefault(
                 int(location.node_id),
-                np.asarray(payload.dataset.points[index], dtype=float),
+                result_points[index],
             )
         projected_points = np.asarray(self._geometry.points, dtype=float).copy()
         for node_id, point_index in self._geometry.node_id_to_point_index.items():
@@ -5360,29 +5396,41 @@ class FEMViewport(QWidget):
             for node_id in _face_display_node_ids(node_ids)
         }
         if self._mesh_scope_edge_rows and edge_node_ids.issubset(coordinates):
-            (
-                self._mesh_scope_edges,
-                self._mesh_scope_edge_cells,
-            ) = _mesh_edge_polydata(
-                _pyvista,
-                self._geometry,
-                self._mesh_scope_edge_rows,
-                points=projected_points,
-            )
+            if (
+                self._mesh_scope_edges is not None
+                and int(self._mesh_scope_edges.n_points)
+                == len(projected_points)
+            ):
+                self._mesh_scope_edges.points = projected_points
+            else:
+                (
+                    self._mesh_scope_edges,
+                    self._mesh_scope_edge_cells,
+                ) = _mesh_edge_polydata(
+                    _pyvista,
+                    self._geometry,
+                    self._mesh_scope_edge_rows,
+                    points=projected_points,
+                )
         else:
             self._mesh_scope_edges = None
             self._mesh_scope_edge_cells = ()
-        self._mesh_scope_faces = (
-            _mesh_face_polydata(
-                _pyvista,
-                self._geometry,
-                self._mesh_scope_face_rows,
-                points=projected_points,
-            )
-            if self._mesh_scope_face_rows
-            and face_node_ids.issubset(coordinates)
-            else None
-        )
+        if self._mesh_scope_face_rows and face_node_ids.issubset(coordinates):
+            if (
+                self._mesh_scope_faces is not None
+                and int(self._mesh_scope_faces.n_points)
+                == len(projected_points)
+            ):
+                self._mesh_scope_faces.points = projected_points
+            else:
+                self._mesh_scope_faces = _mesh_face_polydata(
+                    _pyvista,
+                    self._geometry,
+                    self._mesh_scope_face_rows,
+                    points=projected_points,
+                )
+        else:
+            self._mesh_scope_faces = None
 
     def set_selection_mode(self, mode: str) -> None:
         previous = self._selection_mode
@@ -6080,6 +6128,13 @@ class FEMViewport(QWidget):
         self._update_result_layer()
 
     def set_contour_options(self, options: dict[str, Any]) -> None:
+        changed = {
+            key
+            for key, value in options.items()
+            if self._contour.get(key) != value
+        }
+        if not changed:
+            return
         previous_coordinate_system = bool(
             self._contour["show_coordinate_system"]
         )
@@ -6099,6 +6154,9 @@ class FEMViewport(QWidget):
             self._update_result_layer()
         elif coordinate_system_changed:
             self._render()
+
+    def set_contour_metadata(self, options: dict[str, Any]) -> None:
+        self._contour.update(options)
 
     def hide_selection_highlight(self, *, render: bool = True) -> None:
         """Hide the selection actor while preserving the selected FEM entity."""
@@ -7544,13 +7602,29 @@ class FEMViewport(QWidget):
     def _update_result_layer(self) -> None:
         if (
             self._scalar_reuse_pending
-            and self._scalar_reuse_display == self._display
+            and self._scalar_reuse_display is not None
+            and self._scalar_reuse_display.contour_enabled
+            == self._display.contour_enabled
             and self._update_reused_scalar_layer()
         ):
             self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = False
+            self._scalar_reuse_display = None
+            return
+        if (
+            not self._geometry_reuse_pending
+            and self._rendered_display is not None
+            and self._rendered_display.shape_mode == self._display.shape_mode
+            and self._rendered_display.contour_enabled
+            != self._display.contour_enabled
+            and self._update_reused_display_layer()
+        ):
+            self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = False
             self._scalar_reuse_display = None
             return
         self._scalar_reuse_pending = False
+        self._geometry_reuse_pending = False
         self._scalar_reuse_display = None
         self._remove_actor("result")
         self._remove_actor("result_edges")
@@ -7558,6 +7632,7 @@ class FEMViewport(QWidget):
         self._remove_scalar_bars()
         self._result_grid = None
         self._result_render_surface = None
+        self._rendered_display = None
         if self._result_render_payload is not None:
             self._update_result_render_payload_layer(
                 self._result_render_payload
@@ -7705,8 +7780,9 @@ class FEMViewport(QWidget):
         self._refresh_undeformed_overlay()
         self._restore_selection()
         self._render()
+        self._rendered_display = self._display
 
-    def _update_reused_scalar_layer(self) -> bool:
+    def _update_reused_display_layer(self) -> bool:
         payload = self._result_render_payload
         actor = self._actors.get("result")
         mapper = None if actor is None else getattr(actor, "mapper", None)
@@ -7715,10 +7791,8 @@ class FEMViewport(QWidget):
             or self._plotter is None
             or self._result_grid is not payload.dataset
             or mapper is None
-            or not self._display.contour_enabled
         ):
             return False
-
         checked = self._consume_result_install_validation(payload)
         if self._result_render_surface is not None and not (
             bind_shaded_contour_scalars(
@@ -7732,12 +7806,113 @@ class FEMViewport(QWidget):
             )
         ):
             return False
-        mapper.array_name = checked.scalar_name
-        mapper.scalar_visibility = True
-        mapper.scalar_range = self._contour_data_range(checked)
+
+        self._remove_scalar_bars()
+        self._remove_actor("extrema")
+        if self._display.contour_enabled:
+            mapper.array_name = checked.scalar_name
+            mapper.scalar_visibility = True
+            mapper.scalar_range = self._contour_data_range(checked)
+            self._set_actor_edge_visibility("result", False)
+            if self._show_edges and "result_edges" not in self._actors:
+                self._add_result_edges_layer(checked.dataset)
+            if self._contour["legend"]:
+                scalar_bar = self._plotter.add_scalar_bar(
+                    mapper=mapper,
+                    **self._contour_bar_args(checked),
+                )
+                self._configure_contour_bar(
+                    checked,
+                    mapper,
+                    scalar_bar=scalar_bar,
+                )
+            if (
+                self._contour["show_minimum"]
+                or self._contour["show_maximum"]
+            ):
+                self._add_result_render_payload_extrema_labels(
+                    checked,
+                    payload_validated=True,
+                )
+        else:
+            mapper.scalar_visibility = False
+            self._remove_actor("result_edges")
+            palette = self._visual_palette()
+            self._set_actor_color(
+                "result",
+                self._mesh_layer_color(palette),
+            )
+            self._set_actor_edge_color(
+                "result",
+                self._element_layer_color(palette),
+            )
+            self._set_actor_edge_visibility(
+                "result",
+                self._show_edges and not self._is_line_mesh(),
+            )
+        mapper.Update()
+        self._result_render_validated_mtime = int(
+            checked.dataset.GetMTime()
+        )
+        self._render()
+        self._rendered_display = self._display
+        return True
+
+    def _update_reused_scalar_layer(self) -> bool:
+        payload = self._result_render_payload
+        actor = self._actors.get("result")
+        mapper = None if actor is None else getattr(actor, "mapper", None)
+        if (
+            payload is None
+            or self._plotter is None
+            or self._result_grid is not payload.dataset
+            or mapper is None
+        ):
+            return False
+
+        checked = self._consume_result_install_validation(payload)
+        if self._geometry_reuse_pending:
+            if self._result_render_surface is not None and not (
+                update_shaded_contour_geometry(
+                    self._result_render_surface,
+                    checked.dataset,
+                )
+            ):
+                return False
+            self._pick_locators.clear()
+            self._project_mesh_scope_datasets_to_result(checked)
+            for kind in ("node", "element"):
+                pipeline = self._mesh_scope_highlight_pipelines.get(kind)
+                if (
+                    pipeline is not None
+                    and int(pipeline.dataset.n_points)
+                    == int(checked.dataset.n_points)
+                ):
+                    pipeline.dataset.points = checked.dataset.points
+                    pipeline.algorithm.Modified()
+            self._mesh_body_render_cache.clear()
+            if self._display.contour_enabled and self._show_edges:
+                self._remove_actor("result_edges")
+                self._add_result_edges_layer(checked.dataset)
+        if self._result_render_surface is not None and not (
+            bind_shaded_contour_scalars(
+                self._result_render_surface,
+                checked.dataset,
+                scalar_name=checked.scalar_name,
+                point_scalars=(
+                    checked.topology.value_layout
+                    is ResultValueLayout.POINT
+                ),
+            )
+        ):
+            return False
+        if self._display.contour_enabled:
+            mapper.array_name = checked.scalar_name
+            mapper.scalar_visibility = True
+            mapper.scalar_range = self._contour_data_range(checked)
         mapper.Update()
         self._remove_scalar_bars()
-        if self._contour["legend"]:
+        if self._display.contour_enabled and self._contour["legend"]:
             scalar_bar = self._plotter.add_scalar_bar(
                 mapper=mapper,
                 **self._contour_bar_args(checked),
@@ -7749,17 +7924,26 @@ class FEMViewport(QWidget):
             )
         self._remove_actor("extrema")
         if (
-            self._contour["show_minimum"]
-            or self._contour["show_maximum"]
+            self._display.contour_enabled
+            and (
+                self._contour["show_minimum"]
+                or self._contour["show_maximum"]
+            )
         ):
             self._add_result_render_payload_extrema_labels(
                 checked,
                 payload_validated=True,
             )
+        if self._geometry_reuse_pending:
+            self._refresh_node_layer(render=False)
+            self._refresh_labels(render=False)
+            self._refresh_undeformed_overlay()
+            self._restore_selection()
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
         self._render()
+        self._rendered_display = self._display
         return True
 
     def _contour_data_range(

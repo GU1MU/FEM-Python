@@ -66,8 +66,6 @@ class ViewportToolBar(QToolBar):
         )
         self.addSeparator()
         self._add_group(actions, ("nodes", "edges", "node_labels", "element_labels", "symbols"))
-        self.addSeparator()
-        self._add_group(actions, ("undeformed", "deformed", "contour"))
 
     def _add_group(self, actions: Mapping[str, QAction], names: tuple[str, ...]) -> None:
         for name in names:
@@ -78,7 +76,7 @@ class ViewportToolBar(QToolBar):
                 button.setObjectName(f"viewportAction_{name}")
                 self._action_widgets[name] = button
             if isinstance(button, QToolButton) and name in {
-                "symbols", "undeformed", "deformed", "overlay", "contour", "select_element",
+                "symbols", "select_element",
             }:
                 # These pictograms contain thin structural outlines.  Give
                 # them the full button height so the beam/support details do
