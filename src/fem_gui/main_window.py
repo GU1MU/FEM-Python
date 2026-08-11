@@ -291,6 +291,7 @@ from .task_controller import (
     TaskApplyOutcome,
     TaskCompletion,
 )
+from .workspace import FEMWorkspace, WorkspaceDocument
 from .viewport_background import (
     ViewportBackgroundSettings,
     load_background_settings,
@@ -599,8 +600,21 @@ class FEMMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("有限元分析")
         self.resize(1280, 800)
-        self.session = ModelSession()
-        self.document = self.session.projection_snapshot()
+        # Phase 1 keeps the visible GUI single-document while moving ownership
+        # of the Session and its task controller into a workspace context.
+        # The public ``session``, ``document`` and ``task_controller`` names
+        # below remain compatibility aliases for the active context.
+        self._session_alias = ModelSession()
+        self._document_alias = self._session_alias.projection_snapshot()
+        self.workspace = FEMWorkspace(parent=self)
+        self._task_controller_alias = BackgroundTaskController(self)
+        self._active_context = self.workspace.add_model(
+            session=self._session_alias,
+            projection=self._document_alias,
+            display_name="Model-1",
+            task_controller=self._task_controller_alias,
+        )
+        self.workspace.activate(self._active_context)
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session)
         )
@@ -724,7 +738,6 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
-        self.task_controller = BackgroundTaskController(self)
         self.scope_background_reference_threshold = (
             _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD
         )
@@ -800,6 +813,72 @@ class FEMMainWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self.task_controller.busy
+
+    def _active_workspace_context(self) -> WorkspaceDocument | None:
+        """Return the cached active context, refreshing after workspace moves."""
+
+        workspace = getattr(self, "workspace", None)
+        context = getattr(self, "_active_context", None)
+        if (
+            workspace is not None
+            and context is not None
+            and workspace.active_document_id == context.document_id
+        ):
+            return context
+        if workspace is None:
+            return context
+        context = workspace.active_document()
+        if context is not None:
+            self._active_context = context
+        return context
+
+    @property
+    def session(self) -> ModelSession:
+        """Compatibility alias for the active workspace Session."""
+
+        context = self._active_workspace_context()
+        if context is not None:
+            return context.session
+        return self._session_alias
+
+    @session.setter
+    def session(self, value: ModelSession) -> None:
+        self._session_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            context.session = value
+
+    @property
+    def document(self) -> object:
+        """Compatibility alias for the active context projection."""
+
+        context = self._active_workspace_context()
+        if context is not None:
+            return context.projection
+        return self._document_alias
+
+    @document.setter
+    def document(self, value: object) -> None:
+        self._document_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            self.workspace.update_projection(context, value)
+
+    @property
+    def task_controller(self) -> BackgroundTaskController:
+        """Compatibility alias for the active context task controller."""
+
+        context = self._active_workspace_context()
+        if context is not None:
+            return context.task_controller
+        return self._task_controller_alias
+
+    @task_controller.setter
+    def task_controller(self, value: BackgroundTaskController) -> None:
+        self._task_controller_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            context.task_controller = value
 
     def _defer_ui(self, callback: Callable[[], None]) -> None:
         if self._closing:
@@ -2690,6 +2769,7 @@ class FEMMainWindow(QMainWindow):
         self,
         delta: object,
         *,
+        context: WorkspaceDocument | None = None,
         model_geometry: ModelGeometry | None = None,
         result_model_view: ArchiveModelView | None = None,
         geometry_preview: GeometryPreview | None = None,
@@ -2699,12 +2779,34 @@ class FEMMainWindow(QMainWindow):
         """Project one accepted Session transition into every GUI cache."""
         if not bool(getattr(delta, "accepted", True)):
             return False
+        target_context = context
+        if target_context is None:
+            target_context = self.workspace.active_document()
+        if target_context is None:
+            return False
         revision = int(getattr(delta, "session_revision"))
         requested_revision = revision
+        active_context = self.workspace.active_document()
+        if target_context is not active_context:
+            if revision <= target_context.projection.session_revision:
+                return False
+            snapshot = self._snapshot_for_delta(
+                delta,
+                revision,
+                context=target_context,
+            )
+            if snapshot.session_revision < revision:
+                return False
+            self.workspace.update_projection(target_context, snapshot)
+            return True
         if revision <= self._applied_session_revision:
             return False
 
-        snapshot = self._snapshot_for_delta(delta, revision)
+        snapshot = self._snapshot_for_delta(
+            delta,
+            revision,
+            context=target_context,
+        )
         if snapshot.session_revision < revision:
             return False
         if snapshot.session_revision > revision:
@@ -3015,18 +3117,28 @@ class FEMMainWindow(QMainWindow):
         self,
         delta: object,
         revision: int,
+        *,
+        context: WorkspaceDocument | None = None,
     ) -> object:
         """Project one ordered delta without detaching full model/results."""
 
+        target_context = (
+            context
+            if context is not None
+            else self.workspace.active_document()
+        )
+        if target_context is None:
+            return self.session.projection_snapshot()
+
         if (
             isinstance(delta, SessionDelta)
-            and self.session.session_revision == revision
+            and target_context.session.session_revision == revision
         ):
-            return self.session.projection_snapshot(
-                self.document,
+            return target_context.session.projection_snapshot(
+                target_context.projection,
                 delta.changed,
             )
-        return self.session.projection_snapshot()
+        return target_context.session.projection_snapshot()
 
     def _apply_revision_neutral_task_receipt(
         self,
