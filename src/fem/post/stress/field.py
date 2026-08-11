@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import Any, ClassVar, Mapping, Sequence
 
 import numpy as np
 
@@ -113,6 +113,27 @@ class StressField:
     position: StressPosition
     component_names: tuple[str, ...]
     records: tuple[StressRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlaneElementNodalRecord:
+    """Lightweight canonical plane row prepared for legacy CSV projections."""
+
+    components: tuple[float, float, float, float]
+    elem_id: int
+    node_id: int
+    local_node: int
+    region_key: ResultRegionKey
+    weight: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class PlaneElementNodalField:
+    """Plane element-nodal rows without unused invariant/result metadata."""
+
+    records: tuple[PlaneElementNodalRecord, ...]
+    position: ClassVar[StressPosition] = StressPosition.ELEMENT_NODAL
+    component_names: ClassVar[tuple[str, ...]] = CANONICAL_PLANE_COMPONENT_NAMES
 
 
 @dataclass(frozen=True)
@@ -300,6 +321,102 @@ def collect_stress(
         position,
         checkpoint=checkpoint,
     )
+
+
+def collect_plane_element_nodal(
+    mesh: Any,
+    U: Sequence[float],
+    element_type: str | None = None,
+    gauss_order: int | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> PlaneElementNodalField:
+    """Recover only the plane element-nodal values needed by legacy CSVs."""
+
+    checkpoint = _validate_checkpoint(checkpoint)
+    _run_checkpoint(checkpoint)
+    type_keys = dispatch.resolve_type_keys(mesh, element_type)
+    if dispatch.stress_group_for_keys(type_keys) != "plane":
+        raise ValueError("plane CSV recovery requires plane elements")
+    selected = set(type_keys)
+    displacement = validated_u(mesh, U)
+    lookup = node_lookup(mesh)
+    records: list[PlaneElementNodalRecord] = []
+    region_cache: dict[tuple[tuple[object, object], ...], ResultRegionKey] = {}
+
+    for elem in mesh.elements:
+        _run_checkpoint(checkpoint)
+        type_key = dispatch.type_key_from_name(elem.type)
+        if type_key not in selected:
+            continue
+        kernel = get_element_kernel(elem.type)
+        order = (
+            gauss_order
+            if gauss_order is not None
+            else dispatch.default_gauss_order(type_key)
+        )
+        if order is None:
+            raw_values, plane_type, poisson_ratio = kernel.nodal_stress(
+                mesh,
+                elem,
+                displacement,
+                lookup,
+            )
+        else:
+            raw_values, plane_type, poisson_ratio = kernel.nodal_stress(
+                mesh,
+                elem,
+                displacement,
+                lookup,
+                order,
+            )
+        values = np.asarray(raw_values, dtype=float)
+        if values.shape != (len(elem.node_ids), 3):
+            raise ValueError(
+                f"Element {elem.id} nodal stress shape {values.shape} "
+                f"does not match ({len(elem.node_ids)}, 3)"
+            )
+        if not np.isfinite(values).all():
+            raise ValueError("plane element-nodal stress components must be finite")
+        try:
+            props_key = tuple(sorted(elem.props.items()))
+            region_key = region_cache.get(props_key)
+        except TypeError:
+            props_key = None
+            region_key = None
+        if region_key is None:
+            region_key = result_region_key_for_element(elem)
+            if props_key is not None:
+                region_cache[props_key] = region_key
+        for local_node, (node_id, components) in enumerate(
+            zip(elem.node_ids, values),
+            start=1,
+        ):
+            _run_checkpoint(checkpoint)
+            sig_x = float(components[0])
+            sig_y = float(components[1])
+            tau_xy = float(components[2])
+            records.append(
+                PlaneElementNodalRecord(
+                    components=(
+                        sig_x,
+                        sig_y,
+                        (
+                            float(poisson_ratio) * (sig_x + sig_y)
+                            if plane_type == "strain"
+                            else 0.0
+                        ),
+                        tau_xy,
+                    ),
+                    elem_id=int(elem.id),
+                    node_id=int(node_id),
+                    local_node=local_node,
+                    region_key=region_key,
+                )
+            )
+
+    _run_checkpoint(checkpoint)
+    return PlaneElementNodalField(tuple(records))
 
 
 def _collect_element_integration_points(
@@ -798,6 +915,36 @@ def collect(
         gauss_order=gauss_order,
         checkpoint=checkpoint,
     )
+    return nodal_from_stress_field(
+        mesh,
+        stress_field,
+        checkpoint=checkpoint,
+    )
+
+
+def nodal_from_stress_field(
+    mesh: Any,
+    stress_field: StressField,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> NodalStressField:
+    """Project one recovered element-nodal field to the legacy nodal view."""
+
+    checkpoint = _validate_checkpoint(checkpoint)
+    _run_checkpoint(checkpoint)
+    if type(stress_field) is not StressField:
+        raise TypeError("stress_field must be a StressField")
+    if stress_field.position is not StressPosition.ELEMENT_NODAL:
+        raise ValueError(
+            "legacy nodal projection requires element-nodal stress"
+        )
+    if stress_field.component_names not in {
+        CANONICAL_PLANE_COMPONENT_NAMES,
+        CANONICAL_SOLID_COMPONENT_NAMES,
+    }:
+        raise ValueError(
+            "legacy nodal projection requires canonical continuum stress"
+        )
     contributions: dict[int, list[ElementNodalStressContribution]] = {
         int(node_id): [] for node_id in mesh.node_ids
     }

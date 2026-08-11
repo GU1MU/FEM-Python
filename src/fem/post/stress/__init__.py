@@ -6,7 +6,10 @@ from .field import (
     StressPosition,
     StressRecord,
     StressRecovery,
+    PlaneElementNodalField,
     collect_stress,
+    collect_plane_element_nodal,
+    nodal_from_stress_field,
 )
 from .truss import TrussStressField, TrussStressRow
 
@@ -17,10 +20,12 @@ __all__ = [
     "StressPosition",
     "StressRecord",
     "StressRecovery",
+    "PlaneElementNodalField",
     "TrussStressField",
     "TrussStressRow",
     "beam",
     "collect",
+    "collect_plane_element_nodal",
     "collect_stress",
     "dispatch",
     "element",
@@ -28,5 +33,6 @@ __all__ = [
     "field",
     "invariants",
     "nodal",
+    "nodal_from_stress_field",
     "truss",
 ]

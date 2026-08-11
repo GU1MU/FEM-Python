@@ -16,9 +16,10 @@ from ._common import (
 )
 from .field import (
     CANONICAL_PLANE_COMPONENT_NAMES,
+    PlaneElementNodalField,
     StressField,
     StressPosition,
-    collect_stress,
+    collect_plane_element_nodal,
 )
 from .invariants import von_mises_3d, von_mises_plane
 
@@ -163,19 +164,34 @@ def _plane(
     gauss_order: int | None = None,
 ) -> None:
     """Export plane element-nodal stresses without averaging."""
-    recovered = collect_stress(
+    recovered = collect_plane_element_nodal(
         mesh,
         U,
-        position=StressPosition.ELEMENT_NODAL,
         element_type=type_key,
         gauss_order=gauss_order,
     )
+    write_plane_element_nodal(mesh, recovered, path)
+
+
+def write_plane_element_nodal(
+    mesh: Mesh2D,
+    recovered: StressField | PlaneElementNodalField,
+    path: str,
+    *,
+    selected_element_ids: set[int] | None = None,
+) -> None:
+    """Write one already-recovered plane element-nodal stress field."""
 
     path = prepare_output_path(path)
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(PLANE_ELEMENT_HEADER)
-        _write_plane_records(writer, recovered, mesh)
+        _write_plane_records(
+            writer,
+            recovered,
+            mesh,
+            selected_element_ids,
+        )
 
 
 def _solid(
@@ -229,23 +245,23 @@ def _plane_multi(
     gauss_order: int | None = None,
 ) -> None:
     """Export mixed plane element-nodal stresses without averaging."""
-    recovered = collect_stress(
+    recovered = collect_plane_element_nodal(
         mesh,
         U,
-        position=StressPosition.ELEMENT_NODAL,
         gauss_order=gauss_order,
     )
 
-    path = prepare_output_path(path)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(PLANE_ELEMENT_HEADER)
-        selected_element_ids = {
-            int(elem.id)
-            for elem in mesh.elements
-            if dispatch.type_key_from_name(elem.type) in type_keys
-        }
-        _write_plane_records(writer, recovered, mesh, selected_element_ids)
+    selected_element_ids = {
+        int(elem.id)
+        for elem in mesh.elements
+        if dispatch.type_key_from_name(elem.type) in type_keys
+    }
+    write_plane_element_nodal(
+        mesh,
+        recovered,
+        path,
+        selected_element_ids=selected_element_ids,
+    )
 
 
 def _solid_multi(
@@ -299,7 +315,7 @@ def _solid_multi(
 
 def _write_plane_records(
     writer,
-    recovered: StressField,
+    recovered: StressField | PlaneElementNodalField,
     mesh,
     selected_element_ids: set[int] | None = None,
 ) -> None:

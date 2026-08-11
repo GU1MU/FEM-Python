@@ -256,8 +256,20 @@ def _generate_csv_bundle(result: Any, staging: Path, prefix: str) -> None:
 
     try:
         type_keys = post.stress.dispatch.resolve_type_keys(mesh, None)
-        post.stress.dispatch.stress_group_for_keys(type_keys)
+        stress_group = post.stress.dispatch.stress_group_for_keys(type_keys)
     except ValueError:
+        return
+
+    if (
+        stress_group == "plane"
+        and post.stress.dispatch.element_stress_supported(type_keys)
+        and post.stress.dispatch.nodal_stress_supported(type_keys)
+    ):
+        _write_shared_plane_stress_csvs(
+            result,
+            staging,
+            prefix,
+        )
         return
 
     if post.stress.dispatch.element_stress_supported(type_keys):
@@ -285,6 +297,27 @@ def _generate_csv_bundle(result: Any, staging: Path, prefix: str) -> None:
                 result.U,
                 nodal_path,
             )
+
+
+def _write_shared_plane_stress_csvs(
+    result: Any,
+    staging: Path,
+    prefix: str,
+) -> None:
+    """Recover plane element-nodal stress once for both CSV projections."""
+
+    mesh = result.model.mesh
+    recovered = post.stress.collect_plane_element_nodal(mesh, result.U)
+    post.stress.element.write_plane_element_nodal(
+        mesh,
+        recovered,
+        staging / f"{prefix}_element_stress.csv",
+    )
+    post.stress.nodal.write_recovered(
+        mesh,
+        recovered,
+        staging / f"{prefix}_nodal_stress.csv",
+    )
 
 
 def _write_element_stress_csv(

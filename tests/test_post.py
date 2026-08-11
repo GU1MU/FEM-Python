@@ -120,6 +120,95 @@ def test_nodal_stress_field_collects_ordered_element_contributions():
     assert raw.contributions_by_node[5][0].components == pytest.approx((0.0, 0.0, 0.0))
 
 
+def test_recovered_plane_stress_writers_match_legacy_exports(tmp_path):
+    mesh = make_mixed_tri3_quad4_mesh()
+    mesh.elements[0].props["plane_type"] = "strain"
+    mesh.elements[1].props = dict(mesh.elements[0].props)
+    displacement = np.asarray([
+        0.0,
+        0.001,
+        0.01,
+        0.002,
+        0.013,
+        0.018,
+        -0.002,
+        0.016,
+        0.021,
+        -0.004,
+    ])
+    recovered = stress.StressRecovery(mesh, displacement).collect(
+        stress.StressPosition.ELEMENT_NODAL
+    )
+    csv_recovered = stress.collect_plane_element_nodal(mesh, displacement)
+
+    expected_element = tmp_path / "expected_element.csv"
+    actual_element = tmp_path / "actual_element.csv"
+    stress.element.mixed(
+        ("tri3", "quad4"),
+        mesh,
+        displacement,
+        expected_element,
+    )
+    stress.element.write_plane_element_nodal(
+        mesh,
+        recovered,
+        actual_element,
+    )
+
+    expected_nodal = tmp_path / "expected_nodal.csv"
+    actual_nodal = tmp_path / "actual_nodal.csv"
+    legacy_raw = stress.nodal_from_stress_field(mesh, recovered)
+    legacy_resolved = stress.field.resolve(legacy_raw, threshold=100.0)
+    stress.nodal._write_resolved(
+        mesh,
+        legacy_resolved,
+        expected_nodal,
+    )
+    stress.nodal.write_recovered(
+        mesh,
+        csv_recovered,
+        actual_nodal,
+        threshold=100.0,
+    )
+
+    expected_canonical = tmp_path / "expected_canonical.csv"
+    actual_canonical = tmp_path / "actual_canonical.csv"
+    stress.export.csv(
+        mesh,
+        displacement,
+        expected_canonical,
+        position=stress.StressPosition.ELEMENT_NODAL,
+    )
+    stress.export.write_csv(recovered, actual_canonical)
+
+    assert actual_element.read_bytes() == expected_element.read_bytes()
+    assert actual_nodal.read_bytes() == expected_nodal.read_bytes()
+    assert actual_canonical.read_bytes() == expected_canonical.read_bytes()
+
+
+def test_recovered_solid_nodal_writer_matches_legacy_resolution(tmp_path):
+    mesh = make_mixed_hex8_tet4_mesh()
+    mesh.elements[1].props = dict(mesh.elements[0].props)
+    displacement = np.arange(mesh.num_dofs, dtype=float) ** 2 * 0.001
+    recovered = stress.StressRecovery(mesh, displacement).collect(
+        stress.StressPosition.ELEMENT_NODAL
+    )
+    expected = tmp_path / "expected_solid_nodal.csv"
+    actual = tmp_path / "actual_solid_nodal.csv"
+
+    legacy_raw = stress.nodal_from_stress_field(mesh, recovered)
+    legacy_resolved = stress.field.resolve(legacy_raw, threshold=100.0)
+    stress.nodal._write_resolved(mesh, legacy_resolved, expected)
+    stress.nodal.write_recovered(
+        mesh,
+        recovered,
+        actual,
+        threshold=100.0,
+    )
+
+    assert actual.read_bytes() == expected.read_bytes()
+
+
 def test_canonical_stress_positions_include_plane_strain_s33():
     props = {
         "E": 100.0,

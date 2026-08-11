@@ -524,11 +524,11 @@ def test_native_viewport_cannot_cover_independent_tool_overlays():
     viewport.nativeSurfaceUpdated.emit()
     application.processEvents()
     assert host.agent_chat_drawer.isVisible()
+    host._animation.setDuration(0)
     QTest.mouseClick(
         host.agent_chat_drawer.close_button,
         Qt.MouseButton.LeftButton,
     )
-    QTest.qWait(host.ANIMATION_DURATION_MS + 20)
     application.processEvents()
     assert not host.drawer_is_open
     assert viewport.geometry() == baseline_geometry

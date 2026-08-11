@@ -11,7 +11,7 @@ from . import (
     element as element_export,
     nodal as nodal_export,
 )
-from .field import StressPosition, collect_stress
+from .field import StressField, StressPosition, collect_stress
 
 
 CSV_HEADER = [
@@ -56,6 +56,14 @@ def csv(
         element_type=element_type,
         gauss_order=gauss_order,
     )
+    write_csv(stress_field, path)
+
+
+def write_csv(stress_field: StressField, path: str) -> None:
+    """Write one already-recovered canonical stress field to CSV."""
+
+    if type(stress_field) is not StressField:
+        raise TypeError("stress_field must be a StressField")
     output_path = prepare_output_path(path)
     region_ids: dict[object, int] = {}
     with open(output_path, "w", newline="", encoding="utf-8") as stream:

@@ -138,13 +138,14 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         )
         if button.defaultAction() is not None
     ]
-    assert project_buttons[:6] == [
+    assert project_buttons[:7] == [
         "action_new_native",
         "action_open_project",
         "action_save_project",
         "action_open",
-        "action_save_result",
         "action_open_result",
+        "action_save_result",
+        "action_model_info",
     ]
     _wait_idle(window)
     window.close()
@@ -165,6 +166,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
     assert window.document.path == path
     assert "[结果只读]" in window.windowTitle()
     assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "结果"
+    assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.result_provider is not None and window.result_provider.is_archived
     assert window.result_tree.catalog is not None
     assert window.inspection_service is not None
@@ -182,6 +184,55 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
     assert not window.actions["save_project"].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
     _wait_idle(window)
+    window.close()
+
+
+def test_result_archive_switches_between_result_and_mesh_modules(
+    tmp_path: Path,
+) -> None:
+    window = _open_archive_window(tmp_path, "module-switch")
+    artifact_id = window.document.artifact.artifact_id
+
+    assert window._current_module_name() == "结果"
+    assert window.navigation.tabs.currentWidget() is window.result_tree
+    assert window.viewport._result_render_payload is not None
+
+    for module_name in ("模型", "网格"):
+        window.ribbon.set_current(module_name)
+        assert window._current_module_name() == module_name
+        assert window.navigation.tabs.currentWidget() is window.model_tree
+        assert window.viewport._model is window._result_archive_model_view
+        assert window.viewport._geometry is window.geometry
+        assert window.viewport._result_render_payload is None
+        assert window.viewport.artifact_id == artifact_id
+
+    window.ribbon.set_current("结果")
+    assert window.navigation.tabs.currentWidget() is window.result_tree
+    assert window.viewport._result_render_payload is not None
+    assert window.viewport.artifact_id == artifact_id
+    _wait_idle(window)
+    window.close()
+
+
+def test_open_result_reprojects_when_result_module_is_already_current(
+    tmp_path: Path,
+) -> None:
+    archive = _snapshot(make_continuum_nodal_semantics_result, "already-result")
+    path = tmp_path / "already-result.femres"
+    save_result_archive(path, archive)
+    window = FEMMainWindow()
+    window._set_selection_filter("face")
+    window.ribbon.set_current("结果")
+
+    receipt = window.open_result_path(path)
+    assert receipt.completion is not None
+    assert receipt.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
+    _wait_idle(window)
+
+    assert window._current_module_name() == "结果"
+    assert window.navigation.tabs.currentWidget() is window.result_tree
+    assert window.viewport._result_render_payload is not None
+    assert window.viewport._model is window._result_archive_model_view
     window.close()
 
 

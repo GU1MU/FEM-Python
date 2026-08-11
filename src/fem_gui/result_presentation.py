@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from typing import Protocol
 
 from fem.application.results import (
     FieldAvailability,
@@ -12,7 +13,14 @@ from fem.application.results import (
     ResultProvider,
     ResultVariable,
 )
-from fem.elements.beam_section import BeamSectionPoint
+
+
+class _SectionPointView(Protocol):
+    """Application-facing section-point values needed for presentation."""
+
+    number: int
+    local_y: float
+    local_z: float
 
 
 _POSITION_LABELS = {
@@ -90,11 +98,9 @@ def result_field_position_label(
     return result_position_label(field_id.position)
 
 
-def section_point_relative_position_label(point: BeamSectionPoint) -> str:
+def section_point_relative_position_label(point: _SectionPointView) -> str:
     """Return a rectangular corner name, preserving IDs for other shapes."""
 
-    if type(point) is not BeamSectionPoint:
-        raise TypeError("point must be a BeamSectionPoint")
     if point.local_y != 0.0 and point.local_z != 0.0:
         horizontal = "右" if point.local_y > 0.0 else "左"
         vertical = "上" if point.local_z > 0.0 else "下"

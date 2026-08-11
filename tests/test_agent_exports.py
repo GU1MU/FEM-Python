@@ -2,6 +2,7 @@ from dataclasses import replace
 import hashlib
 from pathlib import Path
 
+from fem import post
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.schemas import ExportFormat, ResourceLimits
 from fem_agent.tools.exports import export_results
@@ -56,6 +57,64 @@ def test_csv_export_registers_every_actual_file_and_digest(tmp_path):
         path.name.startswith(".fem-agent-export-")
         for path in exports_directory.iterdir()
     )
+
+
+def test_plane_csv_bundle_recovers_stress_once_and_preserves_output(
+    tmp_path,
+    monkeypatch,
+):
+    run_directory, exports_directory = _run_paths(tmp_path)
+    result = make_zero_result(make_tri3_stiffness_mesh(), "plate")
+    expected_element = tmp_path / "expected_element.csv"
+    expected_nodal = tmp_path / "expected_nodal.csv"
+    post.stress.element.by_type(
+        "tri3",
+        result.model.mesh,
+        result.U,
+        expected_element,
+    )
+    post.stress.nodal.by_type(
+        "tri3",
+        result.model.mesh,
+        result.U,
+        expected_nodal,
+    )
+
+    original_collect = post.stress.collect_plane_element_nodal
+    recovery_count = 0
+
+    def counting_collect(mesh, displacement):
+        nonlocal recovery_count
+        recovery_count += 1
+        return original_collect(mesh, displacement)
+
+    def reject_legacy_export(*args, **kwargs):
+        raise AssertionError("plane stress CSVs must share recovered stress")
+
+    monkeypatch.setattr(
+        post.stress,
+        "collect_plane_element_nodal",
+        counting_collect,
+    )
+    monkeypatch.setattr(post.stress.element, "by_type", reject_legacy_export)
+    monkeypatch.setattr(post.stress.nodal, "by_type", reject_legacy_export)
+
+    outcome = export_results(
+        result,
+        (ExportFormat.CSV,),
+        run_id="run-1",
+        run_directory=run_directory,
+        exports_directory=exports_directory,
+    )
+
+    assert outcome.ok is True
+    assert recovery_count == 1
+    assert (
+        exports_directory / "result-run-1_element_stress.csv"
+    ).read_bytes() == expected_element.read_bytes()
+    assert (
+        exports_directory / "result-run-1_nodal_stress.csv"
+    ).read_bytes() == expected_nodal.read_bytes()
 
 
 def test_vtk_export_registers_vtk_and_materialized_csv_dependencies(tmp_path):

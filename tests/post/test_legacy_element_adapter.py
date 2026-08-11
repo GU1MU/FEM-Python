@@ -81,19 +81,22 @@ def test_single_plane_legacy_csv_delegates_and_preserves_bytes(
     displacement = np.linspace(-0.04, 0.11, mesh.num_dofs)
     target = tmp_path / "quad8-element.csv"
     calls = []
-    original = element.collect_stress
+    original = element.collect_plane_element_nodal
 
-    def spy_collect_stress(*args, **kwargs):
+    def spy_collect_plane_element_nodal(*args, **kwargs):
         calls.append((args, kwargs))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(element, "collect_stress", spy_collect_stress)
+    monkeypatch.setattr(
+        element,
+        "collect_plane_element_nodal",
+        spy_collect_plane_element_nodal,
+    )
 
     element.quad8(mesh, displacement, target, gauss_order=3)
 
     assert len(calls) == 1
     assert calls[0][1] == {
-        "position": StressPosition.ELEMENT_NODAL,
         "element_type": "quad8",
         "gauss_order": 3,
     }
@@ -122,16 +125,20 @@ def test_mixed_plane_legacy_csv_delegates_and_preserves_bytes(
     displacement = np.linspace(-0.03, 0.09, mesh.num_dofs)
     target = tmp_path / f"mixed-{'-'.join(type_keys)}-element.csv"
     calls = []
-    original = element.collect_stress
+    original = element.collect_plane_element_nodal
 
-    def spy_collect_stress(*args, **kwargs):
+    def spy_collect_plane_element_nodal(*args, **kwargs):
         calls.append((args, kwargs))
         return original(*args, **kwargs)
 
     def reject_legacy_kernel_lookup(*_args, **_kwargs):
         raise AssertionError("plane adapter must not call an element kernel")
 
-    monkeypatch.setattr(element, "collect_stress", spy_collect_stress)
+    monkeypatch.setattr(
+        element,
+        "collect_plane_element_nodal",
+        spy_collect_plane_element_nodal,
+    )
     monkeypatch.setattr(
         element,
         "get_element_kernel",
@@ -142,7 +149,6 @@ def test_mixed_plane_legacy_csv_delegates_and_preserves_bytes(
 
     assert len(calls) == 1
     assert calls[0][1] == {
-        "position": StressPosition.ELEMENT_NODAL,
         "gauss_order": None,
     }
     assert target.read_bytes() == _legacy_plane_bytes(

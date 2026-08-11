@@ -1369,7 +1369,12 @@ class FEMMainWindow(QMainWindow):
                     timings=payload.timings,
                     source_label=spec.path.name,
                 )
+                result_module_was_current = (
+                    self._current_module_name() == "结果"
+                )
                 self.ribbon.set_current("结果")
+                if result_module_was_current:
+                    self._on_module_changed("结果")
                 self.status_panel.set_state(
                     f"结果文件已打开：{spec.path.name}",
                     6000,
@@ -7641,7 +7646,7 @@ class FEMMainWindow(QMainWindow):
         return dict(kinds).get(str(selected))
 
     def _scope_selection_topology(self) -> ScopeSelectionTopology:
-        model = self.document.model
+        model = self._current_gui_model()
         if model is None:
             raise RuntimeError("scope selection requires a generated mesh")
         if self._scope_selection_topology_cache is None:
@@ -7654,7 +7659,7 @@ class FEMMainWindow(QMainWindow):
         return self._scope_selection_topology_cache
 
     def _mesh_selection_topology(self) -> MeshSelectionTopology:
-        model = self.document.model
+        model = self._current_gui_model()
         if model is None:
             raise RuntimeError("mesh selection requires a generated mesh")
         if self._mesh_selection_topology_cache is None:
@@ -7662,6 +7667,13 @@ class FEMMainWindow(QMainWindow):
                 build_mesh_selection_topology(model)
             )
         return self._mesh_selection_topology_cache
+
+    def _current_gui_model(self) -> object | None:
+        """Return the structural model facade used by GUI-only consumers."""
+
+        if self.document.source_kind == "result":
+            return self._result_archive_model_view
+        return self.document.model
 
     def _start_edge_scope_selection(self) -> None:
         if self.document.model is None:
@@ -7851,7 +7863,7 @@ class FEMMainWindow(QMainWindow):
     ) -> ModelCapabilityReport | None:
         """Return the headless capability report for current authoring state."""
 
-        model = self.document.model
+        model = self._current_gui_model()
         if model is not None:
             return describe_model_capabilities(model)
         recipe = self.document.geometry_recipe
@@ -12897,11 +12909,7 @@ class FEMMainWindow(QMainWindow):
         if artifact is None or geometry is None:
             FEMViewport.clear_model(self.viewport)
             return
-        model = (
-            self._result_archive_model_view
-            if self.document.source_kind == "result"
-            else artifact.model
-        )
+        model = self._current_gui_model()
         if model is None:
             FEMViewport.clear_model(self.viewport)
             return

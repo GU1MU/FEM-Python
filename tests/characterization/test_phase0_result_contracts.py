@@ -69,11 +69,11 @@ _RESULT_CASES = (
         2,
         (ResultVariable.U, ResultVariable.RF),
         (
-            (ResultVariable.S, FieldPosition.INTEGRATION_POINT),
-            (ResultVariable.S, FieldPosition.CENTROID),
-            (ResultVariable.S, FieldPosition.ELEMENT_NODAL),
-            (ResultVariable.S, FieldPosition.NODE_REGION),
-            (ResultVariable.S, FieldPosition.RESOLVED_NODAL),
+            ResultFieldId(ResultVariable.S, FieldPosition.INTEGRATION_POINT),
+            ResultFieldId(ResultVariable.S, FieldPosition.CENTROID),
+            ResultFieldId(ResultVariable.S, FieldPosition.ELEMENT_NODAL),
+            ResultFieldId(ResultVariable.S, FieldPosition.NODE_REGION),
+            ResultFieldId(ResultVariable.S, FieldPosition.RESOLVED_NODAL),
         ),
     ),
     (
@@ -84,8 +84,8 @@ _RESULT_CASES = (
         3,
         (ResultVariable.U, ResultVariable.RF),
         (
-            (ResultVariable.LE, FieldPosition.CENTROID),
-            (ResultVariable.S, FieldPosition.CENTROID),
+            ResultFieldId(ResultVariable.LE, FieldPosition.CENTROID),
+            ResultFieldId(ResultVariable.S, FieldPosition.CENTROID),
         ),
     ),
     (
@@ -97,8 +97,31 @@ _RESULT_CASES = (
         (ResultVariable.U, ResultVariable.UR, ResultVariable.RF,
          ResultVariable.RM),
         (
-            (ResultVariable.S, FieldPosition.SECTION_END),
-            (ResultVariable.S, FieldPosition.SECTION_NODE_ENVELOPE),
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.SECTION_POINT,
+                section_point_number=1,
+            ),
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.SECTION_POINT,
+                section_point_number=2,
+            ),
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.SECTION_POINT,
+                section_point_number=3,
+            ),
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.SECTION_POINT,
+                section_point_number=4,
+            ),
+            ResultFieldId(ResultVariable.S, FieldPosition.SECTION_END),
+            ResultFieldId(
+                ResultVariable.S,
+                FieldPosition.SECTION_NODE_ENVELOPE,
+            ),
         ),
     ),
 )
@@ -129,7 +152,7 @@ def _location_identity(location):
 
 
 @pytest.mark.parametrize(
-    "name,builder,family,canonical_types,dofs,primary_variables,lazy_fields",
+    "name,builder,family,canonical_types,dofs,primary_variables,lazy_field_ids",
     _RESULT_CASES,
 )
 def test_phase0_provider_profile_catalog_and_topology_contract(
@@ -139,7 +162,7 @@ def test_phase0_provider_profile_catalog_and_topology_contract(
     canonical_types,
     dofs,
     primary_variables,
-    lazy_fields,
+    lazy_field_ids,
 ) -> None:
     result = builder()
     source = _source(name)
@@ -184,13 +207,10 @@ def test_phase0_provider_profile_catalog_and_topology_contract(
         if item.state is FieldState.READY
     ) == primary_variables
     assert tuple(
-        (
-            item.key.request.field_id.variable,
-            item.key.request.field_id.position,
-        )
+        item.key.request.field_id
         for item in catalog.fields
         if item.state is FieldState.LAZY
-    ) == lazy_fields
+    ) == lazy_field_ids
     for field_data in fields:
         assert field_data.source == source
         assert field_data.values.shape == (
@@ -519,8 +539,9 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
         "action_open_project",
         "action_save_project",
         "action_open",
-        "action_save_result",
         "action_open_result",
+        "action_save_result",
+        "action_model_info",
     ]
     window.close()
     application.processEvents()
