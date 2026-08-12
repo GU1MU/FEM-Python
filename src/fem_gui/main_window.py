@@ -12,7 +12,7 @@ from time import perf_counter, sleep
 from typing import Any, Callable
 
 import numpy as np
-from PySide6.QtCore import QSize, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
@@ -333,7 +333,11 @@ from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
-from .widgets.viewport import FEMViewport
+from .widgets.viewport import (
+    FEMViewport,
+    _capture_camera_state,
+    _restore_camera_state,
+)
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 
@@ -608,6 +612,9 @@ class FEMMainWindow(QMainWindow):
         self._session_alias = ModelSession()
         self._document_alias = self._session_alias.projection_snapshot()
         self.workspace = FEMWorkspace(parent=self)
+        # A context switch batches every viewport mutation and emits one
+        # explicit render after the target presentation has been installed.
+        self._workspace_activation = False
         self._task_controller_alias = BackgroundTaskController(self)
         self._active_context = self.workspace.add_model(
             session=self._session_alias,
@@ -839,7 +846,13 @@ class FEMMainWindow(QMainWindow):
         self,
         context: WorkspaceDocument,
     ) -> bool:
-        """Activate one context and rebuild only the shared presentation."""
+        """Activate one context while reusing its presentation adapters.
+
+        The workspace owns the long-lived geometry/inspection references.  The
+        window only installs those references into its single viewport; VTK
+        actors are consequently rebuilt for the active document and never
+        retained by an inactive context.
+        """
 
         previous_context = getattr(self, "_active_context", None)
         previous_active_id = self.workspace.active_document_id
@@ -851,7 +864,51 @@ class FEMMainWindow(QMainWindow):
         ):
             self.model_tree.set_active_document(context.document_id)
             return True
+        # Embedded editors own transient geometry and cannot be detached from
+        # the current viewport safely.  Keep the current context active.
+        if self._active_editor():
+            return False
+
+        if previous_context is not None:
+            self._capture_document_presentation(previous_context)
+        previous_presentation = (
+            replace(previous_context.presentation_state)
+            if previous_context is not None
+            else None
+        )
+        previous_aliases = {
+            "document": self.document,
+            "geometry": self.geometry,
+            "inspection_service": self.inspection_service,
+            "result_provider": self.result_provider,
+            "result_selection": self.result_selection,
+            "display": self._display,
+            "step_name": self._current_step_name,
+            "legacy_project_extension": self._legacy_project_extension,
+            "result_archive_geometry": self._result_archive_geometry,
+            "result_archive_model_view": self._result_archive_model_view,
+            "result_visualization_provider_cache": (
+                self._result_visualization_provider_cache
+            ),
+            "model_edges_visible": self._model_edges_visible,
+            "symbol_settings": self._symbol_settings,
+            "overlay_undeformed": self._overlay_undeformed,
+            "selection_context": replace(self._selection_context),
+            "geometry_selection_mode": self._geometry_selection_mode,
+            "selection_mode": self.selection.mode,
+            "selection_node_id": self.selection.node_id,
+            "selection_element_id": self.selection.element_id,
+            "selected_geometry_refs": set(self._selected_geometry_refs),
+            "selected_mesh_scope_refs": set(self._selected_mesh_scope_refs),
+        }
+
+        viewport_render_suppressed = getattr(
+            self.viewport,
+            "_render_suppressed",
+            False,
+        )
         try:
+            self._clear_workspace_transients()
             self.workspace.activate(context)
             self._active_context = context
             self._applied_session_revision = -1
@@ -860,20 +917,71 @@ class FEMMainWindow(QMainWindow):
                 and context.projection.project_path.suffix.casefold()
                 in LEGACY_MODEL_FILE_SUFFIXES
             )
+            self._prepare_document_presentation(context)
+            cache = context.presentation_cache
+            artifact = context.projection.artifact
+            artifact_id = None if artifact is None else artifact.artifact_id
+            model_geometry = (
+                cache.model_geometry
+                if cache.matches_artifact(artifact_id)
+                else None
+            )
+            result_identity = context.session.current_result_identity()
+            result_model_view = None
+            if result_identity is not None and cache.matches_result(*result_identity):
+                result_model_view = cache.result_model_view
+
+            self._workspace_activation = True
+            self.viewport._render_suppressed = True
             delta = SessionDelta(
                 session_revision=int(context.session.session_revision),
                 reason="workspace document activated",
             )
-            applied = self._apply_session_delta(delta, context=context)
+            applied = self._apply_session_delta(
+                delta,
+                context=context,
+                model_geometry=model_geometry,
+                result_model_view=result_model_view,
+            )
+            if not applied:
+                raise RuntimeError("target context projection could not be installed")
+            self._restore_document_presentation(context, render=False)
+            self._project_viewport_for_module(
+                context.presentation_state.module_name
+                or self._current_module_name(),
+                render=False,
+                reset_camera=False,
+            )
+            self._set_ribbon_module_silent(
+                context.presentation_state.module_name
+                or self._current_module_name()
+            )
+            # First display fits once; warm displays restore the saved camera
+            # and do not reset/fit it.  All preceding calls use render=False.
+            self.viewport._render_suppressed = viewport_render_suppressed
+            camera_state = context.presentation_state.camera_state
+            if camera_state is not None and self.viewport._plotter is not None:
+                _restore_camera_state(self.viewport._plotter, camera_state)
+                self.viewport.render()
+            else:
+                try:
+                    self.viewport.fit(render=False)
+                except TypeError:
+                    # Keep compatibility with lightweight viewport probes in
+                    # existing GUI tests that expose ``fit()`` only.
+                    self.viewport.fit()
+                self.viewport.render()
+            self.model_tree.set_active_document(context.document_id)
+            return True
         except Exception:
             logging.exception("workspace document activation failed")
             applied = False
-        if applied:
-            self.model_tree.set_active_document(context.document_id)
-            return True
+        finally:
+            self._workspace_activation = False
+            self.viewport._render_suppressed = viewport_render_suppressed
+
         # Activation can fail after the workspace registry has already moved.
-        # Restore the previous pair so the aliases and workspace remain in
-        # lockstep for subsequent commands.
+        # Restore the previous pair so aliases and registries stay in lockstep.
         previous_still_registered = False
         if previous_context is not None:
             try:
@@ -898,11 +1006,268 @@ class FEMMainWindow(QMainWindow):
                 self.workspace.active_kind = previous_active_kind
         self._active_context = previous_context
         self._applied_session_revision = previous_revision
+        if previous_context is not None:
+            previous_context.presentation_state = previous_presentation
+        self._restore_failed_workspace_activation(
+            previous_context,
+            previous_aliases,
+            viewport_render_suppressed=viewport_render_suppressed,
+        )
         if previous_context is None:
             self.model_tree.set_active_document(None)
         elif self.workspace.active_document_id == previous_context.document_id:
             self.model_tree.set_active_document(previous_context.document_id)
         return applied
+
+    def _restore_failed_workspace_activation(
+        self,
+        previous_context: WorkspaceDocument | None,
+        previous_aliases: dict[str, object],
+        *,
+        viewport_render_suppressed: bool,
+    ) -> None:
+        """Restore aliases and the previous scene after a failed activation."""
+
+        self.document = previous_aliases["document"]
+        self.geometry = previous_aliases["geometry"]
+        self.inspection_service = previous_aliases["inspection_service"]
+        self.result_provider = previous_aliases["result_provider"]
+        self.result_selection = previous_aliases["result_selection"]
+        self._display = previous_aliases["display"]
+        self._current_step_name = previous_aliases["step_name"]
+        self._legacy_project_extension = previous_aliases[
+            "legacy_project_extension"
+        ]
+        self._result_archive_geometry = previous_aliases[
+            "result_archive_geometry"
+        ]
+        self._result_archive_model_view = previous_aliases[
+            "result_archive_model_view"
+        ]
+        self._result_visualization_provider_cache = previous_aliases[
+            "result_visualization_provider_cache"
+        ]
+        self._model_edges_visible = previous_aliases["model_edges_visible"]
+        self._symbol_settings = previous_aliases["symbol_settings"]
+        self._overlay_undeformed = previous_aliases["overlay_undeformed"]
+        self._selection_context = previous_aliases["selection_context"]
+        self._geometry_selection_mode = previous_aliases[
+            "geometry_selection_mode"
+        ]
+        self.selection.mode = previous_aliases["selection_mode"]
+        self.selection.node_id = previous_aliases["selection_node_id"]
+        self.selection.element_id = previous_aliases["selection_element_id"]
+        self._selected_geometry_refs = set(
+            previous_aliases["selected_geometry_refs"]
+        )
+        self._selected_mesh_scope_refs = set(
+            previous_aliases["selected_mesh_scope_refs"]
+        )
+
+        # Rebuild only the shared viewport scene.  All actor and display
+        # mutations remain render-suppressed until the final explicit repaint.
+        self.viewport._render_suppressed = True
+        try:
+            if previous_context is None:
+                FEMViewport.clear_model(self.viewport)
+            elif self.document.artifact is not None and self.geometry is not None:
+                self._restore_viewport_model_scene(
+                    render=False,
+                    reset_camera=False,
+                )
+            else:
+                preview = self._current_native_geometry_preview()
+                if preview is not None:
+                    self.viewport.show_geometry_preview(
+                        preview,
+                        render=False,
+                        reset_camera=False,
+                    )
+                else:
+                    FEMViewport.clear_model(self.viewport)
+            if self.result_provider is not None and self.result_selection is not None:
+                try:
+                    self._apply_display(render=False)
+                except Exception:
+                    logging.exception(
+                        "failed to restore previous result display after activation"
+                    )
+            self._sync_step_combos()
+            self._refresh_result_controls()
+            self.status_panel.set_step(self._current_step_name)
+            self._update_action_states()
+        except Exception:
+            logging.exception(
+                "failed to restore previous viewport after activation failure"
+            )
+        finally:
+            self.viewport._render_suppressed = viewport_render_suppressed
+        camera_state = (
+            previous_context.presentation_state.camera_state
+            if previous_context is not None
+            else None
+        )
+        if camera_state is not None and self.viewport._plotter is not None:
+            try:
+                _restore_camera_state(self.viewport._plotter, camera_state)
+            except Exception:
+                logging.exception(
+                    "failed to restore previous camera after activation failure"
+                )
+        try:
+            self.viewport.render()
+        except Exception:
+            logging.exception("failed to repaint previous viewport after activation failure")
+
+    def _capture_document_presentation(
+        self,
+        context: WorkspaceDocument,
+    ) -> None:
+        """Save the lightweight visible state before leaving ``context``."""
+
+        if context is not self._active_workspace_context():
+            return
+        state = context.presentation_state
+        state.module_name = self._current_module_name() or None
+        state.step_name = self._current_step_name
+        state.result_selection = self.result_selection
+        state.display_state = self._display
+        state.selection_mode = getattr(self.viewport, "_selection_mode", None)
+        plotter = getattr(self.viewport, "_plotter", None)
+        state.camera_state = (
+            _capture_camera_state(plotter) if plotter is not None else None
+        )
+
+        cache = context.presentation_cache
+        artifact = context.projection.artifact
+        artifact_id = None if artifact is None else artifact.artifact_id
+        if artifact_id is None:
+            cache.invalidate_model()
+        elif (
+            self.geometry is not None
+            and self.geometry.artifact_id == artifact_id
+        ):
+            cache.artifact_id = artifact_id
+            cache.model_geometry = self.geometry
+            cache.inspection_service = self.inspection_service
+        identity = self.session.current_result_identity()
+        provider = self.result_provider
+        if identity is None or provider is None:
+            cache.invalidate_result()
+        elif provider.source == identity[0]:
+            cache.result_source = identity[0]
+            cache.result_generation = identity[1]
+            cache.result_model_view = self._result_archive_model_view
+
+    def _prepare_document_presentation(self, context: WorkspaceDocument) -> None:
+        """Seed window aliases from ``context`` before projection callbacks run."""
+
+        state = context.presentation_state
+        names = context.session.runnable_step_names()
+        self._current_step_name = (
+            state.step_name if state.step_name in names else context.session.default_step_name()
+        )
+        self._display = (
+            state.display_state
+            if isinstance(state.display_state, DisplayState)
+            else DisplayState()
+        )
+        self.result_selection = (
+            state.result_selection
+            if isinstance(state.result_selection, ScalarFieldSelection)
+            else None
+        )
+        selection_mode = state.selection_mode
+        if isinstance(selection_mode, str):
+            if selection_mode.startswith("geometry_"):
+                self._selection_context.set_space("geometry")
+                self._geometry_selection_mode = selection_mode.removeprefix(
+                    "geometry_"
+                )
+            elif selection_mode.startswith("mesh_"):
+                self._selection_context.set_space("mesh")
+                mesh_filter = selection_mode.removeprefix("mesh_")
+                self._selection_context.set_filter(
+                    "point" if mesh_filter == "node" else mesh_filter
+                )
+            elif selection_mode in {"node", "element"}:
+                self.selection.mode = selection_mode
+        else:
+            self._selection_context = SelectionContextState()
+            self._geometry_selection_mode = "body"
+            self.selection.mode = "node"
+            try:
+                self.viewport.set_selection_mode("node", render=False)
+            except TypeError:
+                self.viewport.set_selection_mode("node")
+
+    def _restore_document_presentation(
+        self,
+        context: WorkspaceDocument,
+        *,
+        render: bool,
+    ) -> None:
+        """Install state controls after the target scene has been projected."""
+
+        state = context.presentation_state
+        self._current_step_name = (
+            state.step_name
+            if state.step_name in self.session.runnable_step_names()
+            else self.session.default_step_name()
+        )
+        if isinstance(state.display_state, DisplayState):
+            self._display = state.display_state
+            for name, checked in (
+                ("undeformed", self._display.shape_mode == "undeformed"),
+                ("deformed", self._display.shape_mode == "deformed"),
+                ("contour", self._display.contour_enabled),
+            ):
+                action = self.actions.get(name)
+                if action is not None:
+                    with QSignalBlocker(action):
+                        action.setChecked(checked)
+        selection_mode = state.selection_mode
+        if isinstance(selection_mode, str):
+            try:
+                self.viewport.set_selection_mode(selection_mode, render=render)
+            except (TypeError, ValueError):
+                # Older/fake viewports may not expose the render keyword.
+                self.viewport.set_selection_mode(selection_mode)
+        self._sync_step_combos()
+        self._refresh_result_controls()
+        self.status_panel.set_step(self._current_step_name)
+        self._update_action_states()
+
+    def _clear_workspace_transients(self) -> None:
+        """Remove selections and inspection popups before a context switch."""
+
+        self._close_inspection_windows()
+        self._close_job_manager()
+        self._temporary_selection_context = None
+        self._temporary_selection_owner = None
+        self._pending_local_mesh_selection = False
+        self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_scope_kind = None
+        self._scope_selection_overlay_active = False
+        self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        try:
+            self.viewport.clear_selection(render=False)
+        except TypeError:
+            self.viewport.clear_selection()
+
+    def _set_ribbon_module_silent(self, module_name: str | None) -> None:
+        if not module_name or not hasattr(self, "ribbon"):
+            return
+        tab_bar = self.ribbon.tab_bar
+        for index in range(tab_bar.count()):
+            if tab_bar.tabText(index) == module_name:
+                with QSignalBlocker(tab_bar):
+                    tab_bar.setCurrentIndex(index)
+                self.ribbon.stack.setCurrentIndex(index)
+                return
 
     @property
     def session(self) -> ModelSession:
@@ -2929,6 +3294,7 @@ class FEMMainWindow(QMainWindow):
         if target_context is not active_context:
             if revision <= target_context.projection.session_revision:
                 return False
+            previous_target_artifact = target_context.projection.artifact
             snapshot = self._snapshot_for_delta(
                 delta,
                 revision,
@@ -2937,6 +3303,18 @@ class FEMMainWindow(QMainWindow):
             if snapshot.session_revision < revision:
                 return False
             self.workspace.update_projection(target_context, snapshot)
+            next_artifact = snapshot.artifact
+            if (
+                previous_target_artifact is None
+                or next_artifact is None
+                or previous_target_artifact.artifact_id != next_artifact.artifact_id
+            ):
+                target_context.presentation_cache.invalidate_model()
+            next_target_result = target_context.session.current_result_identity()
+            if next_target_result is None or not target_context.presentation_cache.matches_result(
+                *next_target_result
+            ):
+                target_context.presentation_cache.invalidate_result()
             self._refresh_model_tree_for_context(target_context)
             return True
         if revision <= self._applied_session_revision:
@@ -2974,6 +3352,14 @@ class FEMMainWindow(QMainWindow):
             if self.document.artifact is not None
             else None
         )
+        next_artifact_id = (
+            snapshot.artifact.artifact_id
+            if snapshot.artifact is not None
+            else None
+        )
+        target_cache = target_context.presentation_cache
+        if previous_artifact_id != next_artifact_id:
+            target_cache.invalidate_model()
         self.document = snapshot
         self._legacy_project_extension = bool(
             snapshot.source_kind == "native"
@@ -3111,7 +3497,10 @@ class FEMMainWindow(QMainWindow):
                     self._selection_context.geometry_filter = "body"
                     if self._selection_context.space == "geometry":
                         self.actions["select_body"].setChecked(True)
-                    self.viewport.set_selection_mode("geometry_body")
+                        self.viewport.set_selection_mode(
+                            "geometry_body",
+                            render=not self._workspace_activation,
+                        )
                 try:
                     if (
                         self._sketch_editor_controller is not None
@@ -3120,9 +3509,14 @@ class FEMMainWindow(QMainWindow):
                         self.viewport.show_geometry_preview(
                             preview,
                             render=False,
+                            reset_camera=not self._workspace_activation,
                         )
                     else:
-                        self.viewport.show_geometry_preview(preview)
+                        self.viewport.show_geometry_preview(
+                            preview,
+                            render=not self._workspace_activation,
+                            reset_camera=not self._workspace_activation,
+                        )
                     if (
                         not cached_is_current
                         and recipe is not None
@@ -3175,16 +3569,33 @@ class FEMMainWindow(QMainWindow):
                         "result-only projection requires worker display payload"
                     )
             else:
+                if model_geometry is None and target_cache.matches_artifact(
+                    artifact.artifact_id
+                ):
+                    model_geometry = target_cache.model_geometry
                 geometry = model_geometry or build_model_geometry(artifact.model)
-            geometry = replace(geometry, artifact_id=artifact.artifact_id)
+            if geometry.artifact_id != artifact.artifact_id:
+                geometry = replace(geometry, artifact_id=artifact.artifact_id)
             if snapshot.source_kind != "result":
                 model_for_view = artifact.model
+            cached_inspection = (
+                target_cache.inspection_service
+                if target_cache.matches_artifact(artifact.artifact_id)
+                else None
+            )
             self._install_model(
                 model_for_view,
                 geometry,
                 dict(timings or {}),
                 source_label=source_label or self._session_source_label(),
+                inspection_service=cached_inspection,
+                render=not self._workspace_activation,
+                reset_camera=not self._workspace_activation,
+                preserve_display=self._workspace_activation,
             )
+            target_cache.artifact_id = artifact.artifact_id
+            target_cache.model_geometry = geometry
+            target_cache.inspection_service = self.inspection_service
         else:
             # The model is already installed; update only this document's
             # tree root for definition/result metadata changes.
@@ -3238,11 +3649,18 @@ class FEMMainWindow(QMainWindow):
                 or not consumers_are_current
             ):
                 self._install_result_provider_projection(provider)
+            target_cache.result_source = source
+            target_cache.result_generation = generation
+            target_cache.result_model_view = self._result_archive_model_view
+            target_cache.inspection_service = self.inspection_service
+        else:
+            target_cache.invalidate_result()
 
         self._sync_step_combos()
         self._refresh_result_controls()
         self._update_action_states()
-        self._project_viewport_for_module(self._current_module_name())
+        if not self._workspace_activation:
+            self._project_viewport_for_module(self._current_module_name())
         self.model_tree.set_active_document(target_context.document_id)
         self._applied_session_revision = revision
         return True
@@ -4121,7 +4539,13 @@ class FEMMainWindow(QMainWindow):
             return ""
         return tab_bar.tabText(tab_bar.currentIndex())
 
-    def _project_viewport_for_module(self, module_name: str) -> None:
+    def _project_viewport_for_module(
+        self,
+        module_name: str,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         """Project the stable geometry, mesh, or result scene for a module."""
 
         if self._temporary_selection_context is not None or any(
@@ -4141,29 +4565,57 @@ class FEMMainWindow(QMainWindow):
             if provider is not None and type(selection) is ScalarFieldSelection:
                 if self._viewport_result_scene_is_current(provider, selection):
                     return
-                self._restore_viewport_model_scene(render=False)
-                self._apply_display()
+                self._restore_viewport_model_scene(
+                    render=False,
+                    reset_camera=reset_camera,
+                )
+                self._apply_display(render=render)
             else:
-                self._project_mesh_or_geometry_fallback()
+                self._project_mesh_or_geometry_fallback(
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             return
         if module_name == "几何":
             preview = self._current_native_geometry_preview()
             if preview is not None:
-                self.viewport.show_geometry_preview(preview)
+                self.viewport.show_geometry_preview(
+                    preview,
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             else:
-                self._project_mesh_or_geometry_fallback()
+                self._project_mesh_or_geometry_fallback(
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             return
         if module_name in {"网格", "模型", "分析"}:
-            self._project_mesh_or_geometry_fallback()
+            self._project_mesh_or_geometry_fallback(
+                render=render,
+                reset_camera=reset_camera,
+            )
 
-    def _project_mesh_or_geometry_fallback(self) -> None:
+    def _project_mesh_or_geometry_fallback(
+        self,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         if self.document.artifact is not None and self.geometry is not None:
             self.actions["edges"].setChecked(self._model_edges_visible)
-            self._restore_viewport_model_scene()
+            self._restore_viewport_model_scene(
+                render=render,
+                reset_camera=reset_camera,
+            )
             return
         preview = self._current_native_geometry_preview()
         if preview is not None:
-            self.viewport.show_geometry_preview(preview)
+            self.viewport.show_geometry_preview(
+                preview,
+                render=render,
+                reset_camera=reset_camera,
+            )
             return
         self.viewport.clear_model()
 
@@ -9655,6 +10107,10 @@ class FEMMainWindow(QMainWindow):
         timings: dict[str, float],
         *,
         source_label: str,
+        inspection_service: InspectionService | None = None,
+        render: bool = True,
+        reset_camera: bool = True,
+        preserve_display: bool = False,
     ) -> None:
         self.status_panel.set_state("正在初始化视口……")
         self._scope_selection_overlay_active = False
@@ -9665,15 +10121,18 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self.geometry = geometry
         self.result_provider = None
-        self.result_selection = None
+        if not preserve_display:
+            self.result_selection = None
         self.selection.clear()
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
-        self._display = DisplayState()
-        self._overlay_undeformed = False
-        self.actions["undeformed"].setChecked(True)
-        self.actions["contour"].setChecked(False)
-        self.actions["overlay"].setChecked(False)
+        if not preserve_display:
+            self._display = DisplayState()
+        if not preserve_display:
+            self._overlay_undeformed = False
+            self.actions["undeformed"].setChecked(True)
+            self.actions["contour"].setChecked(False)
+            self.actions["overlay"].setChecked(False)
         self._symbol_settings = replace(
             self._symbol_settings,
             step_name=self._current_step_name,
@@ -9682,13 +10141,16 @@ class FEMMainWindow(QMainWindow):
         if self.document.source_kind != "result":
             def frame_query(target: RegionRef | int) -> BeamFrameReport:
                 return resolve_effective_beam_frames(model, target)
-        started = perf_counter()
-        self.inspection_service = InspectionService(
-            model,
-            definitions=self.document,
-            effective_frame_query=frame_query,
-        )
-        timings["InspectionService 初始化"] = perf_counter() - started
+        if inspection_service is not None:
+            self.inspection_service = inspection_service
+        else:
+            started = perf_counter()
+            self.inspection_service = InspectionService(
+                model,
+                definitions=self.document,
+                effective_frame_query=frame_query,
+            )
+            timings["InspectionService 初始化"] = perf_counter() - started
         started = perf_counter()
         self._show_model_in_tree(
             model,
@@ -9723,6 +10185,7 @@ class FEMMainWindow(QMainWindow):
             geometry,
             refresh_symbols=False,
             render=False,
+            reset_camera=reset_camera,
             show_edges=policy["show_edges"],
             show_nodes=policy["show_nodes"],
             show_node_labels=policy["show_labels"],
@@ -9743,9 +10206,10 @@ class FEMMainWindow(QMainWindow):
             started = perf_counter()
             self.viewport.show_boundary_and_loads(render=False)
             timings["载荷约束符号创建"] = perf_counter() - started
-        started = perf_counter()
-        self.viewport.render()
-        timings["首次渲染"] = perf_counter() - started
+        if render:
+            started = perf_counter()
+            self.viewport.render()
+            timings["首次渲染"] = perf_counter() - started
         logging.info(
             "模型导入性能 %s: %s (总计 %.3fs)",
             source_label,
@@ -12125,6 +12589,13 @@ class FEMMainWindow(QMainWindow):
             definitions=snapshot,
             effective_frame_query=frame_query,
         )
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            cache = active_context.presentation_cache
+            cache.invalidate_model()
+            cache.artifact_id = snapshot.artifact.artifact_id
+            cache.model_geometry = self.geometry
+            cache.inspection_service = self.inspection_service
         self._show_model_in_tree(model)
         self._clear_result_projection()
         self._sync_step_combos()
@@ -13588,6 +14059,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.set_display(
                 shape_mode,
                 contour_enabled,
+                render=not self._workspace_activation,
             )
         except Exception:
             if previous_payload is not None:
@@ -13600,6 +14072,7 @@ class FEMMainWindow(QMainWindow):
                         self.viewport,
                         previous_display.shape_mode,
                         previous_display.contour_enabled,
+                        render=not self._workspace_activation,
                     )
                 except Exception:
                     logging.exception(
@@ -13614,7 +14087,12 @@ class FEMMainWindow(QMainWindow):
                     )
             raise
 
-    def _restore_viewport_model_scene(self, *, render: bool = True) -> None:
+    def _restore_viewport_model_scene(
+        self,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         artifact = self.document.artifact
         geometry = self.geometry
         if artifact is None or geometry is None:
@@ -13636,6 +14114,7 @@ class FEMMainWindow(QMainWindow):
             geometry,
             refresh_symbols=False,
             render=False,
+            reset_camera=reset_camera,
             show_edges=self._model_edges_visible,
             show_nodes=self.actions["nodes"].isChecked(),
             show_node_labels=self.actions["node_labels"].isChecked(),
@@ -13769,7 +14248,7 @@ class FEMMainWindow(QMainWindow):
         self._overlay_undeformed = bool(checked)
         self.viewport.set_undeformed_overlay_visible(checked)
 
-    def _apply_display(self) -> None:
+    def _apply_display(self, *, render: bool = True) -> None:
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -13795,6 +14274,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_display(
             self._display.shape_mode,
             self._display.contour_enabled,
+            render=render,
         )
         self.status_panel.set_result(self._result_status_text())
 

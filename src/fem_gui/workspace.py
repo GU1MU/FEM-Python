@@ -65,6 +65,46 @@ class DocumentPresentationCache:
     result_model_view: object | None = None
     inspection_service: object | None = None
 
+    def matches_artifact(self, artifact_id: object | None) -> bool:
+        """Return whether the cached model adapters belong to ``artifact_id``."""
+
+        return (
+            artifact_id is not None
+            and self.artifact_id is not None
+            and str(self.artifact_id) == str(artifact_id)
+            and self.model_geometry is not None
+        )
+
+    def matches_result(
+        self,
+        source: object | None,
+        generation: int | None,
+    ) -> bool:
+        """Return whether the cached result adapters match one identity."""
+
+        return (
+            source is not None
+            and self.result_source == source
+            and self.result_generation is not None
+            and generation is not None
+            and int(self.result_generation) == int(generation)
+            and self.result_model_view is not None
+        )
+
+    def invalidate_model(self) -> None:
+        """Drop only model-derived adapters, preserving result identity fields."""
+
+        self.artifact_id = None
+        self.model_geometry = None
+        self.inspection_service = None
+
+    def invalidate_result(self) -> None:
+        """Drop only result-derived adapters."""
+
+        self.result_source = None
+        self.result_generation = None
+        self.result_model_view = None
+
 
 @dataclass(slots=True)
 class WorkspaceDocument:
