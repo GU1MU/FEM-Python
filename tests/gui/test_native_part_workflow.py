@@ -136,7 +136,9 @@ def test_switching_current_part_hides_other_geometry_previews() -> None:
     assert window.document.active_part_id == "P1"
     assert preview is not None
     assert set(preview.face_part_ids) == {"P1"}
-    root = window.model_tree.topLevelItem(0)
+    active_id = window.workspace.active_document_id
+    assert active_id is not None
+    root = window.model_tree.roots[active_id]
     assert root.child(0).text(0) == "部件-1"
     assert root.child(0).background(0).color().name() == "#d9ecff"
     assert root.child(1).text(0) == "部件-2"

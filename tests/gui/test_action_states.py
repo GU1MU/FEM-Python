@@ -209,12 +209,15 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
 
     window.new_native_model()
 
-    assert prompts == [("新建模型", "模型名称：", "模型-1")]
+    assert prompts == [("新建模型", "模型名称：", "Model-2")]
     assert window.document.model_name == "支架模型"
     assert window.document.parts == ()
     assert window.document.active_part_id is None
-    assert window.model_tree.topLevelItem(0).text(0) == "支架模型"
-    assert window.model_tree.topLevelItem(0).childCount() == 0
+    active_id = window.workspace.active_document_id
+    assert active_id is not None
+    assert window.model_tree.roots[active_id].text(0) == "支架模型"
+    assert window.model_tree.roots[active_id].childCount() == 0
+    assert window.model_tree.topLevelItemCount() == 2
     revision = window.document.session_revision
 
     window.new_native_model()

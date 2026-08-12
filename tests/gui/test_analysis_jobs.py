@@ -565,7 +565,9 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     assert job1 is not None and job1.has_result
     assert window.document.active_job_name is None
     assert window.document.displayed_result_run_id == job1.run_id
-    assert window.result_tree.topLevelItem(0).child(0).text(0) == "Job-1 · Static-1"
+    run_item = window.result_tree.topLevelItem(0).child(0)
+    assert run_item.text(0) == "Job-1"
+    assert run_item.child(0).text(0) == "Static-1"
 
     previous = window.session.current_result()
     assert previous is not None
@@ -646,7 +648,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     assert provider.catalog().default_selection is None
     assert window.result_selection is None
     assert window.viewport._result_render_payload is None
-    result_step = window.result_tree.topLevelItem(0).child(0)
+    result_step = window.result_tree.topLevelItem(0).child(0).child(0)
     assert result_step.childCount() == 0
     assert errors == []
     window.close()

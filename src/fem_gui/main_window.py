@@ -10,9 +10,10 @@ import logging
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable
+from weakref import WeakSet
 
 import numpy as np
-from PySide6.QtCore import QSize, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
@@ -86,6 +87,7 @@ from fem.application.results import (
     NodalAveragingPolicy,
     OutputRequestProjection,
     ResultCapabilityCatalog,
+    ResultCatalog,
     ResultQuery,
     ResultQueryResult,
     ResultQueryValidationError,
@@ -291,6 +293,12 @@ from .task_controller import (
     TaskApplyOutcome,
     TaskCompletion,
 )
+from .workspace import (
+    DocumentPresentationState,
+    FEMWorkspace,
+    WorkspaceDocument,
+    canonical_path,
+)
 from .viewport_background import (
     ViewportBackgroundSettings,
     load_background_settings,
@@ -332,7 +340,11 @@ from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
-from .widgets.viewport import FEMViewport
+from .widgets.viewport import (
+    FEMViewport,
+    _capture_camera_state,
+    _restore_camera_state,
+)
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 
@@ -350,6 +362,7 @@ _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS = 5.0
+_TREE_KEY_MISSING = object()
 
 
 _VISIBLE_OUTPUT_VARIABLES = frozenset({"u", "rf", "s"})
@@ -599,8 +612,28 @@ class FEMMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("有限元分析")
         self.resize(1280, 800)
-        self.session = ModelSession()
-        self.document = self.session.projection_snapshot()
+        # Phase 1 keeps the visible GUI single-document while moving ownership
+        # of the Session and its task controller into a workspace context.
+        # The public ``session``, ``document`` and ``task_controller`` names
+        # below remain compatibility aliases for the active context.
+        self._session_alias = ModelSession()
+        self._document_alias = self._session_alias.projection_snapshot()
+        self.workspace = FEMWorkspace(parent=self)
+        self._task_callback_context: WorkspaceDocument | None = None
+        self._task_controller_connections: WeakSet[BackgroundTaskController] = (
+            WeakSet()
+        )
+        # A context switch batches every viewport mutation and emits one
+        # explicit render after the target presentation has been installed.
+        self._workspace_activation = False
+        self._task_controller_alias = BackgroundTaskController(self)
+        self._active_context = self.workspace.add_model(
+            session=self._session_alias,
+            projection=self._document_alias,
+            display_name="Model-1",
+            task_controller=self._task_controller_alias,
+        )
+        self.workspace.activate(self._active_context)
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session)
         )
@@ -617,7 +650,10 @@ class FEMMainWindow(QMainWindow):
         self.agent_authoring_bridge.set_result_invalidation_confirmation(
             lambda: self._confirm_result_invalidation()
         )
-        self.agent_authoring_bridge.bind_snapshot(self.document)
+        self.agent_authoring_bridge.bind_snapshot(
+            self.document,
+            document_id=self._active_context.document_id,
+        )
         self.agent_authoring_controller = (
             create_session_authoring_workflow_controller(
                 self.session,
@@ -724,7 +760,6 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
-        self.task_controller = BackgroundTaskController(self)
         self.scope_background_reference_threshold = (
             _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD
         )
@@ -747,7 +782,7 @@ class FEMMainWindow(QMainWindow):
         self._background_settings, self._remember_background = load_background_settings(
             self._application_settings
         )
-        self._contour_options: dict[str, Any] = {
+        self._default_contour_options: dict[str, Any] = {
             "manual": False, "minimum": 0.0, "maximum": 1.0,
             "levels": 12, "colormap": ABAQUS_RAINBOW,
             "style": "segmented", "legend": True,
@@ -762,6 +797,9 @@ class FEMMainWindow(QMainWindow):
             "edges": True,
             "averaging_threshold": 75.0,
         }
+        self._contour_options: dict[str, Any] = dict(
+            self._default_contour_options
+        )
         self._result_visualization_provider_cache: (
             tuple[
                 ResultSourceKey,
@@ -779,6 +817,8 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._step_combos: list[QComboBox] = []
         self._closing = False
+        self._exit_pending = False
+        self._shared_resources_shutdown = False
         self._deferred_ui_callbacks: list[Callable[[], None]] = []
         self._deferred_ui_timer = QTimer(self)
         self._deferred_ui_timer.setSingleShot(True)
@@ -790,16 +830,666 @@ class FEMMainWindow(QMainWindow):
         self._build_ribbon()
         self._build_central_area()
         self._build_status_bar()
-        self.task_controller.busy_changed.connect(self._task_busy_changed)
-        self.task_controller.cancelling_changed.connect(
-            self._task_cancelling_changed
-        )
+        self._bind_task_controller(self._active_context)
+        self._bind_agent_document(self._active_context)
         self._refresh_result_controls()
         self._update_action_states()
+        self._refresh_model_tree_for_context(self._active_context)
+        self._refresh_result_tree_for_context(self._active_context)
+        self.model_tree.set_active_document(self._active_context.document_id)
+        self.result_tree.set_active_document(self._active_context.document_id)
 
     @property
     def busy(self) -> bool:
         return self.task_controller.busy
+
+    def _task_context_or_active(self) -> WorkspaceDocument | None:
+        return self._task_callback_context or self._active_workspace_context()
+
+    def _bind_task_controller(self, context: WorkspaceDocument) -> None:
+        """Connect one document controller without duplicating signal slots."""
+
+        controller = context.task_controller
+        if controller in self._task_controller_connections:
+            return
+        self._task_controller_connections.add(controller)
+        controller.busy_changed.connect(
+            lambda busy, target=context: self._task_busy_changed_for_context(
+                target,
+                bool(busy),
+            )
+        )
+        controller.cancelling_changed.connect(
+            lambda cancelling, target=context: self._task_cancelling_changed_for_context(
+                target,
+                bool(cancelling),
+            )
+        )
+
+    def _task_context_is_active(self, context: WorkspaceDocument) -> bool:
+        return self.workspace.active_document_id == context.document_id
+
+    def _task_busy_changed_for_context(
+        self,
+        context: WorkspaceDocument,
+        busy: bool,
+    ) -> None:
+        if self._task_context_is_active(context):
+            self._task_busy_changed(busy)
+
+    def _task_cancelling_changed_for_context(
+        self,
+        context: WorkspaceDocument,
+        cancelling: bool,
+    ) -> None:
+        if self._task_context_is_active(context):
+            self._task_cancelling_changed(cancelling)
+
+    def _bind_agent_document(self, context: WorkspaceDocument) -> None:
+        """Rebind the one Agent bridge/port pair to an idle target document."""
+
+        panel = getattr(self, "viewport_panel", None)
+        drawer = None if panel is None else getattr(panel, "agent_chat_drawer", None)
+        runtime = None if drawer is None else getattr(drawer, "agent_runtime", None)
+        if runtime is not None:
+            runtime.bind_target(context.document_id, context.session.session_id)
+        idle = None if runtime is None else (lambda: not runtime.busy)
+        for bridge in (
+            self.agent_authoring_bridge,
+            self.agent_result_query_bridge,
+        ):
+            port = bridge.port
+            binder = getattr(port, "bind_session", None)
+            if callable(binder):
+                binder(context.session, idle=idle)
+        # Document switches intentionally do not preserve unfinished Agent
+        # workflow state.  Reset before observing the new typed binding so the
+        # controller becomes usable for the target instead of remaining stale.
+        self.agent_authoring_controller.reset_for_binding()
+        if context.is_result:
+            self.agent_authoring_bridge.unbind_context(
+                "结果只读文档不支持 Agent 建模操作"
+            )
+            self.agent_authoring_controller.invalidate_binding(
+                "结果只读文档不支持 Agent 建模操作"
+            )
+        else:
+            self.agent_authoring_bridge.bind_snapshot(
+                context.projection,
+                document_id=context.document_id,
+            )
+            current = self.agent_authoring_bridge.context
+            if current is not None:
+                self.agent_authoring_controller.observe_binding(current)
+        if drawer is not None:
+            drawer.refresh_authoring_binding()
+
+    def _active_workspace_context(self) -> WorkspaceDocument | None:
+        """Return the cached active context, refreshing after workspace moves."""
+
+        workspace = getattr(self, "workspace", None)
+        context = getattr(self, "_active_context", None)
+        if (
+            workspace is not None
+            and context is not None
+            and workspace.active_document_id == context.document_id
+        ):
+            return context
+        if workspace is None:
+            return context
+        context = workspace.active_document()
+        if context is not None:
+            self._active_context = context
+        return context
+
+    def _activate_workspace_context(
+        self,
+        context: WorkspaceDocument,
+    ) -> bool:
+        """Activate one context while reusing its presentation adapters.
+
+        The workspace owns the long-lived geometry/inspection references.  The
+        window only installs those references into its single viewport; VTK
+        actors are consequently rebuilt for the active document and never
+        retained by an inactive context.
+        """
+
+        previous_context = getattr(self, "_active_context", None)
+        previous_active_id = self.workspace.active_document_id
+        previous_active_kind = self.workspace.active_kind
+        previous_revision = self._applied_session_revision
+        if (
+            previous_context is context
+            and previous_active_id == context.document_id
+        ):
+            self.model_tree.set_active_document(context.document_id)
+            self.result_tree.set_active_document(context.document_id)
+            self._task_busy_changed(context.task_controller.busy)
+            if context.task_controller.cancel_requested:
+                self._task_cancelling_changed(True)
+            return True
+        # Embedded editors own transient geometry and cannot be detached from
+        # the current viewport safely.  Keep the current context active.
+        if self._active_editor():
+            return False
+        try:
+            self._bind_agent_document(context)
+        except (RuntimeError, TypeError, ValueError):
+            return False
+
+        if previous_context is not None:
+            self._capture_document_presentation(previous_context)
+        previous_presentation = (
+            replace(previous_context.presentation_state)
+            if previous_context is not None
+            else None
+        )
+        previous_aliases = {
+            "document": self.document,
+            "geometry": self.geometry,
+            "inspection_service": self.inspection_service,
+            "result_provider": self.result_provider,
+            "result_selection": self.result_selection,
+            "display": self._display,
+            "step_name": self._current_step_name,
+            "legacy_project_extension": self._legacy_project_extension,
+            "result_archive_geometry": self._result_archive_geometry,
+            "result_archive_model_view": self._result_archive_model_view,
+            "result_visualization_provider_cache": (
+                self._result_visualization_provider_cache
+            ),
+            "model_edges_visible": self._model_edges_visible,
+            "symbol_settings": self._symbol_settings,
+            "overlay_undeformed": self._overlay_undeformed,
+            "selection_context": replace(self._selection_context),
+            "geometry_selection_mode": self._geometry_selection_mode,
+            "selection_mode": self.selection.mode,
+            "selection_node_id": self.selection.node_id,
+            "selection_element_id": self.selection.element_id,
+            "selected_geometry_refs": set(self._selected_geometry_refs),
+            "selected_mesh_scope_refs": set(self._selected_mesh_scope_refs),
+        }
+
+        viewport_render_suppressed = getattr(
+            self.viewport,
+            "_render_suppressed",
+            False,
+        )
+        try:
+            self._clear_workspace_transients()
+            self.workspace.activate(context)
+            self._active_context = context
+            self._applied_session_revision = -1
+            self._legacy_project_extension = bool(
+                context.projection.project_path is not None
+                and context.projection.project_path.suffix.casefold()
+                in LEGACY_MODEL_FILE_SUFFIXES
+            )
+            self._prepare_document_presentation(context)
+            cache = context.presentation_cache
+            artifact = context.projection.artifact
+            artifact_id = None if artifact is None else artifact.artifact_id
+            model_geometry = (
+                cache.model_geometry
+                if cache.matches_artifact(artifact_id)
+                else None
+            )
+            result_identity = context.session.current_result_identity()
+            result_model_view = None
+            if result_identity is not None and cache.matches_result(*result_identity):
+                result_model_view = cache.result_model_view
+
+            self._workspace_activation = True
+            self.viewport._render_suppressed = True
+            delta = SessionDelta(
+                session_revision=int(context.session.session_revision),
+                reason="workspace document activated",
+            )
+            applied = self._apply_session_delta(
+                delta,
+                context=context,
+                model_geometry=model_geometry,
+                result_model_view=result_model_view,
+            )
+            if not applied:
+                raise RuntimeError("target context projection could not be installed")
+            self._restore_document_presentation(context, render=False)
+            self._project_viewport_for_module(
+                context.presentation_state.module_name
+                or self._current_module_name(),
+                render=False,
+                reset_camera=False,
+            )
+            self._set_ribbon_module_silent(
+                context.presentation_state.module_name
+                or self._current_module_name()
+            )
+            # First display fits once; warm displays restore the saved camera
+            # and do not reset/fit it.  All preceding calls use render=False.
+            self.viewport._render_suppressed = viewport_render_suppressed
+            camera_state = context.presentation_state.camera_state
+            if camera_state is not None and self.viewport._plotter is not None:
+                _restore_camera_state(self.viewport._plotter, camera_state)
+                self.viewport.render()
+            else:
+                try:
+                    self.viewport.fit(render=False)
+                except TypeError:
+                    # Keep compatibility with lightweight viewport probes in
+                    # existing GUI tests that expose ``fit()`` only.
+                    self.viewport.fit()
+                self.viewport.render()
+            self.model_tree.set_active_document(context.document_id)
+            self.result_tree.set_active_document(context.document_id)
+            self._task_busy_changed(context.task_controller.busy)
+            if context.task_controller.cancel_requested:
+                self._task_cancelling_changed(True)
+            return True
+        except Exception:
+            logging.exception("workspace document activation failed")
+            applied = False
+        finally:
+            self._workspace_activation = False
+            self.viewport._render_suppressed = viewport_render_suppressed
+
+        # Activation can fail after the workspace registry has already moved.
+        # Restore the previous pair so aliases and registries stay in lockstep.
+        previous_still_registered = False
+        if previous_context is not None:
+            try:
+                previous_still_registered = (
+                    self.workspace.document(previous_context.document_id)
+                    is previous_context
+                )
+            except (KeyError, TypeError, ValueError):
+                previous_still_registered = False
+        if previous_still_registered:
+            try:
+                self.workspace.activate(previous_context)
+            except (KeyError, TypeError, ValueError):
+                self.workspace.active_document_id = previous_active_id
+                self.workspace.active_kind = previous_active_kind
+        else:
+            fallback = self.workspace.active_document()
+            if fallback is not None:
+                previous_context = fallback
+            else:
+                self.workspace.active_document_id = previous_active_id
+                self.workspace.active_kind = previous_active_kind
+        self._active_context = previous_context
+        self._applied_session_revision = previous_revision
+        if previous_context is not None:
+            try:
+                self._bind_agent_document(previous_context)
+            except (RuntimeError, TypeError, ValueError):
+                logging.exception("failed to restore Agent document binding")
+        if previous_context is not None:
+            previous_context.presentation_state = previous_presentation
+        self._restore_failed_workspace_activation(
+            previous_context,
+            previous_aliases,
+            viewport_render_suppressed=viewport_render_suppressed,
+        )
+        if previous_context is None:
+            self.model_tree.set_active_document(None)
+            self.result_tree.set_active_document(None)
+        elif self.workspace.active_document_id == previous_context.document_id:
+            self.model_tree.set_active_document(previous_context.document_id)
+            self.result_tree.set_active_document(previous_context.document_id)
+        return applied
+
+    def _restore_failed_workspace_activation(
+        self,
+        previous_context: WorkspaceDocument | None,
+        previous_aliases: dict[str, object],
+        *,
+        viewport_render_suppressed: bool,
+    ) -> None:
+        """Restore aliases and the previous scene after a failed activation."""
+
+        self.document = previous_aliases["document"]
+        self.geometry = previous_aliases["geometry"]
+        self.inspection_service = previous_aliases["inspection_service"]
+        self.result_provider = previous_aliases["result_provider"]
+        self.result_selection = previous_aliases["result_selection"]
+        self._display = previous_aliases["display"]
+        self._current_step_name = previous_aliases["step_name"]
+        self._legacy_project_extension = previous_aliases[
+            "legacy_project_extension"
+        ]
+        self._result_archive_geometry = previous_aliases[
+            "result_archive_geometry"
+        ]
+        self._result_archive_model_view = previous_aliases[
+            "result_archive_model_view"
+        ]
+        self._result_visualization_provider_cache = previous_aliases[
+            "result_visualization_provider_cache"
+        ]
+        self._model_edges_visible = previous_aliases["model_edges_visible"]
+        self._symbol_settings = previous_aliases["symbol_settings"]
+        self._overlay_undeformed = previous_aliases["overlay_undeformed"]
+        self._selection_context = previous_aliases["selection_context"]
+        self._geometry_selection_mode = previous_aliases[
+            "geometry_selection_mode"
+        ]
+        self.selection.mode = previous_aliases["selection_mode"]
+        self.selection.node_id = previous_aliases["selection_node_id"]
+        self.selection.element_id = previous_aliases["selection_element_id"]
+        self._selected_geometry_refs = set(
+            previous_aliases["selected_geometry_refs"]
+        )
+        self._selected_mesh_scope_refs = set(
+            previous_aliases["selected_mesh_scope_refs"]
+        )
+
+        # Rebuild only the shared viewport scene.  All actor and display
+        # mutations remain render-suppressed until the final explicit repaint.
+        self.viewport._render_suppressed = True
+        try:
+            if previous_context is None:
+                FEMViewport.clear_model(self.viewport)
+            elif self.document.artifact is not None and self.geometry is not None:
+                self._restore_viewport_model_scene(
+                    render=False,
+                    reset_camera=False,
+                )
+            else:
+                preview = self._current_native_geometry_preview()
+                if preview is not None:
+                    self.viewport.show_geometry_preview(
+                        preview,
+                        render=False,
+                        reset_camera=False,
+                    )
+                else:
+                    FEMViewport.clear_model(self.viewport)
+            if self.result_provider is not None and self.result_selection is not None:
+                try:
+                    self._apply_display(render=False)
+                except Exception:
+                    logging.exception(
+                        "failed to restore previous result display after activation"
+                    )
+            self._sync_step_combos()
+            self._refresh_result_controls()
+            self.status_panel.set_step(self._current_step_name)
+            self._update_action_states()
+        except Exception:
+            logging.exception(
+                "failed to restore previous viewport after activation failure"
+            )
+        finally:
+            self.viewport._render_suppressed = viewport_render_suppressed
+        camera_state = (
+            previous_context.presentation_state.camera_state
+            if previous_context is not None
+            else None
+        )
+        if camera_state is not None and self.viewport._plotter is not None:
+            try:
+                _restore_camera_state(self.viewport._plotter, camera_state)
+            except Exception:
+                logging.exception(
+                    "failed to restore previous camera after activation failure"
+                )
+        try:
+            self.viewport.render()
+        except Exception:
+            logging.exception("failed to repaint previous viewport after activation failure")
+
+    def _capture_document_presentation(
+        self,
+        context: WorkspaceDocument,
+    ) -> None:
+        """Save the lightweight visible state before leaving ``context``."""
+
+        if context is not self._active_workspace_context():
+            return
+        state = context.presentation_state
+        state.module_name = self._current_module_name() or None
+        state.step_name = self._current_step_name
+        state.result_selection = self.result_selection
+        state.display_state = self._display
+        state.selection_mode = getattr(self.viewport, "_selection_mode", None)
+        state.result_scale_mode = str(self._scale_mode)
+        state.result_scale_value = float(self._scale_value)
+        state.contour_options = dict(self._contour_options)
+        state.overlay_undeformed = bool(self._overlay_undeformed)
+        plotter = getattr(self.viewport, "_plotter", None)
+        state.camera_state = (
+            _capture_camera_state(plotter) if plotter is not None else None
+        )
+
+        cache = context.presentation_cache
+        artifact = context.projection.artifact
+        artifact_id = None if artifact is None else artifact.artifact_id
+        if artifact_id is None:
+            cache.invalidate_model()
+        elif (
+            self.geometry is not None
+            and self.geometry.artifact_id == artifact_id
+        ):
+            cache.artifact_id = artifact_id
+            cache.model_geometry = self.geometry
+            cache.inspection_service = self.inspection_service
+        identity = self.session.current_result_identity()
+        provider = self.result_provider
+        if identity is None or provider is None:
+            cache.invalidate_result()
+        elif provider.source == identity[0]:
+            cache.result_source = identity[0]
+            cache.result_generation = identity[1]
+            cache.result_model_view = self._result_archive_model_view
+
+    def _prepare_document_presentation(self, context: WorkspaceDocument) -> None:
+        """Seed window aliases from ``context`` before projection callbacks run."""
+
+        state = context.presentation_state
+        names = context.session.runnable_step_names()
+        self._current_step_name = (
+            state.step_name if state.step_name in names else context.session.default_step_name()
+        )
+        self._display = (
+            state.display_state
+            if isinstance(state.display_state, DisplayState)
+            else DisplayState()
+        )
+        self.result_selection = (
+            state.result_selection
+            if isinstance(state.result_selection, ScalarFieldSelection)
+            else None
+        )
+        scale_mode = state.result_scale_mode
+        self._scale_mode = (
+            scale_mode
+            if scale_mode in {"auto", "real", "custom"}
+            else "auto"
+        )
+        try:
+            self._scale_value = float(state.result_scale_value)
+        except (TypeError, ValueError):
+            self._scale_value = 1.0
+        saved_contour_options = (
+            state.contour_options
+            if isinstance(state.contour_options, dict)
+            and state.contour_options
+            else self._default_contour_options
+        )
+        self._contour_options = dict(self._default_contour_options)
+        self._contour_options.update(saved_contour_options)
+        self._overlay_undeformed = bool(state.overlay_undeformed)
+        selection_mode = state.selection_mode
+        if isinstance(selection_mode, str):
+            if selection_mode.startswith("geometry_"):
+                self._selection_context.set_space("geometry")
+                self._geometry_selection_mode = selection_mode.removeprefix(
+                    "geometry_"
+                )
+            elif selection_mode.startswith("mesh_"):
+                self._selection_context.set_space("mesh")
+                mesh_filter = selection_mode.removeprefix("mesh_")
+                self._selection_context.set_filter(
+                    "point" if mesh_filter == "node" else mesh_filter
+                )
+            elif selection_mode in {"node", "element"}:
+                self.selection.mode = selection_mode
+        else:
+            self._selection_context = SelectionContextState()
+            self._geometry_selection_mode = "body"
+            self.selection.mode = "node"
+            try:
+                self.viewport.set_selection_mode("node", render=False)
+            except TypeError:
+                self.viewport.set_selection_mode("node")
+
+    def _restore_document_presentation(
+        self,
+        context: WorkspaceDocument,
+        *,
+        render: bool,
+    ) -> None:
+        """Install state controls after the target scene has been projected."""
+
+        state = context.presentation_state
+        self._current_step_name = (
+            state.step_name
+            if state.step_name in self.session.runnable_step_names()
+            else self.session.default_step_name()
+        )
+        if isinstance(state.display_state, DisplayState):
+            self._display = state.display_state
+            for name, checked in (
+                ("undeformed", self._display.shape_mode == "undeformed"),
+                ("deformed", self._display.shape_mode == "deformed"),
+                ("contour", self._display.contour_enabled),
+            ):
+                action = self.actions.get(name)
+                if action is not None:
+                    with QSignalBlocker(action):
+                        action.setChecked(checked)
+        self.result_scale_combo.blockSignals(True)
+        scale_index = self.result_scale_combo.findData(self._scale_mode)
+        if scale_index >= 0:
+            self.result_scale_combo.setCurrentIndex(scale_index)
+        self.result_scale_combo.blockSignals(False)
+        self.result_scale_value.blockSignals(True)
+        self.result_scale_value.setValue(float(self._scale_value))
+        self.result_scale_value.blockSignals(False)
+        overlay_action = self.actions.get("overlay")
+        if overlay_action is not None:
+            with QSignalBlocker(overlay_action):
+                overlay_action.setChecked(self._overlay_undeformed)
+        try:
+            self.viewport.set_undeformed_overlay_visible(
+                self._overlay_undeformed
+            )
+            self.viewport.set_contour_options(
+                {
+                    key: value
+                    for key, value in self._contour_options.items()
+                    if key != "averaging_threshold"
+                }
+            )
+            self.viewport.set_contour_metadata(
+                {
+                    "averaging_threshold": float(
+                        self._contour_options.get("averaging_threshold", 20.0)
+                    )
+                }
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+        selection_mode = state.selection_mode
+        if isinstance(selection_mode, str):
+            try:
+                self.viewport.set_selection_mode(selection_mode, render=render)
+            except (TypeError, ValueError):
+                # Older/fake viewports may not expose the render keyword.
+                self.viewport.set_selection_mode(selection_mode)
+        self._sync_step_combos()
+        self._refresh_result_controls()
+        self.status_panel.set_step(self._current_step_name)
+        self._update_action_states()
+
+    def _clear_workspace_transients(self) -> None:
+        """Remove selections and inspection popups before a context switch."""
+
+        self._close_inspection_windows()
+        self._close_job_manager()
+        self._temporary_selection_context = None
+        self._temporary_selection_owner = None
+        self._pending_local_mesh_selection = False
+        self._pending_analysis_selection = None
+        self._pending_analysis_requested_scope_kind = None
+        self._pending_scope_kind = None
+        self._scope_selection_overlay_active = False
+        self.selection.clear()
+        self._selected_geometry_refs.clear()
+        self._selected_mesh_scope_refs.clear()
+        try:
+            self.viewport.clear_selection(render=False)
+        except TypeError:
+            self.viewport.clear_selection()
+
+    def _set_ribbon_module_silent(self, module_name: str | None) -> None:
+        if not module_name or not hasattr(self, "ribbon"):
+            return
+        tab_bar = self.ribbon.tab_bar
+        for index in range(tab_bar.count()):
+            if tab_bar.tabText(index) == module_name:
+                with QSignalBlocker(tab_bar):
+                    tab_bar.setCurrentIndex(index)
+                self.ribbon.stack.setCurrentIndex(index)
+                return
+
+    @property
+    def session(self) -> ModelSession:
+        """Compatibility alias for the active workspace Session."""
+
+        context = self._task_context_or_active()
+        if context is not None:
+            return context.session
+        return self._session_alias
+
+    @session.setter
+    def session(self, value: ModelSession) -> None:
+        self._session_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            context.session = value
+
+    @property
+    def document(self) -> object:
+        """Compatibility alias for the active context projection."""
+
+        context = self._task_context_or_active()
+        if context is not None:
+            return context.projection
+        return self._document_alias
+
+    @document.setter
+    def document(self, value: object) -> None:
+        self._document_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            self.workspace.update_projection(context, value)
+
+    @property
+    def task_controller(self) -> BackgroundTaskController:
+        """Compatibility alias for the active context task controller."""
+
+        context = self._task_context_or_active()
+        if context is not None:
+            return context.task_controller
+        return self._task_controller_alias
+
+    @task_controller.setter
+    def task_controller(self, value: BackgroundTaskController) -> None:
+        self._task_controller_alias = value
+        context = self._active_workspace_context()
+        if context is not None:
+            context.task_controller = value
 
     def _defer_ui(self, callback: Callable[[], None]) -> None:
         if self._closing:
@@ -942,6 +1632,8 @@ class FEMMainWindow(QMainWindow):
     def close_session(
         self,
         command: CloseSessionCommand,
+        *,
+        document_id: int | None = None,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
         if type(command) is not CloseSessionCommand:
@@ -950,17 +1642,32 @@ class FEMMainWindow(QMainWindow):
                 "command.type.invalid",
                 "command must be CloseSessionCommand",
             )
-        if self.busy:
+        target_context = (
+            self.workspace.active_document()
+            if document_id is None
+            else self.workspace.document(int(document_id))
+        )
+        if target_context is None:
+            return self._rejected_command(
+                command_id,
+                "workspace.document.missing",
+                "no model context is available",
+            )
+        if target_context.task_controller.busy:
             return self._rejected_command(
                 command_id,
                 "task.busy",
                 "a background task is already running",
             )
         try:
-            delta = self.session.close(
+            delta = target_context.session.close(
                 expected_session_revision=command.expected_session_revision
             )
-            receipt = self._accepted_command(command_id, delta)
+            receipt = self._accepted_command(
+                command_id,
+                delta,
+                context=target_context,
+            )
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
                 command_id,
@@ -972,12 +1679,6 @@ class FEMMainWindow(QMainWindow):
 
     def open_project_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
-        if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
         if (
             self._wire_editor_controller is not None
             or self._sketch_editor_controller is not None
@@ -991,10 +1692,31 @@ class FEMMainWindow(QMainWindow):
                 "请先完成或取消当前草图编辑，再打开项目",
             )
         target = Path(path)
-        base_session_id = self.session.session_id
-        base_session_revision = self.session.session_revision
+        existing_id = self.workspace.model_paths.get(canonical_path(target))
+        if existing_id is not None:
+            existing = self.workspace.models[existing_id]
+            if not self._activate_workspace_context(existing):
+                return self._rejected_command(
+                    command_id,
+                    "workspace.activate.rejected",
+                    "the already-open project could not be activated",
+                )
+            return GuiCommandReceipt.accepted(
+                command_id,
+                outcome=GuiCommandOutcome(
+                    output_path=target,
+                    diagnostic_summary="已激活已打开的模型",
+                ),
+            )
+        open_controller = self.workspace.ensure_open_controller()
+        if open_controller.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a project open task is already running",
+            )
         completion = GuiCommandCompletion(command_id)
-        accepted_delta: SessionDelta | None = None
+        accepted_context: WorkspaceDocument | None = None
 
         def workload(context: TaskContext) -> LoadedProject:
             context.report("正在读取并验证自主项目……")
@@ -1004,37 +1726,47 @@ class FEMMainWindow(QMainWindow):
             return loaded
 
         def apply_result(payload: object) -> TaskApplyOutcome:
-            nonlocal accepted_delta
+            nonlocal accepted_context
             if type(payload) is not LoadedProject:
                 raise TypeError(
                     "project loader worker must return LoadedProject"
                 )
-            if (
-                self.session.session_id != base_session_id
-                or self.session.session_revision != base_session_revision
-            ):
-                return TaskApplyOutcome.stale(
-                    "自主项目打开结果已过期，未应用"
-                )
             try:
-                accepted_delta = self.session.replace_from_snapshot(
-                    payload.snapshot,
-                    expected_session_revision=base_session_revision,
+                # Decode remains detached from every existing Session.  Only
+                # after successful validation do we create a new context and
+                # install the snapshot into its own writer.
+                session = ModelSession()
+                accepted_context = self.workspace.add_model(
+                    session=session,
+                    display_name=(
+                        str(payload.snapshot.model_name or "").strip()
+                        or target.stem
+                    ),
+                    source_path=payload.path or target,
                 )
-            except RevisionConflictError as error:
-                return TaskApplyOutcome.stale(str(error))
-            return TaskApplyOutcome.accepted(payload)
+                delta = session.replace_from_snapshot(payload.snapshot)
+            except (RevisionConflictError, TypeError, ValueError) as error:
+                if accepted_context is not None:
+                    self.workspace.remove(accepted_context)
+                    accepted_context = None
+                return TaskApplyOutcome.rejected(str(error))
+            return TaskApplyOutcome.accepted((payload, accepted_context, delta))
 
-        def on_success(payload: object) -> None:
-            if type(payload) is not LoadedProject or accepted_delta is None:
+        def on_success(value: object) -> None:
+            if (
+                type(value) is not tuple
+                or len(value) != 3
+                or type(value[0]) is not LoadedProject
+                or not isinstance(value[1], WorkspaceDocument)
+                or type(value[2]) is not SessionDelta
+            ):
                 raise RuntimeError(
                     "accepted project load has no detached project or delta"
                 )
-            self._accepted_command(
-                command_id,
-                accepted_delta,
-                source_label=target.name,
-            )
+            payload, context, delta = value
+            self._apply_session_delta(delta, context=context)
+            if not self._activate_workspace_context(context):
+                raise RuntimeError("opened project context could not be activated")
             self._import_notices = deepcopy(tuple(payload.notices))
             if payload.notices:
                 self.status_panel.set_state(
@@ -1050,6 +1782,7 @@ class FEMMainWindow(QMainWindow):
                 task_name="打开自主项目",
                 apply_result=apply_result,
                 completion=completion,
+                controller=open_controller,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
@@ -1127,9 +1860,26 @@ class FEMMainWindow(QMainWindow):
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
-    def save_project_path(self, path: str | Path) -> GuiCommandReceipt:
+    def save_project_path(
+        self,
+        path: str | Path,
+        *,
+        document_id: int | None = None,
+    ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
-        if not self.document.can_save:
+        target_context = (
+            self.workspace.active_document()
+            if document_id is None
+            else self.workspace.document(int(document_id))
+        )
+        if target_context is None:
+            return self._rejected_command(
+                command_id,
+                "workspace.document.missing",
+                "no model context is available",
+            )
+        target_document = target_context.projection
+        if not target_document.can_save:
             return self._rejected_command(
                 command_id,
                 "project.save.unavailable",
@@ -1139,7 +1889,7 @@ class FEMMainWindow(QMainWindow):
         if target.suffix.casefold() != MODEL_FILE_SUFFIX:
             target = target.with_suffix(MODEL_FILE_SUFFIX)
         try:
-            save_snapshot = self.session.prepare_project_save()
+            save_snapshot = target_context.session.prepare_project_save()
 
             completion = GuiCommandCompletion(command_id)
 
@@ -1157,7 +1907,7 @@ class FEMMainWindow(QMainWindow):
                         "project save worker must return pathlib.Path"
                     )
                 return self._session_task_outcome(
-                    self.session.accept_project_saved(
+                    target_context.session.accept_project_saved(
                         save_snapshot.token,
                         payload,
                     ),
@@ -1175,23 +1925,41 @@ class FEMMainWindow(QMainWindow):
                         "accepted project save must carry SessionDelta and Path"
                     )
                 delta, _saved_path = value
-                self._accepted_command(command_id, delta)
+                self._accepted_command(
+                    command_id,
+                    delta,
+                    context=target_context,
+                )
 
             started = self._start_task(
                 workload,
                 on_success,
                 "保存自主项目失败",
-                lambda message: self._session_task_failed(
+                lambda message: self._target_session_task_failed(
+                    target_context,
                     save_snapshot.token,
                     "保存自主项目失败",
                     message,
                 ),
                 task_name="保存自主项目",
-                on_cancelled=lambda: self._session_task_cancelled(
-                    save_snapshot.token
+                on_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context,
+                    save_snapshot.token,
+                ),
+                on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
+                    save_snapshot.token,
+                    "保存自主项目失败",
+                    message,
+                ),
+                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context,
+                    save_snapshot.token,
                 ),
                 apply_result=apply_result,
                 completion=completion,
+                controller=target_context.task_controller,
+                context=target_context,
             )
         except Exception as error:
             return self._rejected_command(
@@ -1275,6 +2043,14 @@ class FEMMainWindow(QMainWindow):
                 ),
                 task_name="保存分析结果",
                 on_cancelled=lambda: self._session_task_cancelled(snapshot.token),
+                on_inactive_failure=lambda message: self._session_task_failed(
+                    snapshot.token,
+                    "保存分析结果失败",
+                    message,
+                ),
+                on_inactive_cancelled=lambda: self._session_task_cancelled(
+                    snapshot.token
+                ),
                 apply_result=apply_result,
                 completion=completion,
             )
@@ -1297,119 +2073,6 @@ class FEMMainWindow(QMainWindow):
                 command_id,
                 "task.start.rejected",
                 "the result save task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
-
-    def open_result_path(self, path: str | Path) -> GuiCommandReceipt:
-        """Strictly decode and atomically install a result-only document."""
-
-        command_id = self._next_command_id()
-        if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
-        if self._active_editor():
-            return self._rejected_command(
-                command_id,
-                "editor.active",
-                "请先完成或取消当前编辑",
-            )
-        try:
-            spec = ResultArchiveOpenSpec(Path(path))
-            base_session_id = self.session.session_id
-            base_session_revision = self.session.session_revision
-            completion = GuiCommandCompletion(command_id)
-
-            def workload(context: TaskContext):
-                context.report("正在读取并验证分析结果……")
-                context.checkpoint()
-                loaded = load_result_archive(spec.path)
-                context.checkpoint()
-                started = perf_counter()
-                model_view = build_result_archive_model_view(
-                    loaded.snapshot.model_projection,
-                    loaded.snapshot.profile,
-                    name=str(loaded.snapshot.origin.model_name or "结果"),
-                )
-                geometry = build_result_archive_geometry(
-                    loaded.snapshot.model_projection,
-                )
-                timings = {
-                    "结果显示适配器构建": perf_counter() - started,
-                }
-                context.checkpoint()
-                return _ResultArchiveDisplayPayload(
-                    loaded=loaded,
-                    geometry=geometry,
-                    model_view=model_view,
-                    timings=timings,
-                )
-
-            def apply_result(payload: object) -> TaskApplyOutcome:
-                if type(payload) is not _ResultArchiveDisplayPayload:
-                    raise TypeError(
-                        "result open worker must return display payload"
-                    )
-                if self.session.session_id != base_session_id:
-                    return TaskApplyOutcome.stale("结果打开目标会话已变化，未应用")
-                if self.session.session_revision != base_session_revision:
-                    return TaskApplyOutcome.stale("结果打开目标文档已变化，未应用")
-                delta = self.session.replace_from_result_archive(
-                    payload.loaded,
-                    expected_session_revision=base_session_revision,
-                )
-                return self._session_task_outcome(delta, payload)
-
-            def on_success(value: object) -> None:
-                if (
-                    type(value) is not tuple
-                    or len(value) != 2
-                    or type(value[0]) is not SessionDelta
-                ):
-                    raise TypeError("accepted result open must carry SessionDelta")
-                delta, payload = value
-                if type(payload) is not _ResultArchiveDisplayPayload:
-                    raise TypeError("accepted result open has invalid payload")
-                self._accepted_command(
-                    command_id,
-                    delta,
-                    model_geometry=payload.geometry,
-                    result_model_view=payload.model_view,
-                    timings=payload.timings,
-                    source_label=spec.path.name,
-                )
-                result_module_was_current = (
-                    self._current_module_name() == "结果"
-                )
-                self.ribbon.set_current("结果")
-                if result_module_was_current:
-                    self._on_module_changed("结果")
-                self.status_panel.set_state(
-                    f"结果文件已打开：{spec.path.name}",
-                    6000,
-                )
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "打开分析结果失败",
-                task_name="打开分析结果",
-                apply_result=apply_result,
-                completion=completion,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.open.rejected",
-                error,
-            )
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result open task could not be started",
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
@@ -1644,6 +2307,9 @@ class FEMMainWindow(QMainWindow):
                 "named-region edit cancelled",
             )
 
+        def on_inactive_failure(message: str) -> None:
+            self.session.terminate_named_region_edit(task, message)
+
         return self._start_task(
             workload,
             on_success,
@@ -1651,6 +2317,8 @@ class FEMMainWindow(QMainWindow):
             on_failure,
             task_name="提交作用域",
             on_cancelled=on_cancelled,
+            on_inactive_failure=on_inactive_failure,
+            on_inactive_cancelled=on_cancelled,
             apply_result=apply_result,
             completion=completion,
         )
@@ -2065,6 +2733,14 @@ class FEMMainWindow(QMainWindow):
                 on_cancelled=lambda: self._session_task_cancelled(
                     task.token
                 ),
+                on_inactive_failure=lambda message: self._session_task_failed(
+                    task.token,
+                    "结果字段按需加载失败",
+                    message,
+                ),
+                on_inactive_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
                 apply_result=apply_result,
                 completion=completion,
             )
@@ -2160,7 +2836,16 @@ class FEMMainWindow(QMainWindow):
         ):
             current_selection = self.result_selection
             if type(current_selection) is ScalarFieldSelection:
-                self.result_tree.select_selection(current_selection)
+                active_context = self.workspace.active_document()
+                self.result_tree.select_selection(
+                    current_selection,
+                    document_id=(
+                        None
+                        if active_context is None
+                        else active_context.document_id
+                    ),
+                    source=projected.source,
+                )
         self._refresh_result_controls()
         self._update_action_states()
 
@@ -2395,6 +3080,14 @@ class FEMMainWindow(QMainWindow):
                 ),
                 task_name="结果查询",
                 on_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
+                on_inactive_failure=lambda message: self._session_task_failed(
+                    task.token,
+                    "结果查询失败",
+                    message,
+                ),
+                on_inactive_cancelled=lambda: self._session_task_cancelled(
                     task.token
                 ),
                 apply_result=apply_result,
@@ -2690,6 +3383,7 @@ class FEMMainWindow(QMainWindow):
         self,
         delta: object,
         *,
+        context: WorkspaceDocument | None = None,
         model_geometry: ModelGeometry | None = None,
         result_model_view: ArchiveModelView | None = None,
         geometry_preview: GeometryPreview | None = None,
@@ -2699,12 +3393,51 @@ class FEMMainWindow(QMainWindow):
         """Project one accepted Session transition into every GUI cache."""
         if not bool(getattr(delta, "accepted", True)):
             return False
+        target_context = context
+        if target_context is None:
+            target_context = self._task_callback_context
+        if target_context is None:
+            target_context = self.workspace.active_document()
+        if target_context is None:
+            return False
         revision = int(getattr(delta, "session_revision"))
         requested_revision = revision
+        active_context = self.workspace.active_document()
+        if target_context is not active_context:
+            if revision <= target_context.projection.session_revision:
+                return False
+            previous_target_artifact = target_context.projection.artifact
+            snapshot = self._snapshot_for_delta(
+                delta,
+                revision,
+                context=target_context,
+            )
+            if snapshot.session_revision < revision:
+                return False
+            self.workspace.update_projection(target_context, snapshot)
+            next_artifact = snapshot.artifact
+            if (
+                previous_target_artifact is None
+                or next_artifact is None
+                or previous_target_artifact.artifact_id != next_artifact.artifact_id
+            ):
+                target_context.presentation_cache.invalidate_model()
+            next_target_result = target_context.session.current_result_identity()
+            if next_target_result is None or not target_context.presentation_cache.matches_result(
+                *next_target_result
+            ):
+                target_context.presentation_cache.invalidate_result()
+            self._refresh_model_tree_for_context(target_context)
+            self._refresh_result_tree_for_context(target_context)
+            return True
         if revision <= self._applied_session_revision:
             return False
 
-        snapshot = self._snapshot_for_delta(delta, revision)
+        snapshot = self._snapshot_for_delta(
+            delta,
+            revision,
+            context=target_context,
+        )
         if snapshot.session_revision < revision:
             return False
         if snapshot.session_revision > revision:
@@ -2732,6 +3465,14 @@ class FEMMainWindow(QMainWindow):
             if self.document.artifact is not None
             else None
         )
+        next_artifact_id = (
+            snapshot.artifact.artifact_id
+            if snapshot.artifact is not None
+            else None
+        )
+        target_cache = target_context.presentation_cache
+        if previous_artifact_id != next_artifact_id:
+            target_cache.invalidate_model()
         self.document = snapshot
         self._legacy_project_extension = bool(
             snapshot.source_kind == "native"
@@ -2749,7 +3490,8 @@ class FEMMainWindow(QMainWindow):
             current_authoring_context = None
         else:
             stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
-                snapshot
+                snapshot,
+                document_id=target_context.document_id,
             )
             current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
@@ -2792,7 +3534,8 @@ class FEMMainWindow(QMainWindow):
 
         artifact = snapshot.artifact
         if artifact is None:
-            self._clear_model_projection()
+            self._clear_model_projection(clear_tree=False)
+            self._refresh_model_tree_for_context(target_context)
             recipe = snapshot.geometry_recipe
             canonical_parts = (
                 tuple(snapshot.parts)
@@ -2842,12 +3585,6 @@ class FEMMainWindow(QMainWindow):
                     for reference in self._selected_geometry_refs
                     if reference.logical_id in selectable_ids
                 }
-                self.model_tree.set_geometry_preview(
-                    str(snapshot.model_name or "模型-1"),
-                    (),
-                    parts=canonical_parts,
-                    active_part_id=snapshot.active_part_id,
-                )
                 suppressed_preview = (
                     build_multi_part_geometry_preview(
                         tuple(
@@ -2874,7 +3611,10 @@ class FEMMainWindow(QMainWindow):
                     self._selection_context.geometry_filter = "body"
                     if self._selection_context.space == "geometry":
                         self.actions["select_body"].setChecked(True)
-                    self.viewport.set_selection_mode("geometry_body")
+                        self.viewport.set_selection_mode(
+                            "geometry_body",
+                            render=not self._workspace_activation,
+                        )
                 try:
                     if (
                         self._sketch_editor_controller is not None
@@ -2883,9 +3623,14 @@ class FEMMainWindow(QMainWindow):
                         self.viewport.show_geometry_preview(
                             preview,
                             render=False,
+                            reset_camera=not self._workspace_activation,
                         )
                     else:
-                        self.viewport.show_geometry_preview(preview)
+                        self.viewport.show_geometry_preview(
+                            preview,
+                            render=not self._workspace_activation,
+                            reset_camera=not self._workspace_activation,
+                        )
                     if (
                         not cached_is_current
                         and recipe is not None
@@ -2908,12 +3653,6 @@ class FEMMainWindow(QMainWindow):
                     else active.name
                 )
             elif snapshot.source_kind == "native":
-                self.model_tree.set_geometry_preview(
-                    str(snapshot.model_name or "模型-1"),
-                    (),
-                    parts=(),
-                    active_part_id=None,
-                )
                 self.viewport.clear_model()
                 self.viewport_panel.set_geometry_context(True)
                 self.status_panel.set_object("尚未创建部件")
@@ -2944,16 +3683,37 @@ class FEMMainWindow(QMainWindow):
                         "result-only projection requires worker display payload"
                     )
             else:
+                if model_geometry is None and target_cache.matches_artifact(
+                    artifact.artifact_id
+                ):
+                    model_geometry = target_cache.model_geometry
                 geometry = model_geometry or build_model_geometry(artifact.model)
-            geometry = replace(geometry, artifact_id=artifact.artifact_id)
+            if geometry.artifact_id != artifact.artifact_id:
+                geometry = replace(geometry, artifact_id=artifact.artifact_id)
             if snapshot.source_kind != "result":
                 model_for_view = artifact.model
+            cached_inspection = (
+                target_cache.inspection_service
+                if target_cache.matches_artifact(artifact.artifact_id)
+                else None
+            )
             self._install_model(
                 model_for_view,
                 geometry,
                 dict(timings or {}),
                 source_label=source_label or self._session_source_label(),
+                inspection_service=cached_inspection,
+                render=not self._workspace_activation,
+                reset_camera=not self._workspace_activation,
+                preserve_display=self._workspace_activation,
             )
+            target_cache.artifact_id = artifact.artifact_id
+            target_cache.model_geometry = geometry
+            target_cache.inspection_service = self.inspection_service
+        else:
+            # The model is already installed; update only this document's
+            # tree root for definition/result metadata changes.
+            self._refresh_model_tree_for_context(target_context)
 
         result_identity = self.session.current_result_identity()
         if result_identity is None:
@@ -2992,7 +3752,11 @@ class FEMMainWindow(QMainWindow):
                 and selection_is_current
                 and viewport_is_current
                 and self.result_tree.catalog is provider.catalog()
-                and self.result_tree.has_selection(self.result_selection)
+                and self.result_tree.has_selection(
+                    self.result_selection,
+                    document_id=target_context.document_id,
+                    source=(None if provider is None else provider.source),
+                )
                 and (
                     self.inspection_service is None
                     or self.inspection_service.result_provider is provider
@@ -3003,11 +3767,20 @@ class FEMMainWindow(QMainWindow):
                 or not consumers_are_current
             ):
                 self._install_result_provider_projection(provider)
+            target_cache.result_source = source
+            target_cache.result_generation = generation
+            target_cache.result_model_view = self._result_archive_model_view
+            target_cache.inspection_service = self.inspection_service
+        else:
+            target_cache.invalidate_result()
 
         self._sync_step_combos()
         self._refresh_result_controls()
         self._update_action_states()
-        self._project_viewport_for_module(self._current_module_name())
+        self._refresh_result_tree_for_context(target_context)
+        if not self._workspace_activation:
+            self._project_viewport_for_module(self._current_module_name())
+        self.model_tree.set_active_document(target_context.document_id)
         self._applied_session_revision = revision
         return True
 
@@ -3015,18 +3788,28 @@ class FEMMainWindow(QMainWindow):
         self,
         delta: object,
         revision: int,
+        *,
+        context: WorkspaceDocument | None = None,
     ) -> object:
         """Project one ordered delta without detaching full model/results."""
 
+        target_context = (
+            context
+            if context is not None
+            else self.workspace.active_document()
+        )
+        if target_context is None:
+            return self.session.projection_snapshot()
+
         if (
             isinstance(delta, SessionDelta)
-            and self.session.session_revision == revision
+            and target_context.session.session_revision == revision
         ):
-            return self.session.projection_snapshot(
-                self.document,
+            return target_context.session.projection_snapshot(
+                target_context.projection,
                 delta.changed,
             )
-        return self.session.projection_snapshot()
+        return target_context.session.projection_snapshot()
 
     def _apply_revision_neutral_task_receipt(
         self,
@@ -3068,7 +3851,7 @@ class FEMMainWindow(QMainWindow):
             return TaskApplyOutcome.rejected(message)
         return TaskApplyOutcome.stale(message)
 
-    def _clear_model_projection(self) -> None:
+    def _clear_model_projection(self, *, clear_tree: bool = True) -> None:
         self._close_inspection_windows()
         self._close_job_manager()
         self._restore_temporary_selection_context()
@@ -3094,8 +3877,18 @@ class FEMMainWindow(QMainWindow):
         self._result_visualization_provider_cache = None
         self.selection.clear()
         self._display = DisplayState()
-        self.model_tree.clear_model()
-        self.result_tree.clear_result()
+        if clear_tree:
+            active_context = self.workspace.active_document()
+            if active_context is None:
+                self.model_tree.clear_model()
+            else:
+                self._refresh_model_tree_for_context(active_context)
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        elif self.result_tree.roots:
+            # Empty workspaces retain the historical placeholder.
+            self.result_tree.clear_result()
         self.navigation.show_model()
         self.viewport.clear_model()
         self.status_panel.set_step(self._current_step_name)
@@ -3112,7 +3905,11 @@ class FEMMainWindow(QMainWindow):
         self.result_selection = None
         self._result_visualization_provider_cache = None
         self._display = DisplayState()
-        self.result_tree.clear_result()
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        else:
+            self.result_tree.clear_result()
         self.navigation.show_model()
         self.status_panel.set_result()
         if not had_projection:
@@ -3196,15 +3993,12 @@ class FEMMainWindow(QMainWindow):
             self._clear_result_projection()
             self.result_provider = provider
             self.result_selection = None
-            self.result_tree.set_catalog(
-                self._current_step_name
-                or self.session.default_step_name()
-                or "",
-                catalog,
-                section_point_labels=result_provider_section_point_labels(
-                    provider
-                ),
-            )
+            active_context = self.workspace.active_document()
+            if active_context is not None:
+                self._refresh_result_tree_for_context(
+                    active_context,
+                    catalog=catalog,
+                )
             if inspection is not None:
                 inspection.update_result_provider(provider)
             self.status_panel.set_result()
@@ -3236,14 +4030,19 @@ class FEMMainWindow(QMainWindow):
             None if inspection is None else inspection.result_provider
         )
         try:
-            self.result_tree.set_catalog(
-                step_name or "",
-                catalog,
-                section_point_labels=result_provider_section_point_labels(
-                    provider
-                ),
-            )
-            if not self.result_tree.select_selection(selection):
+            active_context = self.workspace.active_document()
+            if active_context is not None:
+                self._refresh_result_tree_for_context(
+                    active_context,
+                    catalog=catalog,
+                )
+            if not self.result_tree.select_selection(
+                selection,
+                document_id=active_context.document_id
+                if active_context is not None
+                else None,
+                source=provider.source,
+            ):
                 raise RuntimeError(
                     "installed selection is missing from the result tree"
                 )
@@ -3257,22 +4056,21 @@ class FEMMainWindow(QMainWindow):
         except Exception:
             try:
                 if previous_catalog is None:
-                    self.result_tree.clear_result()
+                    active_context = self.workspace.active_document()
+                    if active_context is not None:
+                        self._refresh_result_tree_for_context(active_context)
                 else:
-                    self.result_tree.set_catalog(
-                        previous_catalog.source.step_name,
-                        previous_catalog,
-                        section_point_labels=(
-                            result_provider_section_point_labels(
-                                previous_provider
-                            )
-                            if type(previous_provider) is ResultProvider
-                            else None
-                        ),
-                    )
+                    active_context = self.workspace.active_document()
+                    if active_context is not None:
+                        self._refresh_result_tree_for_context(
+                            active_context,
+                            catalog=previous_catalog,
+                        )
                     if type(previous_selection) is ScalarFieldSelection:
                         self.result_tree.select_selection(
-                            previous_selection
+                            previous_selection,
+                            document_id=active_context.document_id,
+                            source=previous_catalog.source,
                         )
             except Exception:
                 logging.exception(
@@ -3736,13 +4534,32 @@ class FEMMainWindow(QMainWindow):
         layout.addWidget(self.ribbon)
         layout.addWidget(splitter, 1)
         self.setCentralWidget(host)
-        self.model_tree.highlightRequested.connect(self._highlight_tree_entry)
-        self.model_tree.informationRequested.connect(self._show_entry_information)
-        self.model_tree.editRequested.connect(self._edit_tree_entry)
-        self.model_tree.deleteRequested.connect(self._delete_tree_entry)
-        self.model_tree.renameRequested.connect(self._rename_tree_entry)
-        self.result_tree.fieldSelectionActivated.connect(
-            self._activate_result_selection
+        self.model_tree.highlightRequested[int, str, object].connect(
+            self._highlight_tree_entry
+        )
+        self.model_tree.informationRequested[int, str, object].connect(
+            self._show_entry_information
+        )
+        self.model_tree.editRequested[int, str, object].connect(
+            self._edit_tree_entry
+        )
+        self.model_tree.deleteRequested[int, str, object].connect(
+            self._delete_tree_entry
+        )
+        self.model_tree.renameRequested[int, str, object].connect(
+            self._rename_tree_entry
+        )
+        self.model_tree.rootActionRequested.connect(
+            self._model_root_action_requested
+        )
+        self.result_tree.fieldSelectionRouted.connect(
+            self._activate_routed_result_selection
+        )
+        self.result_tree.runActivated.connect(
+            self._activate_routed_result_run
+        )
+        self.result_tree.rootActionRequested.connect(
+            self._result_root_action_requested
         )
         self.viewport.entityPicked.connect(self._on_viewport_pick)
         self.viewport.geometryEntityPicked.connect(
@@ -3860,7 +4677,13 @@ class FEMMainWindow(QMainWindow):
             return ""
         return tab_bar.tabText(tab_bar.currentIndex())
 
-    def _project_viewport_for_module(self, module_name: str) -> None:
+    def _project_viewport_for_module(
+        self,
+        module_name: str,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         """Project the stable geometry, mesh, or result scene for a module."""
 
         if self._temporary_selection_context is not None or any(
@@ -3880,29 +4703,57 @@ class FEMMainWindow(QMainWindow):
             if provider is not None and type(selection) is ScalarFieldSelection:
                 if self._viewport_result_scene_is_current(provider, selection):
                     return
-                self._restore_viewport_model_scene(render=False)
-                self._apply_display()
+                self._restore_viewport_model_scene(
+                    render=False,
+                    reset_camera=reset_camera,
+                )
+                self._apply_display(render=render)
             else:
-                self._project_mesh_or_geometry_fallback()
+                self._project_mesh_or_geometry_fallback(
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             return
         if module_name == "几何":
             preview = self._current_native_geometry_preview()
             if preview is not None:
-                self.viewport.show_geometry_preview(preview)
+                self.viewport.show_geometry_preview(
+                    preview,
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             else:
-                self._project_mesh_or_geometry_fallback()
+                self._project_mesh_or_geometry_fallback(
+                    render=render,
+                    reset_camera=reset_camera,
+                )
             return
         if module_name in {"网格", "模型", "分析"}:
-            self._project_mesh_or_geometry_fallback()
+            self._project_mesh_or_geometry_fallback(
+                render=render,
+                reset_camera=reset_camera,
+            )
 
-    def _project_mesh_or_geometry_fallback(self) -> None:
+    def _project_mesh_or_geometry_fallback(
+        self,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         if self.document.artifact is not None and self.geometry is not None:
             self.actions["edges"].setChecked(self._model_edges_visible)
-            self._restore_viewport_model_scene()
+            self._restore_viewport_model_scene(
+                render=render,
+                reset_camera=reset_camera,
+            )
             return
         preview = self._current_native_geometry_preview()
         if preview is not None:
-            self.viewport.show_geometry_preview(preview)
+            self.viewport.show_geometry_preview(
+                preview,
+                render=render,
+                reset_camera=reset_camera,
+            )
             return
         self.viewport.clear_model()
 
@@ -3967,6 +4818,18 @@ class FEMMainWindow(QMainWindow):
 
     def _sync_step_combos(self) -> None:
         names = self.session.runnable_step_names()
+        selected = (
+            self._current_step_name
+            if self._current_step_name in names
+            else names[0]
+            if names
+            else None
+        )
+        self._current_step_name = selected
+        self._symbol_settings = replace(
+            self._symbol_settings,
+            step_name=selected,
+        )
         for combo in self._step_combos:
             combo.blockSignals(True)
             combo.clear()
@@ -3975,7 +4838,7 @@ class FEMMainWindow(QMainWindow):
             else:
                 for name in names:
                     combo.addItem(name, name)
-                index = combo.findData(self._current_step_name)
+                index = combo.findData(selected)
                 combo.setCurrentIndex(index if index >= 0 else 0)
             combo.setEnabled(bool(names) and not self.busy)
             combo.blockSignals(False)
@@ -8868,6 +9731,14 @@ class FEMMainWindow(QMainWindow):
             ),
             task_name="网格生成",
             on_cancelled=lambda: self._session_task_cancelled(task.token),
+            on_inactive_failure=lambda message: self._session_task_failed(
+                task.token,
+                "网格生成失败",
+                message,
+            ),
+            on_inactive_cancelled=lambda: self._session_task_cancelled(
+                task.token
+            ),
             apply_result=apply_result,
             completion=completion,
         )
@@ -8936,7 +9807,7 @@ class FEMMainWindow(QMainWindow):
             "",
             "FEM-Python 结果 (*.femres);;所有文件 (*)",
         )
-        if not path or not self._confirm_document_transition():
+        if not path:
             return
         receipt = self.open_result_path(path)
         if receipt.diagnostic is not None:
@@ -8949,7 +9820,7 @@ class FEMMainWindow(QMainWindow):
             self,
             "新建模型",
             "模型名称：",
-            text="模型-1",
+            text=f"Model-{self.workspace.next_model_number}",
         )
         if not accepted:
             return
@@ -8957,8 +9828,8 @@ class FEMMainWindow(QMainWindow):
         if not model_name:
             self._show_error("新建模型", "模型名称不能为空。")
             return
-        if not self._confirm_discard_changes():
-            return
+        # New models are appended as independent workspace documents; the
+        # current document remains intact, so no discard confirmation applies.
         self._create_native_model(model_name)
 
     def _create_native_model(self, model_name: str) -> None:
@@ -8966,18 +9837,26 @@ class FEMMainWindow(QMainWindow):
 
         if self.busy:
             return
+        previous_context = self._active_context
+        # New model commands append a fresh Session/context.  The existing
+        # active model remains in the workspace and is only switched away
+        # after the new context has been installed.
+        context = self.workspace.add_model(display_name=model_name)
+        if not self._activate_workspace_context(context):
+            self.workspace.remove(context)
+            return
         receipt = self.new_native_project(
             NewNativeProjectCommand(model_name)
         )
         if receipt.diagnostic is not None:
+            self.model_tree.remove_document(context.document_id)
+            self.workspace.remove(context)
+            if previous_context is not None:
+                self._activate_workspace_context(previous_context)
+            else:
+                self._active_context = None
             self._show_command_rejection("新建自主项目", receipt)
             return
-        self.model_tree.set_geometry_preview(
-            str(self.document.model_name or "模型-1"),
-            (),
-            parts=tuple(self.document.parts),
-            active_part_id=self.document.active_part_id,
-        )
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state(
             "自主模型已创建，请在“几何”中选择“新建部件”。",
@@ -8986,8 +9865,6 @@ class FEMMainWindow(QMainWindow):
         self.ribbon.set_current("几何")
 
     def open_native_project(self) -> None:
-        if self.busy:
-            return
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "打开自主项目",
@@ -8995,8 +9872,6 @@ class FEMMainWindow(QMainWindow):
             _native_model_open_filter(),
         )
         if not path:
-            return
-        if not self._confirm_discard_changes():
             return
         receipt = self.open_project_path(path)
         if receipt.diagnostic is not None:
@@ -9022,6 +9897,7 @@ class FEMMainWindow(QMainWindow):
         self,
         *,
         wait: bool = False,
+        force_save_as: bool = False,
         agent_terminal: (
             Callable[[ProposalState, str], None] | None
         ) = None,
@@ -9035,6 +9911,8 @@ class FEMMainWindow(QMainWindow):
             return False
         path = self.document.project_path
         save_as = (
+            force_save_as
+            or
             path is None
             or self._legacy_project_extension
             or path.suffix.casefold() != MODEL_FILE_SUFFIX
@@ -9216,6 +10094,14 @@ class FEMMainWindow(QMainWindow):
             ),
             task_name="INP 导入",
             on_cancelled=lambda: self._session_task_cancelled(task.token),
+            on_inactive_failure=lambda message: self._session_task_failed(
+                task.token,
+                "模型加载失败",
+                message,
+            ),
+            on_inactive_cancelled=lambda: self._session_task_cancelled(
+                task.token
+            ),
             apply_result=apply_result,
             completion=completion,
         )
@@ -9312,34 +10198,274 @@ class FEMMainWindow(QMainWindow):
             12000,
         )
 
-    def _show_model_in_tree(self, model: object) -> None:
+    def _show_model_in_tree(
+        self,
+        model: object,
+        *,
+        context: WorkspaceDocument | None = None,
+    ) -> None:
+        target_context = context or self.workspace.active_document()
+        target_document_id = (
+            None if target_context is None else target_context.document_id
+        )
+        target_document = (
+            self.document if target_context is None else target_context.projection
+        )
         output_catalog = ResultCapabilityCatalog.from_profile(
             classify_result_model(model)
         )
         output_projections = _output_request_projections_by_step(
-            tuple(self.document.steps),
+            tuple(target_document.steps),
             output_catalog,
         )
         definition_options = {
             "section_definitions": tuple(
-                self.document.sections
+                target_document.sections
             ),
             "region_assignments": tuple(
-                self.document.assignments
+                target_document.assignments
             ),
             "output_request_projections_by_step": output_projections,
         }
-        if self.document.source_kind == "native" and self.document.parts:
+        source_path = target_document.source_path or target_document.project_path
+        if target_document.source_kind == "native" and target_document.parts:
             self.model_tree.set_model(
                 model,
-                model_name=str(self.document.model_name or "模型-1"),
-                scope_names=frozenset(self.document.named_regions),
-                native_parts=tuple(self.document.parts),
-                active_part_id=self.document.active_part_id,
+                model_name=str(target_document.model_name or "模型-1"),
+                scope_names=frozenset(target_document.named_regions),
+                native_parts=tuple(target_document.parts),
+                active_part_id=target_document.active_part_id,
+                document_id=target_document_id,
+                source_path=source_path,
                 **definition_options,
             )
             return
-        self.model_tree.set_model(model, **definition_options)
+        self.model_tree.set_model(
+            model,
+            document_id=target_document_id,
+            source_path=source_path,
+            **definition_options,
+        )
+
+    def _refresh_model_tree_for_context(
+        self,
+        context: WorkspaceDocument,
+    ) -> None:
+        """Incrementally project one context's root into ``ModelTree``."""
+
+        if context.is_result:
+            # External result documents own display geometry in the result
+            # tree; they must never add a model-document root.
+            self.model_tree.remove_document(context.document_id)
+            return
+        snapshot = context.projection
+        artifact = snapshot.artifact
+        if artifact is not None:
+            self._show_model_in_tree(artifact.model, context=context)
+            return
+        self.model_tree.set_geometry_preview(
+            str(snapshot.model_name or context.display_name or "模型"),
+            (),
+            parts=tuple(snapshot.parts)
+            if snapshot.source_kind == "native"
+            else None,
+            active_part_id=snapshot.active_part_id,
+            document_id=context.document_id,
+            source_path=snapshot.source_path or snapshot.project_path,
+        )
+
+    def _refresh_result_tree_for_context(
+        self,
+        context: WorkspaceDocument,
+        *,
+        catalog: object | None = None,
+    ) -> None:
+        """Incrementally project one model/archive result root.
+
+        ResultTree owns one indexed root per workspace context.  This helper
+        deliberately performs no viewport, ribbon, or result-control work, so
+        deltas for inactive documents stay on the cheap tree-only path.
+        """
+
+        provider = None
+        if catalog is None:
+            try:
+                provider = context.session.current_result_provider()
+            except (AttributeError, RuntimeError, ValueError):
+                provider = None
+            if provider is not None:
+                try:
+                    catalog = provider.catalog()
+                except (AttributeError, RuntimeError, ValueError):
+                    catalog = None
+        labels = None
+        if provider is not None:
+            try:
+                labels = result_provider_section_point_labels(provider)
+            except (AttributeError, RuntimeError, ValueError):
+                labels = None
+        source_path = context.source_path or getattr(
+            context.projection,
+            "project_path",
+            None,
+        )
+        if context.is_result:
+            self.result_tree.upsert_archive(
+                context.document_id,
+                context.projection,
+                display_name=context.display_name,
+                source_path=source_path,
+                catalog=catalog if isinstance(catalog, ResultCatalog) else None,
+                section_point_labels=labels,
+            )
+        else:
+            self.result_tree.upsert_model_runs(
+                context.document_id,
+                context.projection,
+                display_name=context.display_name,
+                source_path=source_path,
+                catalog=catalog if isinstance(catalog, ResultCatalog) else None,
+                section_point_labels=labels,
+            )
+
+    def open_result_path(self, path: str | Path) -> GuiCommandReceipt:
+        """Decode an archive in the background and append it to the workspace."""
+
+        command_id = self._next_command_id()
+        if self._active_editor():
+            return self._rejected_command(
+                command_id,
+                "editor.active",
+                "active editor must be completed before opening a result",
+            )
+        try:
+            spec = ResultArchiveOpenSpec(Path(path))
+            existing_id = self.workspace.result_paths.get(canonical_path(spec.path))
+            if existing_id is not None:
+                context = self.workspace.document(existing_id)
+                if not self._activate_workspace_context(context):
+                    return self._rejected_command(
+                        command_id,
+                        "result.activate.rejected",
+                        "the existing result document could not be activated",
+                    )
+                self.ribbon.set_current("结果")
+                return GuiCommandReceipt.accepted(
+                    command_id,
+                    outcome=GuiCommandOutcome(output_path=spec.path),
+                )
+            open_controller = self.workspace.ensure_open_controller()
+            if open_controller.busy:
+                return self._rejected_command(
+                    command_id,
+                    "task.busy",
+                    "a result archive is already being opened",
+                )
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(task_context: TaskContext):
+                task_context.report("reading and validating result archive")
+                task_context.checkpoint()
+                loaded = load_result_archive(spec.path)
+                task_context.checkpoint()
+                started = perf_counter()
+                model_view = build_result_archive_model_view(
+                    loaded.snapshot.model_projection,
+                    loaded.snapshot.profile,
+                    name=str(loaded.snapshot.origin.model_name or "Result"),
+                )
+                geometry = build_result_archive_geometry(
+                    loaded.snapshot.model_projection,
+                )
+                timings = {"result display adapters": perf_counter() - started}
+                task_context.checkpoint()
+                return _ResultArchiveDisplayPayload(
+                    loaded=loaded,
+                    geometry=geometry,
+                    model_view=model_view,
+                    timings=timings,
+                )
+
+            def on_success(value: object) -> None:
+                if type(value) is not _ResultArchiveDisplayPayload:
+                    raise TypeError("result open worker must return display payload")
+                payload = value
+                session = ModelSession()
+                delta = session.replace_from_result_archive(
+                    payload.loaded,
+                    path=spec.path,
+                )
+                if not delta.accepted:
+                    raise RuntimeError(delta.reason or "result archive was rejected")
+                projection = session.projection_snapshot()
+                display_name = str(
+                    projection.model_name
+                    or payload.loaded.snapshot.origin.model_name
+                    or spec.path.stem
+                )
+                previous_context = self.workspace.active_document()
+                context = self.workspace.add_result(
+                    session=session,
+                    projection=projection,
+                    display_name=display_name,
+                    source_path=spec.path,
+                )
+                context.presentation_state.module_name = "结果"
+                artifact = projection.artifact
+                context.presentation_cache.artifact_id = (
+                    None if artifact is None else artifact.artifact_id
+                )
+                context.presentation_cache.model_geometry = payload.geometry
+                context.presentation_cache.result_model_view = payload.model_view
+                identity = session.current_result_identity()
+                if identity is not None:
+                    context.presentation_cache.result_source = identity[0]
+                    context.presentation_cache.result_generation = identity[1]
+                try:
+                    self._refresh_result_tree_for_context(context)
+                    if not self._activate_workspace_context(context):
+                        raise RuntimeError(
+                            "result document could not be activated"
+                        )
+                    result_module_was_current = (
+                        self._current_module_name() == "结果"
+                    )
+                    self.ribbon.set_current("结果")
+                    if result_module_was_current:
+                        self._on_module_changed("结果")
+                    self.status_panel.set_state(
+                        f"结果文件已打开：{spec.path.name}",
+                        6000,
+                    )
+                except Exception:
+                    self.result_tree.remove_archive(context.document_id)
+                    self.workspace.remove(context)
+                    if previous_context is not None:
+                        try:
+                            self._activate_workspace_context(previous_context)
+                        except Exception:
+                            logging.exception(
+                                "failed to restore prior context after result open rollback"
+                            )
+                    raise
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "打开分析结果失败",
+                task_name="打开分析结果",
+                completion=completion,
+                controller=open_controller,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(command_id, "result.open.rejected", error)
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result open task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
 
     def _install_model(
         self,
@@ -9348,6 +10474,10 @@ class FEMMainWindow(QMainWindow):
         timings: dict[str, float],
         *,
         source_label: str,
+        inspection_service: InspectionService | None = None,
+        render: bool = True,
+        reset_camera: bool = True,
+        preserve_display: bool = False,
     ) -> None:
         self.status_panel.set_state("正在初始化视口……")
         self._scope_selection_overlay_active = False
@@ -9358,15 +10488,18 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self.geometry = geometry
         self.result_provider = None
-        self.result_selection = None
+        if not preserve_display:
+            self.result_selection = None
         self.selection.clear()
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
-        self._display = DisplayState()
-        self._overlay_undeformed = False
-        self.actions["undeformed"].setChecked(True)
-        self.actions["contour"].setChecked(False)
-        self.actions["overlay"].setChecked(False)
+        if not preserve_display:
+            self._display = DisplayState()
+        if not preserve_display:
+            self._overlay_undeformed = False
+            self.actions["undeformed"].setChecked(True)
+            self.actions["contour"].setChecked(False)
+            self.actions["overlay"].setChecked(False)
         self._symbol_settings = replace(
             self._symbol_settings,
             step_name=self._current_step_name,
@@ -9375,17 +10508,27 @@ class FEMMainWindow(QMainWindow):
         if self.document.source_kind != "result":
             def frame_query(target: RegionRef | int) -> BeamFrameReport:
                 return resolve_effective_beam_frames(model, target)
+        if inspection_service is not None:
+            self.inspection_service = inspection_service
+        else:
+            started = perf_counter()
+            self.inspection_service = InspectionService(
+                model,
+                definitions=self.document,
+                effective_frame_query=frame_query,
+            )
+            timings["InspectionService 初始化"] = perf_counter() - started
         started = perf_counter()
-        self.inspection_service = InspectionService(
+        self._show_model_in_tree(
             model,
-            definitions=self.document,
-            effective_frame_query=frame_query,
+            context=self.workspace.active_document(),
         )
-        timings["InspectionService 初始化"] = perf_counter() - started
-        started = perf_counter()
-        self._show_model_in_tree(model)
         timings["模型树更新"] = perf_counter() - started
-        self.result_tree.clear_result()
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        else:
+            self.result_tree.clear_result()
         self.navigation.show_model()
         element_count = len(model.mesh.elements)
         node_count = len(model.mesh.nodes)
@@ -9413,6 +10556,7 @@ class FEMMainWindow(QMainWindow):
             geometry,
             refresh_symbols=False,
             render=False,
+            reset_camera=reset_camera,
             show_edges=policy["show_edges"],
             show_nodes=policy["show_nodes"],
             show_node_labels=policy["show_labels"],
@@ -9433,9 +10577,10 @@ class FEMMainWindow(QMainWindow):
             started = perf_counter()
             self.viewport.show_boundary_and_loads(render=False)
             timings["载荷约束符号创建"] = perf_counter() - started
-        started = perf_counter()
-        self.viewport.render()
-        timings["首次渲染"] = perf_counter() - started
+        if render:
+            started = perf_counter()
+            self.viewport.render()
+            timings["首次渲染"] = perf_counter() - started
         logging.info(
             "模型导入性能 %s: %s (总计 %.3fs)",
             source_label,
@@ -9591,28 +10736,176 @@ class FEMMainWindow(QMainWindow):
             self._cancel_solid_face_boolean()
         return accepted
 
-    def close_model(self, *, confirm: bool = True) -> bool:
-        if self.busy:
-            return False
-        if confirm and not self._confirm_discard_changes():
-            return False
-        if self._solid_face_boolean_operation is not None:
-            self._cancel_solid_face_boolean()
-        receipt = self.close_session(
-            CloseSessionCommand(self.document.session_revision)
+    def _confirm_workspace_context_close(
+        self,
+        context: WorkspaceDocument,
+        confirm: bool,
+    ) -> bool:
+        """Apply the close guard to an arbitrary (possibly inactive) context."""
+
+        dirty = bool(context.projection.dirty)
+        unsaved_results = int(context.session.unsaved_result_count)
+        if not dirty and not unsaved_results:
+            return True
+        if not confirm:
+            # The caller has already performed the confirmation (for example
+            # the deferred cooperative-cancellation close path).
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("未保存的文档内容")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            f"模型“{context.display_name}”包含未保存的内容，是否关闭？"
         )
-        if receipt.diagnostic is not None:
-            self._show_command_rejection("关闭模型", receipt)
+        discard = box.addButton(
+            "放弃修改并关闭",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is discard
+
+    def _request_workspace_context_cancel(
+        self,
+        context: WorkspaceDocument,
+        *,
+        after_cleanup: Callable[[], None] | None = None,
+    ) -> bool:
+        """Request cooperative cancellation for one document-owned task."""
+
+        running = next(
+            (
+                run
+                for run in context.projection.runs
+                if run.status is RunStatus.RUNNING
+            ),
+            None,
+        )
+        if running is not None:
+            try:
+                delta = context.session.request_cancel(running.run_id)
+                self._apply_session_delta(delta, context=context)
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                pass
+        return context.task_controller.request_cancel(after_cleanup=after_cleanup)
+
+    def _close_workspace_context_after_cancel(self, document_id: int) -> None:
+        """Finish a deferred close once the target controller is idle."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if context.task_controller.busy:
+            return
+        self.close_model(confirm=False, document_id=context.document_id)
+
+    def close_model(
+        self,
+        *,
+        confirm: bool = True,
+        document_id: int | None = None,
+    ) -> bool:
+        target_context = (
+            self.workspace.active_document()
+            if document_id is None
+            else self.workspace.document(int(document_id))
+        )
+        if target_context is None:
             return False
-        self._selected_geometry_refs.clear()
-        self._selected_mesh_scope_refs.clear()
-        self._display = DisplayState()
-        self._overlay_undeformed = False
-        self.actions["undeformed"].setChecked(True)
-        self.actions["contour"].setChecked(False)
-        self.actions["overlay"].setChecked(False)
-        self.status_panel.reset_document()
-        self.status_panel.set_selection_mode(self.selection.mode)
+        active_context = self.workspace.active_document()
+        was_active = (
+            target_context is self._active_context
+            and active_context is target_context
+        )
+        if was_active:
+            if confirm and not self._confirm_discard_changes():
+                return False
+        elif not self._confirm_workspace_context_close(target_context, confirm):
+            return False
+        if target_context.task_controller.busy:
+            requested = self._request_workspace_context_cancel(
+                target_context,
+                after_cleanup=lambda document_id=target_context.document_id: self._close_workspace_context_after_cancel(
+                    document_id
+                ),
+            )
+            # A second close request while cancellation is already underway
+            # still owns the same deferred release callback.
+            return bool(requested or target_context.task_controller.cancel_requested)
+        if (
+            was_active
+            and self._solid_face_boolean_operation is not None
+        ):
+            self._cancel_solid_face_boolean()
+        replacement = None
+        if was_active:
+            same_kind = tuple(
+                self.workspace.results.values()
+                if target_context.is_result
+                else self.workspace.models.values()
+            )
+            target_index = same_kind.index(target_context)
+            if target_index + 1 < len(same_kind):
+                replacement = same_kind[target_index + 1]
+            elif target_index:
+                replacement = same_kind[target_index - 1]
+            else:
+                replacement = next(
+                    (
+                        context
+                        for context in self.workspace.documents()
+                        if context is not target_context
+                    ),
+                    None,
+                )
+            if replacement is not None and not self._activate_workspace_context(
+                replacement
+            ):
+                return False
+        if target_context.projection.is_open:
+            receipt = self.close_session(
+                CloseSessionCommand(target_context.projection.session_revision),
+                document_id=target_context.document_id,
+            )
+            if receipt.diagnostic is not None:
+                self._show_command_rejection("关闭模型", receipt)
+                return False
+        closed_id = target_context.document_id
+        target_context.presentation_cache.invalidate_model()
+        target_context.presentation_cache.invalidate_result()
+        target_context.presentation_state = DocumentPresentationState()
+        if target_context.is_result:
+            self.result_tree.remove_archive(closed_id)
+        else:
+            self.model_tree.remove_document(closed_id)
+            self.result_tree.remove_model_runs(closed_id)
+        self.workspace.remove(target_context)
+        if replacement is None:
+            replacement = self.workspace.active_document()
+        if replacement is None:
+            self._active_context = None
+        elif was_active:
+            # The replacement was preflighted before removal so activation
+            # cannot fail after the target registry entry is gone.  Refresh
+            # only its existing root for compatibility with the normal
+            # post-close projection path.  Result documents have no model
+            # artifact and therefore refresh the result root instead.
+            if replacement.is_result:
+                self._refresh_result_tree_for_context(replacement)
+            else:
+                self._refresh_model_tree_for_context(replacement)
+        if was_active and replacement is None:
+            self._clear_model_projection(clear_tree=True)
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self._display = DisplayState()
+            self._overlay_undeformed = False
+            self.actions["undeformed"].setChecked(True)
+            self.actions["contour"].setChecked(False)
+            self.actions["overlay"].setChecked(False)
+            self.status_panel.reset_document()
+            self.status_panel.set_selection_mode(self.selection.mode)
         return True
 
     def _apply_model_definition_changes(
@@ -10875,6 +12168,16 @@ class FEMMainWindow(QMainWindow):
                 self.session.accept_task_cancelled(task.token)
             )
 
+        def inactive_failed(message: str) -> None:
+            self._apply_session_delta(
+                self.session.accept_task_failed(task.token, message)
+            )
+
+        def inactive_cancelled() -> None:
+            self._apply_session_delta(
+                self.session.accept_task_cancelled(task.token)
+            )
+
         return self._start_task(
             workload,
             succeeded,
@@ -10882,6 +12185,8 @@ class FEMMainWindow(QMainWindow):
             failed,
             task_name="模型检查",
             on_cancelled=cancelled,
+            on_inactive_failure=inactive_failed,
+            on_inactive_cancelled=inactive_cancelled,
             apply_result=apply_result,
             completion=completion,
             on_progress=on_progress,
@@ -11255,6 +12560,16 @@ class FEMMainWindow(QMainWindow):
             ),
             task_name=f"作业 {job.name}",
             on_cancelled=lambda token=task.token: self._job_cancelled(token),
+            on_inactive_failure=(
+                lambda message, token=task.token, current_stage=stage: self._job_failed(
+                    token,
+                    message,
+                    validation_failure=current_stage["name"] == "模型验证",
+                )
+            ),
+            on_inactive_cancelled=(
+                lambda token=task.token: self._job_cancelled(token)
+            ),
             apply_result=apply_result,
             completion=completion,
             on_progress=on_progress,
@@ -11389,11 +12704,16 @@ class FEMMainWindow(QMainWindow):
         *,
         validation_failure: bool = False,
     ) -> None:
+        target_context = self._task_context_or_active()
         self._apply_session_delta(
             self.session.accept_run_failed(token, message)
         )
         job = self.session.find_run(token.run_id)
         if job is None:
+            return
+        if target_context is not None and not self._task_context_is_active(
+            target_context
+        ):
             return
         self._refresh_job_manager()
         state = "模型检查失败" if validation_failure else "分析失败"
@@ -11404,11 +12724,16 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _job_cancelled(self, token: object) -> None:
+        target_context = self._task_context_or_active()
         self._apply_session_delta(
             self.session.accept_run_cancelled(token)
         )
         job = self.session.find_run(token.run_id)
         if job is None:
+            return
+        if target_context is not None and not self._task_context_is_active(
+            target_context
+        ):
             return
         self._refresh_job_manager()
         self.status_panel.set_state(f"分析已取消：{job.name}", 5000)
@@ -11454,12 +12779,17 @@ class FEMMainWindow(QMainWindow):
             return
         if not self._viewport_result_scene_is_current(provider, selection):
             self._apply_display()
-        self.result_tree.set_catalog(
-            f"{job.name} · {job.step_name}",
-            provider.catalog(),
-            section_point_labels=result_provider_section_point_labels(provider),
-        )
-        if not self.result_tree.select_selection(selection):
+        context = self.workspace.active_document()
+        if context is not None:
+            self._refresh_result_tree_for_context(
+                context,
+                catalog=provider.catalog(),
+            )
+        if not self.result_tree.select_selection(
+            selection,
+            document_id=context.document_id if context is not None else None,
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "current result selection is missing from the result tree"
             )
@@ -11544,7 +12874,8 @@ class FEMMainWindow(QMainWindow):
             if not delta.changed and not delta.invalidated
             else self._apply_session_delta(delta)
         )
-        if applied:
+        target = self._task_context_or_active()
+        if applied and (target is None or self._task_context_is_active(target)):
             self._show_error(title, message)
 
     def _session_task_cancelled(self, token: object) -> None:
@@ -11553,6 +12884,86 @@ class FEMMainWindow(QMainWindow):
             self._apply_revision_neutral_task_receipt(delta)
             return
         self._apply_session_delta(delta)
+
+    def _target_session_task_failed(
+        self,
+        context: WorkspaceDocument,
+        token: object,
+        title: str,
+        message: str,
+    ) -> None:
+        delta = context.session.accept_task_failed(token, message)
+        applied = (
+            self._apply_revision_neutral_task_receipt(delta)
+            if not delta.changed and not delta.invalidated
+            else self._apply_session_delta(delta, context=context)
+        )
+        if applied and self.workspace.active_document_id == context.document_id:
+            self._show_error(title, message)
+
+    def _target_session_task_cancelled(
+        self,
+        context: WorkspaceDocument,
+        token: object,
+    ) -> None:
+        delta = context.session.accept_task_cancelled(token)
+        if not delta.changed and not delta.invalidated:
+            self._apply_revision_neutral_task_receipt(delta)
+            return
+        self._apply_session_delta(delta, context=context)
+
+    def _task_target_is_live(self, context: WorkspaceDocument) -> bool:
+        try:
+            registered = self.workspace.document(context.document_id)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return registered is context and registered.session is context.session
+
+    @staticmethod
+    def _session_delta_from_task_value(value: object) -> SessionDelta | None:
+        if type(value) is SessionDelta:
+            return value
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                found = FEMMainWindow._session_delta_from_task_value(item)
+                if found is not None:
+                    return found
+        if isinstance(value, dict):
+            for item in value.values():
+                found = FEMMainWindow._session_delta_from_task_value(item)
+                if found is not None:
+                    return found
+        return None
+
+    def _apply_inactive_task_projection(
+        self,
+        value: object,
+        context: WorkspaceDocument,
+    ) -> None:
+        """Apply only the target projection/tree portion of a late task."""
+
+        delta = self._session_delta_from_task_value(value)
+        if delta is None or not self._task_target_is_live(context):
+            return
+        previous = self._task_callback_context
+        self._task_callback_context = context
+        try:
+            self._apply_session_delta(delta, context=context)
+        finally:
+            self._task_callback_context = previous
+
+    def _invoke_task_callback(
+        self,
+        context: WorkspaceDocument | None,
+        callback: Callable[..., object],
+        *args: object,
+    ) -> object:
+        previous = self._task_callback_context
+        self._task_callback_context = context
+        try:
+            return callback(*args)
+        finally:
+            self._task_callback_context = previous
 
     def _start_task(
         self,
@@ -11563,53 +12974,107 @@ class FEMMainWindow(QMainWindow):
         *,
         task_name: str = "后台任务",
         on_cancelled: Callable[[], None] | None = None,
+        on_inactive_failure: Callable[[str], None] | None = None,
+        on_inactive_cancelled: Callable[[], None] | None = None,
         apply_result: Callable[[object], TaskApplyOutcome] | None = None,
         completion: GuiCommandCompletion | None = None,
         on_progress: Callable[[str], None] | None = None,
+        controller: BackgroundTaskController | None = None,
+        context: WorkspaceDocument | None = None,
     ) -> bool:
-        if self.busy:
-            self.status_panel.set_state(
-                "当前任务正在运行："
-                f"{self.task_controller.current_task_name or '后台任务'}",
-                4000,
+        target_context = context
+        if target_context is None and controller is None:
+            target_context = self._active_workspace_context()
+        if target_context is not None:
+            self._bind_task_controller(target_context)
+        task_controller = (
+            controller
+            or (
+                target_context.task_controller
+                if target_context is not None
+                else self.task_controller
             )
+        )
+        if task_controller.busy:
+            if target_context is None or self._task_context_is_active(target_context):
+                self.status_panel.set_state(
+                    "当前任务正在运行："
+                    f"{task_controller.current_task_name or '后台任务'}",
+                    4000,
+                )
             return False
         result_applier = apply_result or TaskApplyOutcome.accepted
 
+        def apply(value: object) -> TaskApplyOutcome:
+            if target_context is not None and not self._task_target_is_live(
+                target_context
+            ):
+                return TaskApplyOutcome.stale("目标文档已关闭")
+            outcome = self._invoke_task_callback(
+                target_context,
+                result_applier,
+                value,
+            )
+            if type(outcome) is not TaskApplyOutcome:
+                raise TypeError("apply_result must return a TaskApplyOutcome")
+            return outcome
+
         def project_terminal(record: TaskCompletion) -> None:
+            active_target = (
+                target_context is None
+                or self._task_context_is_active(target_context)
+            )
             if record.state is BackgroundTaskState.FAILED:
                 message = record.message or "后台任务失败"
                 try:
-                    if on_failure is None:
-                        self._show_error(error_title, message)
+                    failure_callback = (
+                        on_failure if active_target else on_inactive_failure
+                    )
+                    if failure_callback is None:
+                        if active_target:
+                            self._show_error(error_title, message)
                     else:
-                        on_failure(message)
+                        self._invoke_task_callback(
+                            target_context,
+                            failure_callback,
+                            message,
+                        )
                 except Exception:
                     logging.exception(
                         "GUI background task failure callback failed"
                     )
-                    self._show_error(error_title, message)
+                    if active_target:
+                        self._show_error(error_title, message)
             elif record.state is BackgroundTaskState.CANCELLED:
                 try:
-                    if on_cancelled is not None:
-                        on_cancelled()
+                    cancelled_callback = (
+                        on_cancelled if active_target else on_inactive_cancelled
+                    )
+                    if cancelled_callback is not None:
+                        self._invoke_task_callback(
+                            target_context,
+                            cancelled_callback,
+                        )
                 except Exception as error:
                     logging.exception(
                         "GUI background task cancellation callback failed"
                     )
-                    self._show_error(
-                        error_title,
-                        str(error).strip() or type(error).__name__,
+                    if active_target:
+                        self._show_error(
+                            error_title,
+                            str(error).strip() or type(error).__name__,
+                        )
+                if active_target:
+                    self.status_panel.set_state(
+                        f"已取消：{record.task_name}",
+                        4000,
                     )
-                self.status_panel.set_state(
-                    f"已取消：{record.task_name}",
-                    4000,
-                )
             elif record.state is BackgroundTaskState.DISCARDED:
-                self.status_panel.set_state(
-                    record.message or "任务结果已过期，未应用",
-                    5000,
-                )
+                if active_target:
+                    self.status_panel.set_state(
+                        record.message or "任务结果已过期，未应用",
+                        5000,
+                    )
 
         def terminal(record: TaskCompletion) -> None:
             try:
@@ -11619,23 +13084,70 @@ class FEMMainWindow(QMainWindow):
                     completion.complete(record)
 
         def progress(message: str) -> None:
-            self.status_panel.set_state(message)
-            if on_progress is not None:
-                on_progress(message)
+            if target_context is None or self._task_context_is_active(target_context):
+                self.status_panel.set_state(message)
+                if on_progress is not None:
+                    self._invoke_task_callback(target_context, on_progress, message)
 
-        task_id = self.task_controller.start(
+        project_callback = (
+            None
+            if on_success is None
+            else self._task_project_result_wrapper(target_context, on_success)
+        )
+        task_id = task_controller.start(
             workload,
             task_name=task_name,
-            apply_result=result_applier,
-            project_result=on_success,
-            rebuild_projection=self._rebuild_full_projection,
+            apply_result=apply,
+            project_result=project_callback,
+            rebuild_projection=self._task_rebuild_projection_wrapper(
+                target_context,
+            ),
             on_terminal=terminal,
             on_progress=progress,
-            on_projection_error=self._task_projection_failed,
+            on_projection_error=self._task_projection_failed_wrapper(
+                target_context,
+            ),
         )
         if task_id is not None and completion is not None:
             completion.bind_task_id(task_id)
         return task_id is not None
+
+    def _task_project_result_wrapper(
+        self,
+        context: WorkspaceDocument | None,
+        callback: Callable[[object], None],
+    ) -> Callable[[object], None]:
+        def project(value: object) -> None:
+            if context is not None and not self._task_target_is_live(context):
+                return
+            if context is not None and not self._task_context_is_active(context):
+                self._apply_inactive_task_projection(value, context)
+                return
+            self._invoke_task_callback(context, callback, value)
+
+        return project
+
+    def _task_rebuild_projection_wrapper(
+        self,
+        context: WorkspaceDocument | None,
+    ) -> Callable[[], None]:
+        def rebuild() -> None:
+            if context is not None and not self._task_context_is_active(context):
+                return
+            self._invoke_task_callback(context, self._rebuild_full_projection)
+
+        return rebuild
+
+    def _task_projection_failed_wrapper(
+        self,
+        context: WorkspaceDocument | None,
+    ) -> Callable[[str], None]:
+        def report(message: str) -> None:
+            if context is not None and not self._task_context_is_active(context):
+                return
+            self._invoke_task_callback(context, self._task_projection_failed, message)
+
+        return report
 
     def _task_busy_changed(self, busy: bool) -> None:
         self.status_panel.set_task_active(bool(busy))
@@ -11699,7 +13211,13 @@ class FEMMainWindow(QMainWindow):
             )
 
         self.document = snapshot
-        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(snapshot)
+        bound_context = self._task_context_or_active()
+        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
+            snapshot,
+            document_id=(
+                None if bound_context is None else bound_context.document_id
+            ),
+        )
         current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
             self.agent_authoring_controller.observe_binding(
@@ -11727,6 +13245,13 @@ class FEMMainWindow(QMainWindow):
             definitions=snapshot,
             effective_frame_query=frame_query,
         )
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            cache = active_context.presentation_cache
+            cache.invalidate_model()
+            cache.artifact_id = snapshot.artifact.artifact_id
+            cache.model_geometry = self.geometry
+            cache.inspection_service = self.inspection_service
         self._show_model_in_tree(model)
         self._clear_result_projection()
         self._sync_step_combos()
@@ -12635,7 +14160,75 @@ class FEMMainWindow(QMainWindow):
             return "—"
         return ", ".join(f"{axis}={float(value):.6g}" for axis, value in zip("xyz", point))
 
-    def _highlight_tree_entry(self, kind: str, key: object) -> None:
+    def _prepare_tree_entry(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> tuple[int | None, str, object] | None:
+        """Normalize legacy and document-routed tree callbacks.
+
+        Phase 1 callers pass ``(kind, key)`` while the multi-document tree
+        emits ``(document_id, kind, key)``.  Routed callbacks activate their
+        target context before the existing handlers inspect ``self.document``.
+        """
+
+        if key is _TREE_KEY_MISSING:
+            return None, str(document_id_or_kind), kind_or_key
+        try:
+            context = self.workspace.document(document_id_or_kind)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not self._activate_workspace_context(context):
+            return None
+        return context.document_id, str(kind_or_key), key
+
+    def _model_root_action_requested(self, document_id: int, action: str) -> None:
+        """Handle model-root lifecycle actions after routing by document id."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if action == "activate":
+            self._activate_workspace_context(context)
+            return
+        if action == "close":
+            self.close_model(document_id=context.document_id)
+            return
+        if not self._activate_workspace_context(context):
+            return
+        if action == "save":
+            self.save_native_project()
+        elif action == "save_as":
+            self.save_native_project(force_save_as=True)
+
+    def _result_root_action_requested(self, document_id: int, action: str) -> None:
+        """Handle result-root activation and independent close actions."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if action == "activate":
+            self._activate_workspace_context(context)
+        elif action == "close":
+            self.close_model(document_id=context.document_id)
+
+    def _highlight_tree_entry(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> None:
+        entry = self._prepare_tree_entry(
+            document_id_or_kind,
+            kind_or_key,
+            key,
+        )
+        if entry is None:
+            return
+        _document_id, kind, key = entry
         if kind == "part" and type(key) is str:
             if self._solid_face_boolean_operation is not None:
                 self.status_panel.set_state("请在视口中选择目标面", 3000)
@@ -13082,6 +14675,14 @@ class FEMMainWindow(QMainWindow):
                 on_cancelled=lambda: self._session_task_cancelled(
                     task.token
                 ),
+                on_inactive_failure=lambda message: self._session_task_failed(
+                    task.token,
+                    "节点平均应力云图计算失败",
+                    message,
+                ),
+                on_inactive_cancelled=lambda: self._session_task_cancelled(
+                    task.token
+                ),
                 apply_result=apply_result,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
@@ -13111,7 +14712,14 @@ class FEMMainWindow(QMainWindow):
             render_provider,
             render_selection,
         )
-        if not self.result_tree.has_selection(selection):
+        active_context = self.workspace.active_document()
+        if not self.result_tree.has_selection(
+            selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field is missing from the result tree"
             )
@@ -13121,7 +14729,13 @@ class FEMMainWindow(QMainWindow):
             contour_enabled=self._display.contour_enabled,
         )
         self.result_selection = selection
-        if not self.result_tree.select_selection(selection):
+        if not self.result_tree.select_selection(
+            selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field disappeared from the result tree"
             )
@@ -13154,6 +14768,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.set_display(
                 shape_mode,
                 contour_enabled,
+                render=not self._workspace_activation,
             )
         except Exception:
             if previous_payload is not None:
@@ -13166,6 +14781,7 @@ class FEMMainWindow(QMainWindow):
                         self.viewport,
                         previous_display.shape_mode,
                         previous_display.contour_enabled,
+                        render=not self._workspace_activation,
                     )
                 except Exception:
                     logging.exception(
@@ -13180,7 +14796,12 @@ class FEMMainWindow(QMainWindow):
                     )
             raise
 
-    def _restore_viewport_model_scene(self, *, render: bool = True) -> None:
+    def _restore_viewport_model_scene(
+        self,
+        *,
+        render: bool = True,
+        reset_camera: bool = True,
+    ) -> None:
         artifact = self.document.artifact
         geometry = self.geometry
         if artifact is None or geometry is None:
@@ -13202,6 +14823,7 @@ class FEMMainWindow(QMainWindow):
             geometry,
             refresh_symbols=False,
             render=False,
+            reset_camera=reset_camera,
             show_edges=self._model_edges_visible,
             show_nodes=self.actions["nodes"].isChecked(),
             show_node_labels=self.actions["node_labels"].isChecked(),
@@ -13248,7 +14870,16 @@ class FEMMainWindow(QMainWindow):
                 current is provider
                 and type(installed) is ScalarFieldSelection
             ):
-                self.result_tree.select_selection(installed)
+                active_context = self.workspace.active_document()
+                self.result_tree.select_selection(
+                    installed,
+                    document_id=(
+                        None
+                        if active_context is None
+                        else active_context.document_id
+                    ),
+                    source=(None if provider is None else provider.source),
+                )
             self.status_panel.set_state(
                 receipt.diagnostic.message,
                 5000,
@@ -13283,6 +14914,77 @@ class FEMMainWindow(QMainWindow):
                 True,
             )
         self.status_panel.set_result(self._result_status_text())
+
+    def _activate_routed_result_selection(
+        self,
+        document_id: int,
+        run_id: str,
+        source: object,
+        selection: ScalarFieldSelection,
+    ) -> None:
+        """Activate the owning document/run before applying a field choice."""
+
+        if type(selection) is not ScalarFieldSelection:
+            return
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if self.workspace.active_document_id != context.document_id:
+            if not self._activate_workspace_context(context):
+                return
+        if not context.is_result and run_id:
+            identity = context.session.current_result_identity()
+            if identity is None or identity[0].run_id != str(run_id):
+                try:
+                    receipt = self.select_run_result(str(run_id))
+                except (RuntimeError, TypeError, ValueError):
+                    return
+                if receipt.diagnostic is not None:
+                    return
+        identity = context.session.current_result_identity()
+        if source is not None and (
+            identity is None or identity[0] != source
+        ):
+            return
+        self._activate_result_selection(selection)
+
+    def _activate_routed_result_run(
+        self,
+        document_id: int,
+        run_id: str,
+    ) -> None:
+        """Activate a run item after routing to its owning workspace document."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if self.workspace.active_document_id != context.document_id:
+            if not self._activate_workspace_context(context):
+                return
+        if context.is_result:
+            was_result = self._current_module_name() == "结果"
+            self.ribbon.set_current("结果")
+            if was_result:
+                self._on_module_changed("结果")
+            return
+        identity = context.session.current_result_identity()
+        if identity is not None and identity[0].run_id == str(run_id):
+            self._refresh_result_tree_for_context(context)
+            was_result = self._current_module_name() == "结果"
+            self.ribbon.set_current("结果")
+            if was_result:
+                self._on_module_changed("结果")
+            return
+        try:
+            receipt = self.select_run_result(str(run_id))
+        except (RuntimeError, TypeError, ValueError):
+            return
+        if receipt.diagnostic is not None:
+            return
+        self._refresh_result_tree_for_context(context)
+        self.ribbon.set_current("结果")
 
     def _finish_activated_result_selection(
         self,
@@ -13335,7 +15037,7 @@ class FEMMainWindow(QMainWindow):
         self._overlay_undeformed = bool(checked)
         self.viewport.set_undeformed_overlay_visible(checked)
 
-    def _apply_display(self) -> None:
+    def _apply_display(self, *, render: bool = True) -> None:
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -13361,6 +15063,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_display(
             self._display.shape_mode,
             self._display.contour_enabled,
+            render=render,
         )
         self.status_panel.set_result(self._result_status_text())
 
@@ -13505,7 +15208,14 @@ class FEMMainWindow(QMainWindow):
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._show_error("结果显示失败", str(error))
             return
-        if not self.result_tree.has_selection(settings.selection):
+        active_context = self.workspace.active_document()
+        if not self.result_tree.has_selection(
+            settings.selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             self._show_error(
                 "结果显示失败",
                 "selected field is missing from the result tree",
@@ -13530,7 +15240,13 @@ class FEMMainWindow(QMainWindow):
         self._scale_mode = settings.scale_mode
         self._scale_value = settings.scale_value
         self._overlay_undeformed = settings.overlay_undeformed
-        if not self.result_tree.select_selection(settings.selection):
+        if not self.result_tree.select_selection(
+            settings.selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field disappeared from the result tree"
             )
@@ -14012,7 +15728,20 @@ class FEMMainWindow(QMainWindow):
             ],
         )
 
-    def _show_entry_information(self, kind: str, key: object) -> None:
+    def _show_entry_information(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> None:
+        entry = self._prepare_tree_entry(
+            document_id_or_kind,
+            kind_or_key,
+            key,
+        )
+        if entry is None:
+            return
+        _document_id, kind, key = entry
         if kind == "model":
             self.show_model_information()
         elif kind == "part":
@@ -14078,7 +15807,20 @@ class FEMMainWindow(QMainWindow):
         else:
             self.show_entity_information(kind, key)
 
-    def _rename_tree_entry(self, kind: str, _key: object) -> None:
+    def _rename_tree_entry(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> None:
+        entry = self._prepare_tree_entry(
+            document_id_or_kind,
+            kind_or_key,
+            key,
+        )
+        if entry is None:
+            return
+        _document_id, kind, _key = entry
         if self.busy or self.document.source_kind != "native":
             return
         if kind == "model":
@@ -14132,9 +15874,25 @@ class FEMMainWindow(QMainWindow):
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
             self._show_error(title, str(error))
 
-    def _edit_tree_entry(self, kind: str, key: object) -> None:
+    def _edit_tree_entry(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> None:
+        entry = self._prepare_tree_entry(
+            document_id_or_kind,
+            kind_or_key,
+            key,
+        )
+        if entry is None:
+            return
+        document_id, kind, key = entry
         if kind == "part" and type(key) is str:
-            self._highlight_tree_entry(kind, key)
+            if document_id is None:
+                self._highlight_tree_entry(kind, key)
+            else:
+                self._highlight_tree_entry(document_id, kind, key)
             if self.document.active_part_id != key:
                 return
             self.show_geometry_manager()
@@ -14157,9 +15915,25 @@ class FEMMainWindow(QMainWindow):
         else:
             self.show_entity_information(kind, key)
 
-    def _delete_tree_entry(self, kind: str, key: object) -> None:
+    def _delete_tree_entry(
+        self,
+        document_id_or_kind: object,
+        kind_or_key: object = None,
+        key: object = _TREE_KEY_MISSING,
+    ) -> None:
+        entry = self._prepare_tree_entry(
+            document_id_or_kind,
+            kind_or_key,
+            key,
+        )
+        if entry is None:
+            return
+        document_id, kind, key = entry
         if kind == "part" and type(key) is str:
-            self._highlight_tree_entry(kind, key)
+            if document_id is None:
+                self._highlight_tree_entry(kind, key)
+            else:
+                self._highlight_tree_entry(document_id, kind, key)
             if self.document.active_part_id != key:
                 return
             self.delete_geometry()
@@ -14285,44 +16059,133 @@ class FEMMainWindow(QMainWindow):
         for window in windows:
             window.close()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        if self.busy:
-            box = QMessageBox(
-                QMessageBox.Icon.Question,
-                "任务正在运行",
-                "是否取消当前任务并在安全退出后关闭程序？",
-                parent=self,
-            )
-            cancel_button = box.addButton(
-                "取消任务并退出",
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-            box.addButton(
-                "继续等待",
-                QMessageBox.ButtonRole.RejectRole,
-            )
-            box.exec()
-            if box.clickedButton() is cancel_button:
-                self.cancel_current_task(
-                    after_cleanup=lambda: self._defer_ui(self.close)
-                )
-            event.ignore()
+    def _confirm_workspace_task_exit(self, context: WorkspaceDocument) -> bool:
+        """Ask whether one document-owned task may be cancelled for exit."""
+
+        box = QMessageBox(self)
+        box.setWindowTitle("任务正在运行")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"文档“{context.display_name}”有后台任务正在运行，是否取消任务并退出？"
+        )
+        cancel_button = box.addButton(
+            "取消任务并退出",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        continue_button = box.addButton(
+            "继续编辑",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.setDefaultButton(continue_button)
+        box.exec()
+        return box.clickedButton() is cancel_button
+
+    def _shutdown_shared_resources(self) -> None:
+        """Shutdown the singleton viewport/Agent boundary at most once."""
+
+        if self._shared_resources_shutdown:
             return
-        if self.isVisible() and not self._confirm_discard_changes():
-            event.ignore()
+        self._shared_resources_shutdown = True
+        self.viewport_panel.overlay_host.shutdown(wait=False)
+        self.viewport.shutdown_backend()
+
+    def _finish_workspace_exit(self) -> None:
+        """Release every idle document, then close the shared window boundary."""
+
+        if self._closing:
             return
-        self._close_inspection_windows()
-        self._close_job_manager()
-        if self.document.is_open:
-            receipt = self.close_session(
-                CloseSessionCommand(self.document.session_revision)
-            )
-            if receipt.diagnostic is not None:
-                event.ignore()
+        if self.workspace.any_busy():
+            return
+        for context in tuple(self.workspace.documents()):
+            if not self._release_workspace_context_for_exit(context):
                 return
+        self._active_context = None
+        self._clear_model_projection(clear_tree=True)
+        self._exit_pending = False
         self._closing = True
         self._deferred_ui_timer.stop()
         self._deferred_ui_callbacks.clear()
-        self.viewport_panel.overlay_host.shutdown(wait=False)
-        self.viewport.shutdown_backend()
-        event.accept()
+        self._close_inspection_windows()
+        self._close_job_manager()
+        self._shutdown_shared_resources()
+        self.close()
+
+    def _release_workspace_context_for_exit(
+        self,
+        context: WorkspaceDocument,
+    ) -> bool:
+        """Release one confirmed document without activating its neighbors."""
+
+        if context.task_controller.busy:
+            return False
+        if context.projection.is_open:
+            try:
+                context.session.close(
+                    expected_session_revision=context.projection.session_revision
+                )
+            except (RevisionConflictError, RuntimeError, TypeError, ValueError):
+                logging.exception("workspace document could not close during exit")
+                return False
+        context.presentation_cache.invalidate_model()
+        context.presentation_cache.invalidate_result()
+        context.presentation_state = DocumentPresentationState()
+        if context.is_result:
+            self.result_tree.remove_archive(context.document_id)
+        else:
+            self.model_tree.remove_document(context.document_id)
+            self.result_tree.remove_model_runs(context.document_id)
+        self.workspace.remove(context)
+        return True
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._closing:
+            event.accept()
+            return
+        if self._exit_pending:
+            event.ignore()
+            return
+        contexts = tuple(self.workspace.documents())
+        if self.isVisible():
+            # Confirm every context before mutating any registry entry.  This
+            # keeps a later cancellation from leaving a partially closed
+            # workspace.
+            for context in contexts:
+                if not self._confirm_workspace_context_close(context, True):
+                    event.ignore()
+                    return
+                if context.task_controller.busy and not self._confirm_workspace_task_exit(
+                    context
+                ):
+                    event.ignore()
+                    return
+        busy_contexts = tuple(
+            context for context in contexts if context.task_controller.busy
+        )
+        if busy_contexts:
+            self._exit_pending = True
+            pending_ids = {context.document_id for context in busy_contexts}
+
+            def release_after_cancel(document_id: int) -> None:
+                pending_ids.discard(document_id)
+                if pending_ids or not self._exit_pending:
+                    return
+                self._finish_workspace_exit()
+
+            for context in busy_contexts:
+                requested = self._request_workspace_context_cancel(
+                    context,
+                    after_cleanup=lambda document_id=context.document_id: release_after_cancel(
+                        document_id
+                    ),
+                )
+                if not requested and not context.task_controller.cancel_requested:
+                    self._exit_pending = False
+                    event.ignore()
+                    return
+            event.ignore()
+            return
+        self._finish_workspace_exit()
+        if self._closing:
+            event.accept()
+        else:
+            event.ignore()

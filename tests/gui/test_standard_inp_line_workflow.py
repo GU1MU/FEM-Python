@@ -61,11 +61,15 @@ def _application() -> QApplication:
 def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     deadline = monotonic() + timeout
     application = _application()
-    while window.busy and monotonic() < deadline:
+    def busy() -> bool:
+        controller = window.workspace.open_controller
+        return window.busy or (controller is not None and controller.busy)
+
+    while busy() and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
     application.processEvents()
-    assert not window.busy
+    assert not busy()
 
 
 def _defined_truss_model(*, load: float = 100.0):
@@ -596,8 +600,10 @@ def test_successful_document_replacements_clear_import_notices(
             tmp_path / "before-close.inp",
             notices=(notice,),
         )
+        closed_document_id = window.workspace.active_document_id
         assert window.close_model(confirm=False)
-        assert window.document.source_kind is None
+        assert closed_document_id not in window.workspace.models
+        assert window.workspace.active_document() is not None
         assert window.import_notices == ()
     finally:
         _close_window(window)

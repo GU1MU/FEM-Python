@@ -430,6 +430,8 @@ class QtAgentRuntime(QObject):
         self._proposal_lifecycles: dict[str, _ProposalLifecycle] = {}
         self._pending_continuation: _ProposalContinuation | None = None
         self._attached_input_key: tuple[str, str, str] | None = None
+        self._target_document_id: str | None = None
+        self._target_session_id: str | None = None
         self.sessionReset.connect(
             self._reset_authoring_controller_for_session,
             Qt.ConnectionType.QueuedConnection,
@@ -457,6 +459,37 @@ class QtAgentRuntime(QObject):
     def session_id(self) -> str | None:
         with self._lock:
             return self._gui_session_id
+
+    @property
+    def target_identity(self) -> tuple[str, str] | None:
+        """Return the workspace document/session currently bound to Agent."""
+
+        with self._lock:
+            if (
+                self._target_document_id is None
+                or self._target_session_id is None
+            ):
+                return None
+            return self._target_document_id, self._target_session_id
+
+    def bind_target(
+        self,
+        document_id: str | int,
+        session_id: str,
+    ) -> None:
+        """Bind the single runtime to an idle workspace document identity."""
+
+        normalized_document = str(document_id)
+        normalized_session = str(session_id)
+        if not normalized_document or not normalized_session:
+            raise ValueError("Agent target document/session identities are required")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Agent runtime is shut down")
+            if self._busy:
+                raise RuntimeError("Agent runtime must be idle before rebinding")
+            self._target_document_id = normalized_document
+            self._target_session_id = normalized_session
 
     @property
     def authoring_turn_snapshot(self) -> AuthoringTurnSnapshot:

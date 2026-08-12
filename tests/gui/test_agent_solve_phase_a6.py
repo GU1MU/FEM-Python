@@ -128,7 +128,11 @@ def _seed_window(
     window._applied_session_revision = window.document.session_revision
     window.geometry = build_model_geometry(window.document.model)
     window._current_step_name = STEP_NAME
-    window.agent_authoring_bridge.bind_snapshot(window.document)
+    binding = window.agent_authoring_bridge.context.binding
+    window.agent_authoring_bridge.bind_snapshot(
+        window.document,
+        document_id=binding.document_id,
+    )
 
 
 def _proposal(
@@ -136,8 +140,9 @@ def _proposal(
     proposal_id: str = "proposal-a6",
     *,
     job_name: str = "作业-静力1",
+    target_document_id: str | None = None,
 ) -> AgentProposal:
-    return create_solve_proposal(
+    proposal = create_solve_proposal(
         proposal_id=proposal_id,
         agent_session_id="agent-session-a6",
         turn_id=f"turn-{proposal_id}",
@@ -146,6 +151,24 @@ def _proposal(
         draft_revision=6,
         step_name=STEP_NAME,
         job_name=job_name,
+    )
+    if target_document_id is None:
+        return proposal
+    return AgentProposal.create(
+        proposal_kind=proposal.proposal_kind,
+        proposal_id=proposal.proposal_id,
+        agent_session_id=proposal.agent_session_id,
+        turn_id=proposal.turn_id,
+        source_tool_call_ids=proposal.source_tool_call_ids,
+        target_document_id=str(target_document_id),
+        target_session_id=proposal.target_session_id,
+        base_session_revision=proposal.base_session_revision,
+        draft_revision=proposal.draft_revision,
+        operations=proposal.operations,
+        preconditions=proposal.preconditions,
+        expected_changes=proposal.expected_changes,
+        invalidation_impact=proposal.invalidation_impact,
+        display_summary=proposal.display_summary,
     )
 
 
@@ -177,7 +200,10 @@ def test_a6_agent_automatically_preflights_then_gui_click_solves_in_background(
     assert completed_preflight.state is AgentPreflightState.PASSED
     assert completed_preflight.validation_stamp is not None
 
-    proposal = _proposal(window.session)
+    proposal = _proposal(
+        window.session,
+        target_document_id=window.agent_authoring_bridge.context.binding.document_id,
+    )
     window.agent_authoring_bridge.register_proposal(proposal)
     receipt = window.agent_authoring_bridge.accept_from_gui_control(
         proposal.proposal_id
@@ -404,7 +430,11 @@ def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     _application()
     busy_window = FEMMainWindow()
     _seed_window(busy_window, validated=True)
-    busy_proposal = _proposal(busy_window.session, "proposal-busy")
+    busy_proposal = _proposal(
+        busy_window.session,
+        "proposal-busy",
+        target_document_id=busy_window.agent_authoring_bridge.context.binding.document_id,
+    )
     busy_window.agent_authoring_bridge.register_proposal(busy_proposal)
     busy_window.task_controller._active = object()
     try:
@@ -422,6 +452,7 @@ def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     start_proposal = _proposal(
         start_window.session,
         "proposal-start-false",
+        target_document_id=start_window.agent_authoring_bridge.context.binding.document_id,
     )
     start_window.agent_authoring_bridge.register_proposal(start_proposal)
     monkeypatch.setattr(start_window, "_start_task", lambda *_args, **_kwargs: False)
@@ -453,7 +484,11 @@ def test_a6_existing_job_terminal_states_map_to_proposal(
     _application()
     window = FEMMainWindow()
     _seed_window(window, validated=True)
-    proposal = _proposal(window.session, f"proposal-{proposal_state.value}")
+    proposal = _proposal(
+        window.session,
+        f"proposal-{proposal_state.value}",
+        target_document_id=window.agent_authoring_bridge.context.binding.document_id,
+    )
     window.agent_authoring_bridge.register_proposal(proposal)
     completions = []
 

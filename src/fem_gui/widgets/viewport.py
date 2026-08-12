@@ -1378,6 +1378,9 @@ class FEMViewport(QWidget):
         self._show_element_labels = False
         self._display = DisplayState()
         self._rendered_display: DisplayState | None = None
+        # Main-window context activation toggles this guard while it batches
+        # actor/layer updates.  The caller then emits one explicit render.
+        self._render_suppressed = False
         self._overlay_undeformed = False
         self._symbol_settings = SymbolSettings()
         self._symbol_sampling_density_override: str | None = None
@@ -2057,6 +2060,7 @@ class FEMViewport(QWidget):
         *,
         refresh_symbols: bool = True,
         render: bool = True,
+        reset_camera: bool = True,
         show_edges: bool | None = None,
         show_nodes: bool | None = None,
         show_node_labels: bool | None = None,
@@ -2138,7 +2142,7 @@ class FEMViewport(QWidget):
         self._remove_all_layers(render=False)
         self._grid = self._make_grid(geometry.points)
         self._pick_grid = self._grid
-        self._add_base_layers(reset_camera=True, render=False)
+        self._add_base_layers(reset_camera=reset_camera, render=False)
         self._install_mesh_scope_highlight_pipelines()
         if refresh_symbols:
             self.show_boundary_and_loads(render=render)
@@ -4461,6 +4465,7 @@ class FEMViewport(QWidget):
         *,
         preserve_model: bool = False,
         render: bool = True,
+        reset_camera: bool = True,
     ) -> None:
         """Display CAD geometry, optionally as a picking overlay on the mesh."""
         self._geometry_preview = preview
@@ -4550,7 +4555,7 @@ class FEMViewport(QWidget):
             self._pick_locators.clear()
         self._clear_preselection(render=False)
         self._update_pickable_actors()
-        if not preserve_model:
+        if not preserve_model and reset_camera:
             self._reset_camera_to_fit()
         if render:
             self._render()
@@ -5432,7 +5437,7 @@ class FEMViewport(QWidget):
         else:
             self._mesh_scope_faces = None
 
-    def set_selection_mode(self, mode: str) -> None:
+    def set_selection_mode(self, mode: str, *, render: bool = True) -> None:
         previous = self._selection_mode
         had_preselection = (
             self._hover_hit is not None or "preselection" in self._actors
@@ -5478,7 +5483,7 @@ class FEMViewport(QWidget):
                 points_visibility_changed = True
             points_actor.SetVisibility(desired_visibility)
         self._update_pickable_actors()
-        if had_preselection or points_visibility_changed:
+        if (had_preselection or points_visibility_changed) and render:
             self._render()
 
     def clear_selection(self, *, render: bool = True) -> None:
@@ -6118,6 +6123,8 @@ class FEMViewport(QWidget):
         self,
         shape_mode: str,
         contour_enabled: bool,
+        *,
+        render: bool = True,
     ) -> None:
         """独立设置已投影结果的几何形状和云图开关。"""
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
@@ -6125,7 +6132,13 @@ class FEMViewport(QWidget):
             shape_mode=shape,
             contour_enabled=bool(contour_enabled),
         )
-        self._update_result_layer()
+        previous_suppressed = self._render_suppressed
+        if not render:
+            self._render_suppressed = True
+        try:
+            self._update_result_layer()
+        finally:
+            self._render_suppressed = previous_suppressed
 
     def set_contour_options(self, options: dict[str, Any]) -> None:
         changed = {
@@ -6613,11 +6626,12 @@ class FEMViewport(QWidget):
         else:
             self._plotter.reset_camera(bounds=bounds, render=False)
 
-    def fit(self) -> None:
+    def fit(self, *, render: bool = True) -> None:
         if self._plotter is not None:
             self._reset_camera_to_fit()
             self._refresh_symbols_for_camera(render=False)
-            self._render()
+            if render:
+                self._render()
 
     def render(self) -> None:
         """Render once after a caller completes a batch of viewport updates."""
@@ -9817,6 +9831,8 @@ class FEMViewport(QWidget):
                 pass
 
     def _render(self) -> None:
+        if self._render_suppressed:
+            return
         if self._plotter is not None:
             try:
                 self._update_pickable_actors()

@@ -341,38 +341,53 @@ class ResultTopologyProjection:
         element_types: tuple[str, ...],
         connectivity: tuple[tuple[int, ...], ...],
         element_region_keys: tuple[ResultRegionKey, ...],
+        *,
+        _copy_arrays: bool = True,
+        _finite_checked: bool = False,
+        _trusted_structure: bool = False,
     ) -> None:
         if type(source) is not ResultSourceKey:
             raise TypeError("source must be ResultSourceKey")
-        checked_node_ids = _positive_unique_id_tuple(
-            node_ids,
-            label="node_ids",
+        checked_node_ids = (
+            node_ids
+            if _trusted_structure
+            else _positive_unique_id_tuple(node_ids, label="node_ids")
         )
         coordinates = _owned_finite_matrix(
             node_coordinates,
             label="node_coordinates",
             columns=3,
             rows=len(checked_node_ids),
+            copy=_copy_arrays,
+            check_finite=not _finite_checked,
         )
         displacements = _owned_finite_matrix(
             nodal_displacements,
             label="nodal_displacements",
             columns=3,
             rows=len(checked_node_ids),
+            copy=_copy_arrays,
+            check_finite=not _finite_checked,
         )
-        checked_element_ids = _positive_unique_id_tuple(
-            element_ids,
-            label="element_ids",
-        )
-        checked_element_types = _strict_string_tuple(
-            element_types,
-            label="element_types",
-        )
-        checked_connectivity = _connectivity_tuple(
-            connectivity,
-            node_ids=frozenset(checked_node_ids),
-        )
-        checked_region_keys = _region_key_tuple(element_region_keys)
+        if _trusted_structure:
+            checked_element_ids = element_ids
+            checked_element_types = element_types
+            checked_connectivity = connectivity
+            checked_region_keys = element_region_keys
+        else:
+            checked_element_ids = _positive_unique_id_tuple(
+                element_ids,
+                label="element_ids",
+            )
+            checked_element_types = _strict_string_tuple(
+                element_types,
+                label="element_types",
+            )
+            checked_connectivity = _connectivity_tuple(
+                connectivity,
+                node_ids=frozenset(checked_node_ids),
+            )
+            checked_region_keys = _region_key_tuple(element_region_keys)
         element_count = len(checked_element_ids)
         if len(checked_element_types) != element_count:
             raise ValueError(
@@ -398,6 +413,34 @@ class ResultTopologyProjection:
             self,
             "element_region_keys",
             checked_region_keys,
+        )
+
+    @classmethod
+    def _from_owned_arrays(
+        cls,
+        source: ResultSourceKey,
+        node_ids: tuple[int, ...],
+        node_coordinates: np.ndarray,
+        nodal_displacements: np.ndarray,
+        element_ids: tuple[int, ...],
+        element_types: tuple[str, ...],
+        connectivity: tuple[tuple[int, ...], ...],
+        element_region_keys: tuple[ResultRegionKey, ...],
+    ) -> "ResultTopologyProjection":
+        """Trusted decoder transfer for already-owned readonly arrays."""
+
+        return cls(
+            source,
+            node_ids,
+            node_coordinates,
+            nodal_displacements,
+            element_ids,
+            element_types,
+            connectivity,
+            element_region_keys,
+            _copy_arrays=False,
+            _finite_checked=True,
+            _trusted_structure=True,
         )
 
     @property
@@ -430,6 +473,10 @@ class FieldData:
         key: FieldMaterializationKey,
         locations: tuple[FieldLocation, ...],
         values: np.ndarray,
+        *,
+        _copy_values: bool = True,
+        _finite_checked: bool = False,
+        _trusted_locations: bool = False,
     ) -> None:
         if type(descriptor) is not FieldDescriptor:
             raise TypeError("descriptor must be FieldDescriptor")
@@ -442,45 +489,70 @@ class FieldData:
         if type(locations) is not tuple:
             raise TypeError("locations must be a tuple")
 
-        identities: set[tuple[object, ...]] = set()
-        for location in locations:
-            if type(location) is not FieldLocation:
-                raise TypeError(
-                    "locations must contain only FieldLocation values"
-                )
-            if location.association is not descriptor.association:
-                raise ValueError(
-                    "location association must match descriptor association"
-                )
-            point_number = descriptor.field_id.section_point_number
-            if point_number is None:
-                if location.section_point is not None:
-                    raise ValueError(
-                        "non-section-point fields cannot contain section points"
+        if not _trusted_locations:
+            identities: set[tuple[object, ...]] = set()
+            for location in locations:
+                if type(location) is not FieldLocation:
+                    raise TypeError(
+                        "locations must contain only FieldLocation values"
                     )
-            elif (
-                location.section_point is None
-                or location.section_point.number != point_number
-            ):
-                raise ValueError(
-                    "section-point field locations must match the field point number"
-                )
-            identity = _field_location_identity_key(location)
-            if identity in identities:
-                raise ValueError("field locations must have unique identities")
-            identities.add(identity)
+                if location.association is not descriptor.association:
+                    raise ValueError(
+                        "location association must match descriptor association"
+                    )
+                point_number = descriptor.field_id.section_point_number
+                if point_number is None:
+                    if location.section_point is not None:
+                        raise ValueError(
+                            "non-section-point fields cannot contain section points"
+                        )
+                elif (
+                    location.section_point is None
+                    or location.section_point.number != point_number
+                ):
+                    raise ValueError(
+                        "section-point field locations must match the field point number"
+                    )
+                identity = _field_location_identity_key(location)
+                if identity in identities:
+                    raise ValueError("field locations must have unique identities")
+                identities.add(identity)
 
         owned_values = _owned_finite_matrix(
             values,
             label="values",
             columns=len(descriptor.columns),
             rows=len(locations),
+            copy=_copy_values,
+            check_finite=not _finite_checked,
         )
         object.__setattr__(self, "descriptor", descriptor)
         object.__setattr__(self, "source", source)
         object.__setattr__(self, "key", key)
         object.__setattr__(self, "locations", locations)
         object.__setattr__(self, "_values", owned_values)
+
+    @classmethod
+    def _from_owned_values(
+        cls,
+        descriptor: FieldDescriptor,
+        source: ResultSourceKey,
+        key: FieldMaterializationKey,
+        locations: tuple[FieldLocation, ...],
+        values: np.ndarray,
+    ) -> "FieldData":
+        """Trusted decoder transfer for an already-owned readonly matrix."""
+
+        return cls(
+            descriptor,
+            source,
+            key,
+            locations,
+            values,
+            _copy_values=False,
+            _finite_checked=True,
+            _trusted_locations=True,
+        )
 
     @property
     def values(self) -> np.ndarray:
@@ -788,6 +860,8 @@ def _owned_finite_matrix(
     label: str,
     columns: int,
     rows: int,
+    copy: bool = True,
+    check_finite: bool = True,
 ) -> np.ndarray:
     if type(value) is not np.ndarray:
         raise TypeError(f"{label} must be a numpy.ndarray")
@@ -803,8 +877,21 @@ def _owned_finite_matrix(
         raise TypeError(f"{label} must contain real numeric values")
     if np.issubdtype(value.dtype, np.complexfloating):
         raise TypeError(f"{label} must contain real numeric values")
+    if not copy:
+        if check_finite and not bool(np.isfinite(value).all()):
+            raise ValueError(f"{label} must contain only finite values")
+        if not (
+            value.dtype == np.dtype(float)
+            and value.flags.c_contiguous
+            and value.flags.owndata
+            and not value.flags.writeable
+        ):
+            raise ValueError(
+                f"{label} trusted transfer requires owned readonly float64 C data"
+            )
+        return value
     owned = np.array(value, dtype=float, order="C", copy=True)
-    if not bool(np.isfinite(owned).all()):
+    if check_finite and not bool(np.isfinite(owned).all()):
         raise ValueError(f"{label} must contain only finite values")
     owned.setflags(write=False)
     return owned
