@@ -18,6 +18,7 @@ from ..icons import icon
 ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
 ROLE_INHERITED = ROLE_KEY + 1
+ROLE_DOCUMENT_ID = ROLE_INHERITED + 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,11 +235,30 @@ def _section_label(section: Any, element: Any | None = None) -> str:
 class ModelTree(QTreeWidget):
     """Model navigation tree with explicit inspect and edit actions."""
 
-    highlightRequested = Signal(str, object)
-    informationRequested = Signal(str, object)
-    editRequested = Signal(str, object)
-    deleteRequested = Signal(str, object)
-    renameRequested = Signal(str, object)
+    # Keep the two-argument overload for callers from Phase 0/1 while making
+    # the three-argument document-routed overload the default.  Emission
+    # helpers below publish both overloads; Qt chooses the compatible overload
+    # for each connected slot, so existing integrations remain source-safe.
+    highlightRequested = Signal(
+        (int, str, object),
+        (str, object),
+    )
+    informationRequested = Signal(
+        (int, str, object),
+        (str, object),
+    )
+    editRequested = Signal(
+        (int, str, object),
+        (str, object),
+    )
+    deleteRequested = Signal(
+        (int, str, object),
+        (str, object),
+    )
+    renameRequested = Signal(
+        (int, str, object),
+        (str, object),
+    )
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -250,16 +270,236 @@ class ModelTree(QTreeWidget):
         self.itemClicked.connect(self._on_clicked)
         self.itemDoubleClicked.connect(self._on_double_clicked)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        self._roots: dict[int, QTreeWidgetItem] = {}
+        self._active_document_id: int | None = None
+        self._renamable_by_document: dict[int, frozenset[str]] = {}
+        self._non_highlightable_by_document: dict[int, frozenset[str]] = {}
+        self._building_document_id: int | None = None
         self.clear_model()
 
     def clear_model(self) -> None:
         self._renamable_kinds: frozenset[str] = frozenset()
         self._non_highlightable_kinds: frozenset[str] = frozenset()
+        self._roots.clear()
+        self._active_document_id = None
+        self._renamable_by_document.clear()
+        self._non_highlightable_by_document.clear()
+        self._building_document_id = None
         self.clear()
         root = self._item("模型", "empty", None)
         root.addChild(self._item("未打开模型", "empty", None))
         self.addTopLevelItem(root)
         root.setExpanded(True)
+
+    def _add_empty_placeholder(self) -> QTreeWidgetItem:
+        self._building_document_id = None
+        root = self._item("模型", "empty", None)
+        root.addChild(self._item("未打开模型", "empty", None))
+        self.addTopLevelItem(root)
+        root.setExpanded(True)
+        return root
+
+    @property
+    def roots(self) -> dict[int, QTreeWidgetItem]:
+        """Return the document-root index used by incremental updates.
+
+        The mapping is intentionally exposed as a read-only-by-convention
+        dictionary: tests and the window use it for O(1) identity checks, while
+        all mutation remains inside ``insert_document``/``remove_document``.
+        """
+
+        return self._roots
+
+    def insert_document(
+        self,
+        document_id: int,
+        projection: Any,
+        **options: Any,
+    ) -> QTreeWidgetItem:
+        """Append one document root without touching any other root."""
+
+        normalized = int(document_id)
+        options = dict(options)
+        source_path = options.pop("source_path", self._projection_path(projection))
+        model_name = options.pop("model_name", self._projection_name(projection))
+        if normalized in self._roots:
+            return self.update_document(normalized, projection, **options)
+        model = self._projection_model(projection)
+        projection_options = self._projection_options(projection, options)
+        if model is None:
+            return self.set_geometry_preview(
+                str(model_name or "模型"),
+                tuple(projection_options.get("feature_rows", ())),
+                parts=tuple(projection_options.get("native_parts", ()))
+                or None,
+                active_part_id=projection_options.get("active_part_id"),
+                document_id=normalized,
+                source_path=source_path,
+            )
+        return self.set_model(
+            model,
+            document_id=normalized,
+            source_path=source_path,
+            model_name=model_name,
+            **projection_options,
+        )
+
+    def update_document(
+        self,
+        document_id: int,
+        projection: Any,
+        changed: object | None = None,
+        **options: Any,
+    ) -> QTreeWidgetItem:
+        """Replace only one indexed root and preserve all other roots."""
+
+        del changed  # Projection deltas are already coalesced by the Session.
+        normalized = int(document_id)
+        options = dict(options)
+        source_path = options.pop("source_path", self._projection_path(projection))
+        model_name = options.pop("model_name", self._projection_name(projection))
+        model = self._projection_model(projection)
+        projection_options = self._projection_options(projection, options)
+        if model is None:
+            return self.set_geometry_preview(
+                str(model_name or "模型"),
+                tuple(projection_options.get("feature_rows", ())),
+                parts=tuple(projection_options.get("native_parts", ()))
+                or None,
+                active_part_id=projection_options.get("active_part_id"),
+                document_id=normalized,
+                source_path=source_path,
+            )
+        return self.set_model(
+            model,
+            document_id=normalized,
+            source_path=source_path,
+            model_name=model_name,
+            **projection_options,
+        )
+
+    def remove_document(self, document_id: int) -> bool:
+        """Remove one root by integer identity, leaving every other root."""
+
+        normalized = int(document_id)
+        root = self._roots.pop(normalized, None)
+        if root is None:
+            return False
+        index = self.indexOfTopLevelItem(root)
+        if index >= 0:
+            self.takeTopLevelItem(index)
+        self._renamable_by_document.pop(normalized, None)
+        self._non_highlightable_by_document.pop(normalized, None)
+        if self._active_document_id == normalized:
+            self._active_document_id = None
+            self.setCurrentItem(None)
+        if not self._roots:
+            self._add_empty_placeholder()
+        return True
+
+    def set_active_document(self, document_id: int | None) -> None:
+        """Select and highlight a root without rebuilding tree contents."""
+
+        normalized = None if document_id is None else int(document_id)
+        previous = self._active_document_id
+        if previous == normalized:
+            root = None if normalized is None else self._roots.get(normalized)
+            if root is not None:
+                root.setSelected(True)
+                self.setCurrentItem(root)
+            return
+        if previous is not None:
+            old_root = self._roots.get(previous)
+            if old_root is not None:
+                old_root.setSelected(False)
+        self._active_document_id = normalized
+        if normalized is None:
+            self.setCurrentItem(None)
+            return
+        root = self._roots.get(normalized)
+        if root is not None:
+            root.setSelected(True)
+            self.setCurrentItem(root)
+        else:
+            self.setCurrentItem(None)
+
+    def _interaction_kinds(
+        self,
+        document_id: int,
+        mapping: dict[int, frozenset[str]],
+        legacy: frozenset[str],
+    ) -> frozenset[str]:
+        return mapping.get(int(document_id), legacy)
+
+    @staticmethod
+    def _projection_model(projection: Any) -> Any:
+        return getattr(projection, "model", projection)
+
+    @staticmethod
+    def _projection_path(projection: Any) -> str | Path | None:
+        return getattr(projection, "source_path", None) or getattr(
+            projection,
+            "project_path",
+            None,
+        )
+
+    @staticmethod
+    def _projection_name(projection: Any) -> str | None:
+        return (
+            getattr(projection, "display_name", None)
+            or getattr(projection, "model_name", None)
+            or getattr(getattr(projection, "model", None), "name", None)
+        )
+
+    @staticmethod
+    def _projection_options(
+        projection: Any,
+        options: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        section_definitions = getattr(
+            projection,
+            "section_definitions",
+            None,
+        )
+        if section_definitions is None:
+            section_definitions = getattr(projection, "sections", ())
+        region_assignments = getattr(
+            projection,
+            "region_assignments",
+            None,
+        )
+        if region_assignments is None:
+            region_assignments = getattr(projection, "assignments", ())
+        scope_names = getattr(projection, "scope_names", None)
+        if scope_names is None:
+            named_regions = getattr(projection, "named_regions", None)
+            scope_names = (
+                tuple(named_regions)
+                if named_regions is not None
+                else None
+            )
+        feature_rows = getattr(projection, "feature_rows", None)
+        if feature_rows is None:
+            feature_rows = tuple(
+                getattr(item, "name", item)
+                for item in getattr(projection, "feature_history", ())
+            )
+        values = {
+            "feature_rows": feature_rows or (),
+            "part_name": getattr(projection, "part_name", None),
+            "section_definitions": section_definitions or (),
+            "region_assignments": region_assignments or (),
+            "output_request_projections_by_step": getattr(
+                projection,
+                "output_request_projections_by_step",
+                None,
+            ),
+            "scope_names": scope_names,
+            "native_parts": tuple(getattr(projection, "parts", ())),
+            "active_part_id": getattr(projection, "active_part_id", None),
+        }
+        values.update(options)
+        return values
 
     def set_model(
         self,
@@ -278,8 +518,16 @@ class ModelTree(QTreeWidget):
         scope_names: Collection[str] | None = None,
         native_parts: tuple[Any, ...] = (),
         active_part_id: str | None = None,
-    ) -> None:
-        view_state = self._capture_view_state()
+        document_id: int | None = None,
+        source_path: str | Path | None = None,
+    ) -> QTreeWidgetItem:
+        """Build one model root.
+
+        Without ``document_id`` this keeps the legacy single-document
+        replacement behavior.  With an ID, only that indexed root is replaced
+        and the widget is never globally cleared.
+        """
+        view_state = self._capture_view_state() if document_id is None else None
         self._renamable_kinds = (
             frozenset({"model", "part"})
             if part_name is not None or native_parts
@@ -294,7 +542,37 @@ class ModelTree(QTreeWidget):
                 else frozenset()
             )
         )
-        self.clear()
+        if document_id is not None:
+            normalized_document_id = int(document_id)
+            self._renamable_by_document[normalized_document_id] = (
+                self._renamable_kinds
+            )
+            self._non_highlightable_by_document[normalized_document_id] = (
+                self._non_highlightable_kinds
+            )
+        if document_id is None:
+            self._roots.clear()
+            self._active_document_id = None
+            self._renamable_by_document.clear()
+            self._non_highlightable_by_document.clear()
+            self.clear()
+            self._building_document_id = 0
+        else:
+            normalized_document_id = int(document_id)
+            previous_root = self._roots.pop(normalized_document_id, None)
+            previous_index = (
+                self.indexOfTopLevelItem(previous_root)
+                if previous_root is not None
+                else -1
+            )
+            if previous_root is not None:
+                if previous_index >= 0:
+                    self.takeTopLevelItem(previous_index)
+            if self.topLevelItemCount() == 1:
+                placeholder = self.topLevelItem(0)
+                if placeholder.data(0, ROLE_KIND) == "empty":
+                    self.takeTopLevelItem(0)
+            self._building_document_id = normalized_document_id
         visible_scope_names = (
             None
             if scope_names is None
@@ -312,10 +590,14 @@ class ModelTree(QTreeWidget):
             )
 
         root = self._item(
-            str(model_name or model.name or "模型"),
+            self._display_name(
+                model_name or getattr(model, "name", None) or "模型"
+            ),
             "model",
             None,
         )
+        if source_path is not None:
+            root.setToolTip(0, str(Path(source_path)))
         part = None
         if native_parts:
             for native_part in native_parts:
@@ -610,7 +892,16 @@ class ModelTree(QTreeWidget):
                         ),
                     ))
             steps.addChild(step_item)
-        self.addTopLevelItem(root)
+        if document_id is not None:
+            self._roots[int(document_id)] = root
+            self.insertTopLevelItem(
+                previous_index
+                if previous_index >= 0
+                else self.topLevelItemCount(),
+                root,
+            )
+        else:
+            self.addTopLevelItem(root)
         root.setExpanded(True)
         mesh.setExpanded(part is None)
         steps.setExpanded(part is None)
@@ -622,6 +913,8 @@ class ModelTree(QTreeWidget):
         if first_step_item is not None and part is None:
             first_step_item.setExpanded(True)
         self._restore_view_state(view_state)
+        self._building_document_id = None
+        return root
 
     def set_geometry_preview(
         self,
@@ -632,17 +925,51 @@ class ModelTree(QTreeWidget):
         bodies: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
         parts: tuple[Any, ...] | None = None,
         active_part_id: str | None = None,
-    ) -> None:
+        document_id: int | None = None,
+        source_path: str | Path | None = None,
+    ) -> QTreeWidgetItem:
         """显示模型以及稳定的原生部件层级。"""
-        view_state = self._capture_view_state()
+        view_state = self._capture_view_state() if document_id is None else None
+        self._building_document_id = (
+            None if document_id is None else int(document_id)
+        )
+        if document_id is not None:
+            previous_root = self._roots.pop(int(document_id), None)
+            previous_index = (
+                self.indexOfTopLevelItem(previous_root)
+                if previous_root is not None
+                else -1
+            )
+            if previous_root is not None:
+                if previous_index >= 0:
+                    self.takeTopLevelItem(previous_index)
+            if self.topLevelItemCount() == 1:
+                placeholder = self.topLevelItem(0)
+                if placeholder.data(0, ROLE_KIND) == "empty":
+                    self.takeTopLevelItem(0)
         self._renamable_kinds = frozenset({"model", "part"})
         self._non_highlightable_kinds = (
             frozenset({"model", "feature"})
             if parts is not None
             else frozenset({"model", "part", "feature"})
         )
-        self.clear()
-        root = self._item(str(name), "model", None)
+        if document_id is not None:
+            normalized_document_id = int(document_id)
+            self._renamable_by_document[normalized_document_id] = (
+                self._renamable_kinds
+            )
+            self._non_highlightable_by_document[normalized_document_id] = (
+                self._non_highlightable_kinds
+            )
+        if document_id is None:
+            self._roots.clear()
+            self._active_document_id = None
+            self._renamable_by_document.clear()
+            self._non_highlightable_by_document.clear()
+            self.clear()
+        root = self._item(self._display_name(name), "model", None)
+        if source_path is not None:
+            root.setToolTip(0, str(Path(source_path)))
         if parts is not None:
             active_item = None
             for native_part in parts:
@@ -694,12 +1021,22 @@ class ModelTree(QTreeWidget):
                 part.setExpanded(is_active)
                 if is_active:
                     active_item = part
-            self.addTopLevelItem(root)
+            if document_id is not None:
+                self._roots[int(document_id)] = root
+                self.insertTopLevelItem(
+                    previous_index
+                    if previous_index >= 0
+                    else self.topLevelItemCount(),
+                    root,
+                )
+            else:
+                self.addTopLevelItem(root)
             root.setExpanded(True)
             if active_item is not None:
                 self.setCurrentItem(active_item)
             self._restore_view_state(view_state)
-            return
+            self._building_document_id = None
+            return root
         part = self._item(str(part_name), "part", None)
         if bodies:
             for body_id, body_name, rows in bodies:
@@ -728,10 +1065,21 @@ class ModelTree(QTreeWidget):
                     )
                 )
         root.addChild(part)
-        self.addTopLevelItem(root)
+        if document_id is not None:
+            self._roots[int(document_id)] = root
+            self.insertTopLevelItem(
+                previous_index
+                if previous_index >= 0
+                else self.topLevelItemCount(),
+                root,
+            )
+        else:
+            self.addTopLevelItem(root)
         root.setExpanded(True)
         part.setExpanded(True)
         self._restore_view_state(view_state)
+        self._building_document_id = None
+        return root
 
     def _capture_view_state(self) -> _TreeViewState | None:
         """Capture navigation state before replacing the projected items."""
@@ -802,15 +1150,29 @@ class ModelTree(QTreeWidget):
             text = ""
         return kind, text
 
-    def select_entity(self, kind: str, key: int) -> None:
+    def select_entity(
+        self,
+        kind: str,
+        key: int,
+        document_id: int | None = None,
+    ) -> None:
         if kind in {"node", "element"}:
-            mesh = self._find_kind("mesh")
+            mesh = self._find_kind("mesh", document_id)
             if mesh is not None:
                 self.setCurrentItem(mesh)
                 self.scrollToItem(mesh)
             return
-        iterator = self.invisibleRootItem()
-        stack = [iterator.child(index) for index in range(iterator.childCount())]
+        if document_id is None:
+            iterator = self.invisibleRootItem()
+            stack = [
+                iterator.child(index)
+                for index in range(iterator.childCount())
+            ]
+        else:
+            root = self._roots.get(int(document_id))
+            if root is None:
+                return
+            stack = [root]
         while stack:
             item = stack.pop()
             if item.data(0, ROLE_KIND) == kind and item.data(0, ROLE_KEY) == key:
@@ -819,9 +1181,19 @@ class ModelTree(QTreeWidget):
                 return
             stack.extend(item.child(index) for index in range(item.childCount()))
 
-    def _find_kind(self, kind: str) -> QTreeWidgetItem | None:
-        root = self.invisibleRootItem()
-        stack = [root.child(index) for index in range(root.childCount())]
+    def _find_kind(
+        self,
+        kind: str,
+        document_id: int | None = None,
+    ) -> QTreeWidgetItem | None:
+        if document_id is None:
+            root = self.invisibleRootItem()
+            stack = [root.child(index) for index in range(root.childCount())]
+        else:
+            indexed_root = self._roots.get(int(document_id))
+            if indexed_root is None:
+                return None
+            stack = [indexed_root]
         while stack:
             item = stack.pop()
             if item.data(0, ROLE_KIND) == kind:
@@ -841,39 +1213,76 @@ class ModelTree(QTreeWidget):
         item = QTreeWidgetItem([text])
         item.setData(0, ROLE_KIND, kind)
         item.setData(0, ROLE_KEY, key)
+        item.setData(0, ROLE_DOCUMENT_ID, self._building_document_id)
         icon_name = _TREE_ICONS.get(kind)
         if icon_name is not None:
             item.setIcon(0, icon(icon_name))
         return item
 
-    def _entry(self, item: QTreeWidgetItem | None) -> tuple[str, object] | None:
+    @staticmethod
+    def _display_name(value: object) -> str:
+        text = str(value)
+        suffix = Path(text).suffix.casefold()
+        if suffix in {
+            ".fempy",
+            ".femproj",
+            ".femres",
+            ".inp",
+            ".json",
+        }:
+            return Path(text).stem
+        return text
+
+    def _entry(
+        self,
+        item: QTreeWidgetItem | None,
+    ) -> tuple[int, str, object] | None:
         if item is None:
             return None
+        document_id = item.data(0, ROLE_DOCUMENT_ID)
+        if document_id is None:
+            document_id = 0
         kind = str(item.data(0, ROLE_KIND))
         key = item.data(0, ROLE_KEY)
         if kind in {"empty", "category", "detail"}:
             return None
         if kind == "inherited_boundary":
-            return "boundary", key
-        return kind, key
+            return int(document_id), "boundary", key
+        return int(document_id), kind, key
+
+    @staticmethod
+    def _emit_routed(signal: Signal, entry: tuple[int, str, object]) -> None:
+        document_id, kind, key = entry
+        # The first overload is the document-aware contract.  Emit the legacy
+        # overload explicitly so old integrations continue to receive their
+        # original (kind, key) pair.
+        signal.emit(document_id, kind, key)
+        signal[str, object].emit(kind, key)
 
     def _on_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
+        non_highlightable = self._non_highlightable_kinds
+        if entry is not None:
+            non_highlightable = self._interaction_kinds(
+                entry[0],
+                self._non_highlightable_by_document,
+                self._non_highlightable_kinds,
+            )
         if (
             entry is not None
-            and entry[0] not in self._non_highlightable_kinds
+            and entry[1] not in non_highlightable
         ):
-            self.highlightRequested.emit(*entry)
+            self._emit_routed(self.highlightRequested, entry)
 
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
         if entry is not None:
             editable = (
-                entry[0] in _EDITABLE_KINDS
+                entry[1] in _EDITABLE_KINDS
                 and not bool(item.data(0, ROLE_INHERITED))
                 and not (
-                    entry[0] == "part"
-                    and type(entry[1]) is not str
+                    entry[1] == "part"
+                    and type(entry[2]) is not str
                 )
             )
             signal = (
@@ -881,33 +1290,43 @@ class ModelTree(QTreeWidget):
                 if editable
                 else self.informationRequested
             )
-            signal.emit(*entry)
+            self._emit_routed(signal, entry)
 
     def _show_context_menu(self, position: QPoint) -> None:
         item = self.itemAt(position)
         entry = self._entry(item)
         if entry is None:
             return
+        renamable = self._interaction_kinds(
+            entry[0],
+            self._renamable_by_document,
+            self._renamable_kinds,
+        )
+        non_highlightable = self._interaction_kinds(
+            entry[0],
+            self._non_highlightable_by_document,
+            self._non_highlightable_kinds,
+        )
         self.setCurrentItem(item)
         menu = QMenu(self)
         highlight = (
             menu.addAction("高亮")
-            if entry[0] not in self._non_highlightable_kinds
+            if entry[1] not in non_highlightable
             else None
         )
         rename = (
             menu.addAction("重命名")
-            if entry[0] in self._renamable_kinds
+            if entry[1] in renamable
             else None
         )
         edit = (
             menu.addAction("编辑")
             if (
-                entry[0] in _EDITABLE_KINDS
+                entry[1] in _EDITABLE_KINDS
                 and not bool(item.data(0, ROLE_INHERITED))
                 and not (
-                    entry[0] == "part"
-                    and type(entry[1]) is not str
+                    entry[1] == "part"
+                    and type(entry[2]) is not str
                 )
             )
             else None
@@ -915,11 +1334,11 @@ class ModelTree(QTreeWidget):
         delete = (
             menu.addAction("删除")
             if (
-                entry[0] in _DELETABLE_KINDS
+                entry[1] in _DELETABLE_KINDS
                 and not bool(item.data(0, ROLE_INHERITED))
                 and not (
-                    entry[0] == "part"
-                    and type(entry[1]) is not str
+                    entry[1] == "part"
+                    and type(entry[2]) is not str
                 )
             )
             else None
@@ -927,12 +1346,12 @@ class ModelTree(QTreeWidget):
         information = menu.addAction("查看信息")
         chosen = menu.exec(self.viewport().mapToGlobal(position))
         if highlight is not None and chosen is highlight:
-            self.highlightRequested.emit(*entry)
+            self._emit_routed(self.highlightRequested, entry)
         elif rename is not None and chosen is rename:
-            self.renameRequested.emit(*entry)
+            self._emit_routed(self.renameRequested, entry)
         elif edit is not None and chosen is edit:
-            self.editRequested.emit(*entry)
+            self._emit_routed(self.editRequested, entry)
         elif delete is not None and chosen is delete:
-            self.deleteRequested.emit(*entry)
+            self._emit_routed(self.deleteRequested, entry)
         elif chosen is information:
-            self.informationRequested.emit(*entry)
+            self._emit_routed(self.informationRequested, entry)

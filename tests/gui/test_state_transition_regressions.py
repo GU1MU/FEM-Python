@@ -61,11 +61,15 @@ _RESULT_ACTIONS = (
 def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     application = QApplication.instance() or QApplication([])
     deadline = monotonic() + timeout
-    while window.busy and monotonic() < deadline:
+    def busy() -> bool:
+        controller = window.workspace.open_controller
+        return window.busy or (controller is not None and controller.busy)
+
+    while busy() and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
     application.processEvents()
-    assert not window.busy
+    assert not busy()
 
 
 def _application() -> QApplication:

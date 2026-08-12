@@ -131,6 +131,8 @@ class FEMWorkspace:
         self.active_kind: str | None = None
         self.active_document_id: int | None = None
         self._next_document_id = 1
+        self._next_model_number = 1
+        self._next_result_number = 1
         # Detached file decoding and its controller belong to a later phase;
         # retaining an injection point avoids creating a second controller in
         # the Phase 1 single-document startup path.
@@ -141,6 +143,12 @@ class FEMWorkspace:
         """The next never-used document identity (without reserving it)."""
 
         return self._next_document_id
+
+    @property
+    def next_model_number(self) -> int:
+        """The next default display number for a newly created model."""
+
+        return self._next_model_number
 
     @property
     def document_count(self) -> int:
@@ -185,6 +193,13 @@ class FEMWorkspace:
             source_path=source_path,
             task_controller=task_controller,
         )
+
+    def ensure_open_controller(self) -> BackgroundTaskController:
+        """Return the one workspace-owned detached file-open controller."""
+
+        if self.open_controller is None:
+            self.open_controller = self._new_controller()
+        return self.open_controller
 
     def activate(self, document_id: int | WorkspaceDocument) -> WorkspaceDocument:
         """Make a document active using an O(1) integer lookup."""
@@ -321,7 +336,9 @@ class FEMWorkspace:
             key = canonical_path(path)
             existing_id = path_index.get(key)
             if existing_id is not None:
-                return registry[existing_id]
+                existing = registry[existing_id]
+                self.activate(existing)
+                return existing
 
         document_id = self._next_document_id
         self._next_document_id += 1
@@ -331,7 +348,18 @@ class FEMWorkspace:
         if not name and path is not None:
             name = path.stem
         if not name:
-            name = f"{'Result' if kind == 'result' else 'Model'}-{document_id}"
+            if kind == "result":
+                name = f"Result-{self._next_result_number}"
+                self._next_result_number += 1
+            else:
+                name = f"Model-{self._next_model_number}"
+                self._next_model_number += 1
+        elif (
+            kind == "model"
+            and path is None
+            and name == f"Model-{self._next_model_number}"
+        ):
+            self._next_model_number += 1
         controller = task_controller or self._new_controller()
         context = WorkspaceDocument(
             document_id=document_id,

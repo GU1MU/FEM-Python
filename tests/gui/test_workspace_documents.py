@@ -114,7 +114,17 @@ def test_unnamed_result_context_uses_result_identity(gui_application):
     model = workspace.add_model()
 
     assert result.display_name == f"Result-{result.document_id}"
-    assert model.display_name == f"Model-{model.document_id}"
+    assert model.display_name == "Model-1"
+
+
+def test_model_default_names_use_model_sequence_across_result_ids(gui_application):
+    workspace = FEMWorkspace()
+    first = workspace.add_model()
+    workspace.add_result()
+    second = workspace.add_model()
+
+    assert first.display_name == "Model-1"
+    assert second.display_name == "Model-2"
 
 
 def test_idle_contexts_do_not_create_threads(gui_application):
