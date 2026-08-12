@@ -259,6 +259,10 @@ class ModelTree(QTreeWidget):
         (int, str, object),
         (str, object),
     )
+    # Root-level lifecycle actions are routed with the owning document id so
+    # the main window can activate an inactive document before applying the
+    # command.  Child editing keeps the established routed signals above.
+    rootActionRequested = Signal(int, str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1309,6 +1313,22 @@ class ModelTree(QTreeWidget):
         )
         self.setCurrentItem(item)
         menu = QMenu(self)
+        root = item.parent() is None and entry[1] == "model"
+        if root:
+            activate = menu.addAction("激活")
+            save = menu.addAction("保存")
+            save_as = menu.addAction("另存为")
+            close = menu.addAction("关闭")
+            chosen = menu.exec(self.viewport().mapToGlobal(position))
+            if chosen is activate:
+                self.rootActionRequested.emit(entry[0], "activate")
+            elif chosen is save:
+                self.rootActionRequested.emit(entry[0], "save")
+            elif chosen is save_as:
+                self.rootActionRequested.emit(entry[0], "save_as")
+            elif chosen is close:
+                self.rootActionRequested.emit(entry[0], "close")
+            return
         highlight = (
             menu.addAction("高亮")
             if entry[1] not in non_highlightable

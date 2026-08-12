@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QAbstractItemView, QTreeWidget, QTreeWidgetItem
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
 from fem.application.results import (
     FieldAvailability,
@@ -46,6 +46,7 @@ class ResultTree(QTreeWidget):
     fieldSelectionActivated = Signal(ScalarFieldSelection)
     fieldSelectionRouted = Signal(int, str, object, ScalarFieldSelection)
     runActivated = Signal(int, str)
+    rootActionRequested = Signal(int, str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -53,6 +54,8 @@ class ResultTree(QTreeWidget):
         self.setHeaderHidden(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.itemDoubleClicked.connect(self._activate_item)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         self._catalog: ResultCatalog | None = None
         self._section_point_labels: dict[int, str] = {}
         self._roots: dict[int, QTreeWidgetItem] = {}
@@ -277,6 +280,27 @@ class ResultTree(QTreeWidget):
                 return
             stack.extend(item.child(index) for index in range(item.childCount()))
 
+    def _show_context_menu(self, position: QPoint) -> None:
+        """Expose lifecycle actions only for document result roots."""
+
+        item = self.itemAt(position)
+        if item is None or item.parent() is not None:
+            return
+        document_id = item.data(0, ROLE_DOCUMENT_ID)
+        kind = item.data(0, ROLE_RESULT_KIND)
+        if document_id is None or kind not in {"model", "archive"}:
+            return
+        document_id = int(document_id)
+        self.setCurrentItem(item)
+        menu = QMenu(self)
+        activate = menu.addAction("激活")
+        close = menu.addAction("关闭")
+        chosen = menu.exec(self.viewport().mapToGlobal(position))
+        if chosen is activate:
+            self.rootActionRequested.emit(document_id, "activate")
+        elif chosen is close:
+            self.rootActionRequested.emit(document_id, "close")
+
     def _upsert_document_root(
         self,
         document_id: int,
@@ -441,7 +465,7 @@ class ResultTree(QTreeWidget):
             self._active_document_id = None
             self._catalog = None
         if not self._roots:
-            item = QTreeWidgetItem(["暂无分析结果"])
+            item = QTreeWidgetItem(["尚无分析结果"])
             item.setData(0, ROLE_RESULT_KIND, "empty")
             self.addTopLevelItem(item)
         return True

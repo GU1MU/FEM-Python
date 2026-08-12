@@ -817,6 +817,8 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._step_combos: list[QComboBox] = []
         self._closing = False
+        self._exit_pending = False
+        self._shared_resources_shutdown = False
         self._deferred_ui_callbacks: list[Callable[[], None]] = []
         self._deferred_ui_timer = QTimer(self)
         self._deferred_ui_timer.setSingleShot(True)
@@ -4547,11 +4549,17 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.renameRequested[int, str, object].connect(
             self._rename_tree_entry
         )
+        self.model_tree.rootActionRequested.connect(
+            self._model_root_action_requested
+        )
         self.result_tree.fieldSelectionRouted.connect(
             self._activate_routed_result_selection
         )
         self.result_tree.runActivated.connect(
             self._activate_routed_result_run
+        )
+        self.result_tree.rootActionRequested.connect(
+            self._result_root_action_requested
         )
         self.viewport.entityPicked.connect(self._on_viewport_pick)
         self.viewport.geometryEntityPicked.connect(
@@ -4810,6 +4818,18 @@ class FEMMainWindow(QMainWindow):
 
     def _sync_step_combos(self) -> None:
         names = self.session.runnable_step_names()
+        selected = (
+            self._current_step_name
+            if self._current_step_name in names
+            else names[0]
+            if names
+            else None
+        )
+        self._current_step_name = selected
+        self._symbol_settings = replace(
+            self._symbol_settings,
+            step_name=selected,
+        )
         for combo in self._step_combos:
             combo.blockSignals(True)
             combo.clear()
@@ -4818,7 +4838,7 @@ class FEMMainWindow(QMainWindow):
             else:
                 for name in names:
                     combo.addItem(name, name)
-                index = combo.findData(self._current_step_name)
+                index = combo.findData(selected)
                 combo.setCurrentIndex(index if index >= 0 else 0)
             combo.setEnabled(bool(names) and not self.busy)
             combo.blockSignals(False)
@@ -9877,6 +9897,7 @@ class FEMMainWindow(QMainWindow):
         self,
         *,
         wait: bool = False,
+        force_save_as: bool = False,
         agent_terminal: (
             Callable[[ProposalState, str], None] | None
         ) = None,
@@ -9890,6 +9911,8 @@ class FEMMainWindow(QMainWindow):
             return False
         path = self.document.project_path
         save_as = (
+            force_save_as
+            or
             path is None
             or self._legacy_project_extension
             or path.suffix.casefold() != MODEL_FILE_SUFFIX
@@ -10230,6 +10253,11 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         """Incrementally project one context's root into ``ModelTree``."""
 
+        if context.is_result:
+            # External result documents own display geometry in the result
+            # tree; they must never add a model-document root.
+            self.model_tree.remove_document(context.document_id)
+            return
         snapshot = context.projection
         artifact = snapshot.artifact
         if artifact is not None:
@@ -10720,7 +10748,9 @@ class FEMMainWindow(QMainWindow):
         if not dirty and not unsaved_results:
             return True
         if not confirm:
-            return False
+            # The caller has already performed the confirmation (for example
+            # the deferred cooperative-cancellation close path).
+            return True
         box = QMessageBox(self)
         box.setWindowTitle("未保存的文档内容")
         box.setIcon(QMessageBox.Icon.Warning)
@@ -10735,6 +10765,41 @@ class FEMMainWindow(QMainWindow):
         box.exec()
         return box.clickedButton() is discard
 
+    def _request_workspace_context_cancel(
+        self,
+        context: WorkspaceDocument,
+        *,
+        after_cleanup: Callable[[], None] | None = None,
+    ) -> bool:
+        """Request cooperative cancellation for one document-owned task."""
+
+        running = next(
+            (
+                run
+                for run in context.projection.runs
+                if run.status is RunStatus.RUNNING
+            ),
+            None,
+        )
+        if running is not None:
+            try:
+                delta = context.session.request_cancel(running.run_id)
+                self._apply_session_delta(delta, context=context)
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                pass
+        return context.task_controller.request_cancel(after_cleanup=after_cleanup)
+
+    def _close_workspace_context_after_cancel(self, document_id: int) -> None:
+        """Finish a deferred close once the target controller is idle."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if context.task_controller.busy:
+            return
+        self.close_model(confirm=False, document_id=context.document_id)
+
     def close_model(
         self,
         *,
@@ -10746,7 +10811,7 @@ class FEMMainWindow(QMainWindow):
             if document_id is None
             else self.workspace.document(int(document_id))
         )
-        if target_context is None or target_context.task_controller.busy:
+        if target_context is None:
             return False
         active_context = self.workspace.active_document()
         was_active = (
@@ -10758,18 +10823,54 @@ class FEMMainWindow(QMainWindow):
                 return False
         elif not self._confirm_workspace_context_close(target_context, confirm):
             return False
+        if target_context.task_controller.busy:
+            requested = self._request_workspace_context_cancel(
+                target_context,
+                after_cleanup=lambda document_id=target_context.document_id: self._close_workspace_context_after_cancel(
+                    document_id
+                ),
+            )
+            # A second close request while cancellation is already underway
+            # still owns the same deferred release callback.
+            return bool(requested or target_context.task_controller.cancel_requested)
         if (
             was_active
             and self._solid_face_boolean_operation is not None
         ):
             self._cancel_solid_face_boolean()
-        receipt = self.close_session(
-            CloseSessionCommand(target_context.projection.session_revision),
-            document_id=target_context.document_id,
-        )
-        if receipt.diagnostic is not None:
-            self._show_command_rejection("关闭模型", receipt)
-            return False
+        replacement = None
+        if was_active:
+            same_kind = tuple(
+                self.workspace.results.values()
+                if target_context.is_result
+                else self.workspace.models.values()
+            )
+            target_index = same_kind.index(target_context)
+            if target_index + 1 < len(same_kind):
+                replacement = same_kind[target_index + 1]
+            elif target_index:
+                replacement = same_kind[target_index - 1]
+            else:
+                replacement = next(
+                    (
+                        context
+                        for context in self.workspace.documents()
+                        if context is not target_context
+                    ),
+                    None,
+                )
+            if replacement is not None and not self._activate_workspace_context(
+                replacement
+            ):
+                return False
+        if target_context.projection.is_open:
+            receipt = self.close_session(
+                CloseSessionCommand(target_context.projection.session_revision),
+                document_id=target_context.document_id,
+            )
+            if receipt.diagnostic is not None:
+                self._show_command_rejection("关闭模型", receipt)
+                return False
         closed_id = target_context.document_id
         target_context.presentation_cache.invalidate_model()
         target_context.presentation_cache.invalidate_result()
@@ -10780,13 +10881,22 @@ class FEMMainWindow(QMainWindow):
             self.model_tree.remove_document(closed_id)
             self.result_tree.remove_model_runs(closed_id)
         self.workspace.remove(target_context)
-        replacement = self.workspace.active_document()
-        if replacement is not None:
-            if not self._activate_workspace_context(replacement):
-                return False
-        else:
+        if replacement is None:
+            replacement = self.workspace.active_document()
+        if replacement is None:
             self._active_context = None
+        elif was_active:
+            # The replacement was preflighted before removal so activation
+            # cannot fail after the target registry entry is gone.  Refresh
+            # only its existing root for compatibility with the normal
+            # post-close projection path.  Result documents have no model
+            # artifact and therefore refresh the result root instead.
+            if replacement.is_result:
+                self._refresh_result_tree_for_context(replacement)
+            else:
+                self._refresh_model_tree_for_context(replacement)
         if was_active and replacement is None:
+            self._clear_model_projection(clear_tree=True)
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
             self._display = DisplayState()
@@ -14073,6 +14183,38 @@ class FEMMainWindow(QMainWindow):
             return None
         return context.document_id, str(kind_or_key), key
 
+    def _model_root_action_requested(self, document_id: int, action: str) -> None:
+        """Handle model-root lifecycle actions after routing by document id."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if action == "activate":
+            self._activate_workspace_context(context)
+            return
+        if action == "close":
+            self.close_model(document_id=context.document_id)
+            return
+        if not self._activate_workspace_context(context):
+            return
+        if action == "save":
+            self.save_native_project()
+        elif action == "save_as":
+            self.save_native_project(force_save_as=True)
+
+    def _result_root_action_requested(self, document_id: int, action: str) -> None:
+        """Handle result-root activation and independent close actions."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if action == "activate":
+            self._activate_workspace_context(context)
+        elif action == "close":
+            self.close_model(document_id=context.document_id)
+
     def _highlight_tree_entry(
         self,
         document_id_or_kind: object,
@@ -15917,53 +16059,133 @@ class FEMMainWindow(QMainWindow):
         for window in windows:
             window.close()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
-        busy_contexts = self.workspace.busy_documents()
-        if busy_contexts:
-            box = QMessageBox(
-                QMessageBox.Icon.Question,
-                "任务正在运行",
-                "是否取消当前任务并在安全退出后关闭程序？",
-                parent=self,
-            )
-            cancel_button = box.addButton(
-                "取消任务并退出",
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-            box.addButton(
-                "继续等待",
-                QMessageBox.ButtonRole.RejectRole,
-            )
-            box.exec()
-            if box.clickedButton() is cancel_button:
-                active = self.workspace.active_document()
-                for context in busy_contexts:
-                    if context is active:
-                        continue
-                    context.task_controller.request_cancel()
-                if active is not None and active.task_controller.busy:
-                    self.cancel_current_task(
-                        after_cleanup=lambda: self._defer_ui(self.close)
-                    )
-                else:
-                    self._defer_ui(self.close)
-            event.ignore()
+    def _confirm_workspace_task_exit(self, context: WorkspaceDocument) -> bool:
+        """Ask whether one document-owned task may be cancelled for exit."""
+
+        box = QMessageBox(self)
+        box.setWindowTitle("任务正在运行")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(
+            f"文档“{context.display_name}”有后台任务正在运行，是否取消任务并退出？"
+        )
+        cancel_button = box.addButton(
+            "取消任务并退出",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        continue_button = box.addButton(
+            "继续编辑",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        box.setDefaultButton(continue_button)
+        box.exec()
+        return box.clickedButton() is cancel_button
+
+    def _shutdown_shared_resources(self) -> None:
+        """Shutdown the singleton viewport/Agent boundary at most once."""
+
+        if self._shared_resources_shutdown:
             return
-        if self.isVisible() and not self._confirm_discard_changes():
-            event.ignore()
+        self._shared_resources_shutdown = True
+        self.viewport_panel.overlay_host.shutdown(wait=False)
+        self.viewport.shutdown_backend()
+
+    def _finish_workspace_exit(self) -> None:
+        """Release every idle document, then close the shared window boundary."""
+
+        if self._closing:
             return
-        self._close_inspection_windows()
-        self._close_job_manager()
-        if self.document.is_open:
-            receipt = self.close_session(
-                CloseSessionCommand(self.document.session_revision)
-            )
-            if receipt.diagnostic is not None:
-                event.ignore()
+        if self.workspace.any_busy():
+            return
+        for context in tuple(self.workspace.documents()):
+            if not self._release_workspace_context_for_exit(context):
                 return
+        self._active_context = None
+        self._clear_model_projection(clear_tree=True)
+        self._exit_pending = False
         self._closing = True
         self._deferred_ui_timer.stop()
         self._deferred_ui_callbacks.clear()
-        self.viewport_panel.overlay_host.shutdown(wait=False)
-        self.viewport.shutdown_backend()
-        event.accept()
+        self._close_inspection_windows()
+        self._close_job_manager()
+        self._shutdown_shared_resources()
+        self.close()
+
+    def _release_workspace_context_for_exit(
+        self,
+        context: WorkspaceDocument,
+    ) -> bool:
+        """Release one confirmed document without activating its neighbors."""
+
+        if context.task_controller.busy:
+            return False
+        if context.projection.is_open:
+            try:
+                context.session.close(
+                    expected_session_revision=context.projection.session_revision
+                )
+            except (RevisionConflictError, RuntimeError, TypeError, ValueError):
+                logging.exception("workspace document could not close during exit")
+                return False
+        context.presentation_cache.invalidate_model()
+        context.presentation_cache.invalidate_result()
+        context.presentation_state = DocumentPresentationState()
+        if context.is_result:
+            self.result_tree.remove_archive(context.document_id)
+        else:
+            self.model_tree.remove_document(context.document_id)
+            self.result_tree.remove_model_runs(context.document_id)
+        self.workspace.remove(context)
+        return True
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._closing:
+            event.accept()
+            return
+        if self._exit_pending:
+            event.ignore()
+            return
+        contexts = tuple(self.workspace.documents())
+        if self.isVisible():
+            # Confirm every context before mutating any registry entry.  This
+            # keeps a later cancellation from leaving a partially closed
+            # workspace.
+            for context in contexts:
+                if not self._confirm_workspace_context_close(context, True):
+                    event.ignore()
+                    return
+                if context.task_controller.busy and not self._confirm_workspace_task_exit(
+                    context
+                ):
+                    event.ignore()
+                    return
+        busy_contexts = tuple(
+            context for context in contexts if context.task_controller.busy
+        )
+        if busy_contexts:
+            self._exit_pending = True
+            pending_ids = {context.document_id for context in busy_contexts}
+
+            def release_after_cancel(document_id: int) -> None:
+                pending_ids.discard(document_id)
+                if pending_ids or not self._exit_pending:
+                    return
+                self._finish_workspace_exit()
+
+            for context in busy_contexts:
+                requested = self._request_workspace_context_cancel(
+                    context,
+                    after_cleanup=lambda document_id=context.document_id: release_after_cancel(
+                        document_id
+                    ),
+                )
+                if not requested and not context.task_controller.cancel_requested:
+                    self._exit_pending = False
+                    event.ignore()
+                    return
+            event.ignore()
+            return
+        self._finish_workspace_exit()
+        if self._closing:
+            event.accept()
+        else:
+            event.ignore()
