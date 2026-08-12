@@ -36,6 +36,7 @@ from fem.application.results.data import (
     ResultDiagnostic,
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
+    _field_location_identity_key,
 )
 from fem.application.results.execution import (
     OutputExecutionStatus,
@@ -93,6 +94,8 @@ _MAX_ZIP_CONTAINER_BYTES = 1024 * 1024 * 1024
 _MAX_ZIP_ENTRY_COUNT = 4096
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ARRAY_BYTES = 512 * 1024 * 1024
+_MAX_NPY_HEADER_BYTES = 10_000
+_NPY_READ_CHUNK_BYTES = 64 * 1024
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -201,7 +204,6 @@ def _parse_manifest(data: bytes) -> dict[str, Any]:
         raise ResultArchiveDecodeError(f"manifest is not strict UTF-8 JSON: {error}") from error
     if type(payload) is not dict:
         raise ResultArchiveDecodeError("manifest root must be a JSON object")
-    _exact_keys(payload, _TOP_LEVEL_KEYS, label="manifest")
     return payload
 
 
@@ -874,26 +876,16 @@ def _checked_array_meta(value: object, *, label: str) -> dict[str, object]:
     return {"dtype": parsed.str, "shape": tuple(shape), "nbytes": nbytes, "sha256": sha}
 
 
-def _checked_array(
-    raw: bytes,
+def _validate_decoded_array(
+    array: object,
     meta: dict[str, object],
     *,
     label: str,
     expected_dtype: str,
     expected_shape: tuple[int, ...],
     finite: bool = False,
+    copy: bool = True,
 ) -> np.ndarray:
-    if hashlib.sha256(raw).hexdigest() != meta["sha256"]:
-        raise ResultArchiveDecodeError(f"{label} SHA-256 checksum mismatch")
-    try:
-        stream = BytesIO(raw)
-        array = np.load(stream, allow_pickle=False)
-        if stream.tell() != len(raw):
-            raise ResultArchiveDecodeError(f"{label} contains trailing bytes")
-    except ResultArchiveDecodeError:
-        raise
-    except (ValueError, OSError, EOFError) as error:
-        raise ResultArchiveDecodeError(f"{label} is not a valid non-pickle .npy array") from error
     if type(array) is not np.ndarray:
         raise ResultArchiveDecodeError(f"{label} must contain a plain ndarray")
     if array.dtype.hasobject or np.issubdtype(array.dtype, np.complexfloating):
@@ -912,9 +904,42 @@ def _checked_array(
         raise ResultArchiveDecodeError(f"{label} contains non-finite values")
     if np.issubdtype(array.dtype, np.integer) and array.dtype.itemsize < 1:
         raise ResultArchiveDecodeError(f"{label} integer dtype is invalid")
-    array = np.array(array, dtype=array.dtype, order="C", copy=True)
+    if copy:
+        array = np.array(array, dtype=array.dtype, order="C", copy=True)
     array.setflags(write=False)
     return array
+
+
+def _checked_array(
+    raw: bytes,
+    meta: dict[str, object],
+    *,
+    label: str,
+    expected_dtype: str,
+    expected_shape: tuple[int, ...],
+    finite: bool = False,
+    copy: bool = True,
+) -> np.ndarray:
+    if hashlib.sha256(raw).hexdigest() != meta["sha256"]:
+        raise ResultArchiveDecodeError(f"{label} SHA-256 checksum mismatch")
+    try:
+        stream = BytesIO(raw)
+        array = np.load(stream, allow_pickle=False)
+        if stream.tell() != len(raw):
+            raise ResultArchiveDecodeError(f"{label} contains trailing bytes")
+    except ResultArchiveDecodeError:
+        raise
+    except (ValueError, OSError, EOFError) as error:
+        raise ResultArchiveDecodeError(f"{label} is not a valid non-pickle .npy array") from error
+    return _validate_decoded_array(
+        array,
+        meta,
+        label=label,
+        expected_dtype=expected_dtype,
+        expected_shape=expected_shape,
+        finite=finite,
+        copy=copy,
+    )
 
 
 class _ArchiveBuilder:
@@ -1225,67 +1250,335 @@ def _writestr_deterministic(archive: zipfile.ZipFile, name: str, data: bytes) ->
     archive.writestr(info, data)
 
 
-def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
-    if type(data) is not bytes:
-        raise TypeError("archive data must be bytes")
-    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
-    try:
-        archive = zipfile.ZipFile(BytesIO(data), "r")
-    except (zipfile.BadZipFile, OSError, ValueError) as error:
-        raise ResultArchiveDecodeError(f"result archive is not a valid ZIP: {error}") from error
-    try:
-        infos = archive.infolist()
-        _validate_zip_infos(infos, error_type=ResultArchiveDecodeError)
-        names = [item.filename for item in infos]
-        if len(names) != len(set(names)):
-            raise ResultArchiveDecodeError("result archive contains duplicate entries")
-        if any(not _safe_entry_name(name) for name in names):
-            raise ResultArchiveDecodeError("result archive contains unsafe entry path")
-        if MANIFEST_NAME not in names:
-            raise ResultArchiveDecodeError("result archive is missing manifest.json")
-        manifest_info = archive.getinfo(MANIFEST_NAME)
-        _validate_manifest_bytes(
-            manifest_info.file_size,
-            error_type=ResultArchiveDecodeError,
+def _expected_array_order(manifest: Mapping[str, object]) -> list[str]:
+    """Return the canonical ZIP entry order declared by a validated manifest."""
+
+    expected_order = [MANIFEST_NAME]
+    topology = manifest["topology"]
+    if type(topology) is not dict or type(topology.get("arrays")) is not dict:
+        raise ResultArchiveDecodeError("manifest.topology.arrays must be an object")
+    expected_order.extend(
+        topology["arrays"][key]
+        for key in _TOPOLOGY_ARRAY_ORDER
+    )
+    fields = manifest["fields"]
+    if type(fields) is not list:
+        raise ResultArchiveDecodeError("manifest.fields must be an array")
+    for field in fields:
+        if type(field) is not dict or type(field.get("arrays")) is not dict:
+            raise ResultArchiveDecodeError("manifest.fields entries must contain arrays")
+        expected_order.extend(
+            field["arrays"][key]
+            for key in _FIELD_ARRAY_ORDER
+            if key in field["arrays"]
         )
-        manifest_bytes = _read_zip_entry_bounded(
-            archive,
-            MANIFEST_NAME,
-            _MAX_MANIFEST_BYTES,
+    return expected_order
+
+
+class _HashingZipStream:
+    """Sequential digest wrapper for one uncompressed ZIP entry."""
+
+    def __init__(self, source: Any) -> None:
+        self._source = source
+        self._digest = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._source.read(size)
+        self._digest.update(data)
+        return data
+
+    def readinto(self, buffer: Any) -> int:
+        count = self._source.readinto(buffer)
+        if count is None:
+            return 0
+        self._digest.update(memoryview(buffer)[:count])
+        return count
+
+    def tell(self) -> int:
+        return self._source.tell()
+
+    def digest(self) -> str:
+        return self._digest.hexdigest()
+
+
+class _ArchiveArrayReader(Mapping[str, bytes]):
+    """Read archive NPY entries one at a time in canonical order.
+
+    The path decoder parses each NPY header and fills a bounded destination via
+    ``readinto`` on a hashing ZIP stream, so no raw NPY payload mapping is
+    retained.  The mapping ``__getitem__`` remains for bytes API
+    compatibility/testing; path decoding uses ``read_array`` and enforces the
+    same canonical order.
+    """
+
+    def __init__(
+        self,
+        archive: zipfile.ZipFile,
+        manifest_arrays: Mapping[str, object],
+        expected_names: tuple[str, ...],
+        total_read: int,
+    ) -> None:
+        self._archive = archive
+        self._manifest_arrays = manifest_arrays
+        self._expected_names = expected_names
+        self._next_index = 0
+        self._total_read = total_read
+
+    def _claim(self, name: str) -> dict[str, object]:
+        if type(name) is not str or name not in self._manifest_arrays:
+            raise KeyError(name)
+        if self._next_index >= len(self._expected_names):
+            raise ResultArchiveDecodeError(
+                "result archive contains an unexpected array read"
+            )
+        expected = self._expected_names[self._next_index]
+        if name != expected:
+            raise ResultArchiveDecodeError(
+                "result archive arrays are not read in canonical order"
+            )
+        return _checked_array_meta(
+            self._manifest_arrays[name],
+            label=f"manifest.arrays[{name!r}]",
         )
-        total_read = len(manifest_bytes)
-        if total_read > _MAX_ZIP_TOTAL_BYTES:
+
+    def __getitem__(self, name: str) -> bytes:
+        meta = self._claim(name)
+        raw = _read_zip_entry_bounded(
+            self._archive,
+            name,
+            _MAX_ZIP_ENTRY_BYTES,
+        )
+        self._total_read += len(raw)
+        if self._total_read > _MAX_ZIP_TOTAL_BYTES:
             raise ResultArchiveDecodeError(
                 "result archive exceeds the total size safety limit"
             )
-        manifest = _parse_manifest(manifest_bytes)
-        _validate_array_entry_names(manifest)
-        array_meta = manifest["arrays"]
-        if type(array_meta) is not dict:
-            raise ResultArchiveDecodeError("manifest.arrays must be an object")
-        arrays: dict[str, bytes] = {}
-        expected_names = {MANIFEST_NAME, *array_meta}
-        if set(names) != expected_names:
-            unknown = sorted(set(names) - expected_names)
-            missing = sorted(expected_names - set(names))
-            raise ResultArchiveDecodeError(f"ZIP entries do not match manifest (missing={missing}, unknown={unknown})")
-        expected_order = [MANIFEST_NAME]
-        expected_order.extend(
-            manifest["topology"]["arrays"][key]
-            for key in _TOPOLOGY_ARRAY_ORDER
+        self._next_index += 1
+        return raw
+
+    def read_array(
+        self,
+        name: str,
+        *,
+        label: str,
+        expected_dtype: str,
+        expected_shape: tuple[int, ...],
+        finite: bool = False,
+    ) -> np.ndarray:
+        """Decode one NPY via bounded header parsing and direct ZIP reads."""
+
+        meta = self._claim(name)
+        try:
+            declared_size = self._archive.getinfo(name).file_size
+            if declared_size > _MAX_ZIP_ENTRY_BYTES:
+                raise ResultArchiveDecodeError(
+                    f"result archive entry {name!r} exceeds the size safety limit"
+                )
+            if self._total_read + declared_size > _MAX_ZIP_TOTAL_BYTES:
+                raise ResultArchiveDecodeError(
+                    "result archive exceeds the total size safety limit"
+                )
+            with self._archive.open(name, "r") as source:
+                stream = _HashingZipStream(source)
+                version = np.lib.format.read_magic(stream)
+                if version == (1, 0):
+                    read_header = np.lib.format.read_array_header_1_0
+                elif version == (2, 0):
+                    read_header = np.lib.format.read_array_header_2_0
+                else:
+                    raise ResultArchiveDecodeError(
+                        f"{label} uses unsupported NPY version {version!r}"
+                    )
+                header_shape, fortran_order, header_dtype = read_header(
+                    stream,
+                    max_header_size=_MAX_NPY_HEADER_BYTES,
+                )
+                header_shape = tuple(header_shape)
+                try:
+                    header_nbytes = math.prod(header_shape, start=1) * header_dtype.itemsize
+                except (OverflowError, TypeError, ValueError) as error:
+                    raise ResultArchiveDecodeError(
+                        f"{label} NPY shape is invalid"
+                    ) from error
+                if header_nbytes > _MAX_ARRAY_BYTES:
+                    raise ResultArchiveDecodeError(
+                        f"{label} declared byte size exceeds archive safety limit"
+                    )
+                if (
+                    header_dtype.hasobject
+                    or np.issubdtype(header_dtype, np.complexfloating)
+                    or header_dtype.str != np.dtype(expected_dtype).str
+                    or header_dtype.str != meta["dtype"]
+                ):
+                    raise ResultArchiveDecodeError(
+                        f"{label} dtype does not match manifest"
+                    )
+                if header_shape != expected_shape or header_shape != meta["shape"]:
+                    raise ResultArchiveDecodeError(
+                        f"{label} shape does not match manifest"
+                    )
+                if header_nbytes != meta["nbytes"]:
+                    raise ResultArchiveDecodeError(
+                        f"{label} byte size does not match manifest"
+                    )
+                array = np.empty(
+                    header_shape,
+                    dtype=header_dtype,
+                    order="F" if fortran_order else "C",
+                )
+                flat_array = array.ravel(order="K")
+                data_view = memoryview(flat_array).cast("B")
+                offset = 0
+                checked_elements = 0
+                while offset < len(data_view):
+                    end = min(offset + _NPY_READ_CHUNK_BYTES, len(data_view))
+                    count = stream.readinto(data_view[offset:end])
+                    if count <= 0:
+                        raise ResultArchiveDecodeError(
+                            f"{label} array payload is truncated"
+                        )
+                    offset += count
+                    if finite:
+                        complete_elements = offset // header_dtype.itemsize
+                        if complete_elements > checked_elements:
+                            if not bool(
+                                np.isfinite(
+                                    flat_array[checked_elements:complete_elements]
+                                ).all()
+                            ):
+                                raise ResultArchiveDecodeError(
+                                    f"{label} contains non-finite values"
+                                )
+                            checked_elements = complete_elements
+                if stream.tell() != declared_size:
+                    raise ResultArchiveDecodeError(
+                        f"{label} contains trailing bytes"
+                    )
+                # Force ZipExtFile's end-of-entry CRC check without retaining
+                # another payload buffer.
+                stream.read(1)
+                if stream.digest() != meta["sha256"]:
+                    raise ResultArchiveDecodeError(
+                        f"{label} SHA-256 checksum mismatch"
+                    )
+                if stream.tell() != declared_size:
+                    raise ResultArchiveDecodeError(
+                        f"{label} entry size changed during read"
+                    )
+        except ResultArchiveDecodeError:
+            raise
+        except (KeyError, OSError, RuntimeError, ValueError, EOFError, zipfile.BadZipFile) as error:
+            raise ResultArchiveDecodeError(
+                f"{label} is not a valid non-pickle .npy array"
+            ) from error
+        if fortran_order:
+            array = np.array(array, dtype=array.dtype, order="C", copy=True)
+        self._total_read += declared_size
+        self._next_index += 1
+        return _validate_decoded_array(
+            array,
+            meta,
+            label=label,
+            expected_dtype=expected_dtype,
+            expected_shape=expected_shape,
+            # Finite values are checked incrementally while filling the bounded
+            # destination above, avoiding a full-size temporary mask.
+            finite=False,
+            copy=False,
         )
-        for field in manifest["fields"]:
-            expected_order.extend(
-                field["arrays"][key]
-                for key in _FIELD_ARRAY_ORDER
-                if key in field["arrays"]
+
+    def __iter__(self):
+        return iter(self._manifest_arrays)
+
+    def __len__(self) -> int:
+        return len(self._manifest_arrays)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._manifest_arrays
+
+    def assert_consumed(self) -> None:
+        if self._next_index != len(self._expected_names):
+            raise ResultArchiveDecodeError(
+                "result archive arrays were not fully materialized"
             )
-        if names != expected_order:
-            raise ResultArchiveDecodeError("ZIP entries are not in canonical order")
-        for name in array_meta:
-            if not _safe_entry_name(name) or name == MANIFEST_NAME:
-                raise ResultArchiveDecodeError(f"manifest declares unsafe array entry {name!r}")
-            _checked_array_meta(array_meta[name], label=f"manifest.arrays[{name!r}]")
+
+
+def _open_archive_zip(
+    archive: zipfile.ZipFile,
+    *,
+    materialize_arrays: bool,
+) -> tuple[dict[str, Any], Mapping[str, bytes]]:
+    """Validate one open archive and return its manifest plus array source.
+
+    ``materialize_arrays=True`` preserves the bytes API's historical mapping;
+    ``False`` returns a streaming reader for the path API while the caller keeps
+    the ``ZipFile`` open for decoding.
+    """
+
+    infos = archive.infolist()
+    _validate_zip_infos(infos, error_type=ResultArchiveDecodeError)
+    names = [item.filename for item in infos]
+    if len(names) != len(set(names)):
+        raise ResultArchiveDecodeError("result archive contains duplicate entries")
+    if any(not _safe_entry_name(name) for name in names):
+        raise ResultArchiveDecodeError("result archive contains unsafe entry path")
+    if MANIFEST_NAME not in names:
+        raise ResultArchiveDecodeError("result archive is missing manifest.json")
+    manifest_info = archive.getinfo(MANIFEST_NAME)
+    _validate_manifest_bytes(
+        manifest_info.file_size,
+        error_type=ResultArchiveDecodeError,
+    )
+    manifest_bytes = _read_zip_entry_bounded(
+        archive,
+        MANIFEST_NAME,
+        _MAX_MANIFEST_BYTES,
+    )
+    total_read = len(manifest_bytes)
+    if total_read > _MAX_ZIP_TOTAL_BYTES:
+        raise ResultArchiveDecodeError(
+            "result archive exceeds the total size safety limit"
+        )
+    # Parse the manifest JSON exactly once.  Dispatch on format/schema before
+    # applying the v1 key/entry rules so a future schema is rejected before any
+    # array entry can be read, even when it carries additional contract keys.
+    manifest = _parse_manifest(manifest_bytes)
+    if manifest.get("format") != FORMAT_NAME:
+        raise ResultArchiveDecodeError("manifest.format is not fem-python-result")
+    schema = manifest.get("schema")
+    if type(schema) is not int:
+        raise ResultArchiveDecodeError("manifest.schema must be a strict integer")
+    if schema != SCHEMA_VERSION:
+        raise UnsupportedResultArchiveSchemaError(
+            f"unsupported result archive schema {schema!r}"
+        )
+    _exact_keys(manifest, _TOP_LEVEL_KEYS, label="manifest")
+    _validate_array_entry_names(manifest)
+    array_meta = manifest["arrays"]
+    if type(array_meta) is not dict:
+        raise ResultArchiveDecodeError("manifest.arrays must be an object")
+    expected_order = _expected_array_order(manifest)
+    expected_names = {MANIFEST_NAME, *array_meta}
+    if set(names) != expected_names:
+        unknown = sorted(set(names) - expected_names)
+        missing = sorted(expected_names - set(names))
+        raise ResultArchiveDecodeError(
+            f"ZIP entries do not match manifest (missing={missing}, unknown={unknown})"
+        )
+    if names != expected_order:
+        raise ResultArchiveDecodeError("ZIP entries are not in canonical order")
+    for name in array_meta:
+        if not _safe_entry_name(name) or name == MANIFEST_NAME:
+            raise ResultArchiveDecodeError(
+                f"manifest declares unsafe array entry {name!r}"
+            )
+        _checked_array_meta(
+            array_meta[name],
+            label=f"manifest.arrays[{name!r}]",
+        )
+    if materialize_arrays:
+        arrays: dict[str, bytes] = {}
+        for name in expected_order[1:]:
             raw = _read_zip_entry_bounded(
                 archive,
                 name,
@@ -1298,12 +1591,30 @@ def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
                 )
             arrays[name] = raw
         return manifest, arrays
+    return manifest, _ArchiveArrayReader(
+        archive,
+        array_meta,
+        tuple(expected_order[1:]),
+        total_read,
+    )
+
+
+def _open_archive_bytes(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
+    if type(data) is not bytes:
+        raise TypeError("archive data must be bytes")
+    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
+    try:
+        with zipfile.ZipFile(BytesIO(data), "r") as archive:
+            manifest, arrays = _open_archive_zip(
+                archive,
+                materialize_arrays=True,
+            )
+            # ``materialize_arrays=True`` always returns the historical dict.
+            return manifest, arrays  # type: ignore[return-value]
     except ResultArchiveDecodeError:
         raise
-    except (KeyError, RuntimeError, zipfile.BadZipFile, OSError) as error:
+    except (zipfile.BadZipFile, KeyError, RuntimeError, OSError, ValueError) as error:
         raise ResultArchiveDecodeError(f"result archive read failed: {error}") from error
-    finally:
-        archive.close()
 
 
 def _inspect_result_archive_header(
@@ -1409,7 +1720,22 @@ def _array_from_manifest(
     if name not in arrays or name not in manifest_arrays:
         raise ResultArchiveDecodeError(f"{label} references missing array entry {name!r}")
     meta = _checked_array_meta(manifest_arrays[name], label=f"manifest.arrays[{name!r}]")
-    return _checked_array(arrays[name], meta, label=label, expected_dtype=expected_dtype, expected_shape=expected_shape, finite=finite)
+    if isinstance(arrays, _ArchiveArrayReader):
+        return arrays.read_array(
+            name,
+            label=label,
+            expected_dtype=expected_dtype,
+            expected_shape=expected_shape,
+            finite=finite,
+        )
+    return _checked_array(
+        arrays[name],
+        meta,
+        label=label,
+        expected_dtype=expected_dtype,
+        expected_shape=expected_shape,
+        finite=finite,
+    )
 
 
 def _decode_origin(value: object) -> ResultArchiveOrigin:
@@ -1462,10 +1788,12 @@ def _decode_named_region_mapping(
     value: object,
     *,
     label: str,
-    allowed_ids: frozenset[int],
+    allowed_ids: tuple[int, ...],
 ) -> dict[str, tuple[int, ...]]:
     if type(value) is not dict:
         raise ResultArchiveDecodeError(f"{label} must be an object")
+    allowed_tuple = tuple(allowed_ids)
+    allowed_set: frozenset[int] | None = None
     result: dict[str, tuple[int, ...]] = {}
     for name, raw_ids in value.items():
         if type(name) is not str or not name.strip():
@@ -1475,9 +1803,17 @@ def _decode_named_region_mapping(
         if any(type(item) is not int or item <= 0 for item in raw_ids):
             raise ResultArchiveDecodeError(f"{label}.{name} must contain positive integers")
         ids = tuple(raw_ids)
-        if len(set(ids)) != len(ids):
+        # The canonical full-region mapping is already known to be unique and
+        # valid from topology decoding; avoid materializing validation sets.
+        if ids == allowed_tuple:
+            result[name] = ids
+            continue
+        id_set = set(ids)
+        if len(id_set) != len(ids):
             raise ResultArchiveDecodeError(f"{label}.{name} contains duplicate IDs")
-        if not set(ids).issubset(allowed_ids):
+        if allowed_set is None:
+            allowed_set = frozenset(allowed_tuple)
+        if not id_set.issubset(allowed_set):
             raise ResultArchiveDecodeError(f"{label}.{name} references an unknown ID")
         result[name] = ids
     return result
@@ -1496,7 +1832,9 @@ def _decode_topology(
     element_count = _strict_int(topology["element_count"], label="manifest.topology.element_count", minimum=1)
     element_types = topology["element_types"]
     region_keys_value = topology["region_keys"]
-    if type(element_types) is not list or any(type(item) is not str or not item for item in element_types):
+    if type(element_types) is not list or any(
+        type(item) is not str or not item.strip() for item in element_types
+    ):
         raise ResultArchiveDecodeError("manifest.topology.element_types must be a string array")
     if len(set(element_types)) != len(element_types):
         raise ResultArchiveDecodeError("manifest.topology.element_types contains duplicates")
@@ -1527,8 +1865,14 @@ def _decode_topology(
     connectivity = _array_from_manifest(arrays, manifest["arrays"], entries["connectivity"], label="topology.connectivity", expected_dtype="<i8", expected_shape=tuple(connectivity_values_meta["shape"]))
     type_indices = _array_from_manifest(arrays, manifest["arrays"], entries["element_type_indices"], label="topology.element_type_indices", expected_dtype="<i8", expected_shape=(element_count,))
     region_indices = _array_from_manifest(arrays, manifest["arrays"], entries["region_indices"], label="topology.region_indices", expected_dtype="<i8", expected_shape=(element_count,))
-    if offsets[0] != 0 or np.any(offsets[1:] < offsets[:-1]) or offsets[-1] != len(connectivity):
+    if offsets[0] != 0 or np.any(offsets[1:] <= offsets[:-1]) or offsets[-1] != len(connectivity):
         raise ResultArchiveDecodeError("topology connectivity offsets are invalid")
+    if np.any(node_ids <= 0) or len(np.unique(node_ids)) != node_count:
+        raise ResultArchiveDecodeError("topology node IDs are not positive and unique")
+    if np.any(element_ids <= 0) or len(np.unique(element_ids)) != element_count:
+        raise ResultArchiveDecodeError("topology element IDs are not positive and unique")
+    if np.any(~np.isin(connectivity, node_ids)):
+        raise ResultArchiveDecodeError("topology connectivity references unknown node ID")
     if np.any(type_indices < 0) or np.any(type_indices >= len(element_types)):
         raise ResultArchiveDecodeError("topology element type index is out of range")
     first_seen_types = tuple(dict.fromkeys(int(item) for item in type_indices))
@@ -1540,7 +1884,12 @@ def _decode_topology(
         raise ResultArchiveDecodeError("topology region index is out of range")
     rows = tuple(tuple(int(item) for item in connectivity[int(offsets[i]): int(offsets[i + 1])]) for i in range(element_count))
     try:
-        return ResultTopologyProjection(
+        topology_factory = (
+            ResultTopologyProjection._from_owned_arrays
+            if isinstance(arrays, _ArchiveArrayReader)
+            else ResultTopologyProjection
+        )
+        return topology_factory(
             source=source,
             node_ids=tuple(int(item) for item in node_ids),
             node_coordinates=coordinates,
@@ -1622,23 +1971,42 @@ def _decode_field(
     for name, mask in (("displacement_mask", displacement_mask), ("averaged_mask", averaged_mask), ("averaged", averaged)):
         if np.any(mask > 1):
             raise ResultArchiveDecodeError(f"field[{field_id}].{name} contains invalid mask value")
-    locations: list[FieldLocation] = []
-    for row in range(rows):
-        region_index = int(id_arrays["region_index"][row])
-        if region_index < -1 or region_index >= len(regions):
-            raise ResultArchiveDecodeError(f"field[{field_id}] region index is out of range")
-        try:
-            locations.append(
-                FieldLocation(
+    identities: set[object] | None
+    if descriptor.association is FieldAssociation.NODE:
+        if len(np.unique(id_arrays["node_id"])) != rows:
+            raise ResultArchiveDecodeError(
+                f"invalid field[{field_id}]: duplicate location identity"
+            )
+        identities = None
+    else:
+        identities = set()
+
+    def iter_locations():
+        for row in range(rows):
+            region_index = int(id_arrays["region_index"][row])
+            if region_index < -1 or region_index >= len(regions):
+                raise ResultArchiveDecodeError(
+                    f"field[{field_id}] region index is out of range"
+                )
+            try:
+                location = FieldLocation(
                     association=descriptor.association,
                     coordinates=tuple(float(item) for item in coordinates[row]),
-                    displacement=(tuple(float(item) for item in displacement[row]) if displacement_mask[row] else None),
+                    displacement=(
+                        tuple(float(item) for item in displacement[row])
+                        if displacement_mask[row]
+                        else None
+                    ),
                     node_id=_optional_positive_int(id_arrays["node_id"][row]),
                     element_id=_optional_positive_int(id_arrays["element_id"][row]),
-                    integration_point=_optional_positive_int(id_arrays["integration_point"][row]),
+                    integration_point=_optional_positive_int(
+                        id_arrays["integration_point"][row]
+                    ),
                     local_node=_optional_positive_int(id_arrays["local_node"][row]),
                     region_key=None if region_index < 0 else regions[region_index],
-                    averaged=(None if not averaged_mask[row] else bool(averaged[row])),
+                    averaged=(
+                        None if not averaged_mask[row] else bool(averaged[row])
+                    ),
                     section_point=(
                         None
                         if point_numbers is None
@@ -1649,11 +2017,56 @@ def _decode_field(
                         )
                     ),
                 )
-            )
-        except (TypeError, ValueError) as error:
-            raise ResultArchiveDecodeError(f"invalid field[{field_id}] location {row}: {error}") from error
+            except (TypeError, ValueError) as error:
+                raise ResultArchiveDecodeError(
+                    f"invalid field[{field_id}] location {row}: {error}"
+                ) from error
+            point_number = descriptor.field_id.section_point_number
+            if point_number is None:
+                if location.section_point is not None:
+                    raise ResultArchiveDecodeError(
+                        f"invalid field[{field_id}] location {row}: "
+                        "non-section-point fields cannot contain section points"
+                    )
+            elif (
+                location.section_point is None
+                or location.section_point.number != point_number
+            ):
+                raise ResultArchiveDecodeError(
+                    f"invalid field[{field_id}] location {row}: "
+                    "section point does not match the field descriptor"
+                )
+            # Nodal identity is just the positive node ID; avoid allocating a
+            # two-item tuple for every row while retaining exact duplicate
+            # detection for all other associations.
+            if identities is not None:
+                identity = _field_location_identity_key(location)
+                if identity in identities:
+                    raise ResultArchiveDecodeError(
+                        f"invalid field[{field_id}] location {row}: duplicate identity"
+                    )
+                identities.add(identity)
+            yield location
+
     try:
-        return FieldData(descriptor=descriptor, source=source, key=key, locations=tuple(locations), values=field_values)
+        locations = tuple(iter_locations())
+    finally:
+        if identities is not None:
+            identities.clear()
+            del identities
+    try:
+        field_factory = (
+            FieldData._from_owned_values
+            if isinstance(arrays, _ArchiveArrayReader)
+            else FieldData
+        )
+        return field_factory(
+            descriptor=descriptor,
+            source=source,
+            key=key,
+            locations=locations,
+            values=field_values,
+        )
     except (TypeError, ValueError) as error:
         raise ResultArchiveDecodeError(f"invalid field[{field_id}]: {error}") from error
 
@@ -1752,13 +2165,12 @@ def _optional_positive_int(value: object) -> int | None:
     return None if integer == -1 else integer
 
 
-def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
-    """Decode and strictly validate one schema-v1 archive byte sequence."""
+def _decode_result_archive_snapshot(
+    manifest: Mapping[str, object],
+    arrays: Mapping[str, bytes],
+) -> ResultArchiveSnapshot:
+    """Decode a validated manifest and array source into the public snapshot."""
 
-    if type(data) is not bytes:
-        raise TypeError("archive data must be bytes")
-    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
-    manifest, arrays = _open_archive_bytes(data)
     if manifest["format"] != FORMAT_NAME:
         raise ResultArchiveDecodeError("manifest.format is not fem-python-result")
     schema = manifest["schema"]
@@ -1808,12 +2220,12 @@ def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
             named_region_node_ids=_decode_named_region_mapping(
                 model_projection_value["named_region_node_ids"],
                 label="manifest.model_projection.named_region_node_ids",
-                allowed_ids=frozenset(topology.node_ids),
+                allowed_ids=topology.node_ids,
             ),
             named_region_element_ids=_decode_named_region_mapping(
                 model_projection_value["named_region_element_ids"],
                 label="manifest.model_projection.named_region_element_ids",
-                allowed_ids=frozenset(topology.element_ids),
+                allowed_ids=topology.element_ids,
             ),
             summaries=model_projection_value["summaries"],
         )
@@ -1839,7 +2251,19 @@ def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
         raise ResultArchiveDecodeError(
             "catalog READY keys must exactly match materialized field keys"
         )
+    if isinstance(arrays, _ArchiveArrayReader):
+        arrays.assert_consumed()
     return snapshot
+
+
+def decode_result_archive_v1(data: bytes) -> ResultArchiveSnapshot:
+    """Decode and strictly validate one schema-v1 archive byte sequence."""
+
+    if type(data) is not bytes:
+        raise TypeError("archive data must be bytes")
+    _validate_container_bytes(len(data), error_type=ResultArchiveDecodeError)
+    manifest, arrays = _open_archive_bytes(data)
+    return _decode_result_archive_snapshot(manifest, arrays)
 
 
 def _validate_profile_bound_catalog(
@@ -2003,12 +2427,32 @@ def save_result_archive_v1(
 def load_result_archive_v1(path: str | Path) -> LoadedResultArchive:
     source = Path(path)
     try:
-        snapshot = decode_result_archive_v1(
-            _read_path_bounded(source, _MAX_ZIP_CONTAINER_BYTES)
+        declared_size = source.stat().st_size
+        _validate_container_bytes(
+            declared_size,
+            error_type=ResultArchiveDecodeError,
         )
+        # Keep the ZipFile open for the complete decode.  The path API uses a
+        # streaming array reader and never materializes the whole container or
+        # a mapping of every raw NPY payload.
+        with zipfile.ZipFile(source, "r") as archive:
+            current_size = source.stat().st_size
+            _validate_container_bytes(
+                current_size,
+                error_type=ResultArchiveDecodeError,
+            )
+            if current_size != declared_size:
+                raise ResultArchiveDecodeError(
+                    "result archive container size changed during open"
+                )
+            manifest, arrays = _open_archive_zip(
+                archive,
+                materialize_arrays=False,
+            )
+            snapshot = _decode_result_archive_snapshot(manifest, arrays)
     except ResultArchiveDecodeError:
         raise
-    except (OSError, ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError, zipfile.BadZipFile) as error:
         raise ResultArchiveDecodeError(f"result archive load failed: {error}") from error
     return LoadedResultArchive(snapshot=snapshot, path=source, source_schema=SCHEMA_VERSION)
 

@@ -64,9 +64,11 @@ def save_result_archive(
 
 
 def load_result_archive(path: str | Path) -> LoadedResultArchive:
-    """Route a result archive path through strict schema dispatch."""
+    """Load a result archive path with one manifest parse and streamed arrays."""
 
-    _require_supported_schema(*inspect_result_archive_header_path(path))
+    # ``load_result_archive_v1`` performs format/schema dispatch while its ZIP
+    # handle is open.  Keeping dispatch in that single pass avoids the former
+    # header-inspect read followed by a second manifest read/decode.
     return load_result_archive_v1(path)
 
 

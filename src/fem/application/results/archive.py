@@ -348,13 +348,23 @@ class ResultArchiveModelProjection:
             "named_region_element_ids",
             _freeze_index_mapping(self.named_region_element_ids, label="named_region_element_ids"),
         )
-        node_ids = frozenset(self.topology.node_ids)
-        element_ids = frozenset(self.topology.element_ids)
+        node_ids = self.topology.node_ids
+        node_id_set: frozenset[int] | None = None
         for name, values in self.named_region_node_ids.items():
-            if not frozenset(values).issubset(node_ids):
+            if values == node_ids:
+                continue
+            if node_id_set is None:
+                node_id_set = frozenset(node_ids)
+            if not all(item in node_id_set for item in values):
                 raise ValueError(f"named_region_node_ids.{name} references an unknown node")
+        element_ids = self.topology.element_ids
+        element_id_set: frozenset[int] | None = None
         for name, values in self.named_region_element_ids.items():
-            if not frozenset(values).issubset(element_ids):
+            if values == element_ids:
+                continue
+            if element_id_set is None:
+                element_id_set = frozenset(element_ids)
+            if not all(item in element_id_set for item in values):
                 raise ValueError(f"named_region_element_ids.{name} references an unknown element")
         object.__setattr__(self, "summaries", _freeze_mapping(self.summaries, label="summaries"))
 
