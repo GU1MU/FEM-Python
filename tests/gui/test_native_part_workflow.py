@@ -76,7 +76,7 @@ def test_model_tree_uses_color_for_current_part_without_showing_ids() -> None:
     assert root.child(0).data(0, ROLE_KIND) == "part"
     assert root.child(0).data(0, ROLE_KEY) == "P1"
     assert root.child(0).text(0) == "部件-1"
-    assert root.child(0).background(0).color().name() == "#d9ecff"
+    assert root.child(0).font(0).bold()
     assert root.child(1).text(0) == "工具部件（已抑制）"
     assert tree.currentItem() is root.child(0)
     tree.close()
@@ -140,7 +140,7 @@ def test_switching_current_part_hides_other_geometry_previews() -> None:
     assert active_id is not None
     root = window.model_tree.roots[active_id]
     assert root.child(0).text(0) == "部件-1"
-    assert root.child(0).background(0).color().name() == "#d9ecff"
+    assert root.child(0).font(0).bold()
     assert root.child(1).text(0) == "部件-2"
     window.close()
 

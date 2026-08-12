@@ -183,7 +183,7 @@ class MaterialEditDialog(QDialog):
     def __init__(self, material: MaterialDefinition | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑材料" if material else "新建材料")
-        current = material or MaterialDefinition("Material-1", {"E": 210000.0, "nu": 0.3})
+        current = material or MaterialDefinition("Material-1", {})
         self._properties = dict(current.properties)
         self._row_kinds: list[str] = []
         self.name_edit = QLineEdit(current.name, self)
@@ -237,8 +237,6 @@ class MaterialEditDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.behavior_table)
         layout.addLayout(controls)
-        hint = QLabel("双击材料行为，或选中后点击“编辑参数”。", self)
-        layout.addWidget(hint)
         layout.addWidget(buttons)
         self.resize(420, 300)
         self._refresh_behaviors()

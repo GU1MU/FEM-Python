@@ -1429,26 +1429,19 @@ class MeshSettingsDialog(QDialog):
         self.order_combo.setCurrentIndex(
             0 if settings is None or settings.order == 1 else 1
         )
-        self.method_combo = QComboBox(self)
-        if self._mesh_dimension == 1:
-            self.method_combo.addItem("线网格", "line")
-        else:
-            self.method_combo.addItem("自由网格", "free")
-            if self._mesh_dimension == 2:
-                self.method_combo.addItem("四边形重组", "recombine")
-            elif self._allow_hexahedron:
-                self.method_combo.addItem("结构化网格", "structured")
         self.shape_combo = QComboBox(self)
-        current_method = (
-            "line"
-            if self._mesh_dimension == 1
-            else {
-                "quadrilateral": "recombine",
-                "hexahedron": "structured",
-            }.get(settings.cell_shape if settings is not None else "", "free")
-        )
-        method_index = self.method_combo.findData(current_method)
-        self.method_combo.setCurrentIndex(max(0, method_index))
+        if self._mesh_dimension == 1:
+            self.shape_combo.addItem("线网格", "line")
+        elif self._mesh_dimension == 3:
+            self.shape_combo.addItem("四面体", "tetrahedron")
+            if self._allow_hexahedron:
+                self.shape_combo.addItem("六面体", "hexahedron")
+        else:
+            self.shape_combo.addItem("三角形", "triangle")
+            self.shape_combo.addItem("四边形", "quadrilateral")
+        current_shape = settings.cell_shape if settings is not None else ""
+        shape_index = self.shape_combo.findData(current_shape)
+        self.shape_combo.setCurrentIndex(max(0, shape_index))
         self.formulation_combo = None
         if self._mesh_dimension == 1:
             self.formulation_combo = QComboBox(self)
@@ -1465,11 +1458,8 @@ class MeshSettingsDialog(QDialog):
             self.formulation_combo.currentIndexChanged.connect(
                 self._refresh_line_acceptance
             )
-        self.method_combo.currentIndexChanged.connect(self._refresh_shape_options)
-        self._refresh_shape_options()
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("网格方法", self.method_combo)
         form.addRow("单元类型", self.shape_combo)
         form.addRow("单元阶次", self.order_combo)
         if self.formulation_combo is not None:
@@ -1489,26 +1479,9 @@ class MeshSettingsDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
         if self._mesh_dimension == 1:
-            self.method_combo.setEnabled(False)
             self.shape_combo.setEnabled(False)
             self.order_combo.setEnabled(False)
             self._refresh_line_acceptance()
-
-    def _refresh_shape_options(self) -> None:
-        """Expose only element shapes implemented by the selected backend method."""
-        method = str(self.method_combo.currentData())
-        self.shape_combo.clear()
-        if self._mesh_dimension == 1:
-            self.shape_combo.addItem("线网格", "line")
-        elif self._mesh_dimension == 3:
-            if method == "structured" and self._allow_hexahedron:
-                self.shape_combo.addItem("六面体", "hexahedron")
-            else:
-                self.shape_combo.addItem("四面体", "tetrahedron")
-        elif method == "recombine":
-            self.shape_combo.addItem("四边形", "quadrilateral")
-        else:
-            self.shape_combo.addItem("三角形", "triangle")
 
     def settings(self) -> MeshSettings:
         if self._mesh_dimension == 1:

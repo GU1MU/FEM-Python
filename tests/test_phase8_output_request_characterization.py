@@ -141,8 +141,14 @@ def test_preflight_reports_each_unsupported_output_request() -> None:
             "preselect",
             ("PRESELECT",),
             {"variable": "PRESELECT"},
+            name="History Output",
         ),
-        OutputRequest("field", "element", ("UNKNOWN",)),
+        OutputRequest(
+            "field",
+            "element",
+            ("UNKNOWN",),
+            name="Element Output",
+        ),
     )
 
     report = run_static_preflight(model, "Tension")
@@ -171,6 +177,14 @@ def test_preflight_reports_each_unsupported_output_request() -> None:
         dict(item.details)["request_index"]
         for item in output_diagnostics
     ) == (1, 1, 2)
+    assert tuple(
+        dict(item.details)["request_variables"]
+        for item in output_diagnostics
+    ) == (("PRESELECT",), ("PRESELECT",), ("UNKNOWN",))
+    assert tuple(
+        dict(item.details)["request_name"]
+        for item in output_diagnostics
+    ) == ("History Output", "History Output", "Element Output")
 
 
 def test_abaqus_parent_output_context_is_inherited_with_source_evidence(

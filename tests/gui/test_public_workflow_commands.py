@@ -114,9 +114,7 @@ def test_pending_public_command_is_the_busy_gate_and_completion_handle() -> None
 
     assert receipt.status is GuiCommandStatus.PENDING
     require_rejected(
-        window.close_session(
-            CloseSessionCommand(window.document.session_revision)
-        ),
+        window.open_inp_path(FIXTURES / "truss2_tension.inp"),
         code="task.busy",
     )
     terminal = await_succeeded(receipt, timeout=2.0)

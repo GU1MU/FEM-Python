@@ -117,6 +117,7 @@ from fem.core.model import (
     OutputRequest,
     SurfaceLoad,
 )
+from fem.core._constraint_targets import displacement_target_kind
 from fem.geometry import (
     BooleanGeometry,
     BoxGeometry,
@@ -476,6 +477,18 @@ def _resolve_analysis_object_key(
         return int(step_key), int(item_key)
     except (TypeError, ValueError):
         return None
+
+
+_ANALYSIS_COLLECTION_BY_TREE_KIND = {
+    "boundary": "boundaries",
+    "cload": "cloads",
+    "edge_load": "edge_loads",
+    "surface_load": "surface_loads",
+    "line_load": "line_loads",
+    "body_load": "body_loads",
+    "gravity_load": "gravity_loads",
+    "output": "outputs",
+}
 
 
 def initial_display_policy(
@@ -1070,6 +1083,7 @@ class FEMMainWindow(QMainWindow):
             camera_state = context.presentation_state.camera_state
             if camera_state is not None and self.viewport._plotter is not None:
                 _restore_camera_state(self.viewport._plotter, camera_state)
+                self.viewport._refresh_symbols_for_camera(render=False)
                 self.viewport.render()
             else:
                 try:
@@ -1229,6 +1243,7 @@ class FEMMainWindow(QMainWindow):
         if camera_state is not None and self.viewport._plotter is not None:
             try:
                 _restore_camera_state(self.viewport._plotter, camera_state)
+                self.viewport._refresh_symbols_for_camera(render=False)
             except Exception:
                 logging.exception(
                     "failed to restore previous camera after activation failure"
@@ -1801,16 +1816,137 @@ class FEMMainWindow(QMainWindow):
 
     def open_inp_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
-        if self.busy:
+        if self._active_editor():
             return self._rejected_command(
                 command_id,
-                "task.busy",
-                "a background task is already running",
+                "editor.active",
+                "请先完成或取消当前编辑，再打开 INP",
             )
         try:
             target = Path(path)
+            existing_id = self.workspace.model_paths.get(canonical_path(target))
+            if existing_id is not None:
+                existing = self.workspace.models[existing_id]
+                if not self._activate_workspace_context(existing):
+                    return self._rejected_command(
+                        command_id,
+                        "workspace.activate.rejected",
+                        "the already-open INP model could not be activated",
+                    )
+                return GuiCommandReceipt.accepted(
+                    command_id,
+                    outcome=GuiCommandOutcome(
+                        output_path=target,
+                        diagnostic_summary="已激活已打开的 INP 模型",
+                    ),
+                )
+            open_controller = self.workspace.ensure_open_controller()
+            if open_controller.busy:
+                return self._rejected_command(
+                    command_id,
+                    "task.busy",
+                    "a model open task is already running",
+                )
+            session = ModelSession()
+            task = session.prepare_import(target)
             completion = GuiCommandCompletion(command_id)
-            started = self._begin_import(target, completion=completion)
+            accepted_context: WorkspaceDocument | None = None
+
+            def workload(context: TaskContext):
+                timings: dict[str, float] = {}
+                context.report("正在解析并构建 INP……")
+                started_at = perf_counter()
+                import_result = read_inp_with_report(target)
+                timings["INP 解析与构建"] = perf_counter() - started_at
+                model = import_result.model
+                context.report("正在生成显示网格……")
+                started_at = perf_counter()
+                geometry = build_model_geometry(model)
+                timings["VTK 显示几何构建"] = perf_counter() - started_at
+                context.report("正在准备独立模型文档……")
+                started_at = perf_counter()
+                prepared = session.prepare_owned_imported_model_transfer(model)
+                timings["Session 模型所有权准备"] = perf_counter() - started_at
+                context.checkpoint()
+                return prepared, geometry, timings, import_result.notices
+
+            def apply_result(value: object) -> TaskApplyOutcome:
+                nonlocal accepted_context
+                prepared, _geometry, _timings, _notices = self._unpack_model_load(
+                    value
+                )
+                try:
+                    accepted_context = self.workspace.add_model(
+                        session=session,
+                        display_name=target.stem,
+                        source_path=target,
+                    )
+                    delta = session.accept_imported_model_transfer(
+                        task.token,
+                        prepared,
+                    )
+                    if not delta.accepted:
+                        raise RuntimeError(delta.reason or "INP import was rejected")
+                except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
+                    if accepted_context is not None:
+                        self.workspace.remove(accepted_context)
+                        accepted_context = None
+                    return TaskApplyOutcome.rejected(str(error))
+                return TaskApplyOutcome.accepted(
+                    (accepted_context, delta, value)
+                )
+
+            def remove_failed_context(context: WorkspaceDocument) -> None:
+                self.model_tree.remove_document(context.document_id)
+                self.result_tree.remove_model_runs(context.document_id)
+                self.workspace.remove(context)
+
+            def project_result(value: object) -> None:
+                if (
+                    type(value) is not tuple
+                    or len(value) != 3
+                    or not isinstance(value[0], WorkspaceDocument)
+                    or type(value[1]) is not SessionDelta
+                ):
+                    raise RuntimeError(
+                        "accepted INP import has no detached document and delta"
+                    )
+                context, delta, payload = value
+                _model, geometry, timings, notices = self._unpack_model_load(
+                    payload
+                )
+                if not self._apply_session_delta(
+                    delta,
+                    context=context,
+                    model_geometry=geometry,
+                    timings=timings,
+                    source_label=target.name,
+                ):
+                    remove_failed_context(context)
+                    raise RuntimeError("已接受的 INP 模型无法投影")
+                artifact = context.projection.artifact
+                if artifact is None:
+                    remove_failed_context(context)
+                    raise RuntimeError("已接受的 INP 模型缺少模型构件")
+                if geometry.artifact_id != artifact.artifact_id:
+                    geometry = replace(geometry, artifact_id=artifact.artifact_id)
+                context.presentation_cache.artifact_id = artifact.artifact_id
+                context.presentation_cache.model_geometry = geometry
+                if not self._activate_workspace_context(context):
+                    remove_failed_context(context)
+                    raise RuntimeError("INP 模型文档无法激活")
+                self._install_import_notices(notices)
+
+            self.status_panel.set_state("正在导入新模型……")
+            started = self._start_task(
+                workload,
+                project_result,
+                "模型加载失败",
+                task_name="INP 导入",
+                apply_result=apply_result,
+                completion=completion,
+                controller=open_controller,
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
                 command_id,
@@ -2497,6 +2633,82 @@ class FEMMainWindow(QMainWindow):
                 error,
             )
         if job is None:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the analysis task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
+    def create_run(self, name: str, step_name: str) -> GuiCommandReceipt:
+        """Create one pending analysis run without starting the solver."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        try:
+            if self.document.model is None or self.geometry is None:
+                raise RuntimeError("a current model is required")
+            if type(name) is not str or type(step_name) is not str:
+                raise TypeError("name and step_name must be strings")
+            clean_name = name.strip()
+            clean_step = step_name.strip()
+            if not clean_name:
+                raise ValueError("作业名称不能为空。")
+            if len(clean_name) > 64:
+                raise ValueError("作业名称不能超过 64 个字符。")
+            if self.workspace.job_name_exists(clean_name):
+                raise ValueError(f"作业名称已存在：{clean_name}")
+            if clean_step not in self.session.runnable_step_names():
+                raise ValueError(f"分析步不存在：{clean_step}")
+            delta = self.session.create_run(clean_step, clean_name)
+            self.workspace.remember_job_name(clean_name)
+            receipt = self._accepted_command(command_id, delta)
+            self._refresh_job_manager()
+            self.status_panel.set_state(
+                f"作业已创建：{clean_name}；请在作业管理器中提交",
+                5000,
+            )
+            return receipt
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "run.create.rejected",
+                error,
+            )
+
+    def submit_created_run(self, name: str) -> GuiCommandReceipt:
+        """Submit one existing pending run from the job manager."""
+
+        command_id = self._next_command_id()
+        if self.busy:
+            return self._rejected_command(
+                command_id,
+                "task.busy",
+                "a background task is already running",
+            )
+        try:
+            job = self.session.find_run(name)
+            if job is None:
+                raise KeyError(f"作业不存在：{name}")
+            completion = GuiCommandCompletion(command_id)
+            started = self._begin_submit_run(
+                job.name,
+                job.step_name,
+                completion=completion,
+                existing_run=True,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(
+                command_id,
+                "run.submit.rejected",
+                error,
+            )
+        if started is None:
             return self._rejected_command(
                 command_id,
                 "task.start.rejected",
@@ -4108,7 +4320,19 @@ class FEMMainWindow(QMainWindow):
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件")
         file_menu.setObjectName("menuFile")
-        file_menu.addActions([self.actions[name] for name in ("new_native", "open_project", "save_project", "open", "save_result", "open_result")])
+        file_menu.addActions([
+            self.actions[name]
+            for name in (
+                "new_native",
+                "open_project",
+                "save_project",
+                "save_project_as",
+                "open",
+                "save_result",
+                "save_result_as",
+                "open_result",
+            )
+        ])
         file_menu.addSeparator()
         file_menu.addAction(self.actions["exit"])
         edit_menu = self.menuBar().addMenu("编辑")
@@ -4179,9 +4403,11 @@ class FEMMainWindow(QMainWindow):
                     "new_native",
                     "open_project",
                     "save_project",
+                    "save_project_as",
                     "open",
-                    "open_result",
                     "save_result",
+                    "save_result_as",
+                    "open_result",
                     "model_info",
                 ),
                 ("new_native", "open"),
@@ -4209,8 +4435,7 @@ class FEMMainWindow(QMainWindow):
             (
                 "选择",
                 (
-                    "select_point", "select_element", "select_edge",
-                    "select_face", "select_body",
+                    "select_point", "select_edge", "select_face", "select_body",
                 ),
                 (),
             ),
@@ -4536,6 +4761,9 @@ class FEMMainWindow(QMainWindow):
         self.setCentralWidget(host)
         self.model_tree.highlightRequested[int, str, object].connect(
             self._highlight_tree_entry
+        )
+        self.model_tree.highlightResetRequested.connect(
+            self._reset_tree_entry_highlight
         )
         self.model_tree.informationRequested[int, str, object].connect(
             self._show_entry_information
@@ -5416,10 +5644,7 @@ class FEMMainWindow(QMainWindow):
             str(self.wire_editor_panel.work_plane_combo.currentData())
         )
         self.ribbon.set_current("几何")
-        self.status_panel.set_state(
-            "线体编辑已启动，请在视图区添加点并连接杆件",
-            0,
-        )
+        self.status_panel.set_state("线体编辑：添加点并连接杆件", 0)
         self._update_action_states()
 
     def finish_wire_geometry(self) -> None:
@@ -5466,10 +5691,7 @@ class FEMMainWindow(QMainWindow):
             )
             return
         self._exit_wire_editor()
-        self.status_panel.set_state(
-            "线体几何已创建，请在网格设置中选择桁架或梁单元",
-            6000,
-        )
+        self.status_panel.set_state("线体已创建，请选择桁架或梁单元", 6000)
         self.ribbon.set_current("几何")
 
     def cancel_wire_geometry(self) -> None:
@@ -5593,7 +5815,7 @@ class FEMMainWindow(QMainWindow):
         session_revision = self.document.session_revision
         part_revision = self.document.part_revision(part_id)
         original_selection = set(self._selected_geometry_refs)
-        self.status_panel.set_state("正在解析实体平面工作面和关联参考点…", 0)
+        self.status_panel.set_state("正在解析草图工作面…", 0)
 
         def workload(context: TaskContext) -> object:
             context.report("正在解析实体平面工作面和关联参考点…")
@@ -5704,10 +5926,7 @@ class FEMMainWindow(QMainWindow):
         )
         self.ribbon.set_current("几何")
         self._schedule_viewport_fit()
-        self.status_panel.set_state(
-            "面草图编辑已启动；完成闭合材料轮廓后选择“创建”",
-            0,
-        )
+        self.status_panel.set_state("面草图编辑：绘制轮廓后创建", 0)
         self._update_action_states()
 
     def _open_face_sketch_boolean_dialog(self, sketch: SketchGeometry) -> None:
@@ -5776,7 +5995,7 @@ class FEMMainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         self._face_sketch_boolean_parameters_changed(dialog.parameters())
-        self.status_panel.set_state("拉伸布尔参数已打开，正在准备精确预览", 0)
+        self.status_panel.set_state("正在准备拉伸布尔预览", 0)
         self._update_action_states()
 
     def _face_sketch_boolean_parameters_changed(self, payload: object) -> None:
@@ -5964,10 +6183,7 @@ class FEMMainWindow(QMainWindow):
             int(generation),
         )
         self.faceSketchBooleanFeatureRequested.emit(request)
-        self.status_panel.set_state(
-            "拉伸布尔创建请求已准备，等待原子特征提交",
-            5000,
-        )
+        self.status_panel.set_state("拉伸布尔待提交", 5000)
 
     def _commit_face_sketch_boolean_feature(self, payload: object) -> None:
         controller = self._face_sketch_controller
@@ -6009,10 +6225,7 @@ class FEMMainWindow(QMainWindow):
                 self._face_sketch_preview_generation,
                 "提交前状态已变化，精确预览已过期，请重新生成预览",
             )
-            self.status_panel.set_state(
-                "提交前状态已变化；模型未修改，请重新生成精确预览",
-                6000,
-            )
+            self.status_panel.set_state("状态已变化，请重建预览", 6000)
             return
         if not self._confirm_result_invalidation(preserve_editor=True):
             return
@@ -6104,10 +6317,7 @@ class FEMMainWindow(QMainWindow):
                 self.viewport.highlight_geometry_entities(
                     tuple(sorted(original_selection, key=logical_ref_sort_key))
                 )
-            self.status_panel.set_state(
-                "已取消拉伸布尔；模型和历史保持不变",
-                4000,
-            )
+            self.status_panel.set_state("拉伸布尔已取消", 4000)
             self._update_action_states()
 
         if self.task_controller.current_task_name == "拉伸布尔精确预览":
@@ -6179,10 +6389,7 @@ class FEMMainWindow(QMainWindow):
         self.ribbon.set_current("几何")
         self.viewport.set_view("front")
         self._schedule_viewport_fit()
-        self.status_panel.set_state(
-            "二维草图编辑已启动，请在 XY 工作平面绘制闭合轮廓",
-            0,
-        )
+        self.status_panel.set_state("二维草图编辑：绘制闭合轮廓", 0)
         self._update_action_states()
 
     def finish_sketch_geometry(self) -> None:
@@ -6232,8 +6439,7 @@ class FEMMainWindow(QMainWindow):
                 return
             self._exit_sketch_editor()
             self.status_panel.set_state(
-                f"工具草图已完成：{len(planar.tool_face_ids)} 个闭合轮廓；"
-                "正在执行二维布尔运算",
+                f"{len(planar.tool_face_ids)} 个轮廓完成，正在执行二维布尔",
                 0,
             )
             self._refresh_planar_boolean_preview(auto_commit=True)
@@ -6279,10 +6485,7 @@ class FEMMainWindow(QMainWindow):
             )
             return
         self._exit_sketch_editor()
-        self.status_panel.set_state(
-            "二维草图已创建；可继续拉伸、布尔运算或设置网格",
-            6000,
-        )
+        self.status_panel.set_state("二维草图已创建", 6000)
         self.ribbon.set_current("几何")
 
     def cancel_sketch_geometry(self) -> None:
@@ -6562,7 +6765,7 @@ class FEMMainWindow(QMainWindow):
                 sources = all_sources
             else:
                 self.status_panel.set_state(
-                    "该草图包含多个 Profile，请先选择至少一个二维面",
+                "多轮廓草图：请选择二维面",
                     5000,
                 )
                 return
@@ -6673,7 +6876,7 @@ class FEMMainWindow(QMainWindow):
                 sources = all_sources
             else:
                 self.status_panel.set_state(
-                    "该草图包含多个 Profile，请先选择至少一个二维面",
+                "多轮廓草图：请选择二维面",
                     5000,
                 )
                 return
@@ -6798,7 +7001,7 @@ class FEMMainWindow(QMainWindow):
                 self._canonical_geometry_selection()
             )
             self.status_panel.set_state(
-                "目标面已选择，请点击“确定”继续",
+            "目标面已选，请确认",
                 0,
             )
         else:
@@ -6968,9 +7171,9 @@ class FEMMainWindow(QMainWindow):
         valid = self._face_sketch_selection_is_valid()
         face_bar.set_selection_ready(valid)
         self.status_panel.set_state(
-            "目标面已选择，请点击“确定”继续"
+            "目标面已选，请确认"
             if valid
-            else "所选面不是有效的实体平面面，请重新选择",
+            else "无效平面面，请重选",
             0 if valid else 4000,
         )
         self._update_action_states()
@@ -7003,7 +7206,7 @@ class FEMMainWindow(QMainWindow):
             self.status_panel.set_state(str(error), 3000)
             return
         self.viewport_panel.planar_boolean_face_bar.finish()
-        self.status_panel.set_state("目标面已确认，正在进入工具草图", 0)
+        self.status_panel.set_state("正在进入工具草图", 0)
         self._edit_planar_boolean_tool()
 
     def _confirm_solid_face_boolean_target(self) -> None:
@@ -7018,7 +7221,7 @@ class FEMMainWindow(QMainWindow):
             return
         self.viewport_panel.planar_boolean_face_bar.finish()
         self.status_panel.set_state(
-            "目标面已确认，正在解析三维草图工作面",
+            "正在解析草图工作面",
             0,
         )
         self.start_face_sketch_boolean()
@@ -7068,7 +7271,7 @@ class FEMMainWindow(QMainWindow):
             return
         if self.document.session_revision != controller.base_session_revision:
             self.status_panel.set_state(
-                "项目已变化；请取消后重新打开二维布尔",
+                "项目已变化，请重开二维布尔",
                 5000,
             )
             return
@@ -7139,8 +7342,7 @@ class FEMMainWindow(QMainWindow):
             )
         self._schedule_viewport_fit()
         self.status_panel.set_state(
-            "请在只读目标的 XY 平面上绘制闭合工具轮廓；"
-            "完成草图后将直接执行二维布尔运算",
+            "在目标 XY 平面绘制闭合轮廓",
             0,
         )
         self._update_action_states()
@@ -7192,13 +7394,13 @@ class FEMMainWindow(QMainWindow):
             return
         if self.document.session_revision != controller.base_session_revision:
             self.status_panel.set_state(
-                "项目已变化；请取消后重新打开二维布尔",
+                "项目已变化，请重开二维布尔",
                 5000,
             )
             return
         if self.busy:
             self.status_panel.set_state(
-                "当前有后台任务正在运行，请稍后重试",
+                "后台任务运行中，请稍后",
                 5000,
             )
             if auto_commit:
@@ -7278,7 +7480,7 @@ class FEMMainWindow(QMainWindow):
             self.planar_boolean_panel.set_preview_valid(True)
             if auto_commit:
                 self.status_panel.set_state(
-                    "精确预览和拓扑验证已通过，正在提交二维布尔",
+                    "验证通过，正在提交二维布尔",
                     0,
                 )
                 self.finish_planar_boolean(preview=preview)
@@ -7355,7 +7557,7 @@ class FEMMainWindow(QMainWindow):
             geometry_preview=preview,
         ):
             self.status_panel.set_state(
-                "提交未完成；已提交几何保持不变，已返回工具草图",
+                "提交未完成，已返回工具草图",
                 5000,
             )
             self._edit_planar_boolean_tool()
@@ -7403,7 +7605,7 @@ class FEMMainWindow(QMainWindow):
                     )
                 )
             self.status_panel.set_state(
-                "已取消二维布尔；已提交几何和选择保持不变",
+                "二维布尔已取消",
                 4000,
             )
 
@@ -7430,7 +7632,7 @@ class FEMMainWindow(QMainWindow):
         )
         if len(candidates) < 2:
             self.status_panel.set_state(
-                "实体布尔需要至少两个未抑制三维部件",
+                "实体布尔至少需要两个三维部件",
                 5000,
             )
             return
@@ -7461,7 +7663,7 @@ class FEMMainWindow(QMainWindow):
         self._set_geometry_selection_mode("body")
         self.main_splitter.setSizes([260, 720, 0, 0, 400, 0])
         self.status_panel.set_state(
-            "实体布尔已打开；请分别选择目标部件和工具部件",
+            "实体布尔：选择目标和工具部件",
             0,
         )
         self._update_action_states()
@@ -7716,7 +7918,7 @@ class FEMMainWindow(QMainWindow):
                 return
         self._rebuild_full_projection()
         self.status_panel.set_state(
-            "已取消实体布尔；源部件保持不变",
+            "实体布尔已取消",
             4000,
         )
 
@@ -7907,7 +8109,7 @@ class FEMMainWindow(QMainWindow):
                 ):
                     self.viewport.show_geometry_preview(payload)
                     self.status_panel.set_state(
-                        "布尔 OCC 预览已重建，可选择生成拓扑",
+                        "布尔预览已重建",
                         4000,
                     )
 
@@ -7991,7 +8193,7 @@ class FEMMainWindow(QMainWindow):
             ):
                 self.viewport.show_geometry_preview(payload)
                 self.status_panel.set_state(
-                    "部件布尔 OCC 预览已重建，可选择生成拓扑",
+                        "部件布尔预览已重建",
                     4000,
                 )
 
@@ -8070,7 +8272,7 @@ class FEMMainWindow(QMainWindow):
             ):
                 self.viewport.show_geometry_preview(payload)
                 self.status_panel.set_state(
-                    "二维布尔 OCC 预览已重建，可选择生成拓扑",
+                        "二维布尔预览已重建",
                     4000,
                 )
 
@@ -8254,7 +8456,7 @@ class FEMMainWindow(QMainWindow):
                 self._show_error("撤销拉伸布尔", str(error))
                 return
             self.status_panel.set_state(
-                "拉伸布尔已完整撤销；几何、引用和特征历史已恢复",
+                "拉伸布尔已撤销",
                 5000,
             )
         elif isinstance(current, MultiBodyGeometry):
@@ -8496,29 +8698,23 @@ class FEMMainWindow(QMainWindow):
         self._selection_context.geometry_filter = "body"
         if self._selection_context.space == "geometry":
             self._set_selection_filter("body", force=True)
-        message = (
-            f"{label}几何已创建；网格、模型和结果已标记过期，"
-            "请进入网格模块生成网格"
-        )
+        message = f"{label}几何已创建，网格待更新"
         if TransitionEffect.NAMED_REGIONS_CLEARED in delta.effects:
             removed_region_count = (
                 prior_region_count - len(self.document.named_regions)
             )
-            message += (
-                f"；{removed_region_count} 个旧作用域已失效，"
-                "请重新创建作用域"
-            )
+            message += f"；{removed_region_count} 个作用域失效"
         if TransitionEffect.LOCAL_CONTROLS_CLEARED in delta.effects:
             message += "；旧局部网格设置已失效"
         if delta.effects & {
             TransitionEffect.ASSIGNMENTS_CLEARED,
             TransitionEffect.STEPS_CLEARED,
         }:
-            message += "；依赖旧拓扑的区域分配和分析步已失效"
+            message += "；拓扑依赖失效"
         if TransitionEffect.MESH_SHAPE_NORMALIZED in delta.effects:
-            message += "；网格单元形状已按新几何规范化"
+            message += "；单元类型已调整"
         if TransitionEffect.REFERENCES_PRESERVED in delta.effects:
-            message += "；逻辑拓扑未变化，已有拓扑引用已保留"
+            message += "；拓扑引用保留"
         self.status_panel.set_state(message, 6000)
         return True
 
@@ -9115,8 +9311,7 @@ class FEMMainWindow(QMainWindow):
             "element": "单元",
         }[default_kind]
         self.status_panel.set_state(
-            f"请选择用于{label}的{kind_label}；可点选或框选，"
-            "Ctrl 多选，使用视图底部的“创建”完成，Esc 取消",
+            f"选择{label}{kind_label}（Ctrl 多选，底栏完成）",
             0,
         )
 
@@ -9293,7 +9488,7 @@ class FEMMainWindow(QMainWindow):
         if receipt.diagnostic is not None:
             self._show_command_rejection("网格设置", receipt)
             return
-        self.status_panel.set_state("网格设置已更新，请生成网格", 5000)
+        self.status_panel.set_state("网格设置已更新，需划分网格", 5000)
 
     def show_mesh_controls(self) -> None:
         settings = self.document.mesh_settings
@@ -9312,7 +9507,7 @@ class FEMMainWindow(QMainWindow):
             self._show_command_rejection("网格控制", receipt)
             return
         self.status_panel.set_state(
-            "局部网格控制已更新，请重新生成网格",
+            "局部网格已更新，需重新划分",
             5000,
         )
 
@@ -9355,8 +9550,8 @@ class FEMMainWindow(QMainWindow):
                 default_kind,
             )
             self.status_panel.set_state(
-                f"请选择需要设置局部网格的{'面' if default_kind == 'face' else '边'}；"
-                "Ctrl 多选，Enter 完成，Esc 取消",
+                f"选择局部网格{'面' if default_kind == 'face' else '边'}"
+                "（Ctrl 多选，Enter 完成）",
                 0,
             )
             return
@@ -9401,7 +9596,7 @@ class FEMMainWindow(QMainWindow):
             "face": "面",
         }.get(control.target.kind, "实体")
         self.status_panel.set_state(
-            f"已设置所选{kind_name}的局部尺寸，请重新生成网格",
+            f"{kind_name}局部尺寸已设置，需重新划分",
             5000,
         )
         self._restore_temporary_selection_context("local_mesh")
@@ -9421,7 +9616,7 @@ class FEMMainWindow(QMainWindow):
         self._selected_mesh_scope_refs.clear()
         self.setWindowTitle(f"有限元分析 — {recipe.name}（几何）")
         self.status_panel.set_state(
-            "网格已清除；旧作用域及其依赖定义已失效",
+            "网格已清除，相关定义已失效",
             5000,
         )
 
@@ -9452,7 +9647,7 @@ class FEMMainWindow(QMainWindow):
                 or self.document.model_revision != revision
             ):
                 self.status_panel.set_state(
-                    "模型已发生变化，已忽略旧的网格检查结果",
+                    "模型已变化，旧网格检查已忽略",
                     5000,
                 )
                 return
@@ -9747,31 +9942,41 @@ class FEMMainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(
             self, "打开 Abaqus INP", "", "Abaqus INP 文件 (*.inp);;所有文件 (*)"
         )
-        if path and self._confirm_document_transition():
+        if path:
             receipt = self.open_inp_path(Path(path))
             if receipt.diagnostic is not None:
                 self._show_command_rejection("模型加载失败", receipt)
 
-    def save_current_result(self, *, wait: bool = False) -> bool:
-        """Show the result Save As dialog on every invocation."""
+    def save_current_result(
+        self,
+        *,
+        wait: bool = False,
+        force_save_as: bool = False,
+    ) -> bool:
+        """Save the displayed result, prompting when no target exists."""
 
         if self.busy or self._current_result_provider() is None:
             return False
+        path = self.document.result_path
         run = self.session.find_run(self.document.displayed_result_run_id)
         model_name = str(self.document.model_name or "模型").strip() or "模型"
         job_name = str(getattr(run, "name", None) or "结果").strip() or "结果"
-        default_name = (
-            f"{model_name}-{job_name}{RESULT_FILE_SUFFIX}"
-        )
-        filename, _filter = QFileDialog.getSaveFileName(
-            self,
-            "保存分析结果",
-            default_name,
-            "FEM-Python 结果 (*.femres)",
-        )
-        if not filename:
-            return False
-        receipt = self.save_result_path(filename)
+        if force_save_as or path is None:
+            default_name = (
+                Path(path).with_suffix(RESULT_FILE_SUFFIX).name
+                if path is not None
+                else f"{model_name}-{job_name}{RESULT_FILE_SUFFIX}"
+            )
+            filename, _filter = QFileDialog.getSaveFileName(
+                self,
+                "保存分析结果",
+                default_name,
+                "FEM-Python 结果 (*.femres)",
+            )
+            if not filename:
+                return False
+            path = Path(filename)
+        receipt = self.save_result_path(path)
         if receipt.diagnostic is not None:
             self._show_command_rejection("保存分析结果失败", receipt)
             return False
@@ -9795,6 +10000,9 @@ class FEMMainWindow(QMainWindow):
             terminal.state is BackgroundTaskState.SUCCEEDED
             and not self.busy
         )
+
+    def save_current_result_as(self, *, wait: bool = False) -> bool:
+        return self.save_current_result(wait=wait, force_save_as=True)
 
     def open_result_file(self) -> None:
         """Show the result archive dialog and install only after confirmation."""
@@ -9859,7 +10067,7 @@ class FEMMainWindow(QMainWindow):
             return
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state(
-            "自主模型已创建，请在“几何”中选择“新建部件”。",
+            "模型已创建，请新建部件",
             5000,
         )
         self.ribbon.set_current("几何")
@@ -9885,7 +10093,7 @@ class FEMMainWindow(QMainWindow):
                 self.ribbon.set_current("几何")
                 if not self.import_notices:
                     self.status_panel.set_state(
-                        "自主项目已打开，请生成网格并检查模型",
+                    "项目已打开，请划分并检查网格",
                         6000,
                     )
 
@@ -9962,7 +10170,7 @@ class FEMMainWindow(QMainWindow):
                 return
             if self.document.dirty:
                 self.status_panel.set_state(
-                    "已保存发起操作时的项目快照；当前修改仍未保存",
+                    "项目快照已保存，当前修改未保存",
                     6000,
                 )
             else:
@@ -10001,6 +10209,9 @@ class FEMMainWindow(QMainWindow):
             terminal.state is BackgroundTaskState.SUCCEEDED
             and not self.document.dirty
         )
+
+    def save_native_project_as(self, *, wait: bool = False) -> bool:
+        return self.save_native_project(wait=wait, force_save_as=True)
 
     def _start_agent_project_save(
         self,
@@ -10125,7 +10336,7 @@ class FEMMainWindow(QMainWindow):
         )
         if not accepted:
             self.status_panel.set_state(
-                "导入结果已过期，未覆盖当前会话",
+            "导入结果过期，未应用",
                 5000,
             )
             return
@@ -10150,7 +10361,7 @@ class FEMMainWindow(QMainWindow):
         )
         if not accepted:
             self.status_panel.set_state(
-                "网格结果已过期，未覆盖当前会话",
+            "网格结果过期，未应用",
                 5000,
             )
             return
@@ -10231,7 +10442,11 @@ class FEMMainWindow(QMainWindow):
         if target_document.source_kind == "native" and target_document.parts:
             self.model_tree.set_model(
                 model,
-                model_name=str(target_document.model_name or "模型-1"),
+                model_name=str(
+                    target_context.display_name
+                    if target_context is not None
+                    else target_document.model_name or "模型-1"
+                ),
                 scope_names=frozenset(target_document.named_regions),
                 native_parts=tuple(target_document.parts),
                 active_part_id=target_document.active_part_id,
@@ -10242,6 +10457,11 @@ class FEMMainWindow(QMainWindow):
             return
         self.model_tree.set_model(
             model,
+            model_name=(
+                None
+                if target_context is None
+                else target_context.display_name
+            ),
             document_id=target_document_id,
             source_path=source_path,
             **definition_options,
@@ -10264,7 +10484,7 @@ class FEMMainWindow(QMainWindow):
             self._show_model_in_tree(artifact.model, context=context)
             return
         self.model_tree.set_geometry_preview(
-            str(snapshot.model_name or context.display_name or "模型"),
+            str(context.display_name or snapshot.model_name or "模型"),
             (),
             parts=tuple(snapshot.parts)
             if snapshot.source_kind == "native"
@@ -10280,9 +10500,9 @@ class FEMMainWindow(QMainWindow):
         *,
         catalog: object | None = None,
     ) -> None:
-        """Incrementally project one model/archive result root.
+        """Incrementally project one model's jobs or one archive result root.
 
-        ResultTree owns one indexed root per workspace context.  This helper
+        ResultTree owns one indexed root per successful run or archive.  This helper
         deliberately performs no viewport, ribbon, or result-control work, so
         deltas for inactive documents stay on the cheap tree-only path.
         """
@@ -10398,11 +10618,7 @@ class FEMMainWindow(QMainWindow):
                 if not delta.accepted:
                     raise RuntimeError(delta.reason or "result archive was rejected")
                 projection = session.projection_snapshot()
-                display_name = str(
-                    projection.model_name
-                    or payload.loaded.snapshot.origin.model_name
-                    or spec.path.stem
-                )
+                display_name = spec.path.stem
                 previous_context = self.workspace.active_document()
                 context = self.workspace.add_result(
                     session=session,
@@ -10519,12 +10735,13 @@ class FEMMainWindow(QMainWindow):
             )
             timings["InspectionService 初始化"] = perf_counter() - started
         started = perf_counter()
-        self._show_model_in_tree(
-            model,
-            context=self.workspace.active_document(),
-        )
-        timings["模型树更新"] = perf_counter() - started
         active_context = self.workspace.active_document()
+        if active_context is not None:
+            if active_context.is_result:
+                self.model_tree.remove_document(active_context.document_id)
+            else:
+                self._show_model_in_tree(model, context=active_context)
+        timings["模型树更新"] = perf_counter() - started
         if active_context is not None:
             self._refresh_result_tree_for_context(active_context)
         else:
@@ -10573,7 +10790,10 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_symbols_visible(
             self.actions["symbols"].isChecked(), refresh=False, render=False
         )
-        if self.document.source_kind != "result":
+        if (
+            self.document.source_kind != "result"
+            and not self._workspace_activation
+        ):
             started = perf_counter()
             self.viewport.show_boundary_and_loads(render=False)
             timings["载荷约束符号创建"] = perf_counter() - started
@@ -10594,8 +10814,7 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state("模型加载完成", 5000)
         if simplified:
             self.status_panel.set_state(
-                "大型模型：首次显示已隐藏单元边，并降低载荷与约束符号密度；"
-                "可在符号设置中调整。",
+                "大型模型：已简化首次显示",
                 8000,
             )
         else:
@@ -12330,7 +12549,7 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         if not self._apply_session_delta(delta):
             self.status_panel.set_state(
-                "模型已发生变化，已忽略旧的检查结果",
+                "模型已变化，旧检查已忽略",
                 5000,
             )
             return False
@@ -12358,18 +12577,8 @@ class FEMMainWindow(QMainWindow):
             item.code == "static.stiffness.skipped_large_model"
             for item in report.warnings
         )
-        output_warning_messages = {
-            "output.request.kind_unsupported": "当前输出请求的类型暂不支持执行。",
-            "output.request.target_unsupported": "当前输出请求的目标暂不支持执行。",
-            "output.request.variables_empty": "当前输出请求未指定任何结果变量。",
-            "output.request.variable_unsupported": "当前输出请求包含暂不支持的结果变量。",
-            "output.request.model_family_unsupported": "当前模型类型暂不支持所请求的结果变量。",
-            "output.request.position_unsupported": "当前模型类型暂不支持所请求的结果位置。",
-            "output.request.metadata_unsupported": "当前输出请求包含暂不支持的设置。",
-            "output.request.frequency_unsupported": "当前输出请求的输出频率暂不支持。",
-        }
         warning_messages = tuple(dict.fromkeys(
-            output_warning_messages.get(item.code, item.message)
+            self._render_model_check_warning(item)
             for item in report.warnings
         ))
         self._show_information("模型检查", [
@@ -12385,27 +12594,107 @@ class FEMMainWindow(QMainWindow):
                     else ("已跳过" if stiffness_skipped else "未执行")
                 ),
             ),
-            ("警告/限制", "；".join(warning_messages) or "无"),
+            ("警告/限制", "\n".join(warning_messages) or "无"),
             ("检查结果", "通过"),
         ])
 
-    def create_and_submit_job(self) -> None:
-        """显示创建窗口后提交一个新的会话作业。"""
+    @staticmethod
+    def _render_model_check_warning(item: PreflightDiagnostic) -> str:
+        details = dict(getattr(item, "details", ()))
+        request_index = details.get("request_index")
+        request_name = details.get("request_name")
+        if type(request_index) is int:
+            request_label = f"第 {request_index + 1} 条输出请求"
+        else:
+            request_label = "当前输出请求"
+        if request_name:
+            request_label += f"“{request_name}”"
+
+        def values_text(value: object) -> str:
+            if isinstance(value, (tuple, list)):
+                return "、".join(str(part) for part in value)
+            return "" if value is None else str(value)
+
+        request_variables = values_text(details.get("request_variables"))
+        variables_context = (
+            f"（变量：{request_variables}）" if request_variables else ""
+        )
+        code = item.code
+        if code == "output.request.kind_unsupported":
+            kind = details.get("kind", details.get("request_kind", ""))
+            return (
+                f"{request_label}{variables_context}："
+                f"类型“{kind}”暂不支持执行"
+            )
+        if code == "output.request.target_unsupported":
+            target = details.get("target", details.get("request_target", ""))
+            return (
+                f"{request_label}{variables_context}："
+                f"目标“{target}”暂不支持执行"
+            )
+        if code == "output.request.variables_empty":
+            return f"{request_label}：未指定结果变量"
+        if code == "output.request.variable_unsupported":
+            variables = values_text(
+                details.get("source_variables")
+                or details.get("canonical_variable")
+                or details.get("request_variables")
+            )
+            return f"变量 {variables} 暂不支持执行"
+        if code == "output.request.model_family_unsupported":
+            family = details.get("model_family", "")
+            return (
+                f"{request_label}{variables_context}："
+                f"模型类型“{family}”暂不支持这些变量"
+            )
+        if code == "output.request.position_unsupported":
+            position = details.get("position", "")
+            return (
+                f"{request_label}{variables_context}："
+                f"结果位置“{position}”暂不支持"
+            )
+        if code == "output.request.metadata_unsupported":
+            settings = values_text(
+                details.get("options")
+                or details.get("source_keys")
+                or details.get("flags")
+            )
+            setting_text = f"设置“{settings}”" if settings else "部分设置"
+            return (
+                f"{request_label}{variables_context}："
+                f"{setting_text}暂不支持"
+            )
+        if code == "output.request.frequency_unsupported":
+            frequency = details.get("frequency", "")
+            return (
+                f"{request_label}{variables_context}："
+                f"输出频率“{frequency}”暂不支持"
+            )
+        return str(item.message).rstrip("；;。.")
+
+    def create_job(self) -> None:
+        """Create a pending job; submission is owned by the job manager."""
+
         if self.document.model is None or self.geometry is None or self.busy:
             return
         dialog = JobSubmitDialog(
-            self.session.next_run_name(),
+            self.workspace.next_job_name(),
             self.session.runnable_step_names(),
             self._current_step_name,
             self,
         )
         if self._exec_dialog(dialog):
-            receipt = self.submit_run(dialog.job_name, dialog.step_name)
+            receipt = self.create_run(dialog.job_name, dialog.step_name)
             if receipt.diagnostic is not None:
                 self._show_command_rejection("创建作业失败", receipt)
 
+    def create_and_submit_job(self) -> None:
+        """Compatibility entry point following the create-only GUI workflow."""
+
+        self.create_job()
+
     def resubmit_job(self, source_name: str | None = None) -> None:
-        """以当前模型状态重新提交某个已完成或失败作业。"""
+        """以历史作业的分析步设置创建一个新的待提交作业。"""
         if self.busy or self.document.model is None or self.geometry is None:
             return
         source = self.session.find_run(source_name)
@@ -12418,18 +12707,18 @@ class FEMMainWindow(QMainWindow):
         if source is None:
             return
         dialog = JobSubmitDialog(
-            self.session.next_run_name(),
+            self.workspace.next_job_name(),
             self.session.runnable_step_names(),
             source.step_name,
             self,
         )
         if self._exec_dialog(dialog):
-            receipt = self.submit_run(
+            receipt = self.create_run(
                 dialog.job_name,
                 dialog.step_name,
             )
             if receipt.diagnostic is not None:
-                self._show_command_rejection("重新提交作业失败", receipt)
+                self._show_command_rejection("复制作业失败", receipt)
 
     def _submit_job(
         self,
@@ -12442,7 +12731,7 @@ class FEMMainWindow(QMainWindow):
         del source_job_name
         receipt = self.submit_run(name, step_name)
         if receipt.diagnostic is not None:
-            self._show_command_rejection("创建作业失败", receipt)
+            self._show_command_rejection("提交作业失败", receipt)
             return None
         return self.session.find_run(str(name).strip())
 
@@ -12454,6 +12743,7 @@ class FEMMainWindow(QMainWindow):
         completion: GuiCommandCompletion | None = None,
         expected_session_revision: int | None = None,
         on_progress: Callable[[str], None] | None = None,
+        existing_run: bool = False,
     ) -> AnalysisRun | None:
         if self.document.model is None or self.geometry is None or self.busy:
             raise RuntimeError("a current model is required and the task controller must be idle")
@@ -12465,15 +12755,24 @@ class FEMMainWindow(QMainWindow):
             raise ValueError("作业名称不能为空。")
         if len(clean_name) > 64:
             raise ValueError("作业名称不能超过 64 个字符。")
-        if self.session.find_run(clean_name) is not None:
+        if not existing_run and self.workspace.job_name_exists(clean_name):
             raise ValueError(f"作业名称已存在：{clean_name}")
         if clean_step not in self.session.runnable_step_names():
             raise ValueError(f"分析步不存在：{clean_step}")
-        task = self.session.prepare_solve(
-            clean_step,
-            clean_name,
-            expected_session_revision=expected_session_revision,
+        task = (
+            self.session.prepare_run_solve(
+                clean_name,
+                expected_session_revision=expected_session_revision,
+            )
+            if existing_run
+            else self.session.prepare_solve(
+                clean_step,
+                clean_name,
+                expected_session_revision=expected_session_revision,
+            )
         )
+        if not existing_run:
+            self.workspace.remember_job_name(clean_name)
         if task.delta is not None:
             self._apply_session_delta(task.delta)
         self._apply_session_delta(self.session.begin_run(task.token))
@@ -12683,7 +12982,7 @@ class FEMMainWindow(QMainWindow):
         )
         if not self._apply_session_delta(delta):
             self.status_panel.set_state(
-                "求解结果已过期，未覆盖当前会话",
+                "求解结果过期，未应用",
                 5000,
             )
             return
@@ -12805,6 +13104,7 @@ class FEMMainWindow(QMainWindow):
             return None
         if self._job_manager is None:
             dialog = JobManagerDialog(self.document.runs, self)
+            dialog.submitRequested.connect(self.submit_job)
             dialog.terminateRequested.connect(self.terminate_job)
             dialog.openResultRequested.connect(self.open_job_result)
             self._fit_viewport_when_dialog_finishes(dialog)
@@ -12832,6 +13132,16 @@ class FEMMainWindow(QMainWindow):
     def _forget_job_manager(self, dialog: JobManagerDialog) -> None:
         if self._job_manager is dialog:
             self._job_manager = None
+
+    def submit_job(self, name: str) -> bool:
+        """Submit the pending job selected in the job manager."""
+
+        receipt = self.submit_created_run(name)
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("提交作业失败", receipt)
+            self._refresh_job_manager()
+            return False
+        return True
 
     def terminate_job(self, name: str) -> bool:
         """请求终止作业管理窗口中选定的当前求解。"""
@@ -12998,8 +13308,7 @@ class FEMMainWindow(QMainWindow):
         if task_controller.busy:
             if target_context is None or self._task_context_is_active(target_context):
                 self.status_panel.set_state(
-                    "当前任务正在运行："
-                    f"{task_controller.current_task_name or '后台任务'}",
+                    f"任务中：{task_controller.current_task_name or '后台任务'}",
                     4000,
                 )
             return False
@@ -13157,8 +13466,7 @@ class FEMMainWindow(QMainWindow):
         if cancelling:
             self.status_panel.set_task_active(True, cancelling=True)
             self.status_panel.set_state(
-                "正在取消，等待当前后端调用返回："
-                f"{self.task_controller.current_task_name or '后台任务'}"
+                f"取消中：{self.task_controller.current_task_name or '后台任务'}"
             )
 
     def _task_projection_failed(self, message: str) -> None:
@@ -13253,7 +13561,13 @@ class FEMMainWindow(QMainWindow):
             cache.model_geometry = self.geometry
             cache.inspection_service = self.inspection_service
         self._show_model_in_tree(model)
+        had_result_projection = not (
+            self.result_provider is None
+            and self.viewport._result_render_payload is None
+        )
         self._clear_result_projection()
+        if not had_result_projection:
+            self.viewport.show_boundary_and_loads()
         self._sync_step_combos()
         self._refresh_result_controls()
         self._update_action_states()
@@ -13935,16 +14249,15 @@ class FEMMainWindow(QMainWindow):
         if any(reference.kind != kind for reference in selected):
             raise ValueError("mesh box selection cannot mix entity kinds")
         semantic_filter = self._active_mesh_selection_filter()
-        groups = tuple(
-            expanded
-            for reference in selected
-            if (
-                expanded := self._expand_mesh_selection_reference(
-                    semantic_filter,
-                    reference,
-                )
+        groups_by_identity: dict[int, tuple[MeshEntityRef, ...]] = {}
+        for reference in selected:
+            expanded = self._expand_mesh_selection_reference(
+                semantic_filter,
+                reference,
             )
-        )
+            if expanded:
+                groups_by_identity.setdefault(id(expanded), expanded)
+        groups = tuple(groups_by_identity.values())
         if not groups:
             self._on_viewport_pick_missed(f"mesh_{semantic_filter}")
             return
@@ -13996,13 +14309,7 @@ class FEMMainWindow(QMainWindow):
         *,
         additive: bool,
     ) -> None:
-        unique_groups = tuple(
-            {
-                tuple(sorted(set(group), key=mesh_entity_ref_sort_key))
-                for group in groups
-                if group
-            }
-        )
+        unique_groups = tuple(group for group in groups if group)
         previous = set(self._selected_mesh_scope_refs)
         if additive:
             selected = set(previous)
@@ -14066,7 +14373,7 @@ class FEMMainWindow(QMainWindow):
             topology = self._mesh_selection_topology()
             semantic_count = len(
                 {
-                    group
+                    id(group)
                     for reference in references
                     if (group := topology.expand(kind, reference))
                 }
@@ -14183,6 +14490,20 @@ class FEMMainWindow(QMainWindow):
             return None
         return context.document_id, str(kind_or_key), key
 
+    def _resolve_tree_analysis_key(
+        self,
+        kind: str,
+        key: object,
+    ) -> object | None:
+        collection_name = _ANALYSIS_COLLECTION_BY_TREE_KIND.get(kind)
+        if collection_name is None:
+            return key
+        return _resolve_analysis_object_key(
+            tuple(self.document.steps),
+            collection_name,
+            key,
+        )
+
     def _model_root_action_requested(self, document_id: int, action: str) -> None:
         """Handle model-root lifecycle actions after routing by document id."""
 
@@ -14285,6 +14606,31 @@ class FEMMainWindow(QMainWindow):
             return
         if self.inspection_service is None:
             return
+        resolved_key = self._resolve_tree_analysis_key(kind, key)
+        if resolved_key is None:
+            return
+        if kind == "boundary":
+            step_index, boundary_index = resolved_key
+            boundary = self.document.model.steps[step_index].boundaries[
+                boundary_index
+            ]
+            target_kind = displacement_target_kind(boundary)
+            target = boundary.target
+            self.highlight_entity(
+                "node" if target_kind == "node_set" and isinstance(target, int)
+                else target_kind,
+                target,
+            )
+            names = {
+                "node_set": "节点集",
+                "edge": "边集合",
+                "surface": "表面",
+            }
+            self.status_panel.set_object(
+                f"{names[target_kind]} {target}"
+            )
+            return
+        key = resolved_key
         self.highlight_entity(kind, key)
         if kind not in {"node", "element"}:
             if kind in {"model", "mesh"}:
@@ -14295,6 +14641,11 @@ class FEMMainWindow(QMainWindow):
                 "edge": "边集合", "material": "材料", "section": "截面", "step": "分析步",
             }
             self.status_panel.set_object(f"{names.get(kind, '对象')} {key}")
+
+    def _reset_tree_entry_highlight(self, followed_by_highlight: bool) -> None:
+        """Clear the previous tree highlight before projecting a new item."""
+
+        self.viewport.clear_selection(render=not followed_by_highlight)
 
     def _current_result_provider(self) -> ResultProvider | None:
         """Return the exact provider for the currently displayed Session result."""
@@ -14567,7 +14918,7 @@ class FEMMainWindow(QMainWindow):
             return
         if self.busy:
             self.status_panel.set_state(
-                "结果任务正在运行，节点平均阈值将在任务完成后应用",
+            "结果任务中，完成后应用节点平均",
                 4000,
             )
             return
@@ -15146,7 +15497,7 @@ class FEMMainWindow(QMainWindow):
             )
         if self.busy and not _materialization_completion:
             self.status_panel.set_state(
-                "结果任务正在运行，请等待完成后再应用显示设置",
+            "结果任务中，完成后应用设置",
                 5000,
             )
             return
@@ -15805,7 +16156,9 @@ class FEMMainWindow(QMainWindow):
         elif kind == "mesh":
             self.show_mesh_browser()
         else:
-            self.show_entity_information(kind, key)
+            resolved_key = self._resolve_tree_analysis_key(kind, key)
+            if resolved_key is not None:
+                self.show_entity_information(kind, resolved_key)
 
     def _rename_tree_entry(
         self,
@@ -15980,6 +16333,21 @@ class FEMMainWindow(QMainWindow):
     def highlight_entity(self, kind: str, key: object) -> None:
         if self.inspection_service is None:
             return
+        self.viewport.clear_selection(render=False)
+        if kind == "boundary":
+            step_index, boundary_index = key
+            boundary = self.document.model.steps[int(step_index)].boundaries[
+                int(boundary_index)
+            ]
+            target_kind = displacement_target_kind(boundary)
+            self.highlight_entity(
+                "node"
+                if target_kind == "node_set"
+                and isinstance(boundary.target, int)
+                else target_kind,
+                boundary.target,
+            )
+            return
         if kind in {"surface", "edge", "surface_load", "edge_load"}:
             region_kind = "surface" if kind in {"surface", "surface_load"} else "edge"
             if kind in {"surface_load", "edge_load"}:
@@ -15995,7 +16363,23 @@ class FEMMainWindow(QMainWindow):
                 if region_kind == "surface"
                 else self.document.model.edges[str(key)].edges
             )
-            self.viewport.highlight_region(members, region_kind)
+            reference_factory = (
+                MeshEntityRef.face
+                if region_kind == "surface"
+                else MeshEntityRef.edge
+            )
+            references = tuple(
+                reference_factory(
+                    int(member.elem_id),
+                    int(member.local_index),
+                    member.node_ids,
+                )
+                for member in members
+            )
+            self.viewport.highlight_mesh_entities(
+                references,
+                entity_kind="face" if region_kind == "surface" else "edge",
+            )
             return
         beam_frame_target: RegionRef | int | None = None
         if kind == "element":
@@ -16019,6 +16403,41 @@ class FEMMainWindow(QMainWindow):
                 else RegionRef("element_set", str(target))
             )
         selection = self.inspection_service.selection_for(kind, key)
+        scope_kind = (
+            "node"
+            if kind in {"node_set", "cload"}
+            else "element"
+            if kind in {
+                "element_set",
+                "line_load",
+                "body_load",
+                "gravity_load",
+            }
+            else None
+        )
+        if scope_kind == "node" and selection.node_ids:
+            self.viewport.highlight_mesh_entities(
+                tuple(
+                    MeshEntityRef.node(int(node_id))
+                    for node_id in selection.node_ids
+                ),
+                entity_kind="node",
+            )
+            return
+        if scope_kind == "element" and selection.element_ids:
+            self.viewport.highlight_mesh_entities(
+                tuple(
+                    MeshEntityRef.element(int(element_id))
+                    for element_id in selection.element_ids
+                ),
+                entity_kind="element",
+            )
+            if beam_frame_target is not None:
+                self.viewport.show_beam_frame_preview(
+                    beam_frame_target,
+                    render=False,
+                )
+            return
         if len(selection.node_ids) == 1 and not selection.element_ids:
             self._on_viewport_pick("node", selection.node_ids[0])
         elif len(selection.element_ids) == 1 and not selection.node_ids:

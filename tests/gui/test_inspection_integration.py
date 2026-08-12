@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
 from fem.io.inp import read
-from fem.application import NativePart
+from fem.application import MeshEntityRef, NativePart
 from fem.application.results import build_solve_result_bundle
 from fem.core.model import (
+    AnalysisStep,
     DisplacementConstraint,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
+    FEMModel,
     MaterialDefinition,
     NodalLoad,
 )
@@ -25,6 +31,7 @@ from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import MaterialEditDialog
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.widgets.model_tree import ROLE_KEY, ROLE_KIND
+from tests.helpers.mesh_builders import make_selection_hex_mesh
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
@@ -292,6 +299,83 @@ def test_tree_double_click_edits_imported_boundary_and_load(
     )
     assert window.document.dirty
     assert not window.session.can_submit("Static-1")
+    window.close()
+
+
+def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) -> None:
+    _application()
+    model = FEMModel(
+        make_selection_hex_mesh(),
+        edges={
+            "FIXED_EDGE": Edge(
+                "FIXED_EDGE",
+                (ElementEdge(1, 4, (5, 6)),),
+            )
+        },
+        steps=(
+            AnalysisStep(
+                "Initial",
+                boundaries=(
+                    DisplacementConstraint(
+                        "FIXED_EDGE",
+                        1,
+                        3,
+                        target_kind="edge",
+                        name="Fixed",
+                    ),
+                ),
+                edge_loads=(
+                    EdgeLoad(
+                        "FIXED_EDGE",
+                        (2.0, 0.0, 0.0),
+                        name="Edge traction",
+                    ),
+                ),
+            ),
+        ),
+    )
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("edge-boundary.inp"),
+        (model, build_model_geometry(model)),
+    )
+    highlighted_scopes = []
+    highlighted_nodes = []
+    window.viewport._actors["set_highlight"] = object()
+    monkeypatch.setattr(
+        window.viewport,
+        "highlight_mesh_entities",
+        lambda references, **options: highlighted_scopes.append(
+            (tuple(references), options)
+        ),
+    )
+    monkeypatch.setattr(
+        window.viewport,
+        "highlight_nodes",
+        lambda node_ids: highlighted_nodes.append(node_ids),
+    )
+
+    window.model_tree._on_clicked(
+        _find_kind(window.model_tree, "boundary")
+    )
+
+    expected = (
+        MeshEntityRef.edge(1, 4, (5, 6)),
+    )
+    assert highlighted_scopes == [
+        (expected, {"entity_kind": "edge"})
+    ]
+    assert highlighted_nodes == []
+    assert "set_highlight" not in window.viewport._actors
+
+    window.model_tree._on_clicked(
+        _find_kind(window.model_tree, "edge_load")
+    )
+
+    assert highlighted_scopes[-1] == (
+        expected,
+        {"entity_kind": "edge"},
+    )
     window.close()
 
 

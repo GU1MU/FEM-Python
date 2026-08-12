@@ -472,19 +472,25 @@ def test_phase0_project_router_dispatches_every_supported_schema(
 
 def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
-    assert tuple(item.key for item in ACTION_DESCRIPTORS[:8]) == (
+    assert tuple(item.key for item in ACTION_DESCRIPTORS[:10]) == (
         GuiActionKey.OPEN,
         GuiActionKey.NEW_NATIVE,
         GuiActionKey.OPEN_PROJECT,
         GuiActionKey.SAVE_PROJECT,
+        GuiActionKey.SAVE_PROJECT_AS,
         GuiActionKey.RELOAD,
         GuiActionKey.CLOSE,
         GuiActionKey.SAVE_RESULT,
+        GuiActionKey.SAVE_RESULT_AS,
         GuiActionKey.OPEN_RESULT,
     )
+    assert descriptors[GuiActionKey.SAVE_PROJECT_AS].text == "模型另存为..."
+    assert descriptors[GuiActionKey.SAVE_PROJECT_AS].icon_name is None
     assert descriptors[GuiActionKey.SAVE_RESULT].text == "保存结果"
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
     assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "save_result"
+    assert descriptors[GuiActionKey.SAVE_RESULT_AS].text == "结果另存为..."
+    assert descriptors[GuiActionKey.SAVE_RESULT_AS].icon_name is None
     assert descriptors[GuiActionKey.OPEN_RESULT].text == "打开结果"
     assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
     assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "open_result"
@@ -500,6 +506,11 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     }
     assert not states[GuiActionKey.SAVE_RESULT].enabled
     assert "没有可保存" in states[GuiActionKey.SAVE_RESULT].reason
+    assert not states[GuiActionKey.SAVE_RESULT_AS].enabled
+    assert (
+        states[GuiActionKey.SAVE_RESULT_AS].reason
+        == states[GuiActionKey.SAVE_RESULT].reason
+    )
     assert states[GuiActionKey.OPEN_RESULT].enabled
 
     application = QApplication.instance() or QApplication([])
@@ -507,18 +518,22 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     file_menu = window.findChild(QMenu, "menuFile")
     assert file_menu is not None
     assert [
-        action.objectName() for action in file_menu.actions()[:6]
+        action.objectName() for action in file_menu.actions()[:8]
     ] == [
         "action_new_native",
         "action_open_project",
         "action_save_project",
+        "action_save_project_as",
         "action_open",
         "action_save_result",
+        "action_save_result_as",
         "action_open_result",
     ]
-    assert file_menu.actions()[6].isSeparator()
-    assert file_menu.actions()[7] is window.actions["exit"]
+    assert file_menu.actions()[8].isSeparator()
+    assert file_menu.actions()[9] is window.actions["exit"]
     assert not window.actions["save_result"].icon().isNull()
+    assert window.actions["save_project_as"].icon().isNull()
+    assert window.actions["save_result_as"].icon().isNull()
     assert not window.actions["open_result"].icon().isNull()
 
     project_page = window.ribbon.stack.widget(
@@ -541,9 +556,11 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
         "action_new_native",
         "action_open_project",
         "action_save_project",
+        "action_save_project_as",
         "action_open",
-        "action_open_result",
         "action_save_result",
+        "action_save_result_as",
+        "action_open_result",
         "action_model_info",
     ]
     window.close()

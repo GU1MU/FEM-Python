@@ -240,7 +240,7 @@ def test_geometry_edge_box_selection_expands_and_ctrl_toggles(
     window.close()
 
 
-def test_box_selection_direction_uses_containment_then_crossing(
+def test_box_selection_bounds_are_direction_independent(
     monkeypatch,
 ) -> None:
     _application()
@@ -252,17 +252,16 @@ def test_box_selection_direction_uses_containment_then_crossing(
         lambda x, y: (int(x), int(y)),
     )
 
-    _bounds, left_to_right = viewport._vtk_rectangle(
+    left_to_right = viewport._vtk_rectangle(
         (10.0, 10.0),
         (50.0, 50.0),
     )
-    _bounds, right_to_left = viewport._vtk_rectangle(
+    right_to_left = viewport._vtk_rectangle(
         (50.0, 10.0),
         (10.0, 50.0),
     )
 
-    assert left_to_right
-    assert not right_to_left
+    assert left_to_right == right_to_left == (10.0, 50.0, 10.0, 50.0)
     window.close()
 
 

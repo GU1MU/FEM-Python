@@ -58,6 +58,7 @@ from fem.geometry import (
     SketchReferencePoint,
     SketchTangentConstraint,
     SketchVerticalConstraint,
+    sketch_constraint_entity_ids,
 )
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
@@ -650,6 +651,12 @@ class SketchEditorPanel(QWidget):
         self.constraints_table = QTableWidget(0, 2, self)
         self.constraints_table.setObjectName("sketchConstraintsTable")
         self.constraints_table.setHorizontalHeaderLabels(("类型", "值"))
+        self.constraints_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.constraints_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
         for column in range(self.constraints_table.columnCount()):
             self.constraints_table.horizontalHeaderItem(column).setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter
@@ -1560,8 +1567,13 @@ class SketchEditorPanel(QWidget):
         targets = self._constraint_command_targets
         if kind is None:
             return ""
-        if kind in {"fixed", "horizontal", "vertical"} and targets:
-            entity_text = "个点" if kind == "fixed" else "条直线"
+        if kind in {"fixed", "horizontal", "vertical", "radius"} and targets:
+            entity_text = {
+                "fixed": "个点",
+                "horizontal": "条直线",
+                "vertical": "条直线",
+                "radius": "个圆或圆弧",
+            }[kind]
             return f"已选择 {len(targets)} {entity_text}；可继续选择，或点击确定"
         if kind == "distance" and targets and targets[0][0] == "curve":
             return f"已选择 {len(targets)} 条直线；可继续选择，或点击确定"
@@ -1592,16 +1604,14 @@ class SketchEditorPanel(QWidget):
                 else "请选择第二个点"
             )
         if kind == "radius":
-            return "请选择一个圆或圆弧"
+            return "请选择一个或多个圆或圆弧"
         return "请选择约束对象"
 
     def _constraint_command_complete(self) -> bool:
         kind = self._constraint_command_kind
         targets = self._constraint_command_targets
-        if kind in {"horizontal", "vertical", "fixed"}:
+        if kind in {"horizontal", "vertical", "fixed", "radius"}:
             return len(targets) >= 1
-        if kind == "radius":
-            return len(targets) == 1
         if kind == "distance":
             return (bool(targets) and all(item[0] == "curve" for item in targets)) or (
                 len(targets) == 2 and all(item[0] == "point" for item in targets)
@@ -1658,6 +1668,7 @@ class SketchEditorPanel(QWidget):
                 "horizontal",
                 "vertical",
                 "distance",
+                "radius",
             }:
                 del self._constraint_command_targets[index]
             else:
@@ -1669,6 +1680,7 @@ class SketchEditorPanel(QWidget):
             "horizontal",
             "vertical",
             "distance",
+            "radius",
         }
         if (
             self._constraint_command_complete() and not batch_kind
@@ -1719,6 +1731,7 @@ class SketchEditorPanel(QWidget):
         self.constraint_command_bar.hide()
         if self._viewport is not None:
             self._viewport.end_sketch_constraint_selection()
+        self._constraint_row_changed()
 
     def create_constraints(
         self,
@@ -1732,7 +1745,13 @@ class SketchEditorPanel(QWidget):
 
         normalized = str(kind).strip().casefold()
         targets = tuple(str(item).strip() for item in entity_ids)
-        if normalized not in {"fixed", "horizontal", "vertical", "distance"}:
+        if normalized not in {
+            "fixed",
+            "horizontal",
+            "vertical",
+            "distance",
+            "radius",
+        }:
             constraint = self.create_constraint(
                 normalized, targets, value=value, driving=driving
             )
@@ -1755,6 +1774,12 @@ class SketchEditorPanel(QWidget):
                 not isinstance(curve_map.get(item), SketchLine) for item in targets
             ):
                 raise ValueError("约束目标无效：该约束需要一条或多条直线")
+        elif normalized == "radius":
+            if not targets or any(
+                not isinstance(curve_map.get(item), (SketchCircle, SketchArc))
+                for item in targets
+            ):
+                raise ValueError("约束目标无效：半径尺寸需要一个或多个圆或圆弧")
         elif not targets or not all(
             isinstance(curve_map.get(item), SketchLine) for item in targets
         ):
@@ -1787,6 +1812,20 @@ class SketchEditorPanel(QWidget):
                 constraint = SketchHorizontalConstraint(constraint_id, target)
             elif normalized == "vertical":
                 constraint = SketchVerticalConstraint(constraint_id, target)
+            elif normalized == "radius":
+                curve = curve_map[target]
+                if isinstance(curve, SketchCircle):
+                    measured = curve.radius
+                else:
+                    center = point_map[curve.center_point_id]
+                    start = point_map[curve.start_point_id]
+                    measured = math.hypot(start.u - center.u, start.v - center.v)
+                constraint = SketchRadiusDimension(
+                    constraint_id,
+                    curve.id,
+                    measured if value is None or not driving else value,
+                    driving=driving,
+                )
             else:
                 line = curve_map[target]
                 first = point_map[line.start_point_id]
@@ -2064,8 +2103,7 @@ class SketchEditorPanel(QWidget):
         self.commit_constrained_drag(point_id, u, v)
 
     def delete_selected_constraint(self) -> None:
-        row = self.constraints_table.currentRow()
-        constraint_id = self._constraint_id_for_row(row)
+        constraint_id = self._selected_constraint_id()
         if constraint_id is None:
             self._set_status("请先选择要删除的草图约束")
             return
@@ -2078,12 +2116,27 @@ class SketchEditorPanel(QWidget):
         )
         return constraint_id if isinstance(constraint_id, str) else None
 
+    def _selected_constraint_id(self) -> str | None:
+        if not self.constraints_table.selectedItems():
+            return None
+        return self._constraint_id_for_row(self.constraints_table.currentRow())
+
+    def _set_constraint_table_highlight(
+        self,
+        targets: tuple[tuple[str, str], ...],
+    ) -> None:
+        if self._viewport is None or self._constraint_command_kind is not None:
+            return
+        setter = getattr(self._viewport, "set_sketch_constraint_selection", None)
+        if setter is not None:
+            setter(targets)
+
     def _constraint_row_changed(self) -> None:
-        row = self.constraints_table.currentRow()
-        constraint_id = self._constraint_id_for_row(row)
+        constraint_id = self._selected_constraint_id()
         self.delete_constraint_button.setEnabled(constraint_id is not None)
         if constraint_id is None or self._controller is None:
             self.edit_constraint_button.setEnabled(False)
+            self._set_constraint_table_highlight(())
             return
         constraint = next(
             (
@@ -2093,6 +2146,11 @@ class SketchEditorPanel(QWidget):
             ),
             None,
         )
+        if constraint is None:
+            self.delete_constraint_button.setEnabled(False)
+            self.edit_constraint_button.setEnabled(False)
+            self._set_constraint_table_highlight(())
+            return
         self.edit_constraint_button.setEnabled(
             isinstance(
                 constraint,
@@ -2104,10 +2162,22 @@ class SketchEditorPanel(QWidget):
                 ),
             )
         )
+        if self._viewport is not None and self._constraint_command_kind is None:
+            snapshot = self._controller.snapshot()
+            point_ids = {point.id for point in snapshot.points}
+            curve_ids = {curve.id for curve in snapshot.curves}
+            targets = tuple(
+                (
+                    "point" if entity_id in point_ids else "curve",
+                    entity_id,
+                )
+                for entity_id in sketch_constraint_entity_ids(constraint)
+                if entity_id in point_ids or entity_id in curve_ids
+            )
+            self._set_constraint_table_highlight(targets)
 
     def _edit_selected_constraint(self) -> None:
-        row = self.constraints_table.currentRow()
-        constraint_id = self._constraint_id_for_row(row)
+        constraint_id = self._selected_constraint_id()
         if constraint_id is None:
             self._set_status("请先选择要编辑的草图约束")
             return

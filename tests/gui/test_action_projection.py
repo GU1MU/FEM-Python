@@ -136,6 +136,7 @@ def test_native_scope_actions_remain_disabled_until_meshing() -> None:
     )
 
     assert unselected[GuiActionKey.SAVE_PROJECT].enabled
+    assert unselected[GuiActionKey.SAVE_PROJECT_AS].enabled
     assert unselected[GuiActionKey.MESH_GENERATE].enabled
     assert not unselected[GuiActionKey.GEOMETRY_REGION].enabled
     assert not selected[GuiActionKey.GEOMETRY_REGION].enabled

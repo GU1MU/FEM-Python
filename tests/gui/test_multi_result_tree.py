@@ -37,15 +37,11 @@ def _application() -> QApplication:
 
 def _wait_open(window: FEMMainWindow, receipt) -> None:
     assert receipt.completion is not None
-    terminal = receipt.completion.result(5.0)
+    terminal = receipt.completion.result(2.0)
     app = _application()
     controller = window.workspace.open_controller
-    deadline = time.monotonic() + 5.0
-    while (
-        controller is not None
-        and controller.busy
-        and time.monotonic() < deadline
-    ):
+    deadline = time.monotonic() + 2.0
+    while controller is not None and controller.busy and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.001)
     app.processEvents()
@@ -100,20 +96,26 @@ def test_result_tree_appends_model_and_archive_roots_incrementally(monkeypatch) 
     tree.upsert_model_runs(11, projection, display_name="A", catalog=catalog)
     tree.upsert_archive(22, projection, display_name="external.femres", catalog=catalog)
 
-    assert set(tree.roots) == {11, 22}
+    model_key = (11, catalog.source.run_id)
+    archive_key = (22, catalog.source.run_id)
+    assert set(tree.roots) == {model_key, archive_key}
     assert tree.topLevelItemCount() == 2
-    assert tree.roots[11].text(0) == "A"
-    assert tree.roots[11].child(0).text(0) == "Job-1"
-    assert tree.roots[22].text(0) == "external"
-    assert tree.roots[22].toolTip(0).endswith("A.femres")
+    assert tree.roots[model_key].text(0) == "Job-1"
+    assert tree.roots[model_key].child(0).text(0) == catalog.source.step_name
+    assert tree.roots[archive_key].text(0) == "external"
+    assert tree.roots[archive_key].toolTip(0).endswith("A.femres")
 
     clear_calls: list[bool] = []
     monkeypatch.setattr(tree, "clear", lambda: clear_calls.append(True))
-    previous = tree.roots[11]
+    previous = tree.roots[model_key]
     tree.upsert_model_runs(11, _projection(catalog, "A-updated"), catalog=catalog)
     assert clear_calls == []
-    assert tree.roots[22].text(0) == "external"
-    assert tree.roots[11] is not previous
+    assert tree.roots[archive_key].text(0) == "external"
+    assert tree.roots[model_key] is not previous
+
+    unchanged = tree.roots[model_key]
+    tree.upsert_model_runs(11, _projection(catalog, "A-updated"), catalog=catalog)
+    assert tree.roots[model_key] is unchanged
 
 
 def test_result_field_items_carry_document_run_source_and_typed_selection() -> None:
@@ -121,7 +123,10 @@ def test_result_field_items_carry_document_run_source_and_typed_selection() -> N
     tree = ResultTree()
     catalog = _catalog()
     tree.upsert_model_runs(7, _projection(catalog), catalog=catalog)
-    leaf = _first_leaf(tree.roots[7], catalog.default_selection)
+    leaf = _first_leaf(
+        tree.roots[(7, catalog.source.run_id)],
+        catalog.default_selection,
+    )
     assert leaf is not None
     assert leaf.data(0, ROLE_DOCUMENT_ID) == 7
     assert leaf.data(0, ROLE_RUN_ID) == catalog.source.run_id
@@ -148,7 +153,7 @@ def test_result_root_removal_is_indexed_and_preserves_other_documents() -> None:
     tree.upsert_model_runs(1, projection, catalog=catalog)
     tree.upsert_archive(2, projection, catalog=catalog)
     assert tree.remove_archive(2)
-    assert set(tree.roots) == {1}
+    assert set(tree.roots) == {(1, catalog.source.run_id)}
     assert tree.topLevelItemCount() == 1
     assert not tree.remove_archive(2)
 
@@ -158,7 +163,7 @@ def test_result_run_item_emits_routed_activation() -> None:
     tree = ResultTree()
     catalog = _catalog()
     tree.upsert_model_runs(19, _projection(catalog), catalog=catalog)
-    run_item = tree.roots[19].child(0)
+    run_item = tree.roots[(19, catalog.source.run_id)]
     assert run_item.data(0, ROLE_RESULT_KIND) == "run"
     activated = []
     tree.runActivated.connect(
@@ -166,6 +171,38 @@ def test_result_run_item_emits_routed_activation() -> None:
     )
     tree._activate_item(run_item)
     assert activated == [(19, catalog.source.run_id)]
+
+
+def test_one_model_projects_each_successful_job_as_a_top_level_root() -> None:
+    _application()
+    tree = ResultTree()
+    catalog = _catalog()
+    first = _projection(catalog, "Model-1").runs[0]
+    second = SimpleNamespace(**(vars(first) | {"run_id": "run-2", "name": "Job-2"}))
+    projection = SimpleNamespace(
+        **(vars(_projection(catalog, "Model-1")) | {"runs": (first, second)})
+    )
+
+    tree.upsert_model_runs(5, projection, catalog=catalog)
+
+    assert set(tree.roots) == {(5, first.run_id), (5, second.run_id)}
+    assert [
+        tree.topLevelItem(index).text(0) for index in range(tree.topLevelItemCount())
+    ] == ["Job-1", "Job-2"]
+    assert all(
+        tree.topLevelItem(index).child(0).text(0) == catalog.source.step_name
+        for index in range(tree.topLevelItemCount())
+    )
+
+
+def test_model_without_successful_jobs_has_no_result_root() -> None:
+    _application()
+    tree = ResultTree()
+    projection = SimpleNamespace(model_name="Model-1", runs=())
+
+    assert tree.upsert_model_runs(1, projection) == ()
+    assert tree.roots == {}
+    assert tree.topLevelItem(0).text(0) == "尚无分析结果"
 
 
 def test_same_selection_is_scoped_to_document_and_source() -> None:
@@ -247,7 +284,13 @@ def test_main_window_appends_three_results_and_duplicate_is_index_hit(
         assert len(view_calls) == 3
         assert len(inspection_calls) == 3
         result_ids = set(window.workspace.results)
-        assert result_ids <= set(window.result_tree.roots)
+        assert result_ids == {key[0] for key in window.result_tree.roots}
+        assert {item.text(0) for item in window.result_tree.roots.values()} == {
+            path.stem for path in paths
+        }
+        assert all(
+            document_id not in window.model_tree.roots for document_id in result_ids
+        )
         active_before = window.workspace.active_document_id
         duplicate = window.open_result_path(paths[1])
         assert duplicate.status.value == "accepted"
@@ -255,9 +298,10 @@ def test_main_window_appends_three_results_and_duplicate_is_index_hit(
         assert len(geometry_calls) == 3
         assert len(view_calls) == 3
         assert len(inspection_calls) == 3
-        assert window.workspace.active_document_id == window.workspace.result_paths[
-            canonical_path(paths[1])
-        ]
+        assert (
+            window.workspace.active_document_id
+            == window.workspace.result_paths[canonical_path(paths[1])]
+        )
         assert active_before != window.workspace.active_document_id
     finally:
         window.close()
@@ -279,7 +323,7 @@ def test_main_window_failed_archive_open_is_atomic(tmp_path: Path, monkeypatch) 
         monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
         receipt = window.open_result_path(tmp_path / "broken.femres")
         assert receipt.completion is not None
-        terminal = receipt.completion.result(5.0)
+        terminal = receipt.completion.result(2.0)
         assert terminal.state is BackgroundTaskState.FAILED
         _application().processEvents()
         assert window.workspace.active_document_id == before_context
@@ -344,11 +388,15 @@ def test_result_presentation_state_isolated_across_warm_a_b_a_switch(
             lambda *args, **kwargs: render_calls.append(True),
         )
         window.viewport._plotter = object()
-        monkeypatch.setattr(window, "_apply_session_delta", lambda *_args, **_kwargs: True)
-        monkeypatch.setattr(window, "_project_viewport_for_module", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            window, "_apply_session_delta", lambda *_args, **_kwargs: True
+        )
+        monkeypatch.setattr(
+            window, "_project_viewport_for_module", lambda *_args, **_kwargs: None
+        )
         assert window._activate_workspace_context(context_a)
         assert (
-            window.result_tree.roots[context_a.document_id].data(
+            window.result_tree.roots[(context_a.document_id, source_a.run_id)].data(
                 0,
                 ROLE_RESULT_SOURCE,
             )
@@ -383,7 +431,7 @@ def test_closing_external_result_releases_cache_and_preserves_other_root(
         assert closed.presentation_cache.result_source is None
         assert closed.presentation_cache.inspection_service is None
         assert closed_id not in window.workspace.results
-        assert closed_id not in window.result_tree.roots
+        assert all(key[0] != closed_id for key in window.result_tree.roots)
         assert survivor.document_id in window.workspace.results
         assert survivor.presentation_cache.result_source == survivor_identity
     finally:
@@ -407,10 +455,11 @@ def test_main_window_run_route_is_owned_by_document(monkeypatch) -> None:
         monkeypatch.setattr(
             window,
             "select_run_result",
-            lambda run_id: calls.append(run_id)
-            or SimpleNamespace(diagnostic=None),
+            lambda run_id: calls.append(run_id) or SimpleNamespace(diagnostic=None),
         )
-        monkeypatch.setattr(window, "_refresh_result_tree_for_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            window, "_refresh_result_tree_for_context", lambda *_args, **_kwargs: None
+        )
         ribbon_calls: list[str] = []
         monkeypatch.setattr(
             window.ribbon,

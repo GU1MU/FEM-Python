@@ -13,6 +13,7 @@ from fem.application.results import (
     ResultFieldId,
     ResultQuery,
     ResultSourceKey,
+    ResultValueLayout,
     ResultVariable,
     ScalarFieldSelection,
     build_result_provider,
@@ -395,14 +396,18 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
         payloads[1].topology.selection.field_key
     )
     assert payloads[1].dataset is not payloads[0].dataset
+    assert payloads[0].topology.value_layout is ResultValueLayout.CELL
+    assert payloads[0].topology.cells == ((0, 1),)
+    assert payloads[0].topology.canonical_element_types == ("Beam2",)
+    assert payloads[0].dataset.celltypes.tolist() == [3]
     assert {
         location.section_point.number
-        for location in payloads[0].topology.point_locations
+        for location in payloads[0].topology.cell_locations
         if location is not None and location.section_point is not None
     } == {2}
     assert {
         location.section_point.number
-        for location in payloads[1].topology.point_locations
+        for location in payloads[1].topology.cell_locations
         if location is not None and location.section_point is not None
     } == {3}
 
@@ -411,7 +416,7 @@ def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
     assert viewport._contour_bar_args(payloads[1])["title"] == "S, S11"
     location = next(
         location
-        for location in payloads[0].topology.point_locations
+        for location in payloads[0].topology.cell_locations
         if location is not None and location.section_point is not None
     )
     identity = viewport._result_location_identity(location)

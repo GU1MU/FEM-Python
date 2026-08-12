@@ -126,6 +126,8 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
     assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "save_result"
+    assert descriptors[GuiActionKey.SAVE_RESULT_AS].handler == "save_current_result_as"
+    assert descriptors[GuiActionKey.SAVE_RESULT_AS].icon_name is None
     assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
     assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "open_result"
     file_menu = window.findChild(QMenu, "menuFile")
@@ -135,8 +137,10 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         "action_new_native",
         "action_open_project",
         "action_save_project",
+        "action_save_project_as",
         "action_open",
         "action_save_result",
+        "action_save_result_as",
         "action_open_result",
         "",
         "action_exit",
@@ -153,13 +157,15 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         )
         if button.defaultAction() is not None
     ]
-    assert project_buttons[:7] == [
+    assert project_buttons[:9] == [
         "action_new_native",
         "action_open_project",
         "action_save_project",
+        "action_save_project_as",
         "action_open",
-        "action_open_result",
         "action_save_result",
+        "action_save_result_as",
+        "action_open_result",
         "action_model_info",
     ]
     _wait_idle(window)
@@ -423,10 +429,7 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
     archive = _snapshot(make_continuum_nodal_semantics_result, "dialog")
     source = tmp_path / "dialog-source.femres"
     save_result_archive(source, archive)
-    targets = (
-        tmp_path / "dialog-copy-one",
-        tmp_path / "dialog-copy-two",
-    )
+    target = tmp_path / "dialog-copy"
     window = FEMMainWindow()
     open_calls: list[tuple[object, ...]] = []
     monkeypatch.setattr(
@@ -447,9 +450,8 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
     save_calls: list[tuple[object, ...]] = []
 
     def choose_save_target(*args, **kwargs):
-        index = len(save_calls)
         save_calls.append((*args, kwargs))
-        return str(targets[index]), ""
+        return str(target), ""
 
     monkeypatch.setattr(
         main_window_module.QFileDialog,
@@ -457,13 +459,12 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
         choose_save_target,
     )
     assert window.save_current_result(wait=True)
+    assert save_calls == []
+    assert window.save_current_result_as(wait=True)
     assert window.save_current_result(wait=True)
-    assert all(target.with_suffix(".femres").is_file() for target in targets)
-    assert len(save_calls) == 2
-    assert [call[2] for call in save_calls] == [
-        "model-dialog-job.femres",
-        "model-dialog-job.femres",
-    ]
+    assert target.with_suffix(".femres").is_file()
+    assert len(save_calls) == 1
+    assert save_calls[0][2] == "dialog-source.femres"
     assert all(call[3] == "FEM-Python 结果 (*.femres)" for call in save_calls)
     _wait_idle(window)
     window.close()
@@ -533,7 +534,7 @@ def test_result_archive_model_view_uses_profile_dimension_and_dofs() -> None:
         assert view.mesh.num_dofs == len(archive.topology.node_ids) * dofs_per_node
 
 
-def test_result_archive_model_view_restores_step_counts_and_all_assignments() -> None:
+def test_result_archive_view_keeps_only_result_topology_and_regions() -> None:
     archive = _snapshot(make_continuum_nodal_semantics_result, "summaries")
     element_id = archive.topology.element_ids[0]
     projection = replace(
@@ -572,20 +573,17 @@ def test_result_archive_model_view_restores_step_counts_and_all_assignments() ->
     view = build_result_archive_model_view(projection, archive.profile)
     service = InspectionService(view)
 
-    assert tuple(section.element_set for section in view.sections) == (
-        "REGION-A",
-        "REGION-B",
-    )
+    assert set(view.element_sets) == {"REGION-A", "REGION-B"}
+    assert view.materials == {}
+    assert view.sections == ()
+    assert view.steps == ()
+    assert view.metadata == {}
     model_fields = dict(service.inspect("model", None).pages[0].fields)
     assert model_fields["空间维度"] == "2维"
     assert model_fields["总自由度数量"] == str(
         len(archive.topology.node_ids) * archive.profile.dofs_per_node
     )
-    assert model_fields["分析步数量"] == "1"
-    step_fields = dict(service.inspect("step", 0).pages[0].fields)
-    assert step_fields["边界条件数量"] == "2"
-    assert step_fields["载荷数量"] == "4"
-    assert step_fields["输出请求数量"] == "3"
+    assert model_fields["分析步数量"] == "0"
     node_fields = dict(
         service.inspect("node", archive.topology.node_ids[0]).pages[0].fields
     )
@@ -1019,8 +1017,12 @@ def test_result_action_reasons_are_typed_for_busy_and_no_result() -> None:
     }
     assert not idle[GuiActionKey.SAVE_RESULT].enabled
     assert "成功结果" in idle[GuiActionKey.SAVE_RESULT].reason
+    assert not idle[GuiActionKey.SAVE_RESULT_AS].enabled
+    assert idle[GuiActionKey.SAVE_RESULT_AS].reason == idle[GuiActionKey.SAVE_RESULT].reason
     assert not busy[GuiActionKey.SAVE_RESULT].enabled
     assert "后台任务" in busy[GuiActionKey.SAVE_RESULT].reason
+    assert not busy[GuiActionKey.SAVE_RESULT_AS].enabled
+    assert busy[GuiActionKey.SAVE_RESULT_AS].reason == busy[GuiActionKey.SAVE_RESULT].reason
     assert not busy[GuiActionKey.OPEN_RESULT].enabled
     assert "后台任务" in busy[GuiActionKey.OPEN_RESULT].reason
 
@@ -1049,7 +1051,7 @@ def test_result_dialog_cancel_keeps_document_and_advertises_femres_filter(
     window.close()
 
 
-def test_save_result_dialog_cancel_does_not_start_a_task(
+def test_save_result_as_dialog_cancel_does_not_start_a_task(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1069,7 +1071,7 @@ def test_save_result_dialog_cancel_does_not_start_a_task(
             calls.append((*args, kwargs)) or ("", "")
         ),
     )
-    assert not window.save_current_result()
+    assert not window.save_current_result_as()
     assert not window.busy
     assert calls and calls[0][3] == "FEM-Python 结果 (*.femres)"
     assert _projection_identity(window) == before

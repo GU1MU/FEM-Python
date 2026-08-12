@@ -1101,7 +1101,17 @@ def _append_projected_output_diagnostics(
     """Adapt canonical result diagnostics only after the lifecycle gate opens."""
 
     for projection in projections:
+        request = projection.authoring_request
         for diagnostic in projection.diagnostics:
+            details = dict(diagnostic.details)
+            details.update(
+                {
+                    "request_name": request.name,
+                    "request_kind": request.kind,
+                    "request_target": request.target,
+                    "request_variables": tuple(request.variables),
+                }
+            )
             diagnostics.append(
                 PreflightDiagnostic(
                     code=diagnostic.code,
@@ -1118,7 +1128,7 @@ def _append_projected_output_diagnostics(
                         ),
                     ),
                     remediation=diagnostic.remediation,
-                    details=dict(diagnostic.details),
+                    details=details,
                 )
             )
 

@@ -13,12 +13,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QThread, Qt
-from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QLabel,
+    QToolButton,
+)
 
 from fem.application import AnalysisRun, ModelSession, RunStatus
 from fem.io.inp import read
 from fem.solvers import static_linear
 from fem_gui.analysis_dialogs import JobManagerDialog, JobSubmitDialog
+from fem_gui.commands import GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -71,6 +77,9 @@ def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
 
     assert dialog.job_name == "作业-1"
     assert dialog.step_name == "分析步-1"
+    buttons = dialog.findChild(QDialogButtonBox)
+    assert buttons is not None
+    assert buttons.button(QDialogButtonBox.StandardButton.Ok).text() == "创建"
     assert dialog.findChild(QLabel, "jobSessionNotice") is None
     dialog.close()
 
@@ -143,6 +152,7 @@ def test_job_actions_replace_direct_run(gui_inp_path):
         if button.defaultAction() is not None
     }
     assert window.actions["submit_job"] in ribbon_actions
+    assert window.actions["submit_job"].text() == "创建作业"
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
     assert window.actions["step_info"].isEnabled()
@@ -213,10 +223,35 @@ def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
             SimpleNamespace(
                 code="output.request.target_unsupported",
                 message="Output target 'preselect' is not executable.",
+                details={
+                    "request_index": 1,
+                    "request_name": "History Output",
+                    "request_target": "preselect",
+                    "request_variables": ("PRESELECT",),
+                    "target": "preselect",
+                },
             ),
             SimpleNamespace(
                 code="output.request.kind_unsupported",
                 message="Output kind 'history' is not executable.",
+                details={
+                    "request_index": 1,
+                    "request_name": "History Output",
+                    "request_kind": "history",
+                    "request_variables": ("PRESELECT",),
+                    "kind": "history",
+                },
+            ),
+            SimpleNamespace(
+                code="output.request.variable_unsupported",
+                message="Output variable 'UNKNOWN' is not executable.",
+                details={
+                    "request_index": 2,
+                    "request_name": "Element Output",
+                    "request_target": "element",
+                    "request_variables": ("UNKNOWN",),
+                    "source_variables": ("UNKNOWN",),
+                },
             ),
         ),
     )
@@ -225,12 +260,59 @@ def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
 
     warning_text = dict(reported[0][1])["警告/限制"]
     assert warning_text == (
-        "当前输出请求的目标暂不支持执行。；"
-        "当前输出请求的类型暂不支持执行。"
+        "第 2 条输出请求“History Output”（变量：PRESELECT）："
+        "目标“preselect”暂不支持执行\n"
+        "第 2 条输出请求“History Output”（变量：PRESELECT）："
+        "类型“history”暂不支持执行\n"
+        "变量 UNKNOWN 暂不支持执行"
     )
+    assert "；" not in warning_text
+    assert "。" not in warning_text
     assert "output.request" not in warning_text
-    assert "preselect" not in warning_text
-    assert "history" not in warning_text
+    window.close()
+
+
+def test_create_job_waits_for_job_manager_submission(gui_inp_path):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
+    assert window.check_current_model(show_success=False)
+
+    receipt = window.create_run("Job-1", "Static-1")
+    created = window.session.find_run("Job-1")
+
+    assert receipt.status is GuiCommandStatus.ACCEPTED
+    assert created is not None and created.status is RunStatus.PENDING
+    assert not window.task_controller.busy
+    manager = window.show_job_manager()
+    assert manager is not None
+    assert manager.table.item(0, 2).text() == "已创建"
+    assert manager.submit_button.isEnabled()
+
+    manager.submit_button.click()
+    _wait_for_task(window)
+
+    completed = window.session.find_run("Job-1")
+    assert completed is not None and completed.has_result
+    assert not manager.submit_button.isEnabled()
+    assert manager.open_result_button.isEnabled()
+
+    second_receipt = window.create_run("Job-2", "Static-1")
+    assert second_receipt.status is GuiCommandStatus.ACCEPTED
+    assert manager.table.rowCount() == 2
+    manager.table.selectRow(1)
+    assert manager.submit_button.isEnabled()
+    manager.submit_button.click()
+    _wait_for_task(window)
+
+    second = window.session.find_run("Job-2")
+    assert second is not None and second.has_result
+    assert {
+        window.result_tree.topLevelItem(index).text(0)
+        for index in range(window.result_tree.topLevelItemCount())
+    } == {"Job-1", "Job-2"}
+    manager.close()
     window.close()
 
 
@@ -565,7 +647,7 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     assert job1 is not None and job1.has_result
     assert window.document.active_job_name is None
     assert window.document.displayed_result_run_id == job1.run_id
-    run_item = window.result_tree.topLevelItem(0).child(0)
+    run_item = window.result_tree.topLevelItem(0)
     assert run_item.text(0) == "Job-1"
     assert run_item.child(0).text(0) == "Static-1"
 
@@ -648,7 +730,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     assert provider.catalog().default_selection is None
     assert window.result_selection is None
     assert window.viewport._result_render_payload is None
-    result_step = window.result_tree.topLevelItem(0).child(0).child(0)
+    result_step = window.result_tree.topLevelItem(0).child(0)
     assert result_step.childCount() == 0
     assert errors == []
     window.close()
@@ -865,6 +947,30 @@ def test_job_manager_terminate_button_tracks_selected_running_job():
     manager.table.selectRow(1)
     assert not manager.terminate_button.isEnabled()
     assert manager.open_result_button.isEnabled()
+    manager.close()
+
+
+def test_job_manager_submits_only_a_selected_pending_job():
+    _application()
+    pending = AnalysisRun(
+        run_id="run-1",
+        name="Job-1",
+        step_name="Static-1",
+        artifact_id="artifact-1",
+        model_revision=1,
+    )
+    manager = JobManagerDialog((pending,))
+    requested = []
+    manager.submitRequested.connect(requested.append)
+
+    assert manager.submit_button.isEnabled()
+    assert not manager.terminate_button.isEnabled()
+    manager.submit_button.click()
+
+    assert requested == ["Job-1"]
+    manager.refresh((replace(pending, status=RunStatus.RUNNING),))
+    assert not manager.submit_button.isEnabled()
+    assert manager.terminate_button.isEnabled()
     manager.close()
 
 

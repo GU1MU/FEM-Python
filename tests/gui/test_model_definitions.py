@@ -4,7 +4,12 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QDoubleSpinBox
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QDoubleSpinBox,
+    QLabel,
+)
 
 from fem.application import SectionDefinition
 from fem.core.model import MaterialDefinition
@@ -22,17 +27,24 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_material_and_section_dialogs_use_modal_parameter_fields_only():
+def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
     _application()
     material_dialog = MaterialEditDialog()
     assert material_dialog.findChildren(QDoubleSpinBox) == []
-    assert material_dialog.behavior_table.item(0, 0).text() == "线弹性"
+    assert material_dialog.behavior_table.rowCount() == 0
+    assert "双击材料行为，或选中后点击“编辑参数”。" not in {
+        label.text() for label in material_dialog.findChildren(QLabel)
+    }
     material_dialog.name_edit.setText("Aluminium")
     material = material_dialog.material()
     elastic_dialog = ElasticBehaviorDialog(material.properties)
     density_dialog = DensityBehaviorDialog(material.properties)
+    configured_material = MaterialDefinition(
+        material.name,
+        elastic_dialog.values(),
+    )
     section_dialog = SectionEditDialog(
-        [material],
+        [configured_material],
         section_presets=(
             "solid_plane_stress",
             "solid_plane_strain",
@@ -41,7 +53,7 @@ def test_material_and_section_dialogs_use_modal_parameter_fields_only():
     section = section_dialog.section()
 
     assert material.name == "Aluminium"
-    assert material.properties["E"] > 0.0
+    assert material.properties == {}
     assert elastic_dialog.values()["nu"] == 0.3
     assert density_dialog.value() > 0.0
     assert section.material == "Aluminium"

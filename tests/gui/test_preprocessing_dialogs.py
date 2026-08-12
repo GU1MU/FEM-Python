@@ -125,19 +125,18 @@ def test_mesh_settings_has_no_special_hole_size_field() -> None:
     assert not hasattr(dialog.settings(), "local_size")
 
 
-def test_mesh_settings_method_exposes_only_supported_element_shape() -> None:
+def test_mesh_settings_exposes_supported_element_shapes_without_method_field() -> None:
     _application()
     dialog = MeshSettingsDialog(
         MeshSettings(5.0, cell_shape="quadrilateral"),
         mesh_dimension=2,
     )
 
-    assert dialog.method_combo.currentData() == "recombine"
+    labels = {label.text() for label in dialog.findChildren(QLabel)}
+    assert "网格方法" not in labels
+    assert not hasattr(dialog, "method_combo")
     assert dialog.shape_combo.currentData() == "quadrilateral"
-    dialog.method_combo.setCurrentIndex(
-        dialog.method_combo.findData("free")
-    )
-    assert dialog.shape_combo.count() == 1
+    dialog.shape_combo.setCurrentIndex(dialog.shape_combo.findData("triangle"))
     assert dialog.settings().cell_shape == "triangle"
 
     volume = MeshSettingsDialog(
@@ -145,7 +144,7 @@ def test_mesh_settings_method_exposes_only_supported_element_shape() -> None:
         mesh_dimension=3,
         allow_hexahedron=False,
     )
-    assert volume.method_combo.findData("structured") == -1
+    assert volume.shape_combo.findData("hexahedron") == -1
     assert volume.settings().cell_shape == "tetrahedron"
 
 

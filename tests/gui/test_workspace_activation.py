@@ -278,6 +278,7 @@ def test_activation_restores_camera_step_display_and_batches_to_one_render(
         restored: list[str] = []
         fit_calls: list[dict[str, object]] = []
         render_calls: list[object] = []
+        symbol_refresh_calls: list[dict[str, object]] = []
         child_calls: list[tuple[str, dict[str, object]]] = []
         monkeypatch.setattr(
             main_window_module,
@@ -322,6 +323,11 @@ def test_activation_restores_camera_step_display_and_batches_to_one_render(
             "render",
             lambda *args, **kwargs: render_calls.append(kwargs),
         )
+        monkeypatch.setattr(
+            window.viewport,
+            "_refresh_symbols_for_camera",
+            lambda **kwargs: symbol_refresh_calls.append(kwargs),
+        )
 
         assert window._activate_workspace_context(second)
         assert window._activate_workspace_context(first)
@@ -333,6 +339,11 @@ def test_activation_restores_camera_step_display_and_batches_to_one_render(
         )
         assert restored == ["camera-0"]
         assert fit_calls == [{"render": False}]
+        assert symbol_refresh_calls == [{"render": False}]
+        assert not any(
+            name == "show_boundary_and_loads"
+            for name, _kwargs in child_calls
+        )
         assert len(render_calls) == 2
         assert all(
             kwargs.get("render") is False
@@ -542,6 +553,7 @@ def test_activation_failure_restores_previous_aliases_scene_and_camera(
         window.viewport._plotter = object()
         restored_cameras: list[object] = []
         renders: list[object] = []
+        symbol_refresh_calls: list[dict[str, object]] = []
         monkeypatch.setattr(
             main_window_module,
             "_capture_camera_state",
@@ -564,6 +576,11 @@ def test_activation_failure_restores_previous_aliases_scene_and_camera(
             "render",
             lambda *args, **kwargs: renders.append(kwargs),
         )
+        monkeypatch.setattr(
+            window.viewport,
+            "_refresh_symbols_for_camera",
+            lambda **kwargs: symbol_refresh_calls.append(kwargs),
+        )
 
         assert not window._activate_workspace_context(second)
         assert window.workspace.active_document() is first
@@ -574,6 +591,7 @@ def test_activation_failure_restores_previous_aliases_scene_and_camera(
         assert window._current_step_name == previous_step
         assert window._display is previous_display
         assert restored_cameras == ["previous-camera"]
+        assert symbol_refresh_calls == [{"render": False}]
         assert len(renders) <= 1
     finally:
         window.viewport._plotter = None

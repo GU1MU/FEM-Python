@@ -283,6 +283,7 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
         window._update_action_states()
 
         assert window.actions["save_project"].isEnabled() is expected
+        assert window.actions["save_project_as"].isEnabled() is expected
         if not expected:
             assert not window.save_native_project()
 
@@ -518,9 +519,12 @@ def test_short_action_labels_fit_the_ribbon_vocabulary():
     window = FEMMainWindow()
 
     assert window.actions["new_native"].text() == "新建模型"
-    assert window.actions["open_project"].text() == "打开项目"
-    assert window.actions["save_project"].text() == "保存项目"
+    assert window.actions["open_project"].text() == "打开模型"
+    assert window.actions["save_project"].text() == "保存模型"
+    assert window.actions["save_project_as"].text() == "模型另存为..."
     assert window.actions["open"].text() == "打开 INP"
+    assert window.actions["submit_job"].text() == "创建作业"
+    assert window.actions["save_result_as"].text() == "结果另存为..."
     assert window.actions["export_csv"].text() == "导出 CSV"
     assert window.actions["export_vtk"].text() == "导出 VTK"
     assert window.actions["screenshot"].text() == "导出视口"

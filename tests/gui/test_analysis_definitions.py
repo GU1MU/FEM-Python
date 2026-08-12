@@ -245,6 +245,7 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
         selected_region=RegionRef("edge", "TOP"),
         preferred_kind="edge",
     )
+    load_dialog.x_spin.setValue(1.0)
     step_name, load = load_dialog.definition()
     assert step_name == "Load"
     assert load.edge == "TOP"
@@ -280,6 +281,7 @@ def test_displacement_dialog_creates_independent_checked_dofs():
         3,
     )
     dialog.component_checks[1].setChecked(False)
+    dialog.name_edit.setText("支座位移")
     dialog.component_checks[2].setChecked(True)
     dialog.component_values[2].setValue(0.25)
     dialog.component_checks[3].setChecked(True)
@@ -289,9 +291,12 @@ def test_displacement_dialog_creates_independent_checked_dofs():
 
     assert step_name == "Load"
     assert [
-        (item.first_component, item.last_component, item.value)
+        (item.name, item.first_component, item.last_component, item.value)
         for item in boundaries
-    ] == [(2, 2, 0.25), (3, 3, -0.5)]
+    ] == [
+        ("支座位移", 2, 2, 0.25),
+        ("支座位移-2", 3, 3, -0.5),
+    ]
 
 
 def test_displacement_dialog_merges_adjacent_equal_dofs():
@@ -329,6 +334,7 @@ def test_displacement_dialog_restores_form_after_scope_creation():
         scope_selection_kinds=("surface",),
     )
     original.step_combo.setCurrentText("Step-2")
+    original.name_edit.setText("固定端")
     for component in (1, 2, 3):
         original.component_checks[component].setChecked(True)
         original.component_values[component].setValue(0.125)
@@ -358,6 +364,7 @@ def test_displacement_dialog_restores_form_after_scope_creation():
             3,
             0.125,
             target_kind="surface",
+            name="固定端",
         ),
     )
 
@@ -375,6 +382,7 @@ def test_load_dialog_restores_surface_load_after_scope_creation():
         scope_selection_kinds=("surface",),
     )
     original.step_combo.setCurrentText("Step-2")
+    original.name_edit.setText("端面压力")
     original.load_type_combo.setCurrentIndex(
         original.load_type_combo.findData("pressure")
     )
@@ -403,6 +411,7 @@ def test_load_dialog_restores_surface_load_after_scope_creation():
     assert step_name == "Step-2"
     assert load.magnitude == 12.5
     assert load.surface == "NewFace"
+    assert load.name == "端面压力"
 
 
 @pytest.mark.parametrize(
@@ -460,7 +469,12 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
         _regions("edge", "Loaded"),
         [],
         2,
-        current=EdgeLoad("Loaded", (2.0, -3.0), load_type="traction"),
+        current=EdgeLoad(
+            "Loaded",
+            (2.0, -3.0),
+            load_type="traction",
+            name="剪切载荷",
+        ),
     )
 
     step_name, load = dialog.definition()
@@ -468,6 +482,79 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     assert step_name == "Load"
     assert load.edge == "Loaded"
     assert load.vector == (2.0, -3.0)
+    assert dialog.name_edit.text() == "剪切载荷"
+    assert load.name == "剪切载荷"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ("node", "edge", "surface", "line", "body", "gravity"),
+)
+def test_load_dialog_saves_names_for_every_load_kind(kind):
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Nodes"),
+        _regions("edge", "Edges"),
+        _regions("surface", "Faces"),
+        3,
+        spatial_dimensions=3,
+        line_regions=_regions("element_set", "Lines"),
+        body_regions=_regions("element_set", "Domain"),
+    )
+    dialog.kind_combo.setCurrentIndex(dialog.kind_combo.findData(kind))
+    dialog.name_edit.setText("工况载荷")
+    if kind in {"edge", "surface"}:
+        dialog.x_spin.setValue(1.0)
+
+    _step_name, load = dialog.definition()
+
+    assert load.name == "工况载荷"
+
+
+def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
+    _application()
+    step = static("Load")
+    step.boundaries = (
+        DisplacementConstraint(
+            "Fixed",
+            1,
+            2,
+            name="旧位移约束",
+        ),
+    )
+    step.edge_loads = (
+        EdgeLoad(
+            "Loaded",
+            (2.0, -3.0),
+            name="旧边载荷",
+        ),
+    )
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        _regions("node_set", "Fixed"),
+        _regions("edge", "Loaded"),
+        [],
+        2,
+    )
+
+    def rename_boundary(dialog):
+        dialog.name_edit.setText("固定端位移")
+        return True
+
+    monkeypatch.setattr(DisplacementDialog, "exec", rename_boundary)
+    assert manager.edit_definition(("boundary", 0, 0))
+
+    def rename_load(dialog):
+        dialog.name_edit.setText("加载边牵引")
+        return True
+
+    monkeypatch.setattr(LoadDialog, "exec", rename_load)
+    assert manager.edit_definition(("edge_load", 0, 0))
+
+    updated = manager.values()[0]
+    assert updated.boundaries[0].name == "固定端位移"
+    assert updated.edge_loads[0].name == "加载边牵引"
 
 
 def test_edge_load_editor_refreshes_only_after_dialog_construction(
@@ -664,6 +751,7 @@ def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
         spatial_dimensions=3,
     )
     assert surface_dialog.form.isRowVisible(surface_dialog.z_spin)
+    surface_dialog.z_spin.setValue(1.0)
     _step, load = surface_dialog.definition()
     assert len(load.vector) == 3
 
@@ -799,6 +887,26 @@ def test_load_dialog_validates_region_and_builds_pressure():
     assert load.edge == "Loaded"
     assert load.load_type == "pressure"
     assert load.magnitude == 12.5
+
+
+def test_load_dialog_rejects_zero_distributed_loads():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        _regions("edge", "Loaded"),
+        [],
+        2,
+    )
+
+    with pytest.raises(ValueError, match="非零分量"):
+        dialog.definition()
+
+    dialog.load_type_combo.setCurrentIndex(
+        dialog.load_type_combo.findData("pressure")
+    )
+    with pytest.raises(ValueError, match="压力值不能为 0"):
+        dialog.definition()
 
 
 def test_scope_pick_buttons_request_node_edge_and_surface_selection():

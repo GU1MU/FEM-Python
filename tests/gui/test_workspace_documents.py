@@ -80,6 +80,7 @@ def test_workspace_projection_update_preserves_identity_and_revision(
     workspace.update_projection(context, updated)
     assert context.projection is updated
     assert context.revision == updated.session_revision == session.session_revision
+    assert context.display_name == "identity"
 
 
 def test_projection_path_changes_keep_duplicate_lookup_and_remove_consistent(
@@ -96,7 +97,10 @@ def test_projection_path_changes_keep_duplicate_lookup_and_remove_consistent(
     first = replace(initial, source_path=first_path, project_path=first_path)
     workspace.update_projection(context, first)
     assert workspace.model_paths[canonical_path(first_path)] == context.document_id
-    assert workspace.add_model(source_path=first_path.parent / "." / first_path.name) is context
+    assert (
+        workspace.add_model(source_path=first_path.parent / "." / first_path.name)
+        is context
+    )
 
     second = replace(first, source_path=second_path, project_path=second_path)
     workspace.update_projection(context, second)
@@ -125,6 +129,37 @@ def test_model_default_names_use_model_sequence_across_result_ids(gui_applicatio
 
     assert first.display_name == "Model-1"
     assert second.display_name == "Model-2"
+
+
+def test_workspace_disambiguates_real_model_and_result_names(gui_application, tmp_path):
+    workspace = FEMWorkspace()
+
+    first_model = workspace.add_model(display_name="模型-1")
+    second_model = workspace.add_model(display_name="模型-1")
+    first_result = workspace.add_result(
+        display_name="plate",
+        source_path=tmp_path / "a" / "plate.femres",
+    )
+    second_result = workspace.add_result(
+        display_name="plate",
+        source_path=tmp_path / "b" / "plate.femres",
+    )
+
+    assert first_model.display_name == "模型-1"
+    assert second_model.display_name == "模型-1(1)"
+    assert first_result.display_name == "plate"
+    assert second_result.display_name == "plate(1)"
+
+
+def test_workspace_job_numbers_are_global_and_never_reused(gui_application):
+    workspace = FEMWorkspace()
+
+    assert workspace.next_job_name() == "作业-1"
+    workspace.remember_job_name("作业-1")
+    assert workspace.next_job_name() == "作业-2"
+    assert workspace.job_name_exists("作业-1")
+    workspace.remember_job_name("作业-7")
+    assert workspace.next_job_name() == "作业-8"
 
 
 def test_idle_contexts_do_not_create_threads(gui_application):

@@ -8,9 +8,11 @@ from time import monotonic
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QThread
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, ProjectSnapshot
+from fem.core.model import DisplacementConstraint
 from fem.io.project import LoadedProject
 import fem_gui.main_window as main_window_module
 from fem_gui.commands import (
@@ -21,6 +23,7 @@ from fem_gui.commands import (
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.task_controller import BackgroundTaskState
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.workspace import canonical_path
 from fem_gui.widgets.viewport import FEMViewport
 from fem_gui.widgets.model_tree import (
     ModelTree,
@@ -112,6 +115,74 @@ def test_model_tree_incremental_update_and_remove_never_clear_other_roots(
     assert tree.topLevelItemCount() == 1
 
 
+def test_model_tree_definition_update_preserves_expanded_target_subtree():
+    _application()
+    tree = ModelTree()
+    model = make_static_pull_truss_model()
+    root = tree.insert_document(1, model)
+    other_root = tree.insert_document(2, _model("Other"))
+    items = tuple(_items(root))
+    mesh = next(
+        item for item in items if item.data(0, ROLE_KIND) == "mesh"
+    )
+    analysis = next(
+        item
+        for item in items
+        if item.data(0, ROLE_KIND) == "category"
+        and item.text(0).startswith("分析 (")
+    )
+    step = next(
+        item for item in items if item.data(0, ROLE_KIND) == "step"
+    )
+    boundaries = next(
+        step.child(index)
+        for index in range(step.childCount())
+        if step.child(index).text(0).startswith("边界条件 (")
+    )
+    selected_boundary = boundaries.child(0)
+    mesh.setExpanded(False)
+    analysis.setExpanded(True)
+    step.setExpanded(True)
+    boundaries.setExpanded(True)
+    tree.setCurrentItem(selected_boundary)
+    model.steps[0].boundaries = (
+        *model.steps[0].boundaries,
+        DisplacementConstraint(
+            "TIP",
+            1,
+            1,
+            name="新增位移约束",
+        ),
+    )
+
+    refreshed_root = tree.update_document(1, model)
+
+    refreshed = tuple(_items(refreshed_root))
+    assert tree.roots[2] is other_root
+    assert not next(
+        item for item in refreshed if item.data(0, ROLE_KIND) == "mesh"
+    ).isExpanded()
+    assert next(
+        item
+        for item in refreshed
+        if item.data(0, ROLE_KIND) == "category"
+        and item.text(0).startswith("分析 (")
+    ).isExpanded()
+    refreshed_step = next(
+        item for item in refreshed if item.data(0, ROLE_KIND) == "step"
+    )
+    assert refreshed_step.isExpanded()
+    refreshed_boundaries = next(
+        refreshed_step.child(index)
+        for index in range(refreshed_step.childCount())
+        if refreshed_step.child(index).text(0).startswith("边界条件 (")
+    )
+    assert refreshed_boundaries.isExpanded()
+    assert refreshed_boundaries.childCount() == 3
+    assert tree.currentItem().data(0, ROLE_KIND) == "boundary"
+    assert tree.currentItem().data(0, ROLE_DOCUMENT_ID) == 1
+
+
 def test_model_tree_fifty_roots_use_one_indexed_tree():
     _application()
     tree = ModelTree()
@@ -161,7 +232,7 @@ def _await_terminal(receipt):
     completion = receipt.completion
     assert completion is not None
     application = QApplication.instance() or QApplication([])
-    deadline = monotonic() + 5.0
+    deadline = monotonic() + 2.0
     while not completion.done and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
@@ -236,6 +307,136 @@ def test_main_window_failed_open_does_not_add_root_or_change_active(
             for context in window.workspace.models.values()
         )
         assert window.model_tree.topLevelItemCount() == 1
+    finally:
+        dispose_gui_widget(window)
+
+
+def test_open_projects_use_real_model_name_and_disambiguate_collisions(
+    monkeypatch,
+    dispose_gui_widget,
+):
+    _application()
+    paths = (Path("C:/plate-a.fempy"), Path("C:/plate-b.fempy"))
+    loaded = {
+        path: _loaded_project(path, "plate")
+        for path in paths
+    }
+    monkeypatch.setattr(main_window_module, "load_project", loaded.__getitem__)
+    window = FEMMainWindow()
+    try:
+        first = window.open_project_path(paths[0])
+        await_succeeded(first, timeout=2.0)
+        first_context = window.workspace.active_document()
+        second = window.open_project_path(paths[1])
+        await_succeeded(second, timeout=2.0)
+        second_context = window.workspace.active_document()
+
+        assert first_context is not None
+        assert second_context is not None
+        assert first_context.display_name == "plate"
+        assert second_context.display_name == "plate(1)"
+        assert window.model_tree.roots[first_context.document_id].text(0) == "plate"
+        assert window.model_tree.roots[second_context.document_id].text(0) == "plate(1)"
+    finally:
+        dispose_gui_widget(window)
+
+
+def test_open_inp_paths_append_independent_models_and_reuse_duplicate_path(
+    tmp_path,
+    monkeypatch,
+    dispose_gui_widget,
+):
+    _application()
+    paths = (tmp_path / "first.inp", tmp_path / "second.inp")
+    decode_calls: list[Path] = []
+
+    def decode(path):
+        normalized = Path(path)
+        decode_calls.append(normalized)
+        model = make_static_pull_truss_model()
+        model.name = normalized.stem
+        return SimpleNamespace(model=model, notices=())
+
+    monkeypatch.setattr(main_window_module, "read_inp_with_report", decode)
+    window = FEMMainWindow()
+    try:
+        original_context = window.workspace.active_document()
+        first_terminal = _await_terminal(window.open_inp_path(paths[0]))
+        assert first_terminal.state is BackgroundTaskState.SUCCEEDED
+        first_context = window.workspace.active_document()
+        assert first_context is not None
+        assert first_context.projection.artifact is not None
+        first_artifact_id = first_context.projection.artifact.artifact_id
+
+        second_terminal = _await_terminal(window.open_inp_path(paths[1]))
+        assert second_terminal.state is BackgroundTaskState.SUCCEEDED
+        second_context = window.workspace.active_document()
+
+        assert original_context is not None
+        assert first_context is not None
+        assert second_context is not None
+        assert first_context is not second_context
+        assert first_context.session is not second_context.session
+        assert first_context.projection.artifact.artifact_id == first_artifact_id
+        assert {
+            original_context.document_id,
+            first_context.document_id,
+            second_context.document_id,
+        } <= set(window.workspace.models)
+        assert {
+            original_context.document_id,
+            first_context.document_id,
+            second_context.document_id,
+        } <= set(window.model_tree.roots)
+        assert decode_calls == list(paths)
+
+        duplicate = window.open_inp_path(paths[0])
+        assert duplicate.status is GuiCommandStatus.ACCEPTED
+        assert window.workspace.active_document() is first_context
+        assert decode_calls == list(paths)
+    finally:
+        dispose_gui_widget(window)
+
+
+def test_failed_inp_open_keeps_every_existing_model_unchanged(
+    tmp_path,
+    monkeypatch,
+    dispose_gui_widget,
+):
+    _application()
+    good_path = tmp_path / "good.inp"
+    bad_path = tmp_path / "bad.inp"
+
+    def decode(path):
+        if Path(path) == bad_path:
+            raise ValueError("broken INP")
+        model = make_static_pull_truss_model()
+        model.name = "good"
+        return SimpleNamespace(model=model, notices=())
+
+    monkeypatch.setattr(main_window_module, "read_inp_with_report", decode)
+    window = FEMMainWindow()
+    monkeypatch.setattr(window, "_show_error", lambda *_args: None)
+    try:
+        assert (
+            _await_terminal(window.open_inp_path(good_path)).state
+            is BackgroundTaskState.SUCCEEDED
+        )
+        active_context = window.workspace.active_document()
+        assert active_context is not None
+        assert active_context.projection.artifact is not None
+        model_ids = set(window.workspace.models)
+        root_ids = set(window.model_tree.roots)
+        artifact_id = active_context.projection.artifact.artifact_id
+
+        terminal = _await_terminal(window.open_inp_path(bad_path))
+
+        assert terminal.state is BackgroundTaskState.FAILED
+        assert window.workspace.active_document() is active_context
+        assert set(window.workspace.models) == model_ids
+        assert set(window.model_tree.roots) == root_ids
+        assert active_context.projection.artifact.artifact_id == artifact_id
+        assert canonical_path(bad_path) not in window.workspace.model_paths
     finally:
         dispose_gui_widget(window)
 
@@ -404,10 +605,15 @@ def test_set_active_document_only_touches_old_and_new_roots(monkeypatch):
 
     class SpyRoot:
         def __init__(self):
-            self.selected = []
+            self.bold = []
+            self._font = QFont()
 
-        def setSelected(self, value):
-            self.selected.append(bool(value))
+        def font(self, _column):
+            return QFont(self._font)
+
+        def setFont(self, _column, font):
+            self._font = QFont(font)
+            self.bold.append(font.bold())
 
     roots = {index: SpyRoot() for index in range(1, 51)}
     tree._roots = roots
@@ -417,10 +623,26 @@ def test_set_active_document_only_touches_old_and_new_roots(monkeypatch):
 
     tree.set_active_document(50)
 
-    assert roots[1].selected == [False]
-    assert roots[50].selected == [True]
-    assert sum(len(root.selected) for root in roots.values()) == 2
+    assert roots[1].bold == [False]
+    assert roots[50].bold == [True]
+    assert sum(len(root.bold) for root in roots.values()) == 2
     assert current == [roots[50]]
+
+
+def test_active_document_uses_text_weight_without_persistent_selection():
+    _application()
+    tree = ModelTree()
+    first = tree.insert_document(1, _model("Model-1"))
+    second = tree.insert_document(2, _model("Model-2"))
+
+    tree.set_active_document(1)
+    tree.set_active_document(2)
+
+    assert not first.font(0).bold()
+    assert second.font(0).bold()
+    assert tree.currentItem() is second
+    assert tree.selectedItems() == []
+    assert "QTreeWidget#modelTree::item:hover" in tree.styleSheet()
 
 
 def test_set_active_document_preserves_root_order():

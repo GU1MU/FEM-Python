@@ -494,6 +494,13 @@ def _project_integration_points(
     scalar_values: np.ndarray,
     scale: float,
 ) -> dict[str, object]:
+    if _beam_integration_points_cover_elements(topology, field_data):
+        return _project_element(
+            topology,
+            field_data,
+            scalar_values,
+            scale,
+        )
     known_elements = frozenset(topology.element_ids)
     points: list[tuple[float, float, float]] = []
     for location in field_data.locations:
@@ -512,6 +519,27 @@ def _project_integration_points(
         "point_locations": locations,
         "cell_locations": locations,
     }
+
+
+def _beam_integration_points_cover_elements(
+    topology: ResultTopologyProjection,
+    field_data: FieldData,
+) -> bool:
+    """Return whether one Beam2 integration-point value owns every element."""
+
+    if not topology.element_types or any(
+        element_type != "Beam2" for element_type in topology.element_types
+    ):
+        return False
+    element_ids = tuple(
+        location.element_id for location in field_data.locations
+    )
+    return (
+        len(element_ids) == len(topology.element_ids)
+        and None not in element_ids
+        and len(set(element_ids)) == len(element_ids)
+        and set(element_ids) == set(topology.element_ids)
+    )
 
 
 def _project_element_nodes(

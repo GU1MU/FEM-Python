@@ -151,6 +151,16 @@ def build_constraint_overlays(
     point_map = {point.id: point for point in points}
     curve_map = {curve.id: curve for curve in curves}
     warnings = frozenset(warning_ids)
+    if len(points) > 1:
+        u_values = tuple(point.u for point in points)
+        v_values = tuple(point.v for point in points)
+        point_span = max(
+            max(u_values) - min(u_values),
+            max(v_values) - min(v_values),
+        )
+        fixed_label_offset = 0.035 * point_span if point_span > 0.0 else 0.04
+    else:
+        fixed_label_offset = 0.04
     overlays: list[SketchConstraintOverlay] = []
     for constraint in constraints:
         entity_ids = sketch_constraint_entity_ids(constraint)
@@ -169,7 +179,12 @@ def build_constraint_overlays(
             continue
         u = sum(point.u for point in anchors) / len(anchors)
         v = sum(point.v for point in anchors) / len(anchors)
-        if isinstance(constraint, SketchRadiusDimension):
+        if isinstance(constraint, SketchFixedConstraint):
+            # Keep the lightweight fixed marker beside the point so the point itself
+            # remains visible and selectable in the sketch.
+            u += fixed_label_offset
+            v += fixed_label_offset
+        elif isinstance(constraint, SketchRadiusDimension):
             curve = curve_map[constraint.curve_id]
             center = point_map[curve.center_point_id]
             if isinstance(curve, SketchCircle):

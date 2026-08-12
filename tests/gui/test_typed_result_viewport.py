@@ -1049,11 +1049,6 @@ def test_typed_picking_exposes_location_ids_through_existing_pick_indexes(
             )
         ),
     )
-    monkeypatch.setattr(
-        viewport,
-        "_display_candidate_is_visible",
-        lambda *_args: True,
-    )
     viewport._selection_mode = "node"
     node_hit = viewport._resolve_pick(1, 2)
     monkeypatch.setattr(
@@ -1126,11 +1121,6 @@ def test_contextual_mesh_picking_uses_rendered_result_coordinates_and_ids(
         )
 
     monkeypatch.setattr(viewport, "_world_points_to_display", project)
-    monkeypatch.setattr(
-        viewport,
-        "_display_candidate_is_visible",
-        lambda *_args: True,
-    )
     intersected = []
 
     def intersect(_x, _y, dataset):
@@ -1287,12 +1277,7 @@ def test_result_edge_and_face_pick_data_follow_displayed_node_coordinates(
         monkeypatch.setattr(
             viewport,
             "_vtk_rectangle",
-            lambda *_args: ((-100.0, 100.0, -100.0, 100.0), True),
-        )
-        monkeypatch.setattr(
-            viewport,
-            "_display_candidate_is_visible",
-            lambda *_args: True,
+            lambda *_args: (-100.0, 100.0, -100.0, 100.0),
         )
         boxed = viewport._mesh_entities_in_qt_rectangle(
             (0.0, 0.0),
@@ -1321,12 +1306,6 @@ def test_typed_picking_falls_back_to_model_when_field_lacks_entity_provenance(
             )
         ),
     )
-    monkeypatch.setattr(
-        viewport,
-        "_display_candidate_is_visible",
-        lambda *_args: True,
-    )
-
     cell_payload = _cell_payload()
     viewport.set_result_render_payload(cell_payload)
     viewport._result_grid = cell_payload.dataset
@@ -1463,11 +1442,6 @@ def test_typed_highlight_uses_all_matches_or_falls_back_for_partial_batches(
                 (500.0, 500.0, 0.5),
             )
         ),
-    )
-    monkeypatch.setattr(
-        viewport,
-        "_display_candidate_is_visible",
-        lambda *_args: True,
     )
     viewport._selection_mode = "element"
     element_hit = viewport._resolve_pick(1, 2)

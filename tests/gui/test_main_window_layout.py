@@ -332,8 +332,11 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_vtk"] not in project_actions
     assert window.actions["model_info"] in project_actions
     assert window.actions["submit_job"] not in project_actions
-    assert project_action_order.index(window.actions["open_result"]) < (
-        project_action_order.index(window.actions["save_result"])
+    assert project_action_order.index(window.actions["save_project_as"]) == (
+        project_action_order.index(window.actions["save_project"]) + 1
+    )
+    assert project_action_order.index(window.actions["save_result_as"]) == (
+        project_action_order.index(window.actions["save_result"]) + 1
     )
     project_group_titles = {
         label.text()
@@ -371,7 +374,7 @@ def test_small_ribbon_commands_use_readable_icons():
     window.close()
 
 
-def test_geometry_and_model_pages_reuse_five_semantic_selection_actions():
+def test_geometry_omits_element_selection_while_model_keeps_all_selection_actions():
     _application()
     window = FEMMainWindow()
     tab_names = [
@@ -448,7 +451,6 @@ def test_geometry_and_model_pages_reuse_five_semantic_selection_actions():
             "geometry_fuse",
             "geometry_cut",
             "select_point",
-            "select_element",
             "select_edge",
             "select_face",
             "select_body",

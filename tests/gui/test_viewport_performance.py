@@ -10,7 +10,15 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.core.model import DisplacementConstraint, FEMModel, GravityLoad
+from fem.core.model import (
+    AnalysisStep,
+    DisplacementConstraint,
+    Edge,
+    EdgeLoad,
+    ElementEdge,
+    FEMModel,
+    GravityLoad,
+)
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -330,6 +338,51 @@ def test_gravity_uses_one_centered_yellow_direction_arrow(monkeypatch):
     assert options["color"] == "#FFD400"
     assert options["name"] == "gravity"
     assert plotter.gravity_actor.pickable is False
+
+
+def test_2d_inward_edge_traction_is_lifted_above_mesh_for_visibility(monkeypatch):
+    _application()
+    model = FEMModel(make_selection_quad_mesh())
+    model.edges["RIGHT"] = Edge(
+        "RIGHT",
+        (ElementEdge(1, 1, (2, 3)),),
+    )
+    model.steps = [
+        AnalysisStep(
+            "pull",
+            edge_loads=(EdgeLoad("RIGHT", (-10.0, 0.0)),),
+        )
+    ]
+    geometry = build_model_geometry(model)
+    viewport = FEMViewport()
+    viewport.set_model(model, geometry, refresh_symbols=False, render=False)
+    plotter = _Plotter(_Camera(scale=1.0))
+    viewport._plotter = plotter
+    monkeypatch.setattr(
+        viewport_module,
+        "_pyvista",
+        pytest.importorskip("pyvista"),
+    )
+    viewport.set_symbol_settings(
+        SymbolSettings(
+            step_name="pull",
+            show_constraints=False,
+            show_nodal_loads=False,
+            show_surface_loads=False,
+            show_line_loads=False,
+        ),
+        refresh=False,
+    )
+
+    viewport.show_boundary_and_loads("pull", render=False)
+
+    calls_by_name = {
+        options.get("name"): dataset
+        for dataset, options in plotter.mesh_calls
+    }
+    assert calls_by_name["load_region_edges"].n_lines == 1
+    assert calls_by_name["loads"].n_points > 0
+    assert calls_by_name["loads"].bounds[4] > 0.0
 
 
 def test_symbol_sampling_density_override_is_explicit_and_reversible():

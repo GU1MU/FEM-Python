@@ -13,9 +13,7 @@ import numpy as np
 from fem.application.results import ElementResultProfile, ResultArchiveModelProjection
 from fem.core.model import (
     ElementSet,
-    MaterialDefinition,
     NodeSet,
-    SectionAssignment,
 )
 from fem.post.vtk import cells as vtk_cells
 
@@ -91,46 +89,22 @@ class ArchiveMeshView:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveModelView:
-    """Read-only model tree/inspection/viewport facade for a result archive."""
+    """Read-only topology facade for result inspection and viewport display."""
 
     mesh: ArchiveMeshView
     name: str
     node_sets: Mapping[str, NodeSet]
     element_sets: Mapping[str, ElementSet]
     surfaces: Mapping[str, object]
-    materials: Mapping[str, MaterialDefinition]
-    sections: tuple[SectionAssignment, ...]
+    materials: Mapping[str, object]
+    sections: tuple[object, ...]
     steps: tuple[object, ...]
     metadata: Mapping[str, object]
     edges: Mapping[str, object]
 
 
-@dataclass(frozen=True, slots=True)
-class ArchiveStepView:
-    """Read-only analysis-step summary retained by a result archive."""
-
-    name: str
-    procedure: str
-    summary_boundary_count: int = 0
-    summary_load_count: int = 0
-    summary_output_count: int = 0
-    boundaries: tuple[object, ...] = ()
-    cloads: tuple[object, ...] = ()
-    surface_loads: tuple[object, ...] = ()
-    edge_loads: tuple[object, ...] = ()
-    line_loads: tuple[object, ...] = ()
-    body_loads: tuple[object, ...] = ()
-    gravity_loads: tuple[object, ...] = ()
-    outputs: tuple[object, ...] = ()
-
-
 def _profile_spatial_dimension(profile: ElementResultProfile) -> int:
     return 2 if profile.family.value == "plane_continuum" else 3
-
-
-def _summary_count(value: Mapping[str, object], name: str) -> int:
-    count = value.get(name, 0)
-    return count if type(count) is int and count >= 0 else 0
 
 
 def build_model_geometry(model: Any) -> ModelGeometry:
@@ -148,7 +122,11 @@ def build_model_geometry(model: Any) -> ModelGeometry:
     cells, cell_types, elements = vtk_cells.build(mesh)
     if len(cells) != len(mesh.elements):
         converted = {int(element.id) for element in elements}
-        missing = [int(element.id) for element in mesh.elements if int(element.id) not in converted]
+        missing = [
+            int(element.id)
+            for element in mesh.elements
+            if int(element.id) not in converted
+        ]
         raise ValueError(f"以下单元无法转换为 VTK：{missing}")
     element_id_to_cell_index = {
         int(element.id): index for index, element in enumerate(elements)
@@ -167,9 +145,13 @@ def build_model_geometry(model: Any) -> ModelGeometry:
         cell_array=flat_cells,
         cell_types=np.asarray(cell_types, dtype=np.uint8),
         node_id_to_point_index=node_id_to_point_index,
-        point_index_to_node_id={index: node_id for node_id, index in node_id_to_point_index.items()},
+        point_index_to_node_id={
+            index: node_id for node_id, index in node_id_to_point_index.items()
+        },
         element_id_to_cell_index=element_id_to_cell_index,
-        cell_index_to_element_id={index: element_id for element_id, index in element_id_to_cell_index.items()},
+        cell_index_to_element_id={
+            index: element_id for element_id, index in element_id_to_cell_index.items()
+        },
     )
 
 
@@ -190,9 +172,7 @@ def build_result_archive_geometry(
     topology = projection.topology
     coordinates = topology._node_coordinates
     node_ids = tuple(int(value) for value in topology.node_ids)
-    node_id_to_point_index = {
-        node_id: index for index, node_id in enumerate(node_ids)
-    }
+    node_id_to_point_index = {node_id: index for index, node_id in enumerate(node_ids)}
     cells: list[tuple[int, ...]] = []
     flat: list[int] = []
     cell_types: list[int] = []
@@ -217,13 +197,11 @@ def build_result_archive_geometry(
         cell_types=np.asarray(cell_types, dtype=np.uint8),
         node_id_to_point_index=node_id_to_point_index,
         point_index_to_node_id={
-            index: node_id
-            for node_id, index in node_id_to_point_index.items()
+            index: node_id for node_id, index in node_id_to_point_index.items()
         },
         element_id_to_cell_index=element_id_to_cell_index,
         cell_index_to_element_id={
-            index: element_id
-            for element_id, index in element_id_to_cell_index.items()
+            index: element_id for element_id, index in element_id_to_cell_index.items()
         },
         artifact_id=artifact_id,
     )
@@ -277,63 +255,15 @@ def build_result_archive_model_view(
         region_name: ElementSet(region_name, values)
         for region_name, values in projection.named_region_element_ids.items()
     }
-    summaries = projection.summaries
-    materials = {
-        str(item["name"]): MaterialDefinition(
-            str(item["name"]),
-            dict(item.get("properties", {})),
-        )
-        for item in summaries.get("materials", ())
-        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
-    }
-    assignments = tuple(
-        item
-        for item in summaries.get("assignments", ())
-        if isinstance(item, Mapping)
-    )
-    section_definitions = {
-        str(item["name"]): item
-        for item in summaries.get("sections", ())
-        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
-    }
-    sections = []
-    for assignment in assignments:
-        section = section_definitions.get(str(assignment.get("section_name", "")))
-        region_name = str(assignment.get("region_name", ""))
-        if section is None or region_name not in element_sets:
-            continue
-        sections.append(
-            SectionAssignment(
-                element_set=region_name,
-                material=str(section.get("material") or ""),
-                section_type=str(section.get("section_type") or "solid"),
-                properties=dict(section.get("properties", {})),
-            )
-        )
-    steps = tuple(
-        ArchiveStepView(
-            name=str(item["name"]),
-            procedure=str(item.get("procedure") or "static"),
-            summary_boundary_count=_summary_count(item, "boundary_count"),
-            summary_load_count=(
-                _summary_count(item, "total_load_count")
-                or _summary_count(item, "load_count")
-                + _summary_count(item, "surface_load_count")
-            ),
-            summary_output_count=_summary_count(item, "output_count"),
-        )
-        for item in summaries.get("steps", ())
-        if isinstance(item, Mapping) and str(item.get("name", "")).strip()
-    )
     return ArchiveModelView(
         mesh=mesh,
         name=str(name or "结果"),
         node_sets=MappingProxyType(node_sets),
         element_sets=MappingProxyType(element_sets),
         surfaces=MappingProxyType({}),
-        materials=MappingProxyType(materials),
-        sections=tuple(sections),
-        steps=steps,
-        metadata=MappingProxyType({"result_archive_summaries": projection.summaries}),
+        materials=MappingProxyType({}),
+        sections=(),
+        steps=(),
+        metadata=MappingProxyType({}),
         edges=MappingProxyType({}),
     )

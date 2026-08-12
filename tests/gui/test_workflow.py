@@ -27,6 +27,7 @@ from fem_gui.task_controller import (
     TaskCompletion,
 )
 from fem_gui.visualization.symbols import SymbolSettings
+from tests.helpers.gui_command_receipts import await_succeeded
 
 
 def _application() -> QApplication:
@@ -67,13 +68,10 @@ def test_background_import_solve_and_result_state(gui_inp_path):
     _application()
     window = FEMMainWindow()
 
-    window._load_path(gui_inp_path)
-    assert not window.actions["open"].isEnabled()
+    completion = await_succeeded(window.open_inp_path(gui_inp_path))
     assert not window.actions["submit_job"].isEnabled()
-    _wait_for_task(window)
 
     assert window.document.has_model
-    completion = window.task_controller.last_completion
     assert isinstance(completion, TaskCompletion)
     assert completion.task_name == "INP 导入"
     assert completion.state is BackgroundTaskState.SUCCEEDED
@@ -134,8 +132,7 @@ def test_background_import_solve_and_result_state(gui_inp_path):
 def test_reload_clears_selection_and_old_result(gui_inp_path):
     _application()
     window = FEMMainWindow()
-    window._load_path(gui_inp_path)
-    _wait_for_task(window)
+    await_succeeded(window.open_inp_path(gui_inp_path))
     window.selection.select_node(1)
     assert window.check_current_model(show_success=False)
     window._submit_job("Job-1", "Static-1")
@@ -161,8 +158,7 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
 ):
     _application()
     window = FEMMainWindow()
-    window._load_path(gui_inp_path)
-    _wait_for_task(window)
+    await_succeeded(window.open_inp_path(gui_inp_path))
     assert window.check_current_model(show_success=False)
     window._submit_job("Job-1", "Static-1")
     _wait_for_task(window)

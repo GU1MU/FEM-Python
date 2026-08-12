@@ -27,6 +27,8 @@ ROLE_RUN_ID = ROLE_DOCUMENT_ID + 1
 ROLE_RESULT_SOURCE = ROLE_RUN_ID + 1
 ROLE_RESULT_KIND = ROLE_RESULT_SOURCE + 1
 
+ResultRootKey = tuple[int, str]
+
 
 _FIELD_LABELS = {
     "result.field.u.node": "位移 U",
@@ -41,7 +43,7 @@ _FIELD_LABELS = {
 
 
 class ResultTree(QTreeWidget):
-    """按位移、反力和应力组织当前单步结果。"""
+    """按顶层作业或外部结果组织可用结果字段。"""
 
     fieldSelectionActivated = Signal(ScalarFieldSelection)
     fieldSelectionRouted = Signal(int, str, object, ScalarFieldSelection)
@@ -58,10 +60,12 @@ class ResultTree(QTreeWidget):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self._catalog: ResultCatalog | None = None
         self._section_point_labels: dict[int, str] = {}
-        self._roots: dict[int, QTreeWidgetItem] = {}
-        self._catalogs: dict[int, ResultCatalog] = {}
-        self._root_sources: dict[int, object] = {}
-        self._root_kinds: dict[int, str] = {}
+        self._roots: dict[ResultRootKey, QTreeWidgetItem] = {}
+        self._catalogs: dict[ResultRootKey, ResultCatalog] = {}
+        self._root_kinds: dict[ResultRootKey, str] = {}
+        self._root_signatures: dict[ResultRootKey, tuple[object, ...]] = {}
+        self._keys_by_document: dict[int, set[ResultRootKey]] = {}
+        self._active_run_ids: dict[int, str] = {}
         self._active_document_id: int | None = None
         self.clear_result()
 
@@ -76,8 +80,10 @@ class ResultTree(QTreeWidget):
         self._section_point_labels = {}
         self._roots.clear()
         self._catalogs.clear()
-        self._root_sources.clear()
         self._root_kinds.clear()
+        self._root_signatures.clear()
+        self._keys_by_document.clear()
+        self._active_run_ids.clear()
         self._active_document_id = None
         self.clear()
         item = QTreeWidgetItem(["尚无分析结果"])
@@ -85,26 +91,37 @@ class ResultTree(QTreeWidget):
         item.setData(0, ROLE_RESULT_KIND, "empty")
 
     @property
-    def roots(self) -> dict[int, QTreeWidgetItem]:
-        """Return document roots indexed by integer workspace identity."""
+    def roots(self) -> dict[ResultRootKey, QTreeWidgetItem]:
+        """Return job/result roots indexed by owner document and run identity."""
 
         return self._roots
 
     @property
-    def catalogs(self) -> dict[int, ResultCatalog]:
-        """Return the catalog currently projected for each document."""
+    def catalogs(self) -> dict[ResultRootKey, ResultCatalog]:
+        """Return the catalog currently projected for each job/result root."""
 
         return self._catalogs
 
     def set_active_document(self, document_id: int | None) -> None:
-        self._active_document_id = (
-            None if document_id is None else int(document_id)
-        )
-        self._catalog = (
-            None
-            if self._active_document_id is None
-            else self._catalogs.get(self._active_document_id)
-        )
+        self._active_document_id = None if document_id is None else int(document_id)
+        if self._active_document_id is None:
+            self._catalog = None
+            return
+        run_id = self._active_run_ids.get(self._active_document_id)
+        key = None if run_id is None else (self._active_document_id, run_id)
+        if key not in self._catalogs:
+            key = next(
+                (
+                    candidate
+                    for candidate in self._keys_by_document.get(
+                        self._active_document_id,
+                        (),
+                    )
+                    if candidate in self._catalogs
+                ),
+                None,
+            )
+        self._catalog = None if key is None else self._catalogs.get(key)
 
     def set_catalog(
         self,
@@ -124,34 +141,24 @@ class ResultTree(QTreeWidget):
         # ``set_catalog``.  Once a workspace document is active, route that
         # update through the indexed root instead of clearing all documents.
         if self._active_document_id is not None:
-            from types import SimpleNamespace
-
             document_id = self._active_document_id
-            current_root = self._roots.get(document_id)
+            run_id = str(catalog.source.run_id)
+            key = (document_id, run_id)
+            current_root = self._roots.get(key)
             display_name = (
                 current_root.text(0)
                 if current_root is not None
-                else "结果"
+                else step_name or "结果"
             )
-            projection = SimpleNamespace(
-                model_name=display_name,
-                runs=(
-                    SimpleNamespace(
-                        run_id=catalog.source.run_id,
-                        name=step_name,
-                        step_name=catalog.source.step_name,
-                        has_result=True,
-                    ),
-                ),
-            )
-            self._upsert_document_root(
+            self._upsert_run_root(
                 document_id,
-                projection,
-                display_name=display_name,
+                run_id,
+                name=display_name,
+                step_name=catalog.source.step_name,
                 source_path=None,
                 catalog=catalog,
                 section_point_labels=section_point_labels,
-                kind=self._root_kinds.get(document_id, "model"),
+                kind=self._root_kinds.get(key, "model"),
             )
             self._catalog = catalog
             return
@@ -165,8 +172,10 @@ class ResultTree(QTreeWidget):
         self.clear()
         self._roots.clear()
         self._catalogs.clear()
-        self._root_sources.clear()
         self._root_kinds.clear()
+        self._root_signatures.clear()
+        self._keys_by_document.clear()
+        self._active_run_ids.clear()
         self._catalog = None
         self._section_point_labels = dict(section_point_labels or {})
         root = QTreeWidgetItem(["分析结果"])
@@ -223,18 +232,44 @@ class ResultTree(QTreeWidget):
         source_path: object | None = None,
         catalog: ResultCatalog | None = None,
         section_point_labels: Mapping[int, str] | None = None,
-    ) -> QTreeWidgetItem:
-        """Incrementally replace one model's successful-run result root."""
+    ) -> tuple[QTreeWidgetItem, ...]:
+        """Incrementally project each successful model run as a top-level root."""
 
-        return self._upsert_document_root(
-            int(document_id),
-            projection,
-            display_name=display_name,
-            source_path=source_path,
-            catalog=catalog,
-            section_point_labels=section_point_labels,
-            kind="model",
-        )
+        del display_name
+        document_id = int(document_id)
+        catalog = self._resolved_catalog(projection, catalog)
+        labels = dict(section_point_labels or _projection_labels(projection))
+        path = source_path or _projection_path(projection)
+        runs = _successful_runs(projection)
+        desired = {(document_id, str(getattr(run, "run_id", ""))) for run in runs}
+        for key in tuple(self._keys_by_document.get(document_id, ())):
+            if self._root_kinds.get(key) == "model" and key not in desired:
+                self._remove_key(key, add_placeholder=False)
+
+        source = None if catalog is None else catalog.source
+        roots: list[QTreeWidgetItem] = []
+        for run in runs:
+            run_id = str(getattr(run, "run_id", ""))
+            key = (document_id, run_id)
+            run_catalog = (
+                catalog
+                if source is not None and str(source.run_id) == run_id
+                else self._catalogs.get(key)
+            )
+            roots.append(
+                self._upsert_run_root(
+                    document_id,
+                    run_id,
+                    name=_run_label(run),
+                    step_name=str(getattr(run, "step_name", "")),
+                    source_path=path,
+                    catalog=run_catalog,
+                    section_point_labels=labels,
+                    kind="model",
+                )
+            )
+        self._ensure_empty_placeholder()
+        return tuple(roots)
 
     def upsert_archive(
         self,
@@ -246,37 +281,65 @@ class ResultTree(QTreeWidget):
         catalog: ResultCatalog | None = None,
         section_point_labels: Mapping[int, str] | None = None,
     ) -> QTreeWidgetItem:
-        """Incrementally replace one external result-only root."""
+        """Incrementally project one external result as a top-level root."""
 
-        return self._upsert_document_root(
-            int(document_id),
-            projection,
-            display_name=display_name,
-            source_path=source_path,
+        document_id = int(document_id)
+        catalog = self._resolved_catalog(projection, catalog)
+        labels = dict(section_point_labels or _projection_labels(projection))
+        path = source_path or _projection_path(projection)
+        runs = _successful_runs(projection)
+        if not runs:
+            run_id = (
+                str(catalog.source.run_id)
+                if catalog is not None
+                else str(getattr(projection, "displayed_result_run_id", "result"))
+            )
+            runs = (_archive_run(projection, run_id),)
+        run = runs[0]
+        run_id = str(getattr(run, "run_id", ""))
+        for key in tuple(self._keys_by_document.get(document_id, ())):
+            if key != (document_id, run_id):
+                self._remove_key(key, add_placeholder=False)
+        name = _display_name(
+            display_name or (path if path is not None else None) or _run_label(run)
+        )
+        return self._upsert_run_root(
+            document_id,
+            run_id,
+            name=name,
+            step_name=str(getattr(run, "step_name", "")),
+            source_path=path,
             catalog=catalog,
-            section_point_labels=section_point_labels,
+            section_point_labels=labels,
             kind="archive",
         )
 
     def remove_model_runs(self, document_id: int) -> bool:
-        return self._remove_root(int(document_id))
+        return self._remove_document(int(document_id))
 
     def remove_archive(self, document_id: int) -> bool:
-        return self._remove_root(int(document_id))
+        return self._remove_document(int(document_id))
 
     def set_active_source(self, source: object | None) -> None:
         """Select the first item carrying an exact result source identity."""
 
         if source is None:
             return
-        stack = [
-            self.topLevelItem(index)
-            for index in range(self.topLevelItemCount())
-        ]
+        stack = [self.topLevelItem(index) for index in range(self.topLevelItemCount())]
         while stack:
             item = stack.pop()
             if item.data(0, ROLE_RESULT_SOURCE) == source:
                 self.setCurrentItem(item)
+                document_id = item.data(0, ROLE_DOCUMENT_ID)
+                run_id = item.data(0, ROLE_RUN_ID)
+                if document_id is not None and run_id:
+                    normalized_document_id = int(document_id)
+                    normalized_run_id = str(run_id)
+                    self._active_run_ids[normalized_document_id] = normalized_run_id
+                    if self._active_document_id in {None, normalized_document_id}:
+                        self._catalog = self._catalogs.get(
+                            (normalized_document_id, normalized_run_id)
+                        )
                 return
             stack.extend(item.child(index) for index in range(item.childCount()))
 
@@ -287,26 +350,32 @@ class ResultTree(QTreeWidget):
         if item is None or item.parent() is not None:
             return
         document_id = item.data(0, ROLE_DOCUMENT_ID)
-        kind = item.data(0, ROLE_RESULT_KIND)
-        if document_id is None or kind not in {"model", "archive"}:
+        run_id = item.data(0, ROLE_RUN_ID)
+        if document_id is None or not run_id:
             return
         document_id = int(document_id)
+        run_id = str(run_id)
+        key = (document_id, run_id)
+        kind = self._root_kinds.get(key)
+        if kind not in {"model", "archive"}:
+            return
         self.setCurrentItem(item)
         menu = QMenu(self)
         activate = menu.addAction("激活")
-        close = menu.addAction("关闭")
+        close = menu.addAction("关闭") if kind == "archive" else None
         chosen = menu.exec(self.viewport().mapToGlobal(position))
         if chosen is activate:
-            self.rootActionRequested.emit(document_id, "activate")
-        elif chosen is close:
+            self.runActivated.emit(document_id, run_id)
+        elif close is not None and chosen is close:
             self.rootActionRequested.emit(document_id, "close")
 
-    def _upsert_document_root(
+    def _upsert_run_root(
         self,
         document_id: int,
-        projection: object,
+        run_id: str,
         *,
-        display_name: str | None,
+        name: str,
+        step_name: str,
         source_path: object | None,
         catalog: ResultCatalog | None,
         section_point_labels: Mapping[int, str] | None,
@@ -314,54 +383,44 @@ class ResultTree(QTreeWidget):
     ) -> QTreeWidgetItem:
         if document_id < 0:
             raise ValueError("document_id must be non-negative")
-        if catalog is not None and type(catalog) is not ResultCatalog:
+        if not run_id:
+            raise ValueError("run_id must not be empty")
+        if type(catalog) is not ResultCatalog and catalog is not None:
             raise TypeError("catalog must be a ResultCatalog")
-        if catalog is None:
-            catalog = _projection_catalog(projection)
-        if catalog is not None and type(catalog) is not ResultCatalog:
-            raise TypeError("projection catalog must be a ResultCatalog")
-        labels = dict(section_point_labels or _projection_labels(projection))
-        path = source_path or _projection_path(projection)
-        name = _display_name(display_name or _projection_name(projection) or "Result")
-        if display_name is None and path is not None:
-            name = _display_name(path)
-
-        runs = tuple(
-            run
-            for run in getattr(projection, "runs", ())
-            if bool(getattr(run, "has_result", False))
-            or str(getattr(getattr(run, "status", None), "value", ""))
-            == "succeeded"
+        labels = dict(section_point_labels or {})
+        key = (document_id, run_id)
+        old = self._roots.get(key)
+        display_name = _display_name(name)
+        signature = (
+            display_name,
+            step_name,
+            None if source_path is None else str(source_path),
+            id(catalog),
+            tuple(labels.items()),
+            kind,
         )
-        if kind == "archive" and not runs:
-            run_id = (
-                str(catalog.source.run_id)
-                if catalog is not None
-                else str(getattr(projection, "displayed_result_run_id", "result"))
-            )
-            runs = (_archive_run(projection, run_id),)
-
-        old = self._roots.get(document_id)
+        if old is not None and self._root_signatures.get(key) == signature:
+            if catalog is not None:
+                self._active_run_ids[document_id] = run_id
+                if self._active_document_id in {None, document_id}:
+                    self._catalog = catalog
+                self._section_point_labels = labels
+            return old
         previous_index = self.indexOfTopLevelItem(old) if old is not None else -1
         if old is not None and previous_index >= 0:
             self.takeTopLevelItem(previous_index)
 
-        root = QTreeWidgetItem([name])
-        source = None if catalog is None else catalog.source
-        _set_identity(root, document_id, None, source, kind)
-        if path is not None:
-            root.setToolTip(0, str(path))
+        root = QTreeWidgetItem([display_name])
+        source = (
+            None
+            if catalog is None or str(catalog.source.run_id) != run_id
+            else catalog.source
+        )
+        _set_identity(root, document_id, run_id, source, "run")
+        if source_path is not None:
+            root.setToolTip(0, str(source_path))
         default_item: QTreeWidgetItem | None = None
-        for run in runs:
-            run_id = str(getattr(run, "run_id", ""))
-            run_item = QTreeWidgetItem([_run_label(run)])
-            run_source = (
-                source if source is not None and str(source.run_id) == run_id else None
-            )
-            _set_identity(run_item, document_id, run_id, run_source, "run")
-            root.addChild(run_item)
-            if catalog is None or run_source is None:
-                continue
+        if catalog is not None and source is not None:
             step, selected = self._catalog_step(
                 source.step_name,
                 catalog,
@@ -370,22 +429,23 @@ class ResultTree(QTreeWidget):
                 source=source,
                 section_point_labels=labels,
             )
-            run_item.addChild(step)
-            if selected is not None:
-                default_item = selected
+            default_item = selected
+        else:
+            step = QTreeWidgetItem([step_name or "当前分析步"])
+            _set_identity(step, document_id, run_id, None, "step")
+        root.addChild(step)
 
         if old is None:
             self._remove_empty_placeholder()
-        self._roots[document_id] = root
-        self._root_kinds[document_id] = kind
+        self._roots[key] = root
+        self._root_kinds[key] = kind
+        self._root_signatures[key] = signature
+        self._keys_by_document.setdefault(document_id, set()).add(key)
         if catalog is None:
-            self._catalogs.pop(document_id, None)
-            self._root_sources.pop(document_id, None)
-            if self._active_document_id in {None, document_id}:
-                self._catalog = None
+            self._catalogs.pop(key, None)
         else:
-            self._catalogs[document_id] = catalog
-            self._root_sources[document_id] = source
+            self._catalogs[key] = catalog
+            self._active_run_ids[document_id] = run_id
             if self._active_document_id in {None, document_id}:
                 self._catalog = catalog
             self._section_point_labels = labels
@@ -394,12 +454,22 @@ class ResultTree(QTreeWidget):
             root,
         )
         root.setExpanded(True)
-        if (
-            default_item is not None
-            and self._active_document_id in {None, document_id}
-        ):
+        step.setExpanded(True)
+        if default_item is not None and self._active_document_id in {None, document_id}:
             self.setCurrentItem(default_item)
         return root
+
+    @staticmethod
+    def _resolved_catalog(
+        projection: object,
+        catalog: ResultCatalog | None,
+    ) -> ResultCatalog | None:
+        if catalog is not None and type(catalog) is not ResultCatalog:
+            raise TypeError("catalog must be a ResultCatalog")
+        resolved = _projection_catalog(projection) if catalog is None else catalog
+        if resolved is not None and type(resolved) is not ResultCatalog:
+            raise TypeError("projection catalog must be a ResultCatalog")
+        return resolved
 
     def _catalog_step(
         self,
@@ -450,25 +520,62 @@ class ResultTree(QTreeWidget):
                 default_item = selected_component
         return step, default_item
 
-    def _remove_root(self, document_id: int) -> bool:
-        was_active = self._active_document_id == document_id
-        root = self._roots.pop(document_id, None)
+    def _remove_key(
+        self,
+        key: ResultRootKey,
+        *,
+        add_placeholder: bool = True,
+    ) -> bool:
+        document_id, run_id = key
+        root = self._roots.pop(key, None)
         if root is None:
             return False
         index = self.indexOfTopLevelItem(root)
         if index >= 0:
             self.takeTopLevelItem(index)
-        self._catalogs.pop(document_id, None)
-        self._root_sources.pop(document_id, None)
-        self._root_kinds.pop(document_id, None)
-        if was_active:
+        self._catalogs.pop(key, None)
+        self._root_kinds.pop(key, None)
+        self._root_signatures.pop(key, None)
+        keys = self._keys_by_document.get(document_id)
+        if keys is not None:
+            keys.discard(key)
+            if not keys:
+                self._keys_by_document.pop(document_id, None)
+        if self._active_run_ids.get(document_id) == run_id:
+            replacement = next(iter(self._keys_by_document.get(document_id, ())), None)
+            if replacement is None:
+                self._active_run_ids.pop(document_id, None)
+                if self._active_document_id == document_id:
+                    self._catalog = None
+            else:
+                self._active_run_ids[document_id] = replacement[1]
+                if self._active_document_id == document_id:
+                    self._catalog = self._catalogs.get(replacement)
+        if add_placeholder:
+            self._ensure_empty_placeholder()
+        return True
+
+    def _remove_document(self, document_id: int) -> bool:
+        keys = tuple(self._keys_by_document.get(document_id, ()))
+        if not keys:
+            return False
+        for key in keys:
+            self._remove_key(key, add_placeholder=False)
+        if self._active_document_id == document_id:
             self._active_document_id = None
             self._catalog = None
-        if not self._roots:
-            item = QTreeWidgetItem(["尚无分析结果"])
-            item.setData(0, ROLE_RESULT_KIND, "empty")
-            self.addTopLevelItem(item)
+        self._ensure_empty_placeholder()
         return True
+
+    def _ensure_empty_placeholder(self) -> None:
+        if self._roots:
+            return
+        for index in range(self.topLevelItemCount()):
+            if self.topLevelItem(index).data(0, ROLE_RESULT_KIND) == "empty":
+                return
+        item = QTreeWidgetItem(["尚无分析结果"])
+        item.setData(0, ROLE_RESULT_KIND, "empty")
+        self.addTopLevelItem(item)
 
     def _remove_empty_placeholder(self) -> None:
         for index in range(self.topLevelItemCount() - 1, -1, -1):
@@ -594,20 +701,23 @@ class ResultTree(QTreeWidget):
             raise TypeError("selection must be a ScalarFieldSelection")
         if document_id is None:
             pending = [
-                self.topLevelItem(index)
-                for index in range(self.topLevelItemCount())
+                self.topLevelItem(index) for index in range(self.topLevelItemCount())
             ]
         else:
-            root = self._roots.get(int(document_id))
-            pending = [] if root is None else [root]
+            pending = [
+                self._roots[key]
+                for key in self._keys_by_document.get(int(document_id), ())
+                if key in self._roots
+            ]
         fallback: QTreeWidgetItem | None = None
         while pending:
             item = pending.pop(0)
-            matches_document = (
-                document_id is None
-                or item.data(0, ROLE_DOCUMENT_ID) == int(document_id)
+            matches_document = document_id is None or item.data(
+                0, ROLE_DOCUMENT_ID
+            ) == int(document_id)
+            matches_source = (
+                source is None or item.data(0, ROLE_RESULT_SOURCE) == source
             )
-            matches_source = source is None or item.data(0, ROLE_RESULT_SOURCE) == source
             if (
                 matches_document
                 and matches_source
@@ -618,10 +728,7 @@ class ResultTree(QTreeWidget):
                     break
                 if fallback is None:
                     fallback = item
-            pending.extend(
-                item.child(index)
-                for index in range(item.childCount())
-            )
+            pending.extend(item.child(index) for index in range(item.childCount()))
         return fallback
 
     def _activate_item(self, item: QTreeWidgetItem) -> None:
@@ -704,17 +811,6 @@ def _projection_labels(projection: object) -> Mapping[int, str]:
     return labels if isinstance(labels, Mapping) else {}
 
 
-def _projection_name(projection: object) -> str | None:
-    for name in (
-        getattr(projection, "display_name", None),
-        getattr(projection, "model_name", None),
-        getattr(getattr(projection, "origin", None), "model_name", None),
-    ):
-        if name:
-            return str(name)
-    return None
-
-
 def _projection_path(projection: object) -> object | None:
     return getattr(projection, "source_path", None) or getattr(projection, "path", None)
 
@@ -732,6 +828,15 @@ def _display_name(value: object) -> str:
 def _run_label(run: object) -> str:
     name = str(getattr(run, "name", "") or getattr(run, "run_id", "run"))
     return name
+
+
+def _successful_runs(projection: object) -> tuple[object, ...]:
+    return tuple(
+        run
+        for run in getattr(projection, "runs", ())
+        if bool(getattr(run, "has_result", False))
+        or str(getattr(getattr(run, "status", None), "value", "")) == "succeeded"
+    )
 
 
 def _archive_run(projection: object, run_id: str) -> object:

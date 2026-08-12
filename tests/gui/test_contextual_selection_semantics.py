@@ -391,6 +391,35 @@ def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(monkeypatch) -> No
     window.close()
 
 
+def test_mesh_body_box_expands_shared_group_once(monkeypatch) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    window = FEMMainWindow()
+    window._model_loaded(
+        Path("selection-body-box-performance.inp"),
+        (model, build_model_geometry(model)),
+    )
+    window._set_selection_filter("body")
+    calls = 0
+    original = window._expand_mesh_selection_reference
+
+    def expand(selection_filter, reference):
+        nonlocal calls
+        calls += 1
+        return original(selection_filter, reference)
+
+    monkeypatch.setattr(window, "_expand_mesh_selection_reference", expand)
+    monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
+
+    window._on_mesh_entities_box_selected(
+        tuple(MeshEntityRef.element(element.id) for element in model.mesh.elements)
+    )
+
+    assert calls == len(model.mesh.elements)
+    assert len(window._selected_mesh_scope_refs) == len(model.mesh.elements)
+    window.close()
+
+
 def test_guided_scope_cancel_restores_module_selection_context() -> None:
     _application()
     model = _two_imported_parts_model()

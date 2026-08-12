@@ -263,6 +263,50 @@ def test_fixed_constraint_lists_coordinates_and_edit_moves_circle(
     assert (restored.u, restored.v) == (5.0, 4.0)
 
 
+def test_constraint_table_selection_highlights_its_sketch_entities() -> None:
+    _application()
+    controller = _line_controller()
+    controller.add_constraint(SketchFixedConstraint("F1", "P1", 0.0, 0.0))
+    controller.add_constraint(SketchHorizontalConstraint("H1", "L1"))
+    controller.add_constraint(SketchPointOnCurveConstraint("C1", "P1", "L1"))
+    panel = SketchEditorPanel(controller)
+    viewport = FEMViewport()
+    panel.attach_viewport(viewport)
+
+    panel.constraints_table.setCurrentCell(0, 0)
+    assert viewport._sketch_constraint_selection == (("point", "P1"),)
+
+    panel.constraints_table.setCurrentCell(1, 0)
+    assert viewport._sketch_constraint_selection == (("curve", "L1"),)
+
+    panel.constraints_table.setCurrentCell(2, 0)
+    assert viewport._sketch_constraint_selection == (
+        ("point", "P1"),
+        ("curve", "L1"),
+    )
+
+    panel.constraints_table.clearSelection()
+    assert viewport._sketch_constraint_selection == ()
+    viewport.close()
+
+
+def test_fixed_constraint_overlay_is_offset_from_the_constrained_point() -> None:
+    controller = _line_controller()
+    controller.add_constraint(SketchFixedConstraint("F1", "P1", 0.0, 0.0))
+    snapshot = controller.snapshot()
+
+    overlay = build_constraint_overlays(
+        snapshot.points,
+        snapshot.curves,
+        snapshot.constraints,
+        snapshot.plane,
+    )[0]
+
+    assert overlay.kind == "fixed"
+    assert overlay.text == "固定"
+    assert overlay.position[:2] == pytest.approx((0.07, 0.07))
+
+
 def test_staged_fixed_selection_creates_one_constraint_per_point_atomically() -> None:
     _application()
     controller = SketchDraftController("批量固定")
@@ -323,6 +367,45 @@ def test_staged_multi_line_selection_creates_independent_constraints_atomically(
     assert all(isinstance(item, expected_type) for item in controller.constraints)
     if kind == "distance":
         assert all(not item.driving for item in controller.constraints)
+    assert controller.snapshot().revision == before.revision + 1
+    controller.undo()
+    assert controller.snapshot().constraints == ()
+
+
+def test_staged_multi_radius_selection_creates_dimensions_atomically() -> None:
+    _application()
+    controller = SketchDraftController("批量圆弧半径")
+    controller.add_circle(
+        (0.0, 0.0),
+        2.0,
+        point_id="O1",
+        curve_id="C1",
+    )
+    controller.add_arc(
+        (4.0, 0.0),
+        (5.0, 1.0),
+        (4.0, 2.0),
+        start_point_id="P1",
+        center_point_id="O2",
+        end_point_id="P2",
+        curve_id="A1",
+    )
+    panel = SketchEditorPanel(controller)
+    before = controller.snapshot()
+
+    panel._start_constraint_command("radius")
+    panel._select_curve("C1")
+    panel._select_curve("A1")
+    assert panel.confirm_constraint_command_button.isEnabled()
+    assert "2 个圆或圆弧" in panel.constraint_command_prompt.text()
+    panel._confirm_constraint_command()
+
+    dimensions = controller.constraints
+    assert len(dimensions) == 2
+    assert all(isinstance(item, SketchRadiusDimension) for item in dimensions)
+    assert all(not item.driving for item in dimensions)
+    assert tuple(item.curve_id for item in dimensions) == ("C1", "A1")
+    assert tuple(item.value for item in dimensions) == pytest.approx((2.0, 1.0))
     assert controller.snapshot().revision == before.revision + 1
     controller.undo()
     assert controller.snapshot().constraints == ()

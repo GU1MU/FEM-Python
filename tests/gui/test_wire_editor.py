@@ -406,7 +406,10 @@ def test_line_mesh_dialog_uses_chinese_text_without_policy_description() -> None
     )
 
     assert not dialog.size_spin.isEnabled()
-    assert dialog.method_combo.currentText() == "线网格"
+    assert "网格方法" not in {
+        label.text() for label in dialog.findChildren(QLabel)
+    }
+    assert not hasattr(dialog, "method_combo")
     assert dialog.shape_combo.currentText() == "线网格"
     assert dialog.formulation_combo.currentText() == "Truss2"
     assert not hasattr(dialog, "line_policy_label")

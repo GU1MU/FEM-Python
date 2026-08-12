@@ -27,7 +27,7 @@ from .dialogs import configure_form_layout
 
 
 _STATUS_LABELS = {
-    RunStatus.PENDING: "等待中",
+    RunStatus.PENDING: "已创建",
     RunStatus.RUNNING: "运行中",
     RunStatus.SUCCEEDED: "已完成",
     RunStatus.FAILED: "失败",
@@ -68,7 +68,7 @@ class JobSubmitDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
             parent=self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("提交")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("创建")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -86,6 +86,7 @@ class JobSubmitDialog(QDialog):
 class JobManagerDialog(QDialog):
     """显示会话作业、选中作业日志及历史结果操作。"""
 
+    submitRequested = Signal(str)
     terminateRequested = Signal(str)
     openResultRequested = Signal(str)
 
@@ -113,12 +114,15 @@ class JobManagerDialog(QDialog):
         self._displayed_job_name: str | None = None
         layout.addWidget(self.log_view)
         buttons = QHBoxLayout()
+        self.submit_button = QPushButton("提交求解", self)
         self.terminate_button = QPushButton("终止求解", self)
         self.open_result_button = QPushButton("打开结果", self)
         close = QPushButton("关闭", self)
+        self.submit_button.clicked.connect(self._emit_submit)
         self.terminate_button.clicked.connect(self._emit_terminate)
         self.open_result_button.clicked.connect(self._emit_open_result)
         close.clicked.connect(self.close)
+        buttons.addWidget(self.submit_button)
         buttons.addWidget(self.terminate_button)
         buttons.addWidget(self.open_result_button)
         buttons.addStretch(1)
@@ -174,6 +178,10 @@ class JobManagerDialog(QDialog):
 
     def _update_selection(self) -> None:
         job = self._selected_job()
+        solve_running = any(
+            candidate.status is RunStatus.RUNNING
+            for candidate in getattr(self, "_jobs", ())
+        )
         job_name = job.name if job else None
         log_text = "\n".join(job.messages) if job else "尚无作业记录"
         if job_name != self._displayed_job_name or log_text != self.log_view.toPlainText():
@@ -185,12 +193,23 @@ class JobManagerDialog(QDialog):
             if same_job:
                 scroll_bar.setValue(scroll_bar.maximum() if was_at_bottom else scroll_value)
             self._displayed_job_name = job_name
+        self.submit_button.setEnabled(
+            job is not None
+            and job.status is RunStatus.PENDING
+            and not job.cancellation_requested
+            and not solve_running
+        )
         self.terminate_button.setEnabled(
             job is not None
             and job.status is RunStatus.RUNNING
             and not job.cancellation_requested
         )
         self.open_result_button.setEnabled(job is not None and job.has_result)
+
+    def _emit_submit(self) -> None:
+        name = self.selected_job_name()
+        if name is not None:
+            self.submitRequested.emit(name)
 
     def _emit_terminate(self) -> None:
         name = self.selected_job_name()

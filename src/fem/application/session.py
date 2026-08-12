@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from copy import copy, deepcopy
 from dataclasses import dataclass, field, replace
-import math
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -176,47 +175,6 @@ _COMPUTATION_INVALIDATIONS = frozenset(
         ArtifactKind.DISPLAYED_RESULT,
     }
 )
-
-
-def _archive_safe_text(value: object) -> str | None:
-    """Return a bounded JSON text scalar, excluding path-like values."""
-
-    if type(value) is not str:
-        return None
-    text = value.strip()
-    if not text or any(separator in text for separator in ("/", "\\", ":")):
-        return None
-    return text
-
-
-def _archive_json_scalar(value: object) -> tuple[object, bool]:
-    """Keep only deterministic, finite JSON scalar values."""
-
-    if value is None or type(value) in {bool, int}:
-        return value, True
-    if type(value) is float:
-        return (value, True) if math.isfinite(value) else (None, False)
-    if type(value) is str:
-        text = _archive_safe_text(value)
-        return (text, True) if text is not None else (None, False)
-    return None, False
-
-
-def _archive_scalar_mapping(value: object) -> dict[str, object]:
-    """Project a mapping to sorted, scalar-only JSON values."""
-
-    if not isinstance(value, Mapping):
-        return {}
-    result: dict[str, object] = {}
-    for key in sorted(
-        (candidate for candidate in value if type(candidate) is str)
-    ):
-        if _archive_safe_text(key) is None:
-            continue
-        scalar, accepted = _archive_json_scalar(value[key])
-        if accepted:
-            result[key] = scalar
-    return result
 
 
 class RevisionConflictError(RuntimeError):
@@ -5276,17 +5234,19 @@ class ModelSession:
 
     # ------------------------------------------------------------------
     # Runs and solver results
-    def prepare_solve(
+    def create_run(
         self,
         step_name: str | None = None,
         run_name: str | None = None,
         *,
         expected_session_revision: int | None = None,
-    ) -> SolveTaskSnapshot:
+    ) -> SessionDelta:
+        """Create one pending run bound to the current validated artifact."""
+
         self._check_expected(expected_session_revision)
         if self.result_only:
             raise SessionStateError(
-                "result-only documents cannot submit analysis jobs"
+                "result-only documents cannot create analysis jobs"
             )
         artifact = self._require_current_artifact()
         resolved_step = self._resolve_step_name(step_name)
@@ -5301,6 +5261,56 @@ class ModelSession:
             raise ValueError("run name must not be empty")
         if self._find_run_by_name(resolved_name) is not None:
             raise ValueError(f"run name already exists: {resolved_name}")
+        run_id = new_identity("run")
+        self._runs[run_id] = AnalysisRun(
+            run_id=run_id,
+            name=resolved_name,
+            step_name=resolved_step,
+            artifact_id=artifact.artifact_id,
+            model_revision=self._model_revision,
+        )
+        return self._emit(
+            {ChangeKind.RUNS},
+            frozenset(),
+            "analysis run created",
+        )
+
+    def prepare_run_solve(
+        self,
+        run_id_or_name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SolveTaskSnapshot:
+        """Prepare an existing pending run for background solution."""
+
+        self._check_expected(expected_session_revision)
+        if self.result_only:
+            raise SessionStateError(
+                "result-only documents cannot submit analysis jobs"
+            )
+        artifact = self._require_current_artifact()
+        normalized = str(run_id_or_name).strip()
+        run = self._runs.get(normalized)
+        if run is None:
+            run = self._find_run_by_name(normalized)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id_or_name}")
+        if run.status is not RunStatus.PENDING:
+            raise SessionStateError("only pending runs can be submitted")
+        if run.cancellation_requested:
+            raise SessionStateError("cancelled runs cannot be submitted")
+        if (
+            run.artifact_id != artifact.artifact_id
+            or run.model_revision != self._model_revision
+        ):
+            raise SessionStateError(
+                "run was created for a different model revision"
+            )
+        resolved_step = self._resolve_step_name(run.step_name)
+        if not self.can_submit(resolved_step):
+            raise SessionStateError(
+                f"step {resolved_step!r} does not have a current passing validation"
+            )
         cached_prepared = self._current_prepared_system()
         solve_prepared = (
             None
@@ -5322,27 +5332,13 @@ class ModelSession:
                 "current model artifact must contain exactly one matching "
                 f"analysis step: {resolved_step}"
             )
-        run_id = new_identity("run")
         result_id = new_identity("result")
-        run = AnalysisRun(
-            run_id=run_id,
-            name=resolved_name,
-            step_name=resolved_step,
-            artifact_id=artifact.artifact_id,
-            model_revision=self._model_revision,
-        )
-        self._runs[run_id] = run
-        delta = self._emit(
-            {ChangeKind.RUNS},
-            frozenset(),
-            "analysis run prepared",
-        )
         token = self._issue_token(
             "solve",
             (("model_revision", self._model_revision),),
             artifact_id=artifact.artifact_id,
             step_name=resolved_step,
-            run_id=run_id,
+            run_id=run.run_id,
             result_id=result_id,
         )
         self._task_data[token.task_id] = _IssuedSolvePayload(
@@ -5354,12 +5350,31 @@ class ModelSession:
             token=token,
             model=solve_model,
             step_name=resolved_step,
-            run_name=resolved_name,
-            run_id=run_id,
+            run_name=run.name,
+            run_id=run.run_id,
             result_id=result_id,
-            delta=delta,
             prepared_system=solve_prepared,
         )
+
+    def prepare_solve(
+        self,
+        step_name: str | None = None,
+        run_name: str | None = None,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SolveTaskSnapshot:
+        """Create and prepare a run for compatibility with direct submitters."""
+
+        resolved_name = (
+            self.next_run_name() if run_name is None else str(run_name).strip()
+        )
+        delta = self.create_run(
+            step_name,
+            resolved_name,
+            expected_session_revision=expected_session_revision,
+        )
+        task = self.prepare_run_solve(resolved_name)
+        return replace(task, delta=delta)
 
     def begin_run(self, token: TaskToken) -> SessionDelta:
         status = self._token_status_for(token, "solve")
@@ -5763,10 +5778,7 @@ class ModelSession:
                 unit_context=self._unit_context,
                 model_fingerprint=model_fingerprint,
                 run=archive_run,
-                summaries=self._result_archive_summaries(
-                    record.materialization.topology,
-                    provider.profile,
-                ),
+                summaries={},
                 **self._result_archive_region_kwargs(record.materialization.topology),
             )
         token = self._issue_token(
@@ -6935,224 +6947,6 @@ class ModelSession:
         return {
             "named_region_node_ids": node_ids,
             "named_region_element_ids": element_ids,
-        }
-
-    def _result_archive_summaries(
-        self,
-        topology: Any,
-        profile: Any,
-    ) -> dict[str, object]:
-        """Project deterministic, bounded model inspection summaries.
-
-        These summaries intentionally contain names, counts, and scalar
-        definition attributes only.  They never retain model objects,
-        ``repr`` output, source paths, or large topology/field arrays.
-        """
-
-        model = None if self._artifact is None else self._artifact.model
-        model_name = _archive_safe_text(self._model_name)
-        if model_name is None:
-            model_name = _archive_safe_text(getattr(model, "name", None))
-        if model_name is None:
-            model_name = "Model-1"
-
-        parts: list[dict[str, object]] = []
-        for part in sorted(self._parts, key=lambda item: str(getattr(item, "id", ""))):
-            part_id = _archive_safe_text(getattr(part, "id", None))
-            part_name = _archive_safe_text(getattr(part, "name", None))
-            if part_id is None:
-                continue
-            settings = getattr(part, "mesh_settings", None)
-            settings_summary: dict[str, object] = {}
-            if settings is not None:
-                settings_summary = {
-                    key: value
-                    for key, value in (
-                        ("size", getattr(settings, "size", None)),
-                        ("order", getattr(settings, "order", None)),
-                        ("cell_shape", getattr(settings, "cell_shape", None)),
-                        ("line_element_type", getattr(settings, "line_element_type", None)),
-                        ("auto_level", getattr(settings, "auto_level", None)),
-                        ("strict_cell_shape", getattr(settings, "strict_cell_shape", None)),
-                        (
-                            "local_controls_count",
-                            len(getattr(settings, "local_controls", ())),
-                        ),
-                    )
-                    if _archive_json_scalar(value)[1]
-                }
-            provenance = getattr(part, "provenance", None)
-            provenance_summary: dict[str, object] = {}
-            if provenance is not None:
-                for key in ("feature_id", "target_part_id", "tool_part_id", "operation"):
-                    scalar, accepted = _archive_json_scalar(
-                        getattr(provenance, key, None)
-                    )
-                    if accepted:
-                        provenance_summary[key] = scalar
-            parts.append(
-                {
-                    "id": part_id,
-                    "name": part_name,
-                    "suppressed": bool(getattr(part, "suppressed", False)),
-                    "has_geometry": getattr(part, "geometry_recipe", None) is not None,
-                    "dimension": getattr(part, "dimension", None),
-                    "mesh": settings_summary,
-                    "provenance": provenance_summary,
-                }
-            )
-
-        materials: list[dict[str, object]] = []
-        for material in sorted(
-            self._materials,
-            key=lambda item: str(getattr(item, "name", "")),
-        ):
-            name = _archive_safe_text(getattr(material, "name", None))
-            if name is None:
-                continue
-            materials.append(
-                {
-                    "name": name,
-                    "properties": _archive_scalar_mapping(
-                        getattr(material, "properties", {})
-                    ),
-                }
-            )
-
-        sections: list[dict[str, object]] = []
-        for section in sorted(
-            self._sections,
-            key=lambda item: str(getattr(item, "name", "")),
-        ):
-            name = _archive_safe_text(getattr(section, "name", None))
-            if name is None:
-                continue
-            material = _archive_safe_text(getattr(section, "material", None))
-            section_type = _archive_safe_text(
-                getattr(section, "section_type", None)
-            )
-            sections.append(
-                {
-                    "name": name,
-                    "material": material,
-                    "section_type": section_type,
-                    "properties": _archive_scalar_mapping(
-                        getattr(section, "properties", {})
-                    ),
-                }
-            )
-
-        assignments: list[dict[str, object]] = []
-        for assignment in sorted(
-            self._assignments,
-            key=lambda item: (
-                str(getattr(item, "section_name", "")),
-                str(getattr(item, "region_name", "")),
-            ),
-        ):
-            section_name = _archive_safe_text(
-                getattr(assignment, "section_name", None)
-            )
-            region_name = _archive_safe_text(
-                getattr(assignment, "region_name", None)
-            )
-            if section_name is None or region_name is None:
-                continue
-            orientation = getattr(assignment, "beam_orientation", None)
-            orientation_value = None
-            if orientation is not None:
-                raw_reference = getattr(orientation, "local_y_reference", None)
-                if (
-                    type(raw_reference) is tuple
-                    and len(raw_reference) == 3
-                    and all(type(item) is float and math.isfinite(item) for item in raw_reference)
-                ):
-                    orientation_value = raw_reference
-            assignments.append(
-                {
-                    "section_name": section_name,
-                    "region_name": region_name,
-                    "beam_local_y_reference": orientation_value,
-                }
-            )
-
-        named_regions: list[dict[str, object]] = []
-        for name, region in sorted(self._named_regions.items()):
-            safe_name = _archive_safe_text(name)
-            if safe_name is None:
-                continue
-            references = getattr(region, "references", ())
-            try:
-                reference_count = len(references)
-            except TypeError:
-                reference_count = 0
-            named_regions.append(
-                {
-                    "name": safe_name,
-                    "entity_kind": _archive_safe_text(
-                        getattr(region, "entity_kind", None)
-                    ),
-                    "reference_count": reference_count,
-                }
-            )
-
-        steps: list[dict[str, object]] = []
-        for step in sorted(
-            self._effective_steps(),
-            key=lambda item: str(getattr(item, "name", "")),
-        ):
-            name = _archive_safe_text(getattr(step, "name", None))
-            if name is None:
-                continue
-            steps.append(
-                {
-                    "name": name,
-                    "procedure": _archive_safe_text(
-                        getattr(step, "procedure", None)
-                    ),
-                    "boundary_count": len(getattr(step, "boundaries", ())),
-                    "load_count": len(getattr(step, "cloads", ())),
-                    "surface_load_count": len(
-                        getattr(step, "surface_loads", ())
-                    ),
-                    "total_load_count": sum(
-                        len(getattr(step, field, ()))
-                        for field in (
-                            "cloads",
-                            "edge_loads",
-                            "surface_loads",
-                            "line_loads",
-                            "body_loads",
-                            "gravity_loads",
-                        )
-                    ),
-                    "output_count": len(getattr(step, "outputs", ())),
-                }
-            )
-
-        return {
-            "model": {
-                "name": model_name,
-                "source_kind": _archive_safe_text(self._source_kind),
-                "part_count": len(parts),
-                "material_count": len(materials),
-                "section_count": len(sections),
-                "assignment_count": len(assignments),
-                "named_region_count": len(named_regions),
-                "step_count": len(steps),
-            },
-            "mesh": {
-                "node_count": len(topology.node_ids),
-                "element_count": len(topology.element_ids),
-                "element_types": tuple(sorted(set(topology.element_types))),
-                "dofs_per_node": getattr(profile, "dofs_per_node", None),
-            },
-            "parts": tuple(parts),
-            "materials": tuple(materials),
-            "sections": tuple(sections),
-            "assignments": tuple(assignments),
-            "named_regions": tuple(named_regions),
-            "steps": tuple(steps),
         }
 
     def _find_run_by_name(self, name: str) -> AnalysisRun | None:

@@ -146,11 +146,15 @@ class WorkspaceDocument:
 
     @property
     def is_result(self) -> bool:
-        return self.kind == "result" or getattr(
-            self.projection,
-            "source_kind",
-            None,
-        ) == "result"
+        return (
+            self.kind == "result"
+            or getattr(
+                self.projection,
+                "source_kind",
+                None,
+            )
+            == "result"
+        )
 
 
 ControllerFactory = Callable[[object | None], BackgroundTaskController]
@@ -177,6 +181,8 @@ class FEMWorkspace:
         self._next_document_id = 1
         self._next_model_number = 1
         self._next_result_number = 1
+        self._next_job_number = 1
+        self._job_names: set[str] = set()
         # Detached file decoding and its controller belong to a later phase;
         # retaining an injection point avoids creating a second controller in
         # the Phase 1 single-document startup path.
@@ -193,6 +199,35 @@ class FEMWorkspace:
         """The next default display number for a newly created model."""
 
         return self._next_model_number
+
+    def next_job_name(self) -> str:
+        """Return the next workspace-global default job name."""
+
+        while f"作业-{self._next_job_number}".casefold() in self._job_names:
+            self._next_job_number += 1
+        return f"作业-{self._next_job_number}"
+
+    def job_name_exists(self, name: str) -> bool:
+        """Return whether a job display name was already used in this workspace."""
+
+        normalized = str(name).strip().casefold()
+        if not normalized:
+            return False
+        return normalized in self._job_names
+
+    def remember_job_name(self, name: str) -> None:
+        """Reserve one job name for the lifetime of the workspace."""
+
+        clean = str(name).strip()
+        if not clean:
+            raise ValueError("job name must not be empty")
+        self._job_names.add(clean.casefold())
+        prefix = "作业-"
+        if clean.startswith(prefix) and clean[len(prefix) :].isdigit():
+            self._next_job_number = max(
+                self._next_job_number,
+                int(clean[len(prefix) :]) + 1,
+            )
 
     @property
     def document_count(self) -> int:
@@ -352,18 +387,27 @@ class FEMWorkspace:
             if isinstance(context, WorkspaceDocument)
             else self.document(context)
         )
-        path_index = (
-            self.model_paths
-            if target.kind == "model"
-            else self.result_paths
-        )
+        path_index = self.model_paths if target.kind == "model" else self.result_paths
         old_path = target.source_path
+        old_model_name = str(getattr(target.projection, "model_name", "") or "").strip()
         if old_path is not None:
             old_key = canonical_path(old_path)
             if path_index.get(old_key) == target.document_id:
                 path_index.pop(old_key, None)
 
         target.projection = projection
+        new_model_name = str(getattr(projection, "model_name", "") or "").strip()
+        if (
+            target.kind == "model"
+            and new_model_name
+            and new_model_name != old_model_name
+        ):
+            target.display_name = self._unique_display_name(
+                "model",
+                new_model_name,
+                exclude_document_id=target.document_id,
+            )
+        self._remember_projection_job_names(projection)
         path = (
             getattr(projection, "path", None)
             or getattr(projection, "source_path", None)
@@ -425,6 +469,7 @@ class FEMWorkspace:
             and name == f"Model-{self._next_model_number}"
         ):
             self._next_model_number += 1
+        name = self._unique_display_name(kind, name)
         controller = task_controller or self._new_controller()
         context = WorkspaceDocument(
             document_id=document_id,
@@ -436,11 +481,38 @@ class FEMWorkspace:
             kind=kind,
         )
         registry[document_id] = context
+        self._remember_projection_job_names(projection)
         if path is not None:
             path_index[canonical_path(path)] = document_id
         if self.active_document_id is None:
             self.activate(context)
         return context
+
+    def _unique_display_name(
+        self,
+        kind: str,
+        preferred: str,
+        *,
+        exclude_document_id: int | None = None,
+    ) -> str:
+        registry = self.models if kind == "model" else self.results
+        existing = {
+            context.display_name.casefold()
+            for context in registry.values()
+            if context.document_id != exclude_document_id
+        }
+        if preferred.casefold() not in existing:
+            return preferred
+        number = 1
+        while f"{preferred}({number})".casefold() in existing:
+            number += 1
+        return f"{preferred}({number})"
+
+    def _remember_projection_job_names(self, projection: SessionSnapshot) -> None:
+        for run in projection.runs:
+            name = str(getattr(run, "name", "")).strip()
+            if name:
+                self.remember_job_name(name)
 
     def _kind_for(self, document_id: int) -> str:
         if document_id in self.models:

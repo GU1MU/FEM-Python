@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
 from fem.boundary.step import effective_step_boundaries
@@ -28,13 +28,12 @@ class _TreeViewState:
     vertical_scroll: int
 
 
-_ACTIVE_PART_BACKGROUND = QColor("#d9ecff")
 _ICON_ROOT = Path(__file__).resolve().parents[1] / "resources" / "icons"
 _SCROLL_UP_ARROW = (_ICON_ROOT / "agent_chat_scroll_up.svg").as_posix()
 _SCROLL_DOWN_ARROW = (_ICON_ROOT / "agent_chat_scroll_down.svg").as_posix()
 
 _MODEL_TREE_STYLESHEET = f"""
-QTreeWidget#modelTree::item:selected {{
+QTreeWidget#modelTree::item:hover {{
     background-color: #d9ecff;
     color: #202020;
 }}
@@ -201,10 +200,12 @@ def _style_native_part_item(
     *,
     active: bool,
 ) -> None:
-    """Show current-Part state through color instead of label suffixes."""
+    """Show current-Part state without looking like a hovered tree row."""
 
     if active:
-        item.setBackground(0, QBrush(_ACTIVE_PART_BACKGROUND))
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
     elif native_part.suppressed:
         item.setForeground(0, QBrush(Qt.GlobalColor.gray))
 
@@ -259,6 +260,7 @@ class ModelTree(QTreeWidget):
         (int, str, object),
         (str, object),
     )
+    highlightResetRequested = Signal(bool)
     # Root-level lifecycle actions are routed with the owning document id so
     # the main window can activate an inactive document before applying the
     # command.  Child editing keeps the established routed signals above.
@@ -268,7 +270,8 @@ class ModelTree(QTreeWidget):
         super().__init__(parent)
         self.setObjectName("modelTree")
         self.setHeaderHidden(True)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setMouseTracking(True)
         self.setStyleSheet(_MODEL_TREE_STYLESHEET)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.itemClicked.connect(self._on_clicked)
@@ -402,30 +405,36 @@ class ModelTree(QTreeWidget):
         return True
 
     def set_active_document(self, document_id: int | None) -> None:
-        """Select and highlight a root without rebuilding tree contents."""
+        """Mark the active root without creating a persistent row highlight."""
 
         normalized = None if document_id is None else int(document_id)
         previous = self._active_document_id
         if previous == normalized:
             root = None if normalized is None else self._roots.get(normalized)
             if root is not None:
-                root.setSelected(True)
+                self._set_item_bold(root, True)
                 self.setCurrentItem(root)
             return
         if previous is not None:
             old_root = self._roots.get(previous)
             if old_root is not None:
-                old_root.setSelected(False)
+                self._set_item_bold(old_root, False)
         self._active_document_id = normalized
         if normalized is None:
             self.setCurrentItem(None)
             return
         root = self._roots.get(normalized)
         if root is not None:
-            root.setSelected(True)
+            self._set_item_bold(root, True)
             self.setCurrentItem(root)
         else:
             self.setCurrentItem(None)
+
+    @staticmethod
+    def _set_item_bold(item: QTreeWidgetItem, bold: bool) -> None:
+        font = item.font(0)
+        font.setBold(bold)
+        item.setFont(0, font)
 
     def _interaction_kinds(
         self,
@@ -531,7 +540,18 @@ class ModelTree(QTreeWidget):
         replacement behavior.  With an ID, only that indexed root is replaced
         and the widget is never globally cleared.
         """
-        view_state = self._capture_view_state() if document_id is None else None
+        previous_root = (
+            None
+            if document_id is None
+            else self._roots.get(int(document_id))
+        )
+        view_state = (
+            self._capture_view_state()
+            if document_id is None
+            else self._capture_view_state(previous_root)
+            if previous_root is not None
+            else None
+        )
         self._renamable_kinds = (
             frozenset({"model", "part"})
             if part_name is not None or native_parts
@@ -916,7 +936,7 @@ class ModelTree(QTreeWidget):
             first_step_item = steps.child(0)
         if first_step_item is not None and part is None:
             first_step_item.setExpanded(True)
-        self._restore_view_state(view_state)
+        self._restore_view_state(view_state, root)
         self._building_document_id = None
         return root
 
@@ -933,7 +953,18 @@ class ModelTree(QTreeWidget):
         source_path: str | Path | None = None,
     ) -> QTreeWidgetItem:
         """显示模型以及稳定的原生部件层级。"""
-        view_state = self._capture_view_state() if document_id is None else None
+        previous_root = (
+            None
+            if document_id is None
+            else self._roots.get(int(document_id))
+        )
+        view_state = (
+            self._capture_view_state()
+            if document_id is None
+            else self._capture_view_state(previous_root)
+            if previous_root is not None
+            else None
+        )
         self._building_document_id = (
             None if document_id is None else int(document_id)
         )
@@ -1038,7 +1069,7 @@ class ModelTree(QTreeWidget):
             root.setExpanded(True)
             if active_item is not None:
                 self.setCurrentItem(active_item)
-            self._restore_view_state(view_state)
+            self._restore_view_state(view_state, root)
             self._building_document_id = None
             return root
         part = self._item(str(part_name), "part", None)
@@ -1081,16 +1112,20 @@ class ModelTree(QTreeWidget):
             self.addTopLevelItem(root)
         root.setExpanded(True)
         part.setExpanded(True)
-        self._restore_view_state(view_state)
+        self._restore_view_state(view_state, root)
         self._building_document_id = None
         return root
 
-    def _capture_view_state(self) -> _TreeViewState | None:
+    def _capture_view_state(
+        self,
+        root: QTreeWidgetItem | None = None,
+    ) -> _TreeViewState | None:
         """Capture navigation state before replacing the projected items."""
 
-        if self.topLevelItemCount() != 1:
-            return None
-        root = self.topLevelItem(0)
+        if root is None:
+            if self.topLevelItemCount() != 1:
+                return None
+            root = self.topLevelItem(0)
         if root.data(0, ROLE_KIND) != "model":
             return None
         expanded_paths: set[tuple[tuple[str, str], ...]] = set()
@@ -1117,11 +1152,19 @@ class ModelTree(QTreeWidget):
             self.verticalScrollBar().value(),
         )
 
-    def _restore_view_state(self, state: _TreeViewState | None) -> None:
+    def _restore_view_state(
+        self,
+        state: _TreeViewState | None,
+        root: QTreeWidgetItem | None = None,
+    ) -> None:
         """Restore expansion, selection, and scrolling after a tree rebuild."""
 
-        if state is None or self.topLevelItemCount() != 1:
+        if state is None:
             return
+        if root is None:
+            if self.topLevelItemCount() != 1:
+                return
+            root = self.topLevelItem(0)
         current = None
 
         def visit(
@@ -1136,7 +1179,7 @@ class ModelTree(QTreeWidget):
             for index in range(item.childCount()):
                 visit(item.child(index), path)
 
-        visit(self.topLevelItem(0), ())
+        visit(root, ())
         if current is not None:
             self.setCurrentItem(current)
         self.verticalScrollBar().setValue(state.vertical_scroll)
@@ -1272,10 +1315,12 @@ class ModelTree(QTreeWidget):
                 self._non_highlightable_by_document,
                 self._non_highlightable_kinds,
             )
-        if (
+        will_highlight = (
             entry is not None
             and entry[1] not in non_highlightable
-        ):
+        )
+        self.highlightResetRequested.emit(will_highlight)
+        if will_highlight:
             self._emit_routed(self.highlightRequested, entry)
 
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
@@ -1313,7 +1358,11 @@ class ModelTree(QTreeWidget):
         )
         self.setCurrentItem(item)
         menu = QMenu(self)
-        root = item.parent() is None and entry[1] == "model"
+        root = (
+            item.parent() is None
+            and entry[1] == "model"
+            and entry[0] in self._roots
+        )
         if root:
             activate = menu.addAction("激活")
             save = menu.addAction("保存")

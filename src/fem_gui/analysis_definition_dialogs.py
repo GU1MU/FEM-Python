@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from math import isfinite
 
 from PySide6.QtCore import Qt
@@ -155,6 +155,7 @@ class DisplacementDialogState:
     scope_kind: str
     step_name: str
     components: tuple[tuple[int, bool, float], ...]
+    name: str = ""
 
 
 class DisplacementDialog(QDialog):
@@ -185,6 +186,10 @@ class DisplacementDialog(QDialog):
             supported_scope_kinds = frozenset({"node"})
         self._scope_selection_kinds = supported_scope_kinds
         self._scope_selection_request: str | None = None
+        self.name_edit = QLineEdit(
+            "" if current is None or current.name is None else current.name,
+            self,
+        )
         self._regions = {
             kind: [
                 reference
@@ -264,6 +269,7 @@ class DisplacementDialog(QDialog):
                 if selected:
                     self.component_values[component].setValue(current.value)
         if form_state is not None:
+            self.name_edit.setText(form_state.name)
             kind = {
                 "node": "node_set",
                 "edge": "edge",
@@ -280,6 +286,7 @@ class DisplacementDialog(QDialog):
                 self.component_values[component].setValue(value)
         form = QFormLayout()
         configure_form_layout(form)
+        form.addRow("名称", self.name_edit)
         form.addRow("作用域类型", self.kind_combo)
         form.addRow("选择作用域", region_widget)
         form.addRow("分析步", self.step_combo)
@@ -338,6 +345,7 @@ class DisplacementDialog(QDialog):
                 )
                 for component, check in self.component_checks.items()
             ),
+            self.name_edit.text(),
         )
 
     def _refresh_regions(self) -> None:
@@ -393,6 +401,7 @@ class DisplacementDialog(QDialog):
                 ranges[-1] = (first, component, previous_value)
             else:
                 ranges.append((component, component, value))
+        name = self.name_edit.text().strip() or None
         return step_name, tuple(
             DisplacementConstraint(
                 region.name,
@@ -400,8 +409,15 @@ class DisplacementDialog(QDialog):
                 last,
                 value,
                 target_kind=region.kind,
+                name=(
+                    None
+                    if name is None
+                    else name
+                    if index == 0
+                    else f"{name}-{index + 1}"
+                ),
             )
-            for first, last, value in ranges
+            for index, (first, last, value) in enumerate(ranges)
         )
 
 
@@ -416,6 +432,7 @@ class LoadDialogState:
     component: int | None
     value: float
     vectors: tuple[tuple[str, tuple[float, ...]], ...]
+    name: str = ""
 
 
 class LoadDialog(QDialog):
@@ -460,6 +477,10 @@ class LoadDialog(QDialog):
         )
         self._scope_selection_kinds = supported_scope_kinds
         self._scope_selection_request: str | None = None
+        self.name_edit = QLineEdit(
+            "" if current is None or current.name is None else current.name,
+            self,
+        )
         self._candidate_evaluator = candidate_evaluator
         self._candidate_signature: tuple[str, LineLoad] | None = None
         self._candidate_result: AuthoringCapability | None = None
@@ -549,6 +570,7 @@ class LoadDialog(QDialog):
         self._active_vector_kind: str | None = None
         self.form = QFormLayout()
         configure_form_layout(self.form)
+        self.form.addRow("名称", self.name_edit)
         self.form.addRow("载荷类别", self.kind_combo)
         self.form.addRow("选择作用域", self.region_widget)
         self.form.addRow("分析步", self.step_combo)
@@ -643,6 +665,7 @@ class LoadDialog(QDialog):
             )
             self._vector_values["gravity"] = tuple(current.acceleration)
         if form_state is not None:
+            self.name_edit.setText(form_state.name)
             for kind, vector in form_state.vectors:
                 if kind in self._vector_values:
                     self._vector_values[kind] = tuple(vector)
@@ -718,6 +741,7 @@ class LoadDialog(QDialog):
             None if component is None else int(component),
             self.value_spin.value(),
             tuple((name, tuple(vector)) for name, vector in vectors.items()),
+            self.name_edit.text(),
         )
 
     def _set_distributed_values(
@@ -927,6 +951,7 @@ class LoadDialog(QDialog):
         step = self.step_combo.currentText().strip()
         if not step:
             raise ValueError("请选择分析步")
+        name = self.name_edit.text().strip() or None
         if kind == "gravity":
             acceleration = (self.x_spin.value(),)
             if self.spatial_dimensions >= 2:
@@ -936,6 +961,7 @@ class LoadDialog(QDialog):
             return step, GravityLoad(
                 acceleration,
                 self._gravity_target,
+                name=name,
             )
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
@@ -958,6 +984,7 @@ class LoadDialog(QDialog):
                 target,
                 int(component),
                 self.value_spin.value(),
+                name=name,
             )
         if kind == "line":
             vector = tuple(
@@ -975,6 +1002,7 @@ class LoadDialog(QDialog):
                 target,
                 vector,
                 coordinate_system=coordinate_system,
+                name=name,
             )
         if kind == "body":
             vector = tuple(
@@ -989,14 +1017,31 @@ class LoadDialog(QDialog):
                 raise ValueError(
                     "体力必须包含与空间维数一致的有限分量"
                 )
-            return step, BodyForce(target, vector)
+            return step, BodyForce(target, vector, name=name)
         load_type = str(self.load_type_combo.currentData())
         if load_type == "pressure":
-            return step, (EdgeLoad(target, magnitude=self.value_spin.value(), load_type="pressure") if kind == "edge" else SurfaceLoad(target, magnitude=self.value_spin.value(), load_type="pressure"))
+            magnitude = self.value_spin.value()
+            if magnitude == 0.0:
+                raise ValueError("压力值不能为 0")
+            load_class = EdgeLoad if kind == "edge" else SurfaceLoad
+            return step, load_class(
+                target,
+                magnitude=magnitude,
+                load_type="pressure",
+                name=name,
+            )
         vector = tuple(value.value() for value in (self.x_spin, self.y_spin))
         if self.spatial_dimensions == 3:
             vector += (self.z_spin.value(),)
-        return step, (EdgeLoad(target, vector, load_type="traction") if kind == "edge" else SurfaceLoad(target, vector, load_type="traction"))
+        if not any(value != 0.0 for value in vector):
+            raise ValueError("牵引载荷至少需要一个非零分量")
+        load_class = EdgeLoad if kind == "edge" else SurfaceLoad
+        return step, load_class(
+            target,
+            vector,
+            load_type="traction",
+            name=name,
+        )
 
 
 class OutputRequestDialog(QDialog):
@@ -1721,18 +1766,6 @@ class AnalysisDefinitionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "分析定义", str(error))
                 return
-            if current.name is not None:
-                values = tuple(
-                    replace(
-                        value,
-                        name=(
-                            current.name
-                            if index == 0
-                            else f"{current.name}-{index + 1}"
-                        ),
-                    )
-                    for index, value in enumerate(values)
-                )
             step.boundaries = tuple(
                 item
                 for index, item in enumerate(step.boundaries)
@@ -1845,8 +1878,6 @@ class AnalysisDefinitionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "分析定义", str(error))
                 return
-            if getattr(current, "name", None) is not None:
-                value = replace(value, name=current.name)
             if (
                 isinstance(value, LineLoad)
                 and value.coordinate_system == "local"

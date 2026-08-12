@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from fem.application.results import (
     FieldPosition,
+    ResultCellKind,
     ResultQuery,
     ResultSourceKey,
+    ResultValueLayout,
     ScalarFieldSelection,
     build_result_provider,
     execute_output_requests,
     prepare_result_export_snapshot,
+    project_scalar_field_topology,
 )
 from fem.core.model import OutputRequest
 from fem.io.result_csv import (
@@ -133,6 +137,38 @@ def test_four_point_keys_query_same_beam_ip_without_crossing_points() -> None:
         (4, 0.5, -1.0),
     ]
     assert len({row[3] for row in queried}) > 1
+
+
+def test_beam_single_integration_point_projects_complete_line_topology() -> None:
+    provider, _outcome, _calls = _executed_provider()
+    field = next(
+        field
+        for field in provider.snapshot.fields
+        if field.key.request.field_id.position is FieldPosition.INTEGRATION_POINT
+        and field.key.request.field_id.section_point_number == 2
+    )
+    export = prepare_result_export_snapshot(
+        provider.snapshot,
+        ScalarFieldSelection(field.key, "S11"),
+    )
+
+    projected = project_scalar_field_topology(export, deformation_scale=2.0)
+
+    assert projected.cells == ((0, 1),)
+    assert projected.cell_kinds == (ResultCellKind.FEM_ELEMENT,)
+    assert projected.canonical_element_types == ("Beam2",)
+    assert projected.value_layout is ResultValueLayout.CELL
+    assert projected.point_locations == (None, None)
+    assert projected.cell_locations == field.locations
+    np.testing.assert_allclose(
+        projected.points,
+        provider.snapshot.topology.node_coordinates
+        + 2.0 * provider.snapshot.topology.nodal_displacements,
+    )
+    np.testing.assert_array_equal(
+        projected.values,
+        field.component_values("S11"),
+    )
 
 
 def test_csv_and_vtk_preserve_one_selected_section_point_identity(

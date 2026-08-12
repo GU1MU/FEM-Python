@@ -127,6 +127,77 @@ def _positive_id_indices(values: np.ndarray) -> dict[int, tuple[int, ...]]:
     }
 
 
+def _cell_offsets_and_connectivity(
+    dataset: Any,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Expose the controlled pick datasets as flat VTK cell connectivity."""
+
+    cell_count = int(dataset.GetNumberOfCells())
+    if cell_count == 0:
+        return np.zeros(1, dtype=np.int64), np.empty(0, dtype=np.int64)
+    get_cells = getattr(dataset, "GetCells", None)
+    cell_array = get_cells() if callable(get_cells) else None
+    if cell_array is None:
+        for getter_name in ("GetVerts", "GetLines", "GetPolys", "GetStrips"):
+            candidate = getattr(dataset, getter_name)()
+            if int(candidate.GetNumberOfCells()) == cell_count:
+                cell_array = candidate
+                break
+    if cell_array is None:
+        return None
+    offsets = np.asarray(
+        cell_array.GetOffsetsArray(),
+        dtype=np.int64,
+    )
+    connectivity = np.asarray(
+        cell_array.GetConnectivityArray(),
+        dtype=np.int64,
+    )
+    if len(offsets) != cell_count + 1 or np.any(np.diff(offsets) <= 0):
+        return None
+    return offsets, connectivity
+
+
+def _cell_display_bounds(dataset: Any, display: np.ndarray) -> np.ndarray | None:
+    """Return vectorized xmin/xmax/ymin/ymax/zmin/zmax per display cell."""
+
+    topology = _cell_offsets_and_connectivity(dataset)
+    if topology is None:
+        return None
+    offsets, connectivity = topology
+    if not len(connectivity):
+        return np.empty((0, 6), dtype=float)
+    values = np.asarray(display, dtype=float)[connectivity]
+    starts = offsets[:-1]
+    return np.column_stack(
+        (
+            np.minimum.reduceat(values[:, 0], starts),
+            np.maximum.reduceat(values[:, 0], starts),
+            np.minimum.reduceat(values[:, 1], starts),
+            np.maximum.reduceat(values[:, 1], starts),
+            np.minimum.reduceat(values[:, 2], starts),
+            np.maximum.reduceat(values[:, 2], starts),
+        )
+    )
+
+
+def _rectangle_cell_mask(
+    bounds: tuple[float, float, float, float],
+    cell_bounds: np.ndarray,
+) -> np.ndarray:
+    """Select projected cells intersecting a screen rectangle in one NumPy pass."""
+
+    minimum_x, maximum_x, minimum_y, maximum_y = bounds
+    return (
+        (cell_bounds[:, 1] >= minimum_x)
+        & (cell_bounds[:, 0] <= maximum_x)
+        & (cell_bounds[:, 3] >= minimum_y)
+        & (cell_bounds[:, 2] <= maximum_y)
+        & (cell_bounds[:, 5] >= 0.0)
+        & (cell_bounds[:, 4] <= 1.0)
+    )
+
+
 class _SelectionRubberBand:
     """Draw a border-only rectangle in VTK display coordinates."""
 
@@ -134,7 +205,6 @@ class _SelectionRubberBand:
         import vtk
 
         self._visible = False
-        self._containment = True
         self._points = vtk.vtkPoints()
         self._points.SetNumberOfPoints(4)
         lines = vtk.vtkCellArray()
@@ -159,20 +229,12 @@ class _SelectionRubberBand:
             actor.SetMapper(mapper)
             actor.GetProperty().SetColor(*color)
             actor.GetProperty().SetLineWidth(width)
+            actor.GetProperty().SetLineStipplePattern(0xF0F0)
+            actor.GetProperty().SetLineStippleRepeatFactor(1)
             actor.PickableOff()
             actor.SetVisibility(False)
             renderer.AddViewProp(actor)
             self._actors.append(actor)
-
-    def set_containment(self, containment: bool) -> None:
-        normalized = bool(containment)
-        if normalized == self._containment:
-            return
-        self._containment = normalized
-        pattern = 0xFFFF if normalized else 0xF0F0
-        for actor in self._actors:
-            actor.GetProperty().SetLineStipplePattern(pattern)
-            actor.GetProperty().SetLineStippleRepeatFactor(1)
 
     def set_rectangle(
         self,
@@ -376,7 +438,7 @@ def _mesh_edge_polydata(
         dtype=np.int64,
     )
     dataset.set_active_scalars(None)
-    return dataset, cells
+    return dataset
 
 
 def _line_only_polydata(pyvista, points: np.ndarray, lines: Iterable[int]):
@@ -671,6 +733,19 @@ def _sketch_constraint_label_options(*, warning: bool) -> dict[str, object]:
         "shape_opacity": 0.96,
         "margin": 5,
         "text_color": "#b71c1c" if warning else "#263238",
+        "always_visible": True,
+    }
+
+
+def _sketch_fixed_constraint_label_options(*, warning: bool) -> dict[str, object]:
+    """Return a compact style that leaves the constrained point unobscured."""
+
+    return {
+        "font_size": 9,
+        "bold": False,
+        "shape": None,
+        "margin": 1,
+        "text_color": "#b71c1c" if warning else "#455a64",
         "always_visible": True,
     }
 
@@ -1322,7 +1397,6 @@ class FEMViewport(QWidget):
         self._mesh_scope_face_rows: tuple[
             tuple[int, int, tuple[int, ...]], ...
         ] = ()
-        self._mesh_scope_edge_cells: tuple[tuple[int, ...], ...] = ()
         self._mesh_scope_pick_to_ref: dict[
             tuple[str, int],
             MeshEntityRef,
@@ -1334,6 +1408,7 @@ class FEMViewport(QWidget):
         ] = {}
         self._mesh_body_owner_by_element_id: dict[int, str] = {}
         self._mesh_body_element_ids_by_owner: dict[str, tuple[int, ...]] = {}
+        self._mesh_body_pick_bindings_ready = False
         self._mesh_scope_pick_bindings_ready = False
         self._mesh_selection_topology_provider: (
             Callable[[], MeshSelectionTopology] | None
@@ -1355,6 +1430,10 @@ class FEMViewport(QWidget):
         self._mesh_scope_body_highlight_owners: frozenset[str] = frozenset()
         self._pick_grid = None
         self._pick_locators: dict[int, tuple[int, Any]] = {}
+        self._display_projection_cache: dict[
+            int,
+            tuple[tuple[int, int, tuple[int, int]], np.ndarray],
+        ] = {}
         self._result_render_payload: ResultRenderPayload | None = None
         self._scalar_reuse_pending = False
         self._geometry_reuse_pending = False
@@ -1464,6 +1543,10 @@ class FEMViewport(QWidget):
         self._hover_timer.setSingleShot(True)
         self._hover_timer.setInterval(40)
         self._hover_timer.timeout.connect(self._update_preselection)
+        self._selection_rubber_band_render_timer = QTimer(self)
+        self._selection_rubber_band_render_timer.setSingleShot(True)
+        self._selection_rubber_band_render_timer.setInterval(16)
+        self._selection_rubber_band_render_timer.timeout.connect(self._render)
         self._mesh_scope_render_timer = QTimer(self)
         self._mesh_scope_render_timer.setSingleShot(True)
         self._mesh_scope_render_timer.setInterval(0)
@@ -1904,21 +1987,22 @@ class FEMViewport(QWidget):
             self._selection_rubber_band = _SelectionRubberBand(
                 renderer
             )
-        self._selection_rubber_band.set_containment(
-            float(end[0]) >= float(start[0])
-        )
         self._selection_rubber_band.set_rectangle(
             self._qt_to_vtk_position(*start),
             self._qt_to_vtk_position(*end),
         )
-        self._selection_rubber_band.show()
-        self._render()
+        if self._selection_rubber_band.show():
+            self._selection_rubber_band_render_timer.stop()
+            self._render()
+        elif not self._selection_rubber_band_render_timer.isActive():
+            self._selection_rubber_band_render_timer.start()
 
     def _hide_selection_rubber_band(self) -> None:
         if (
             self._selection_rubber_band is not None
             and self._selection_rubber_band.hide()
         ):
+            self._selection_rubber_band_render_timer.stop()
             self._render()
 
     def _box_select_qt_positions(
@@ -2103,6 +2187,7 @@ class FEMViewport(QWidget):
         self._clear_mesh_scope_pick_bindings()
         self._pick_grid = None
         self._pick_locators.clear()
+        self._display_projection_cache.clear()
         self._result_render_payload = None
         self._result_render_surface = None
         self._scalar_reuse_pending = False
@@ -2726,6 +2811,7 @@ class FEMViewport(QWidget):
             "sketch_constraint_selection_points",
             "sketch_constraint_selection_curves",
             "sketch_constraint_overlays",
+            "sketch_fixed_constraint_overlays",
             "sketch_reference_surface",
             "sketch_support_face_highlight",
         ):
@@ -2967,6 +3053,8 @@ class FEMViewport(QWidget):
             "sketch_entity_hover",
             "sketch_constraint_selection_points",
             "sketch_constraint_selection_curves",
+            "sketch_constraint_overlays",
+            "sketch_fixed_constraint_overlays",
         ):
             self._remove_actor(name)
         if is_offscreen_environment():
@@ -3140,16 +3228,28 @@ class FEMViewport(QWidget):
                         reset_camera=False,
                     )
                 )
-        if data.constraint_overlays:
-            self._actors["sketch_constraint_overlays"] = self._plotter.add_point_labels(
-                np.asarray(tuple(item.position for item in data.constraint_overlays)),
-                tuple(item.text for item in data.constraint_overlays),
+        overlay_groups = (
+            (
+                "sketch_constraint_overlays",
+                tuple(item for item in data.constraint_overlays if item.kind != "fixed"),
+                _sketch_constraint_label_options,
+            ),
+            (
+                "sketch_fixed_constraint_overlays",
+                tuple(item for item in data.constraint_overlays if item.kind == "fixed"),
+                _sketch_fixed_constraint_label_options,
+            ),
+        )
+        for actor_name, overlays, style_options in overlay_groups:
+            if not overlays:
+                continue
+            self._actors[actor_name] = self._plotter.add_point_labels(
+                np.asarray(tuple(item.position for item in overlays)),
+                tuple(item.text for item in overlays),
                 point_size=0,
-                name="sketch_constraint_overlays",
+                name=actor_name,
                 reset_camera=False,
-                **_sketch_constraint_label_options(
-                    warning=any(item.warning for item in data.constraint_overlays)
-                ),
+                **style_options(warning=any(item.warning for item in overlays)),
             )
         selection = self._sketch_selection_polydata(data, coordinates)
         if selection is not None:
@@ -4711,15 +4811,7 @@ class FEMViewport(QWidget):
             if self._mesh_selection_topology_provider is not None
             else build_mesh_selection_topology(self._model)
         )
-        self._mesh_body_owner_by_element_id = dict(topology.element_owners)
-        self._mesh_body_element_ids_by_owner = {
-            owner: tuple(
-                int(reference.element_id)
-                for reference in references
-                if reference.element_id is not None
-            )
-            for owner, references in topology.part_elements.items()
-        }
+        self._install_mesh_body_pick_bindings(topology)
         edge_references = tuple(
             reference
             for reference in topology.pick_references("edge")
@@ -4749,10 +4841,7 @@ class FEMViewport(QWidget):
         self._mesh_scope_edge_rows = edge_rows
         self._mesh_scope_face_rows = face_rows
         if edge_rows:
-            (
-                self._mesh_scope_edges,
-                self._mesh_scope_edge_cells,
-            ) = _mesh_edge_polydata(
+            self._mesh_scope_edges = _mesh_edge_polydata(
                 _pyvista,
                 self._geometry,
                 edge_rows,
@@ -4777,6 +4866,30 @@ class FEMViewport(QWidget):
                 ] = pick_id
         self._mesh_scope_pick_bindings_ready = True
 
+    def _install_mesh_body_pick_bindings(
+        self,
+        topology: MeshSelectionTopology,
+    ) -> None:
+        self._mesh_body_owner_by_element_id = dict(topology.element_owners)
+        self._mesh_body_element_ids_by_owner = {
+            owner: tuple(
+                int(reference.element_id)
+                for reference in references
+                if reference.element_id is not None
+            )
+            for owner, references in topology.part_elements.items()
+        }
+        self._mesh_body_pick_bindings_ready = True
+
+    def _ensure_mesh_body_pick_bindings(self) -> None:
+        if self._mesh_body_pick_bindings_ready:
+            return
+        if self._mesh_selection_topology_provider is None:
+            return
+        self._install_mesh_body_pick_bindings(
+            self._mesh_selection_topology_provider()
+        )
+
     def _ensure_mesh_scope_pick_bindings(self) -> None:
         if self._mesh_scope_pick_bindings_ready:
             return
@@ -4788,12 +4901,12 @@ class FEMViewport(QWidget):
         self._mesh_scope_faces = None
         self._mesh_scope_edge_rows = ()
         self._mesh_scope_face_rows = ()
-        self._mesh_scope_edge_cells = ()
         self._mesh_scope_pick_to_ref.clear()
         self._mesh_scope_ref_to_pick_id.clear()
         self._mesh_scope_identity_to_pick_id.clear()
         self._mesh_body_owner_by_element_id.clear()
         self._mesh_body_element_ids_by_owner.clear()
+        self._mesh_body_pick_bindings_ready = False
         self._mesh_scope_pick_bindings_ready = False
 
     def _reset_mesh_scope_highlight_pipelines(self) -> None:
@@ -5374,7 +5487,6 @@ class FEMViewport(QWidget):
         if self._geometry is None or _pyvista is None:
             self._mesh_scope_edges = None
             self._mesh_scope_faces = None
-            self._mesh_scope_edge_cells = ()
             return
         coordinates: dict[int, np.ndarray] = {}
         result_points = np.asarray(payload.dataset.points)
@@ -5408,10 +5520,7 @@ class FEMViewport(QWidget):
             ):
                 self._mesh_scope_edges.points = projected_points
             else:
-                (
-                    self._mesh_scope_edges,
-                    self._mesh_scope_edge_cells,
-                ) = _mesh_edge_polydata(
+                self._mesh_scope_edges = _mesh_edge_polydata(
                     _pyvista,
                     self._geometry,
                     self._mesh_scope_edge_rows,
@@ -5419,7 +5528,6 @@ class FEMViewport(QWidget):
                 )
         else:
             self._mesh_scope_edges = None
-            self._mesh_scope_edge_cells = ()
         if self._mesh_scope_face_rows and face_node_ids.issubset(coordinates):
             if (
                 self._mesh_scope_faces is not None
@@ -5451,6 +5559,8 @@ class FEMViewport(QWidget):
             self._selection_mode = "element" if mode == "element" else "node"
         if self._selection_mode in {"mesh_edge", "mesh_face"}:
             self._ensure_mesh_scope_pick_bindings()
+        elif self._selection_mode == "mesh_body":
+            self._ensure_mesh_body_pick_bindings()
         if previous != self._selection_mode:
             self._clear_preselection(render=False)
             highlighted_kind = self._mesh_scope_highlight_kind
@@ -5489,6 +5599,7 @@ class FEMViewport(QWidget):
     def clear_selection(self, *, render: bool = True) -> None:
         visual_names = {
             "selection",
+            "set_highlight",
             "geometry_selection",
             "geometry_selection_edges",
             "preselection",
@@ -5510,6 +5621,7 @@ class FEMViewport(QWidget):
         self._selection_highlight_visible = True
         self._mesh_scope_selected_references.clear()
         self._remove_actor("selection")
+        self._remove_actor("set_highlight")
         self._remove_actor("geometry_selection")
         self._remove_actor("geometry_selection_edges")
         self._clear_mesh_scope_highlight(schedule_render=False)
@@ -7331,7 +7443,15 @@ class FEMViewport(QWidget):
                 factors = 0.55 + 0.45 * np.sqrt(norms / maximum)
                 display_vectors = directions * factors[:, None]
         arrow_lengths = np.linalg.norm(display_vectors, axis=1)
-        anchor_points = np.asarray(anchors)
+        camera_position = self._camera_position()
+        anchor_points = np.asarray([
+            np.asarray(anchor, dtype=float) + camera_facing_offset(
+                anchor,
+                camera_position,
+                0.08 * glyph_scale,
+            )
+            for anchor in anchors
+        ])
         displayed_lengths = arrow_lengths * glyph_scale
         display_origins = load_arrow_origins(
             anchor_points,
@@ -8487,36 +8607,36 @@ class FEMViewport(QWidget):
     ) -> tuple[MeshEntityRef, ...]:
         payload = self._rendered_result_payload()
         if payload is not None:
-            points = np.asarray(payload.dataset.points, dtype=float)
+            dataset = payload.dataset
             node_ids = self._typed_result_point_ids(payload.dataset)
-            occluder = payload.dataset
         elif self._geometry is not None:
-            points = self._model_display_points()
+            dataset = self._pick_grid
             node_ids = np.asarray(
                 self._geometry.point_index_to_node_id,
                 dtype=np.int64,
             )
-            occluder = self._pick_grid
         else:
             return ()
-        display = self._world_points_to_display(points)
+        if dataset is None:
+            return ()
+        display = self._dataset_points_to_display(dataset)
         if display is None:
             return ()
-        bounds, _containment = self._vtk_rectangle(start, end)
-        selected: dict[int, MeshEntityRef] = {}
-        for point_index, candidate in enumerate(display):
-            node_id = int(node_ids[point_index])
-            if node_id <= 0:
-                continue
-            if not self._rectangle_contains_point(bounds, candidate):
-                continue
-            if not self._display_candidate_is_visible(
-                candidate,
-                occluder,
-            ):
-                continue
-            selected.setdefault(node_id, MeshEntityRef.node(node_id))
-        return tuple(selected.values())
+        bounds = self._vtk_rectangle(start, end)
+        minimum_x, maximum_x, minimum_y, maximum_y = bounds
+        mask = (
+            (display[:, 0] >= minimum_x)
+            & (display[:, 0] <= maximum_x)
+            & (display[:, 1] >= minimum_y)
+            & (display[:, 1] <= maximum_y)
+            & (display[:, 2] >= 0.0)
+            & (display[:, 2] <= 1.0)
+            & (node_ids > 0)
+        )
+        return tuple(
+            MeshEntityRef.node(int(node_id))
+            for node_id in np.unique(node_ids[mask])
+        )
 
     def _mesh_entities_in_qt_rectangle(
         self,
@@ -8552,12 +8672,10 @@ class FEMViewport(QWidget):
             reference_kind = "element"
         if dataset is None:
             return ()
-        display = self._world_points_to_display(
-            np.asarray(dataset.points, dtype=float)
-        )
+        display = self._dataset_points_to_display(dataset)
         if display is None:
             return ()
-        bounds, containment = self._vtk_rectangle(start, end)
+        bounds = self._vtk_rectangle(start, end)
         if reference_kind == "element" and payload is not None:
             pick_ids = self._typed_result_cell_ids(dataset)
         elif scalar_name in dataset.cell_data:
@@ -8567,32 +8685,14 @@ class FEMViewport(QWidget):
             )
         else:
             return ()
-        occluder = (
-            payload.dataset
-            if payload is not None
-            else self._pick_grid
+        cell_bounds = _cell_display_bounds(dataset, display)
+        if cell_bounds is None or len(cell_bounds) != len(pick_ids):
+            return ()
+        matched_pick_ids = np.unique(
+            pick_ids[_rectangle_cell_mask(bounds, cell_bounds) & (pick_ids > 0)]
         )
         selected: dict[tuple[str, tuple[int, int]], MeshEntityRef] = {}
-        for cell_index, pick_id in enumerate(pick_ids):
-            if int(pick_id) <= 0:
-                continue
-            cell = dataset.get_cell(cell_index)
-            points = display[np.asarray(cell.point_ids, dtype=np.int64)]
-            if not len(points):
-                continue
-            matches = (
-                all(
-                    self._rectangle_contains_point(bounds, point)
-                    for point in points
-                )
-                if containment
-                else self._rectangle_intersects_points(bounds, points)
-            )
-            if not matches or not self._display_candidate_is_visible(
-                np.mean(points, axis=0),
-                occluder,
-            ):
-                continue
+        for pick_id in matched_pick_ids:
             if reference_kind == "element":
                 reference = MeshEntityRef.element(int(pick_id))
             else:
@@ -8615,32 +8715,31 @@ class FEMViewport(QWidget):
         dataset = self._geometry_preview_points
         if dataset is None or "geometry_pick_id" not in dataset.point_data:
             return ()
-        display = self._world_points_to_display(
-            np.asarray(dataset.points, dtype=float)
-        )
+        display = self._dataset_points_to_display(dataset)
         if display is None:
             return ()
-        bounds, _containment = self._vtk_rectangle(start, end)
+        bounds = self._vtk_rectangle(start, end)
         pick_ids = np.asarray(
             dataset.point_data["geometry_pick_id"],
             dtype=np.int64,
         )
-        selected: set[LogicalEntityRef] = set()
-        for point_index, pick_id in enumerate(pick_ids):
-            candidate = display[point_index]
-            if int(pick_id) <= 0 or not self._rectangle_contains_point(
-                bounds,
-                candidate,
-            ):
-                continue
-            if not self._display_candidate_is_visible(
-                candidate,
-                self._geometry_preview_surface,
-            ):
-                continue
-            reference = self._geometry_pick_to_ref.get(int(pick_id))
-            if reference is not None:
-                selected.add(reference)
+        minimum_x, maximum_x, minimum_y, maximum_y = bounds
+        mask = (
+            (display[:, 0] >= minimum_x)
+            & (display[:, 0] <= maximum_x)
+            & (display[:, 1] >= minimum_y)
+            & (display[:, 1] <= maximum_y)
+            & (display[:, 2] >= 0.0)
+            & (display[:, 2] <= 1.0)
+            & (pick_ids > 0)
+        )
+        selected = {
+            reference
+            for pick_id in np.unique(pick_ids[mask])
+            if (
+                reference := self._geometry_pick_to_ref.get(int(pick_id))
+            ) is not None
+        }
         return tuple(sorted(selected, key=logical_ref_sort_key))
 
     def _geometry_entities_in_qt_rectangle(
@@ -8660,104 +8759,41 @@ class FEMViewport(QWidget):
         )
         if dataset is None or scalar_name not in dataset.cell_data:
             return ()
-        display = self._world_points_to_display(
-            np.asarray(dataset.points, dtype=float)
-        )
+        display = self._dataset_points_to_display(dataset)
         if display is None:
             return ()
-        bounds, containment = self._vtk_rectangle(start, end)
+        bounds = self._vtk_rectangle(start, end)
         pick_ids = np.asarray(
             dataset.cell_data[scalar_name],
             dtype=np.int64,
         )
-        cells_by_reference: dict[LogicalEntityRef, list[np.ndarray]] = {}
-        for cell_index, pick_id in enumerate(pick_ids):
-            if int(pick_id) <= 0:
-                continue
-            reference = self._geometry_pick_to_ref.get(int(pick_id))
-            if reference is None:
-                continue
-            cell = dataset.get_cell(cell_index)
-            point_ids = np.asarray(cell.point_ids, dtype=np.int64)
-            if not len(point_ids):
-                continue
-            cells_by_reference.setdefault(reference, []).append(
-                display[point_ids]
-            )
-        selected: list[LogicalEntityRef] = []
-        for reference, cells in sorted(
-            cells_by_reference.items(),
-            key=lambda item: item[0].logical_id,
-        ):
-            entity_points = np.vstack(cells)
-            if containment:
-                matches = all(
-                    self._rectangle_contains_point(bounds, point)
-                    for point in entity_points
-                )
-            else:
-                matches = self._rectangle_intersects_points(
-                    bounds,
-                    entity_points,
-                )
-            if not matches:
-                continue
-            if not any(
-                self._display_candidate_is_visible(
-                    np.mean(cell, axis=0),
-                    self._pick_grid,
-                )
-                for cell in cells
-            ):
-                continue
-            selected.append(reference)
-        return tuple(selected)
+        cell_bounds = _cell_display_bounds(dataset, display)
+        if cell_bounds is None or len(cell_bounds) != len(pick_ids):
+            return ()
+        matched_pick_ids = np.unique(
+            pick_ids[_rectangle_cell_mask(bounds, cell_bounds) & (pick_ids > 0)]
+        )
+        selected = {
+            reference
+            for pick_id in matched_pick_ids
+            if (
+                reference := self._geometry_pick_to_ref.get(int(pick_id))
+            ) is not None
+        }
+        return tuple(sorted(selected, key=logical_ref_sort_key))
 
     def _vtk_rectangle(
         self,
         start: tuple[float, float],
         end: tuple[float, float],
-    ) -> tuple[tuple[float, float, float, float], bool]:
+    ) -> tuple[float, float, float, float]:
         first = self._qt_to_vtk_position(*start)
         second = self._qt_to_vtk_position(*end)
         return (
-            (
-                float(min(first[0], second[0])),
-                float(max(first[0], second[0])),
-                float(min(first[1], second[1])),
-                float(max(first[1], second[1])),
-            ),
-            start[0] <= end[0],
-        )
-
-    @staticmethod
-    def _rectangle_contains_point(
-        bounds: tuple[float, float, float, float],
-        point: np.ndarray,
-    ) -> bool:
-        minimum_x, maximum_x, minimum_y, maximum_y = bounds
-        return (
-            minimum_x <= float(point[0]) <= maximum_x
-            and minimum_y <= float(point[1]) <= maximum_y
-            and 0.0 <= float(point[2]) <= 1.0
-        )
-
-    @staticmethod
-    def _rectangle_intersects_points(
-        bounds: tuple[float, float, float, float],
-        points: np.ndarray,
-    ) -> bool:
-        minimum_x, maximum_x, minimum_y, maximum_y = bounds
-        finite = points[np.isfinite(points).all(axis=1)]
-        if not len(finite):
-            return False
-        return (
-            float(np.max(finite[:, 0])) >= minimum_x
-            and float(np.min(finite[:, 0])) <= maximum_x
-            and float(np.max(finite[:, 1])) >= minimum_y
-            and float(np.min(finite[:, 1])) <= maximum_y
-            and float(np.max(finite[:, 2])) >= 0.0
-            and float(np.min(finite[:, 2])) <= 1.0
+            float(min(first[0], second[0])),
+            float(max(first[0], second[0])),
+            float(min(first[1], second[1])),
+            float(max(first[1], second[1])),
         )
 
     def _update_preselection(self) -> None:
@@ -9042,7 +9078,7 @@ class FEMViewport(QWidget):
         dataset: Any,
         id_array: str,
         dataset_name: str,
-        occluder: Any,
+        _occluder: Any,
         tolerance: float,
         *,
         provenance_ids: np.ndarray | None = None,
@@ -9062,7 +9098,7 @@ class FEMViewport(QWidget):
         mouse = np.asarray((float(x), float(y)), dtype=float)
         threshold = float(tolerance) * self._device_pixel_ratio()
         world_points = np.asarray(dataset.points, dtype=float)
-        display_points = self._world_points_to_display(world_points)
+        display_points = self._dataset_points_to_display(dataset)
         if display_points is None:
             return None
         distances = np.linalg.norm(display_points[:, :2] - mouse, axis=1)
@@ -9083,19 +9119,7 @@ class FEMViewport(QWidget):
                 )
             )
         ]
-        index = next(
-            (
-                int(candidate)
-                for candidate in order
-                if self._display_candidate_is_visible(
-                    display_points[candidate],
-                    occluder,
-                )
-            ),
-            None,
-        )
-        if index is None:
-            return None
+        index = int(order[0])
         world = world_points[index]
         return PickHit(
             self._selection_mode,
@@ -9112,81 +9136,17 @@ class FEMViewport(QWidget):
         y: int,
         tolerance: float,
     ) -> PickHit | None:
-        preview = self._geometry_preview
         dataset = self._geometry_preview_edges
         if (
-            preview is None
-            or dataset is None
+            dataset is None
             or "geometry_pick_id" not in dataset.cell_data
         ):
             return None
-        mouse = np.asarray((float(x), float(y)), dtype=float)
-        threshold = float(tolerance) * self._device_pixel_ratio()
-        points = np.asarray(preview.points, dtype=float)
         ids = np.asarray(dataset.cell_data["geometry_pick_id"], dtype=np.int64)
-        display_points = self._world_points_to_display(points)
-        if display_points is None:
+        picked = self._pick_polyline_cell(x, y, dataset, ids, tolerance)
+        if picked is None:
             return None
-        starts: list[int] = []
-        ends: list[int] = []
-        cells: list[int] = []
-        for cell_index, edge in enumerate(preview.edges):
-            for start_index, end_index in zip(edge, edge[1:]):
-                starts.append(int(start_index))
-                ends.append(int(end_index))
-                cells.append(int(cell_index))
-        if not starts:
-            return None
-        start_ids = np.asarray(starts, dtype=np.int64)
-        end_ids = np.asarray(ends, dtype=np.int64)
-        start_display = display_points[start_ids]
-        vectors = display_points[end_ids] - start_display
-        vector_2d = vectors[:, :2]
-        length_squared = np.einsum("ij,ij->i", vector_2d, vector_2d)
-        fractions = np.divide(
-            np.einsum("ij,ij->i", mouse - start_display[:, :2], vector_2d),
-            length_squared,
-            out=np.zeros_like(length_squared),
-            where=length_squared > 0.0,
-        )
-        fractions = np.clip(fractions, 0.0, 1.0)
-        closest = start_display + fractions[:, None] * vectors
-        distances = np.linalg.norm(closest[:, :2] - mouse, axis=1)
-        candidates = np.flatnonzero(
-            np.isfinite(distances)
-            & (distances <= threshold)
-            & (closest[:, 2] >= 0.0)
-            & (closest[:, 2] <= 1.0)
-            & (ids[np.asarray(cells, dtype=np.int64)] > 0)
-        )
-        if not len(candidates):
-            return None
-        order = candidates[
-            np.lexsort((closest[candidates, 2], distances[candidates]))
-        ]
-        segment_index = next(
-            (
-                int(candidate)
-                for candidate in order
-                if self._display_candidate_is_visible(
-                    closest[candidate],
-                    self._geometry_preview_surface,
-                )
-            ),
-            None,
-        )
-        if segment_index is None:
-            return None
-        cell_index = cells[segment_index]
-        fraction = float(fractions[segment_index])
-        world = (
-            points[start_ids[segment_index]]
-            + fraction
-            * (
-                points[end_ids[segment_index]]
-                - points[start_ids[segment_index]]
-            )
-        )
+        cell_index, world = picked
         return PickHit(
             self._selection_mode,
             int(ids[cell_index]),
@@ -9205,53 +9165,17 @@ class FEMViewport(QWidget):
         dataset = self._mesh_scope_edges
         if (
             dataset is None
-            or not self._mesh_scope_edge_cells
             or "mesh_scope_pick_id" not in dataset.cell_data
         ):
             return None
-        points = np.asarray(dataset.points, dtype=float)
-        display_points = self._world_points_to_display(points)
-        if display_points is None:
-            return None
-        mouse = np.asarray((float(x), float(y)), dtype=float)
-        threshold = float(tolerance) * self._device_pixel_ratio()
         ids = np.asarray(
             dataset.cell_data["mesh_scope_pick_id"],
             dtype=np.int64,
         )
-        candidates: list[tuple[float, float, int, np.ndarray]] = []
-        for cell_index, cell in enumerate(self._mesh_scope_edge_cells):
-            for start_index, end_index in zip(cell, cell[1:]):
-                start = display_points[start_index]
-                end = display_points[end_index]
-                distance, fraction = _point_to_segment_distance(
-                    mouse,
-                    start[:2],
-                    end[:2],
-                )
-                closest = start + fraction * (end - start)
-                if (
-                    distance <= threshold
-                    and 0.0 <= closest[2] <= 1.0
-                    and self._display_candidate_is_visible(
-                        closest,
-                        (
-                            self._result_grid
-                            if self._rendered_result_payload() is not None
-                            else self._pick_grid
-                        ),
-                    )
-                ):
-                    world = (
-                        points[start_index]
-                        + fraction * (points[end_index] - points[start_index])
-                    )
-                    candidates.append(
-                        (distance, float(closest[2]), cell_index, world)
-                    )
-        if not candidates:
+        picked = self._pick_polyline_cell(x, y, dataset, ids, tolerance)
+        if picked is None:
             return None
-        _distance, _depth, cell_index, world = min(candidates)
+        cell_index, world = picked
         return PickHit(
             self._selection_mode,
             int(ids[cell_index]),
@@ -9260,6 +9184,76 @@ class FEMViewport(QWidget):
             tuple(float(value) for value in world),
             vtk_cell_id=cell_index,
         )
+
+    def _pick_polyline_cell(
+        self,
+        x: int,
+        y: int,
+        dataset: Any,
+        pick_ids: np.ndarray,
+        tolerance: float,
+    ) -> tuple[int, np.ndarray] | None:
+        topology = _cell_offsets_and_connectivity(dataset)
+        if topology is None:
+            return None
+        offsets, connectivity = topology
+        segment_counts = np.diff(offsets) - 1
+        if not len(connectivity) or not np.any(segment_counts > 0):
+            return None
+        segment_positions = np.ones(len(connectivity) - 1, dtype=bool)
+        last_positions = offsets[1:] - 1
+        segment_positions[last_positions[last_positions < len(segment_positions)]] = False
+        positions = np.flatnonzero(segment_positions)
+        start_ids = connectivity[positions]
+        end_ids = connectivity[positions + 1]
+        cell_ids = np.repeat(
+            np.arange(len(segment_counts), dtype=np.int64),
+            segment_counts,
+        )
+        points = np.asarray(dataset.points, dtype=float)
+        display = self._world_points_to_display(
+            np.asarray(dataset.points, dtype=float)
+        )
+        if display is None:
+            return None
+        start_display = display[start_ids]
+        vectors = display[end_ids] - start_display
+        vectors_2d = vectors[:, :2]
+        lengths_squared = np.einsum("ij,ij->i", vectors_2d, vectors_2d)
+        mouse = np.asarray((float(x), float(y)), dtype=float)
+        fractions = np.divide(
+            np.einsum("ij,ij->i", mouse - start_display[:, :2], vectors_2d),
+            lengths_squared,
+            out=np.zeros_like(lengths_squared),
+            where=lengths_squared > 0.0,
+        )
+        fractions = np.clip(fractions, 0.0, 1.0)
+        closest = start_display + fractions[:, None] * vectors
+        distances = np.linalg.norm(closest[:, :2] - mouse, axis=1)
+        threshold = float(tolerance) * self._device_pixel_ratio()
+        candidates = np.flatnonzero(
+            np.isfinite(distances)
+            & (distances <= threshold)
+            & (closest[:, 2] >= 0.0)
+            & (closest[:, 2] <= 1.0)
+            & (pick_ids[cell_ids] > 0)
+        )
+        if not len(candidates):
+            return None
+        segment_index = int(
+            candidates[
+                np.lexsort(
+                    (closest[candidates, 2], distances[candidates])
+                )
+            ][0]
+        )
+        fraction = float(fractions[segment_index])
+        world = (
+            points[start_ids[segment_index]]
+            + fraction
+            * (points[end_ids[segment_index]] - points[start_ids[segment_index]])
+        )
+        return int(cell_ids[segment_index]), world
 
     def _pick_cell(
         self,
@@ -9357,6 +9351,37 @@ class FEMViewport(QWidget):
         display[:, 2] = normalized[:, 2]
         return display
 
+    def _dataset_points_to_display(self, dataset: Any) -> np.ndarray | None:
+        renderer = getattr(self._plotter, "renderer", None)
+        if renderer is None:
+            return self._world_points_to_display(
+                np.asarray(dataset.points, dtype=float)
+            )
+        camera = renderer.GetActiveCamera()
+        render_window = renderer.GetRenderWindow()
+        size = (
+            tuple(int(value) for value in render_window.GetSize())
+            if render_window is not None
+            else (int(self._plotter.width()), int(self._plotter.height()))
+        )
+        signature = (
+            int(dataset.GetMTime()),
+            int(camera.GetMTime()),
+            size,
+        )
+        key = id(dataset)
+        cached = self._display_projection_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        display = self._world_points_to_display(
+            np.asarray(dataset.points, dtype=float)
+        )
+        if display is not None:
+            if len(self._display_projection_cache) >= 16:
+                self._display_projection_cache.clear()
+            self._display_projection_cache[key] = (signature, display)
+        return display
+
     def _locator_for(self, dataset: Any):
         import vtk
 
@@ -9403,25 +9428,6 @@ class FEMViewport(QWidget):
         if not hit or int(cell_id) < 0:
             return None
         return int(cell_id), np.asarray(world, dtype=float)
-
-    def _display_candidate_is_visible(
-        self,
-        display: np.ndarray,
-        occluder: Any,
-    ) -> bool:
-        intersection = self._intersect_dataset(
-            float(display[0]),
-            float(display[1]),
-            occluder,
-        )
-        if intersection is None:
-            return True
-        _cell_id, front_world = intersection
-        front_display = self._world_to_display(front_world)
-        return (
-            front_display is None
-            or float(display[2]) <= float(front_display[2]) + 2.0e-3
-        )
 
     def _show_preselection(self, hit: PickHit | None) -> None:
         self._remove_actor("preselection")

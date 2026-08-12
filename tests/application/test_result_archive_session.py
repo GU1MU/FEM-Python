@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -50,39 +49,7 @@ def test_prepare_result_archive_save_binds_exact_source_and_generation() -> None
     assert payload.archive.model_projection.topology is (
         payload.archive.materialization.topology
     )
-    summaries = payload.archive.model_projection.summaries
-    assert {
-        "model",
-        "mesh",
-        "parts",
-        "materials",
-        "sections",
-        "assignments",
-        "steps",
-    } <= set(summaries)
-    assert summaries["mesh"]["node_count"] == len(
-        payload.archive.materialization.topology.node_ids
-    )
-    assert summaries["steps"][0]["total_load_count"] == 0
-
-    def assert_json_safe(value):
-        if isinstance(value, Mapping):
-            for key, item in value.items():
-                assert type(key) is str
-                assert_json_safe(item)
-            return
-        if type(value) is tuple:
-            for item in value:
-                assert_json_safe(item)
-            return
-        assert value is None or type(value) in {bool, int, float, str}
-
-    assert_json_safe(summaries)
-    assert all(
-        not any(separator in item for separator in ("/", "\\"))
-        for item in str(summaries).split()
-        if isinstance(item, str)
-    )
+    assert payload.archive.model_projection.summaries == {}
     assert payload.archive.run.name == "Job-1"
     assert session.snapshot().has_unsaved_results
 

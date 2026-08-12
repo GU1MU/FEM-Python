@@ -33,7 +33,9 @@ class GuiActionKey(str, Enum):
     NEW_NATIVE = "new_native"
     OPEN_PROJECT = "open_project"
     SAVE_PROJECT = "save_project"
+    SAVE_PROJECT_AS = "save_project_as"
     SAVE_RESULT = "save_result"
+    SAVE_RESULT_AS = "save_result_as"
     OPEN_RESULT = "open_result"
     RELOAD = "reload"
     CLOSE = "close"
@@ -156,11 +158,13 @@ def _d(
 ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.OPEN, "打开 INP", "open_inp", "open_inp"),
     _d(GuiActionKey.NEW_NATIVE, "新建模型", "new_native_model", "new_model"),
-    _d(GuiActionKey.OPEN_PROJECT, "打开项目", "open_native_project", "open_project"),
-    _d(GuiActionKey.SAVE_PROJECT, "保存项目", "save_native_project", "save_project"),
+    _d(GuiActionKey.OPEN_PROJECT, "打开模型", "open_native_project", "open_project"),
+    _d(GuiActionKey.SAVE_PROJECT, "保存模型", "save_native_project", "save_project"),
+    _d(GuiActionKey.SAVE_PROJECT_AS, "模型另存为...", "save_native_project_as"),
     _d(GuiActionKey.RELOAD, "重新加载", "reload_model", "reload"),
     _d(GuiActionKey.CLOSE, "关闭模型", "close_model", "close"),
     _d(GuiActionKey.SAVE_RESULT, "保存结果", "save_current_result", "save_result"),
+    _d(GuiActionKey.SAVE_RESULT_AS, "结果另存为...", "save_current_result_as"),
     _d(GuiActionKey.OPEN_RESULT, "打开结果", "open_result_file", "open_result"),
     _d(GuiActionKey.EXIT, "退出", "close"),
     _d(GuiActionKey.MODEL_INFO, "模型概况", "show_model_information", "model_info"),
@@ -220,8 +224,8 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.OUTPUT_CREATE, "输出请求", "create_output_request", "output"),
     _d(GuiActionKey.ANALYSIS_MANAGER, "分析管理", "show_analysis_manager", "analysis_manager"),
     _d(GuiActionKey.CHECK_MODEL, "检查模型", "start_model_check", "check"),
-    _d(GuiActionKey.SUBMIT_JOB, "创建并提交", "create_and_submit_job", "job"),
-    _d(GuiActionKey.RESUBMIT_JOB, "重新提交", "resubmit_job", "resubmit"),
+    _d(GuiActionKey.SUBMIT_JOB, "创建作业", "create_job", "job"),
+    _d(GuiActionKey.RESUBMIT_JOB, "复制作业", "resubmit_job", "resubmit"),
     _d(GuiActionKey.JOB_MANAGER, "作业管理", "show_job_manager", "job_manager"),
     _d(GuiActionKey.UNDEFORMED, "未变形形状", "set_shape_mode", "undeformed", checkable=True, checked=True, group="shape", argument="undeformed"),
     _d(GuiActionKey.DEFORMED, "变形形状", "set_shape_mode", "deformed", checkable=True, group="shape", argument="deformed"),
@@ -392,22 +396,24 @@ def derive_action_availability(
     set_state(GuiActionKey.OPEN, not busy, "后台任务运行时不能打开 INP")
     set_state(GuiActionKey.NEW_NATIVE, not busy, "后台任务运行时不能新建项目")
     set_state(GuiActionKey.OPEN_PROJECT, not busy, "后台任务运行时不能打开项目")
-    set_state(
-        GuiActionKey.SAVE_PROJECT,
-        snapshot.can_save and not busy,
-        "请先创建自主部件；INP 模型保持原文件工作流",
-    )
-    set_state(
-        GuiActionKey.SAVE_RESULT,
-        has_current_result and result_actions_idle,
-        (
-            "后台任务运行时不能保存结果"
-            if busy
-            else "当前没有可保存的成功结果"
-            if not has_current_result
-            else "当前结果任务正在运行，或结果源已过期"
-        ),
-    )
+    for key in (GuiActionKey.SAVE_PROJECT, GuiActionKey.SAVE_PROJECT_AS):
+        set_state(
+            key,
+            snapshot.can_save and not busy,
+            "请先创建自主部件；INP 模型保持原文件工作流",
+        )
+    for key in (GuiActionKey.SAVE_RESULT, GuiActionKey.SAVE_RESULT_AS):
+        set_state(
+            key,
+            has_current_result and result_actions_idle,
+            (
+                "后台任务运行时不能保存结果"
+                if busy
+                else "当前没有可保存的成功结果"
+                if not has_current_result
+                else "当前结果任务正在运行，或结果源已过期"
+            ),
+        )
     set_state(
         GuiActionKey.OPEN_RESULT,
         not busy and not editor_active,
@@ -770,7 +776,7 @@ def derive_action_availability(
     set_state(
         GuiActionKey.RESUBMIT_JOB,
         not busy and resubmittable,
-        "当前没有已完成或失败的作业可重新提交",
+        "当前没有可复制的历史作业",
     )
     set_state(GuiActionKey.JOB_MANAGER, has_model, "请先生成网格或打开 INP 模型")
     set_state(
@@ -894,6 +900,7 @@ def derive_action_availability(
             GuiActionKey.NEW_NATIVE,
             GuiActionKey.OPEN_PROJECT,
             GuiActionKey.SAVE_PROJECT,
+            GuiActionKey.SAVE_PROJECT_AS,
             GuiActionKey.RELOAD,
             GuiActionKey.CLOSE,
             GuiActionKey.MATERIAL_MANAGER,

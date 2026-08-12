@@ -58,6 +58,30 @@ def _session() -> ModelSession:
     return session
 
 
+def test_created_run_stays_pending_until_explicit_submission() -> None:
+    session = _session()
+    snapshot = session.snapshot()
+
+    delta = session.create_run("Step-A", "Job-1")
+    created = session.find_run("Job-1")
+
+    assert delta.changed == frozenset({ChangeKind.RUNS})
+    assert created is not None
+    assert created.status is RunStatus.PENDING
+    assert created.started_at is None
+    assert created.artifact_id == snapshot.artifact.artifact_id
+    assert created.model_revision == snapshot.model_revision
+    task = session.prepare_run_solve(created.run_id)
+    assert task.delta is None
+    assert session.find_run(created.run_id).status is RunStatus.PENDING
+
+    session.begin_run(task.token)
+    running = session.find_run(created.run_id)
+    assert running is not None
+    assert running.status is RunStatus.RUNNING
+    assert running.started_at is not None
+
+
 def test_cached_prepared_system_isolated_from_exposed_solve_task_model() -> None:
     session = ModelSession()
     imported = session.prepare_import("prepared-cache.inp")

@@ -73,11 +73,17 @@ def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
     previous_artifact_id = window.viewport.artifact_id
     rebound = []
     rebuilt = []
+    refreshed_symbols = []
     original_rebind = window.viewport.rebind_model_artifact
+    original_show_symbols = window.viewport.show_boundary_and_loads
 
     def record_rebind(*args, **kwargs) -> None:
         rebound.append(True)
         original_rebind(*args, **kwargs)
+
+    def record_symbol_refresh(*args, **kwargs) -> None:
+        refreshed_symbols.append(True)
+        original_show_symbols(*args, **kwargs)
 
     monkeypatch.setattr(
         window.viewport,
@@ -88,6 +94,11 @@ def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
         FEMViewport,
         "set_model",
         lambda *_args, **_kwargs: rebuilt.append(True),
+    )
+    monkeypatch.setattr(
+        window.viewport,
+        "show_boundary_and_loads",
+        record_symbol_refresh,
     )
     snapshot = window.document
     batch = DefinitionEditBatch(
@@ -103,6 +114,7 @@ def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
     assert receipt.diagnostic is None
     assert rebound == [True]
     assert rebuilt == []
+    assert refreshed_symbols == [True]
     assert window.viewport.artifact_id != previous_artifact_id
     window.close()
 
@@ -323,7 +335,7 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
         is provider
     )
     assert not hasattr(window, "result_data")
-    assert window.result_tree.topLevelItem(0).text(0) == "分析结果"
+    assert window.result_tree.topLevelItem(0).text(0) == "Job-1"
     assert window.result_tree.topLevelItem(0).child(0).text(0) == "pull"
     assert not window.actions["query"].isEnabled()
     assert window.result_variable_combo.isEnabled()

@@ -34,6 +34,7 @@ from fem_gui.widgets.viewport import (
     _geometry_surface_polydata,
     _line_only_polydata,
     _sketch_constraint_label_options,
+    _sketch_fixed_constraint_label_options,
     _sketch_geometry_color,
     _wire_coordinate_label,
 )
@@ -49,6 +50,7 @@ pv = pytest.importorskip(
 def test_sketch_constraint_labels_use_high_contrast_colors() -> None:
     normal = _sketch_constraint_label_options(warning=False)
     warning = _sketch_constraint_label_options(warning=True)
+    fixed = _sketch_fixed_constraint_label_options(warning=False)
 
     assert normal["shape_color"] == "#fff8e1"
     assert normal["text_color"] == "#263238"
@@ -57,6 +59,10 @@ def test_sketch_constraint_labels_use_high_contrast_colors() -> None:
     assert normal["always_visible"] is True
     assert warning["shape_color"] == "#ffebee"
     assert warning["text_color"] == "#b71c1c"
+    assert fixed["font_size"] == 9
+    assert fixed["bold"] is False
+    assert fixed["shape"] is None
+    assert fixed["margin"] == 1
 
 
 def _application() -> QApplication:

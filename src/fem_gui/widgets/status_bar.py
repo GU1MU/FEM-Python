@@ -20,7 +20,12 @@ class CAEStatusBar(QStatusBar):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(lambda: self.set_state("就绪"))
-        self.state_label = self._add_field("statusState", "状态：就绪", 175)
+        self.state_label = self._add_field(
+            "statusState",
+            "状态：就绪",
+            320,
+            stretch=3,
+        )
         self.selection_label = self._add_field("statusSelection", "选择：节点", 100)
         self.object_label = self._add_field("statusObject", "对象：—", 110)
         self.coordinate_label = self._add_field("statusCoordinate", "坐标：—", 245)
@@ -34,7 +39,14 @@ class CAEStatusBar(QStatusBar):
         self.cancel_button.hide()
         self.addPermanentWidget(self.cancel_button)
 
-    def _add_field(self, name: str, text: str, minimum: int) -> QLabel:
+    def _add_field(
+        self,
+        name: str,
+        text: str,
+        maximum: int,
+        *,
+        stretch: int = 1,
+    ) -> QLabel:
         if self._field_count:
             separator = QFrame(self)
             separator.setObjectName("statusSeparator")
@@ -43,14 +55,15 @@ class CAEStatusBar(QStatusBar):
         label = QLabel(text, self)
         label.setObjectName(name)
         label.setMinimumWidth(0)
-        label.setMaximumWidth(minimum)
-        self.addWidget(label, 1)
+        label.setMaximumWidth(maximum)
+        self.addWidget(label, stretch)
         self._field_count += 1
         return label
 
     def set_state(self, text: str, timeout: int = 0) -> None:
         self._timer.stop()
         self.state_label.setText(f"状态：{text}")
+        self.state_label.setToolTip(str(text))
         if timeout > 0:
             self._timer.start(timeout)
 
