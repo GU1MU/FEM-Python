@@ -1146,6 +1146,86 @@ def test_contextual_mesh_picking_uses_rendered_result_coordinates_and_ids(
     viewport.close()
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ("mesh_face", "mesh_body", "mesh_element"),
+)
+def test_nodal_result_cells_support_contextual_single_and_box_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    _application()
+    payload = _node_payload()
+    viewport = FEMViewport()
+    viewport._pick_grid = _model_grid(
+        points=np.asarray(payload.dataset.points),
+        cells=((0, 1, 2),),
+        cell_types=(5,),
+        node_ids=(10, 20, 30),
+        element_ids=(201,),
+    )
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    viewport._selection_mode = mode
+    monkeypatch.setattr(
+        viewport,
+        "_intersect_dataset",
+        lambda *_args: (0, np.asarray((0.25, 0.25, 0.0))),
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_world_points_to_display",
+        lambda points: np.column_stack(
+            (np.asarray(points)[:, :2], np.full(len(points), 0.5))
+        ),
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_vtk_rectangle",
+        lambda *_args: (-1.0, 2.0, -1.0, 2.0),
+    )
+
+    hit = viewport._resolve_pick(1, 2)
+    boxed = viewport._mesh_entities_in_qt_rectangle(
+        (0.0, 0.0),
+        (10.0, 10.0),
+    )
+
+    assert hit is not None
+    assert hit.kind == mode
+    assert hit.pick_id == 201
+    assert hit.dataset_name == "typed_result_grid"
+    assert boxed == (MeshEntityRef.element(201),)
+    viewport.close()
+
+
+def test_aligned_nodal_result_provenance_avoids_per_cell_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _application()
+    payload = _node_payload()
+    viewport = FEMViewport()
+    viewport._pick_grid = _model_grid(
+        points=np.asarray(payload.dataset.points),
+        cells=((0, 1, 2),),
+        cell_types=(5,),
+        node_ids=(10, 20, 30),
+        element_ids=(201,),
+    )
+    monkeypatch.setattr(
+        np,
+        "sort",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("aligned result cells must use the bulk fast path")
+        ),
+    )
+
+    viewport.set_result_render_payload(payload)
+
+    assert viewport._result_cell_index_to_element_id == {0: 201}
+    viewport.close()
+
+
 def test_contextual_mesh_highlight_pipeline_uses_rendered_result_dataset() -> None:
     _application()
     viewport_module._pyvista = pyvista

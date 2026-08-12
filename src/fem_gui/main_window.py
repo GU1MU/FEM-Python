@@ -158,6 +158,7 @@ from fem.geometry import (
     undo_solid_body_feature,
 )
 from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
+from fem.geometry.part_namespace import part_id_sort_key
 from fem.io.project import (
     LEGACY_MODEL_FILE_SUFFIXES,
     MODEL_FILE_SUFFIX,
@@ -5639,6 +5640,7 @@ class FEMMainWindow(QMainWindow):
         *,
         original_recipe: object | None,
         part_name: str | None = None,
+        display_size: float | None = None,
     ) -> None:
         if (
             self._wire_editor_controller is not None
@@ -5659,7 +5661,10 @@ class FEMMainWindow(QMainWindow):
             controller,
             base_snapshot=controller.snapshot(),
         )
-        self.wire_editor_panel.begin(self.viewport)
+        self.wire_editor_panel.begin(
+            self.viewport,
+            display_size=display_size,
+        )
         self.main_splitter.setSizes([260, 760, 360, 0, 0, 0])
         self._wire_editor_work_plane_changed(
             str(self.wire_editor_panel.work_plane_combo.currentData())
@@ -5786,12 +5791,14 @@ class FEMMainWindow(QMainWindow):
                 None,
                 original_recipe=None,
                 part_name=part_name,
+                display_size=dialog.sketch_size(),
             )
         elif creation_kind == "2d":
             self._begin_sketch_editor(
                 None,
                 original_recipe=None,
                 part_name=part_name,
+                display_size=dialog.sketch_size(),
             )
         elif creation_kind in {"3d_box", "3d_cylinder"}:
             self._create_basic_solid_part(creation_kind, part_name)
@@ -6422,6 +6429,7 @@ class FEMMainWindow(QMainWindow):
         *,
         original_recipe: object | None,
         part_name: str | None = None,
+        display_size: float | None = None,
     ) -> None:
         if (
             self._wire_editor_controller is not None
@@ -6441,7 +6449,10 @@ class FEMMainWindow(QMainWindow):
             controller,
             base_snapshot=controller.snapshot(),
         )
-        self.sketch_editor_panel.begin(self.viewport)
+        self.sketch_editor_panel.begin(
+            self.viewport,
+            display_size=display_size,
+        )
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         self.ribbon.set_current("几何")
         self.viewport.set_view("front")
@@ -14059,8 +14070,9 @@ class FEMMainWindow(QMainWindow):
             if mode in {"node", "edge", "face", "element", "body"}
             else "node"
         )
+        model = self._current_gui_model()
         reference_kind = normalized
-        if self.document.model is not None:
+        if model is not None:
             semantic_filter = "point" if normalized == "node" else normalized
             report = self._model_capability_report()
             dimension = (
@@ -14089,7 +14101,7 @@ class FEMMainWindow(QMainWindow):
             self.status_panel.set_object()
         if (
             normalized in {"edge", "face", "body"}
-            and self.document.model is not None
+            and model is not None
             and self._mesh_selection_topology_cache is None
             and self._mesh_selection_topology_requires_background()
         ):
@@ -14101,14 +14113,14 @@ class FEMMainWindow(QMainWindow):
             return
         if (
             normalized in {"edge", "face", "body"}
-            and self.document.model is not None
+            and model is not None
             and self._mesh_selection_topology_cache is None
         ):
             self._mesh_selection_topology()
         if (
             self._selected_mesh_scope_refs
             and normalized in {"edge", "face", "body"}
-            and self.document.model is not None
+            and model is not None
         ):
             topology = self._mesh_selection_topology()
             self._selected_mesh_scope_refs = {
@@ -14358,15 +14370,10 @@ class FEMMainWindow(QMainWindow):
         if any(reference.kind != kind for reference in selected):
             raise ValueError("mesh box selection cannot mix entity kinds")
         semantic_filter = self._active_mesh_selection_filter()
-        groups_by_identity: dict[int, tuple[MeshEntityRef, ...]] = {}
-        for reference in selected:
-            expanded = self._expand_mesh_selection_reference(
-                semantic_filter,
-                reference,
-            )
-            if expanded:
-                groups_by_identity.setdefault(id(expanded), expanded)
-        groups = tuple(groups_by_identity.values())
+        groups = self._mesh_box_selection_groups(
+            semantic_filter,
+            selected,
+        )
         if not groups:
             self._on_viewport_pick_missed(f"mesh_{semantic_filter}")
             return
@@ -14375,6 +14382,59 @@ class FEMMainWindow(QMainWindow):
             groups,
             additive=self._geometry_pick_is_additive(),
         )
+
+    def _mesh_box_selection_groups(
+        self,
+        semantic_filter: str,
+        references: tuple[MeshEntityRef, ...],
+    ) -> tuple[tuple[MeshEntityRef, ...], ...]:
+        """Expand box hits once per semantic mesh entity."""
+
+        if (
+            self._current_gui_model() is None
+            or (
+                self._pending_analysis_selection is not None
+                and semantic_filter in {"point", "element"}
+            )
+            or semantic_filter in {"point", "element"}
+        ):
+            return tuple(
+                expanded
+                for reference in references
+                if (
+                    expanded := self._expand_mesh_selection_reference(
+                        semantic_filter,
+                        reference,
+                    )
+                )
+            )
+        topology = self._mesh_selection_topology()
+        if semantic_filter == "body":
+            owners = {
+                topology.element_owners.get(int(reference.element_id))
+                for reference in references
+                if reference.element_id is not None
+            }
+            owners.discard(None)
+            return tuple(
+                topology.part_elements[owner]
+                for owner in sorted(owners, key=part_id_sort_key)
+            )
+        expansions = (
+            topology.edge_expansions
+            if semantic_filter == "edge"
+            else topology.face_expansions
+            if semantic_filter == "face"
+            else None
+        )
+        if expansions is None:
+            raise ValueError("unsupported mesh selection filter")
+        groups_by_identity: dict[int, tuple[MeshEntityRef, ...]] = {}
+        for reference in references:
+            group = expansions.get((reference.kind, reference.identity))
+            if group:
+                groups_by_identity.setdefault(id(group), group)
+        return tuple(groups_by_identity.values())
 
     def _active_mesh_selection_filter(self) -> str:
         mode = self.viewport._selection_mode
@@ -14388,7 +14448,7 @@ class FEMMainWindow(QMainWindow):
         semantic_filter: str,
         reference: MeshEntityRef,
     ) -> tuple[MeshEntityRef, ...]:
-        if self.document.model is None:
+        if self._current_gui_model() is None:
             return (reference,)
         if (
             self._pending_analysis_selection is not None
@@ -14477,16 +14537,28 @@ class FEMMainWindow(QMainWindow):
         if (
             references
             and kind in {"edge", "face", "body"}
-            and self.document.model is not None
+            and self._current_gui_model() is not None
         ):
             topology = self._mesh_selection_topology()
-            semantic_count = len(
-                {
-                    id(group)
-                    for reference in references
-                    if (group := topology.expand(kind, reference))
-                }
-            )
+            if kind == "body":
+                semantic_count = len(
+                    {
+                        topology.element_owners.get(
+                            int(reference.element_id)
+                        )
+                        for reference in references
+                        if reference.element_id is not None
+                    }
+                    - {None}
+                )
+            else:
+                semantic_count = len(
+                    {
+                        id(group)
+                        for reference in references
+                        if (group := topology.expand(kind, reference))
+                    }
+                )
         status_kind = "node" if kind == "point" else kind
         self.status_panel.set_selection_mode(f"mesh_{status_kind}")
         self.status_panel.set_object(

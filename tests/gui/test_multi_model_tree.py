@@ -52,6 +52,16 @@ def _model(name: str = "shared") -> SimpleNamespace:
     )
 
 
+def _native_part(part_id: str, name: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=part_id,
+        name=name,
+        suppressed=False,
+        feature_history=(),
+        provenance=None,
+    )
+
+
 def _items(root):
     stack = [root]
     while stack:
@@ -454,6 +464,38 @@ def _native_context(window: FEMMainWindow, name: str, path: Path):
     return context
 
 
+def test_double_clicking_model_root_switches_the_workspace_context(
+    tmp_path,
+    monkeypatch,
+    dispose_gui_widget,
+):
+    _application()
+    window = FEMMainWindow()
+    shown = []
+    monkeypatch.setattr(
+        window,
+        "show_model_information",
+        lambda: shown.append(True),
+    )
+    try:
+        first = window.workspace.active_document()
+        second = _native_context(window, "模型-2", tmp_path / "model-2.fempy")
+        assert first is not None
+        assert window.workspace.active_document() is first
+
+        window.model_tree._on_double_clicked(
+            window.model_tree.roots[second.document_id]
+        )
+
+        assert window.workspace.active_document() is second
+        assert window._active_context is second
+        assert window.model_tree.roots[second.document_id].font(0).bold()
+        assert not window.model_tree.roots[first.document_id].font(0).bold()
+        assert shown == []
+    finally:
+        dispose_gui_widget(window)
+
+
 def test_save_routes_only_target_context(
     monkeypatch,
     dispose_gui_widget,
@@ -643,6 +685,58 @@ def test_active_document_uses_text_weight_without_persistent_selection():
     assert tree.currentItem() is second
     assert tree.selectedItems() == []
     assert "QTreeWidget#modelTree::item:hover" in tree.styleSheet()
+
+
+def test_only_active_document_marks_its_current_part_bold():
+    _application()
+    tree = ModelTree()
+    first = tree.set_geometry_preview(
+        "模型-1",
+        (),
+        parts=(_native_part("P1", "部件-1"),),
+        active_part_id="P1",
+        document_id=1,
+    )
+    second = tree.set_geometry_preview(
+        "模型-2",
+        (),
+        parts=(_native_part("P2", "部件-1"),),
+        active_part_id="P2",
+        document_id=2,
+    )
+
+    tree.set_active_document(1)
+
+    assert first.font(0).bold()
+    assert first.child(0).font(0).bold()
+    assert not second.font(0).bold()
+    assert not second.child(0).font(0).bold()
+
+    tree.set_active_document(2)
+
+    assert not first.font(0).bold()
+    assert not first.child(0).font(0).bold()
+    assert second.font(0).bold()
+    assert second.child(0).font(0).bold()
+
+
+def test_double_clicking_model_root_requests_activation_without_information():
+    _application()
+    tree = ModelTree()
+    root = tree.insert_document(7, _model("Model-7"))
+    activated = []
+    informed = []
+    tree.rootActionRequested.connect(
+        lambda document_id, action: activated.append((document_id, action))
+    )
+    tree.informationRequested[int, str, object].connect(
+        lambda document_id, kind, key: informed.append((document_id, kind, key))
+    )
+
+    tree._on_double_clicked(root)
+
+    assert activated == [(7, "activate")]
+    assert informed == []
 
 
 def test_set_active_document_preserves_root_order():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -398,23 +399,81 @@ def test_mesh_body_box_expands_shared_group_once(monkeypatch) -> None:
         (model, build_model_geometry(model)),
     )
     window._set_selection_filter("body")
-    calls = 0
-    original = window._expand_mesh_selection_reference
-
-    def expand(selection_filter, reference):
-        nonlocal calls
-        calls += 1
-        return original(selection_filter, reference)
-
-    monkeypatch.setattr(window, "_expand_mesh_selection_reference", expand)
+    monkeypatch.setattr(
+        window,
+        "_expand_mesh_selection_reference",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("body box selection must expand each owner once")
+        ),
+    )
     monkeypatch.setattr(window, "_geometry_pick_is_additive", lambda: False)
 
     window._on_mesh_entities_box_selected(
         tuple(MeshEntityRef.element(element.id) for element in model.mesh.elements)
     )
 
-    assert calls == len(model.mesh.elements)
     assert len(window._selected_mesh_scope_refs) == len(model.mesh.elements)
+    window.close()
+
+
+def test_large_body_box_groups_by_owner_without_per_element_expansion() -> None:
+    element_count = 20_000
+    group = tuple(
+        MeshEntityRef.element(element_id, part_id="P1")
+        for element_id in range(1, element_count + 1)
+    )
+    topology = SimpleNamespace(
+        element_owners={
+            element_id: "P1"
+            for element_id in range(1, element_count + 1)
+        },
+        part_elements={"P1": group},
+    )
+    fake = SimpleNamespace(
+        _current_gui_model=lambda: object(),
+        _pending_analysis_selection=None,
+        _mesh_selection_topology=lambda: topology,
+        _expand_mesh_selection_reference=lambda *_args: (
+            (_ for _ in ()).throw(
+                AssertionError("body hits must not expand one by one")
+            )
+        ),
+    )
+    hits = tuple(
+        MeshEntityRef.element(element_id)
+        for element_id in range(1, element_count + 1)
+    )
+
+    groups = FEMMainWindow._mesh_box_selection_groups(
+        fake,
+        "body",
+        hits,
+    )
+
+    assert groups == (group,)
+
+
+def test_result_model_view_expands_face_and_body_selection(monkeypatch) -> None:
+    _application()
+    model = _two_imported_parts_model()
+    topology = build_mesh_selection_topology(model)
+    window = FEMMainWindow()
+    window._mesh_selection_topology_cache = topology
+    monkeypatch.setattr(window, "_current_gui_model", lambda: model)
+    face_seed = next(
+        reference
+        for reference in topology.pick_references("face")
+        if reference.element_id == 1
+    )
+
+    face = window._expand_mesh_selection_reference("face", face_seed)
+    body = window._expand_mesh_selection_reference(
+        "body",
+        MeshEntityRef.element(1),
+    )
+
+    assert face == topology.expand("face", face_seed)
+    assert body == topology.part_elements["P1"]
     window.close()
 
 

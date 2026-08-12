@@ -84,6 +84,10 @@ class GeometryCreationDialog(QDialog):
         self.setWindowTitle("新建部件")
         self.part_name_edit = QLineEdit(default_part_name, self)
         self.part_name_edit.setObjectName("nativePartNameEdit")
+        self.sketch_size_spin = _positive_spin_box(self, 50.0)
+        self.sketch_size_spin.setObjectName("sketchDisplaySizeSpin")
+        self.sketch_size_spin.setDecimals(0)
+        self.sketch_size_spin.setRange(1.0, 1.0e12)
 
         self.dimension_list = QListWidget(self)
         self.dimension_list.setObjectName("geometryDimensionList")
@@ -118,6 +122,7 @@ class GeometryCreationDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("部件名称", self.part_name_edit)
+        form.addRow("草图尺寸", self.sketch_size_spin)
         layout.addLayout(form)
         layout.addWidget(QLabel("建模维度", self))
         layout.addWidget(self.dimension_list)
@@ -131,6 +136,9 @@ class GeometryCreationDialog(QDialog):
 
     def part_name(self) -> str:
         return self.part_name_edit.text().strip()
+
+    def sketch_size(self) -> float:
+        return float(self.sketch_size_spin.value())
 
     def _accept(self) -> None:
         if not self.part_name():

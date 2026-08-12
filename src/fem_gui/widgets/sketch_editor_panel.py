@@ -60,6 +60,7 @@ from fem.geometry import (
     SketchVerticalConstraint,
     sketch_constraint_entity_ids,
 )
+from ..dialogs import CompactDoubleSpinBox
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
     SketchPreferences,
@@ -166,6 +167,7 @@ _CONSTRAINT_TYPES = (
     ("两直线角度", "angle"),
 )
 _CONSTRAINT_LABELS = {kind: label for label, kind in _CONSTRAINT_TYPES}
+_SKETCH_NUMERIC_DECIMALS = 12
 
 
 class _SmoothScrollListWidget(QListWidget):
@@ -244,10 +246,13 @@ class _DimensionEditorDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("sketchDimensionEditorDialog")
         self.setWindowTitle("编辑约束")
-        self.value_spin = QDoubleSpinBox(self)
+        self.value_spin = CompactDoubleSpinBox(
+            self,
+            minimum_display_decimals=1,
+        )
         self.value_spin.setObjectName("sketchDimensionEditorValue")
-        self.value_spin.setDecimals(1)
-        self.value_spin.setRange(0.1, 1.0e12)
+        self.value_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
+        self.value_spin.setRange(1.0e-12, 1.0e12)
         self.value_spin.setSingleStep(0.1)
         self.value_spin.setValue(value)
         self.value_spin.installEventFilter(self)
@@ -304,9 +309,9 @@ class _FixedConstraintEditorDialog(QDialog):
         layout.addWidget(buttons)
 
     def _coordinate_spin(self, object_name: str, value: float) -> QDoubleSpinBox:
-        editor = QDoubleSpinBox(self)
+        editor = CompactDoubleSpinBox(self)
         editor.setObjectName(object_name)
-        editor.setDecimals(2)
+        editor.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         editor.setRange(-1.0e12, 1.0e12)
         editor.setSingleStep(0.1)
         editor.setValue(value)
@@ -542,9 +547,9 @@ class SketchEditorPanel(QWidget):
         self.points_table.hide()
 
         def parameter_spin(object_name: str) -> QDoubleSpinBox:
-            editor = QDoubleSpinBox(self)
+            editor = CompactDoubleSpinBox(self)
             editor.setObjectName(object_name)
-            editor.setDecimals(6)
+            editor.setDecimals(_SKETCH_NUMERIC_DECIMALS)
             editor.setRange(-1.0e12, 1.0e12)
             editor.setMinimumWidth(90)
             editor.setSizePolicy(
@@ -636,9 +641,9 @@ class SketchEditorPanel(QWidget):
         self.constraint_driving_check = QCheckBox("驱动尺寸", self)
         self.constraint_driving_check.setChecked(False)
         self.constraint_driving_check.hide()
-        self.constraint_value_spin = QDoubleSpinBox(self)
+        self.constraint_value_spin = CompactDoubleSpinBox(self)
         self.constraint_value_spin.setObjectName("sketchConstraintValue")
-        self.constraint_value_spin.setDecimals(6)
+        self.constraint_value_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         self.constraint_value_spin.setRange(1.0e-12, 1.0e12)
         self.constraint_value_spin.setMinimumWidth(90)
         self.constraint_value_spin.setSizePolicy(
@@ -826,6 +831,7 @@ class SketchEditorPanel(QWidget):
             raise TypeError("controller must be a SketchDraftController")
         self._controller = controller
         self._base_snapshot = base_snapshot or controller.snapshot()
+        self._reference_points = ()
         self._clear_pending()
         self._refresh()
 
@@ -929,7 +935,13 @@ class SketchEditorPanel(QWidget):
     def authoring_purpose(self) -> str:
         return self._authoring_purpose
 
-    def begin(self, viewport, *, purpose: str = "geometry") -> None:
+    def begin(
+        self,
+        viewport,
+        *,
+        purpose: str = "geometry",
+        display_size: float | None = None,
+    ) -> None:
         if self._controller is None:
             raise RuntimeError("sketch editor requires a draft controller")
         normalized = str(purpose).strip().casefold()
@@ -951,6 +963,7 @@ class SketchEditorPanel(QWidget):
             snap=self._preferences.grid_snap,
             spacing=self.spacing_spin.value(),
             reference_points=self._reference_points,
+            display_size=display_size,
         )
         self.set_mode("polyline")
 

@@ -279,6 +279,7 @@ class ModelTree(QTreeWidget):
         self.itemDoubleClicked.connect(self._on_double_clicked)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self._roots: dict[int, QTreeWidgetItem] = {}
+        self._active_part_items: dict[int, QTreeWidgetItem] = {}
         self._active_document_id: int | None = None
         self._renamable_by_document: dict[int, frozenset[str]] = {}
         self._non_highlightable_by_document: dict[int, frozenset[str]] = {}
@@ -289,6 +290,7 @@ class ModelTree(QTreeWidget):
         self._renamable_kinds: frozenset[str] = frozenset()
         self._non_highlightable_kinds: frozenset[str] = frozenset()
         self._roots.clear()
+        self._active_part_items.clear()
         self._active_document_id = None
         self._renamable_by_document.clear()
         self._non_highlightable_by_document.clear()
@@ -398,6 +400,7 @@ class ModelTree(QTreeWidget):
             self.takeTopLevelItem(index)
         self._renamable_by_document.pop(normalized, None)
         self._non_highlightable_by_document.pop(normalized, None)
+        self._active_part_items.pop(normalized, None)
         if self._active_document_id == normalized:
             self._active_document_id = None
             self.setCurrentItem(None)
@@ -413,20 +416,18 @@ class ModelTree(QTreeWidget):
         if previous == normalized:
             root = None if normalized is None else self._roots.get(normalized)
             if root is not None:
-                self._set_item_bold(root, True)
+                self._set_document_active_style(normalized, True)
                 self.setCurrentItem(root)
             return
         if previous is not None:
-            old_root = self._roots.get(previous)
-            if old_root is not None:
-                self._set_item_bold(old_root, False)
+            self._set_document_active_style(previous, False)
         self._active_document_id = normalized
         if normalized is None:
             self.setCurrentItem(None)
             return
         root = self._roots.get(normalized)
         if root is not None:
-            self._set_item_bold(root, True)
+            self._set_document_active_style(normalized, True)
             self.setCurrentItem(root)
         else:
             self.setCurrentItem(None)
@@ -436,6 +437,14 @@ class ModelTree(QTreeWidget):
         font = item.font(0)
         font.setBold(bold)
         item.setFont(0, font)
+
+    def _set_document_active_style(self, document_id: int, active: bool) -> None:
+        root = self._roots.get(int(document_id))
+        if root is not None:
+            self._set_item_bold(root, active)
+        part = self._active_part_items.get(int(document_id))
+        if part is not None:
+            self._set_item_bold(part, active)
 
     def _interaction_kinds(
         self,
@@ -577,6 +586,7 @@ class ModelTree(QTreeWidget):
             )
         if document_id is None:
             self._roots.clear()
+            self._active_part_items.clear()
             self._active_document_id = None
             self._renamable_by_document.clear()
             self._non_highlightable_by_document.clear()
@@ -585,6 +595,7 @@ class ModelTree(QTreeWidget):
         else:
             normalized_document_id = int(document_id)
             previous_root = self._roots.pop(normalized_document_id, None)
+            self._active_part_items.pop(normalized_document_id, None)
             previous_index = (
                 self.indexOfTopLevelItem(previous_root)
                 if previous_root is not None
@@ -634,7 +645,13 @@ class ModelTree(QTreeWidget):
                 _style_native_part_item(
                     native_item,
                     native_part,
-                    active=native_part.id == active_part_id,
+                    active=(
+                        native_part.id == active_part_id
+                        and (
+                            document_id is None
+                            or normalized_document_id == self._active_document_id
+                        )
+                    ),
                 )
                 for record in native_part.feature_history:
                     feature_item = self._item(
@@ -918,13 +935,18 @@ class ModelTree(QTreeWidget):
                     ))
             steps.addChild(step_item)
         if document_id is not None:
-            self._roots[int(document_id)] = root
+            normalized_document_id = int(document_id)
+            self._roots[normalized_document_id] = root
+            if native_parts and part is not None:
+                self._active_part_items[normalized_document_id] = part
             self.insertTopLevelItem(
                 previous_index
                 if previous_index >= 0
                 else self.topLevelItemCount(),
                 root,
             )
+            if normalized_document_id == self._active_document_id:
+                self._set_document_active_style(normalized_document_id, True)
         else:
             self.addTopLevelItem(root)
         root.setExpanded(True)
@@ -932,7 +954,8 @@ class ModelTree(QTreeWidget):
         steps.setExpanded(part is None)
         if part is not None:
             part.setExpanded(True)
-            self.setCurrentItem(part)
+            if document_id is None:
+                self.setCurrentItem(part)
         if first_step_item is None and steps.childCount():
             first_step_item = steps.child(0)
         if first_step_item is not None and part is None:
@@ -970,7 +993,9 @@ class ModelTree(QTreeWidget):
             None if document_id is None else int(document_id)
         )
         if document_id is not None:
-            previous_root = self._roots.pop(int(document_id), None)
+            normalized_document_id = int(document_id)
+            previous_root = self._roots.pop(normalized_document_id, None)
+            self._active_part_items.pop(normalized_document_id, None)
             previous_index = (
                 self.indexOfTopLevelItem(previous_root)
                 if previous_root is not None
@@ -999,6 +1024,7 @@ class ModelTree(QTreeWidget):
             )
         if document_id is None:
             self._roots.clear()
+            self._active_part_items.clear()
             self._active_document_id = None
             self._renamable_by_document.clear()
             self._non_highlightable_by_document.clear()
@@ -1018,7 +1044,13 @@ class ModelTree(QTreeWidget):
                 _style_native_part_item(
                     part,
                     native_part,
-                    active=is_active,
+                    active=(
+                        is_active
+                        and (
+                            document_id is None
+                            or normalized_document_id == self._active_document_id
+                        )
+                    ),
                 )
                 for row in native_part.feature_history:
                     feature_item = self._item(
@@ -1058,17 +1090,22 @@ class ModelTree(QTreeWidget):
                 if is_active:
                     active_item = part
             if document_id is not None:
-                self._roots[int(document_id)] = root
+                normalized_document_id = int(document_id)
+                self._roots[normalized_document_id] = root
+                if active_item is not None:
+                    self._active_part_items[normalized_document_id] = active_item
                 self.insertTopLevelItem(
                     previous_index
                     if previous_index >= 0
                     else self.topLevelItemCount(),
                     root,
                 )
+                if normalized_document_id == self._active_document_id:
+                    self._set_document_active_style(normalized_document_id, True)
             else:
                 self.addTopLevelItem(root)
             root.setExpanded(True)
-            if active_item is not None:
+            if active_item is not None and document_id is None:
                 self.setCurrentItem(active_item)
             self._restore_view_state(view_state, root)
             self._building_document_id = None
@@ -1102,13 +1139,16 @@ class ModelTree(QTreeWidget):
                 )
         root.addChild(part)
         if document_id is not None:
-            self._roots[int(document_id)] = root
+            normalized_document_id = int(document_id)
+            self._roots[normalized_document_id] = root
             self.insertTopLevelItem(
                 previous_index
                 if previous_index >= 0
                 else self.topLevelItemCount(),
                 root,
             )
+            if normalized_document_id == self._active_document_id:
+                self._set_document_active_style(normalized_document_id, True)
         else:
             self.addTopLevelItem(root)
         root.setExpanded(True)
@@ -1327,6 +1367,9 @@ class ModelTree(QTreeWidget):
     def _on_double_clicked(self, item: QTreeWidgetItem) -> None:
         entry = self._entry(item)
         if entry is not None:
+            if entry[1] == "model" and self._roots.get(entry[0]) is item:
+                self.rootActionRequested.emit(entry[0], "activate")
+                return
             editable = (
                 entry[1] in _EDITABLE_KINDS
                 and not bool(item.data(0, ROLE_INHERITED))

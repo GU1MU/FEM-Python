@@ -778,17 +778,29 @@ def _wire_grid_layout(
     plane: str,
     offset: float,
     snap_spacing: float,
+    minimum_size: float = 10.0,
 ) -> _WireGridLayout:
     """Size and align a bounded work-plane grid without losing snap alignment."""
 
     axes = {"XY": (0, 1, 2), "XZ": (0, 2, 1), "YZ": (1, 2, 0)}[plane]
     spacing = float(snap_spacing)
-    spans = (
-        tuple(float(np.ptp(points[:, axis])) for axis in axes[:2])
-        if len(points)
-        else (0.0, 0.0)
+    clean_minimum_size = float(minimum_size)
+    if not np.isfinite(clean_minimum_size) or clean_minimum_size <= 0.0:
+        raise ValueError("grid minimum size must be positive")
+    if len(points):
+        minimum = np.min(points[:, axes[:2]], axis=0)
+        maximum = np.max(points[:, axes[:2]], axis=0)
+        spans = tuple(float(value) for value in maximum - minimum)
+        local_center = 0.5 * (minimum + maximum)
+    else:
+        spans = (0.0, 0.0)
+        local_center = np.zeros(2, dtype=float)
+    geometry_span = max(spans, default=0.0)
+    padding = max(2.0 * spacing, 0.1 * geometry_span)
+    target_size = max(
+        clean_minimum_size,
+        geometry_span + 2.0 * padding,
     )
-    target_size = max(10.0, max(spans, default=0.0) + 2.0 * spacing)
     requested_intervals = max(1, int(math.ceil(target_size / spacing)))
     major_factor = max(1, int(math.ceil(requested_intervals / 2000)))
     visible_spacing = spacing * major_factor
@@ -796,11 +808,11 @@ def _wire_grid_layout(
     if resolution % 2:
         resolution += 1
     plane_size = resolution * visible_spacing
-    center = np.mean(points, axis=0) if len(points) else np.zeros(3, dtype=float)
-    center = np.asarray(center, dtype=float)
-    for axis in axes[:2]:
+    center = np.zeros(3, dtype=float)
+    for index, axis in enumerate(axes[:2]):
         center[axis] = (
-            math.floor(center[axis] / visible_spacing + 0.5) * visible_spacing
+            math.floor(local_center[index] / visible_spacing + 0.5)
+            * visible_spacing
         )
     center[axes[2]] = float(offset)
     return _WireGridLayout(
@@ -849,6 +861,39 @@ def _wire_grid_polydata(pyvista, layout: _WireGridLayout):
     grid.points = np.asarray(points, dtype=float)
     grid.lines = np.asarray(lines, dtype=np.int64)
     return grid
+
+
+def _wire_camera_bounds(
+    points: np.ndarray,
+    plane: str,
+    offset: float,
+    spacing: float,
+    minimum_size: float = 10.0,
+) -> tuple[float, float, float, float, float, float]:
+    """Frame the square wire work plane instead of only its draft points."""
+
+    layout = _wire_grid_layout(
+        points,
+        plane,
+        offset,
+        spacing,
+        minimum_size,
+    )
+    center = np.asarray(layout.center, dtype=float)
+    half_size = 0.5 * layout.plane_size
+    minimum = center.copy()
+    maximum = center.copy()
+    for axis in layout.axes[:2]:
+        minimum[axis] -= half_size
+        maximum[axis] += half_size
+    depth = max(half_size * 1.0e-6, 1.0e-6)
+    minimum[layout.axes[2]] -= depth
+    maximum[layout.axes[2]] += depth
+    return tuple(
+        float(value)
+        for axis in range(3)
+        for value in (minimum[axis], maximum[axis])
+    )
 
 
 def _wire_coordinate_label(point: Iterable[float]) -> str:
@@ -915,6 +960,7 @@ def _sketch_grid_polydata(
     plane: SketchPlane,
     points: Iterable[tuple[float, float, float]],
     spacing: float,
+    minimum_size: float = 10.0,
 ):
     """Build a bounded grid aligned to the frame's U/V axes."""
 
@@ -922,7 +968,13 @@ def _sketch_grid_polydata(
     local_3d = np.column_stack(
         (local, np.zeros(len(local), dtype=float))
     )
-    layout = _wire_grid_layout(local_3d, "XY", 0.0, spacing)
+    layout = _wire_grid_layout(
+        local_3d,
+        "XY",
+        0.0,
+        spacing,
+        minimum_size,
+    )
     grid = _wire_grid_polydata(pyvista, layout)
     grid.points = np.asarray(
         tuple(
@@ -1499,6 +1551,7 @@ class FEMViewport(QWidget):
         self._wire_plane_offset = 0.0
         self._wire_grid_snap = True
         self._wire_grid_spacing = 0.1
+        self._wire_display_size: float | None = None
         self._wire_draft_render_data: WireDraftRenderData | None = None
         self._wire_pending_member_start: str | None = None
         self._wire_authoring_selection: tuple[str, str] | None = None
@@ -1509,6 +1562,7 @@ class FEMViewport(QWidget):
         self._sketch_grid_visible = True
         self._sketch_grid_snap = True
         self._sketch_grid_spacing = 0.1
+        self._sketch_display_size: float | None = None
         self._sketch_snap_sketch_points = True
         self._sketch_snap_external_points = True
         self._sketch_snap_midpoints = True
@@ -1526,6 +1580,7 @@ class FEMViewport(QWidget):
             tuple[float, float, float], ...
         ] = ()
         self._sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
+        self._sketch_support_points: tuple[tuple[float, float, float], ...] = ()
         self._sketch_authoring_snap_reference: SketchReferencePoint | None = None
         self._sketch_authoring_snap_kind: str | None = None
         self._sketch_authoring_snap_point_id: str | None = None
@@ -2336,6 +2391,7 @@ class FEMViewport(QWidget):
         snap: bool = True,
         spacing: float = 0.1,
         reference_points: tuple[SketchReferencePoint, ...] = (),
+        display_size: float | None = None,
     ) -> None:
         """Enter transient planar sketch authoring without touching Session."""
 
@@ -2343,14 +2399,22 @@ class FEMViewport(QWidget):
             raise TypeError("render_data must be a SketchDraftRenderData")
         if not np.isfinite(float(spacing)) or float(spacing) <= 0.0:
             raise ValueError("sketch grid spacing must be positive")
+        if display_size is not None and (
+            not np.isfinite(float(display_size)) or float(display_size) <= 0.0
+        ):
+            raise ValueError("sketch display size must be positive")
         if self._wire_authoring_active:
             self.stop_wire_authoring()
         self._sketch_authoring_active = True
         self._sketch_authoring_mode = "polyline"
         self._sketch_grid_snap = bool(snap)
         self._sketch_grid_spacing = float(spacing)
+        self._sketch_display_size = (
+            None if display_size is None else float(display_size)
+        )
         self._sketch_draft_render_data = render_data
         self._sketch_intersection_revision = None
+        self._sketch_support_points = ()
         self.set_sketch_reference_points(reference_points, render=False)
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
@@ -2428,9 +2492,9 @@ class FEMViewport(QWidget):
             raise RuntimeError("sketch authoring must be active")
         self._remove_actor("sketch_reference_surface")
         self._remove_actor("sketch_support_face_highlight")
-        if is_offscreen_environment():
-            return
-        if not preview.faces or not self._ensure_plotter() or _pyvista is None:
+        if not preview.faces:
+            self._sketch_support_points = ()
+            self._show_sketch_draft(render=render)
             return
         has_body_ids = any(
             body_id is not None
@@ -2448,6 +2512,38 @@ class FEMViewport(QWidget):
             )
         )
         if not face_indices:
+            self._sketch_support_points = ()
+            self._show_sketch_draft(render=render)
+            return
+        support_face_indices = tuple(
+            index
+            for index in face_indices
+            if (
+                support_face_id is None
+                or preview.face_logical_ids[index] == support_face_id
+            )
+        )
+        drawing_face_indices = (
+            support_face_indices
+            if support_face_id is not None
+            else face_indices
+        )
+        support_point_indices = tuple(
+            sorted(
+                {
+                    point_index
+                    for face_index in drawing_face_indices
+                    for point_index in preview.faces[face_index]
+                }
+            )
+        )
+        self._sketch_support_points = tuple(
+            preview.points[index] for index in support_point_indices
+        )
+        self._show_sketch_draft(render=False)
+        if is_offscreen_environment():
+            return
+        if not self._ensure_plotter() or _pyvista is None:
             return
         surface = _pyvista.PolyData()
         surface.points = np.asarray(preview.points, dtype=float)
@@ -2818,9 +2914,11 @@ class FEMViewport(QWidget):
             self._remove_actor(name)
         self._sketch_authoring_active = False
         self._sketch_draft_render_data = None
+        self._sketch_display_size = None
         self._sketch_intersection_revision = None
         self._sketch_intersection_cache = ()
         self._sketch_reference_points = ()
+        self._sketch_support_points = ()
         self._sketch_authoring_snap_reference = None
         self._sketch_authoring_snap_kind = None
         self._sketch_authoring_snap_point_id = None
@@ -3064,12 +3162,18 @@ class FEMViewport(QWidget):
         if not self._ensure_plotter() or _pyvista is None:
             return
         coordinates = np.asarray(data.points, dtype=float).reshape((-1, 3))
+        extent_points = (
+            tuple(data.points)
+            + self._sketch_support_points
+            + tuple(point.position for point in self._sketch_reference_points)
+        )
         geometry_color = _sketch_geometry_color(data.constraint_status)
         grid, grid_layout = _sketch_grid_polydata(
             _pyvista,
             data.plane,
-            data.points,
+            extent_points,
             self._sketch_grid_spacing,
+            self._sketch_display_size or 10.0,
         )
         if self._sketch_grid_visible:
             self._actors["sketch_work_plane_grid"] = self._plotter.add_mesh(
@@ -3456,6 +3560,7 @@ class FEMViewport(QWidget):
         offset: float = 0.0,
         snap: bool = True,
         spacing: float = 0.1,
+        display_size: float | None = None,
     ) -> None:
         """Enter the transient wire tool without touching Session state."""
 
@@ -3468,12 +3573,19 @@ class FEMViewport(QWidget):
             raise ValueError("work plane offset must be finite")
         if not np.isfinite(float(spacing)) or float(spacing) <= 0.0:
             raise ValueError("grid spacing must be positive")
+        if display_size is not None and (
+            not np.isfinite(float(display_size)) or float(display_size) <= 0.0
+        ):
+            raise ValueError("wire display size must be positive")
         self._wire_authoring_active = True
         self._wire_authoring_mode = "point"
         self._wire_work_plane = clean_plane
         self._wire_plane_offset = float(offset)
         self._wire_grid_snap = bool(snap)
         self._wire_grid_spacing = float(spacing)
+        self._wire_display_size = (
+            None if display_size is None else float(display_size)
+        )
         self._wire_pending_member_start = render_data.pending_member_start
         self._wire_authoring_selection = None
         self._wire_authoring_hover = None
@@ -3598,6 +3710,7 @@ class FEMViewport(QWidget):
             self._remove_actor(name)
         self._wire_authoring_active = False
         self._wire_draft_render_data = None
+        self._wire_display_size = None
         self._wire_pending_member_start = None
         self._wire_authoring_selection = None
         self._wire_authoring_hover = None
@@ -3669,6 +3782,7 @@ class FEMViewport(QWidget):
             self._wire_work_plane,
             self._wire_plane_offset,
             self._wire_grid_spacing,
+            self._wire_display_size or 10.0,
         )
         axes = grid_layout.axes
         try:
@@ -3831,7 +3945,15 @@ class FEMViewport(QWidget):
                 )
         self._show_wire_authoring_hover(render=False)
         if reset_camera:
-            self._plotter.reset_camera()
+            self._plotter.reset_camera(
+                bounds=_wire_camera_bounds(
+                    np.empty((0, 3), dtype=float),
+                    self._wire_work_plane,
+                    self._wire_plane_offset,
+                    self._wire_grid_spacing,
+                ),
+                render=False,
+            )
         elif camera_state is not None:
             _restore_camera_state(self._plotter, camera_state)
         if render:
@@ -5349,31 +5471,130 @@ class FEMViewport(QWidget):
             for index, location in enumerate(topology.point_locations)
             if location is not None and location.element_id is not None
         }
-        cell_ids: list[int] = []
-        for cell, location in zip(
-            topology.cells,
-            topology.cell_locations,
-            strict=True,
+        model_cell_ids = self._model_element_ids_for_result_cells(payload)
+        if (
+            not self._result_point_index_to_element_id
+            and all(
+                location is None or location.element_id is None
+                for location in topology.cell_locations
+            )
         ):
-            if location is not None and location.element_id is not None:
-                cell_ids.append(int(location.element_id))
-                continue
-            candidates = {
-                int(point_location.element_id)
-                for point_index in cell
-                if (
-                    (point_location := topology.point_locations[point_index])
-                    is not None
-                    and point_location.element_id is not None
+            cell_ids = model_cell_ids
+        else:
+            resolved_cell_ids: list[int] = []
+            for cell_index, (cell, location) in enumerate(zip(
+                topology.cells,
+                topology.cell_locations,
+                strict=True,
+            )):
+                if location is not None and location.element_id is not None:
+                    resolved_cell_ids.append(int(location.element_id))
+                    continue
+                candidates = {
+                    int(point_location.element_id)
+                    for point_index in cell
+                    if (
+                        (point_location := topology.point_locations[point_index])
+                        is not None
+                        and point_location.element_id is not None
+                    )
+                }
+                resolved_cell_ids.append(
+                    candidates.pop()
+                    if len(candidates) == 1
+                    else int(model_cell_ids[cell_index])
                 )
-            }
-            cell_ids.append(candidates.pop() if len(candidates) == 1 else 0)
+            cell_ids = np.asarray(resolved_cell_ids, dtype=np.int64)
         self._result_cell_index_to_element_id = {
-            index: element_id
+            index: int(element_id)
             for index, element_id in enumerate(cell_ids)
             if element_id > 0
         }
         self._result_provenance_layout = layout
+
+    def _model_element_ids_for_result_cells(
+        self,
+        payload: ResultRenderPayload,
+    ) -> np.ndarray:
+        """Recover FEM element IDs for nodal result cells from the model grid."""
+
+        topology = payload.topology
+        cell_count = len(topology.cells)
+        empty = np.zeros(cell_count, dtype=np.int64)
+        model_grid = self._pick_grid
+        if (
+            model_grid is None
+            or not hasattr(model_grid, "point_data")
+            or not hasattr(model_grid, "cell_data")
+            or not hasattr(model_grid, "n_cells")
+            or int(model_grid.n_cells) != cell_count
+            or any(
+                kind is not ResultCellKind.FEM_ELEMENT
+                for kind in topology.cell_kinds
+            )
+            or "node_id" not in model_grid.point_data
+            or "element_id" not in model_grid.cell_data
+        ):
+            return empty
+        model_cells = _cell_offsets_and_connectivity(model_grid)
+        result_cells = _cell_offsets_and_connectivity(payload.dataset)
+        if model_cells is None or result_cells is None:
+            return empty
+        model_offsets, model_connectivity = model_cells
+        result_offsets, result_connectivity = result_cells
+        model_counts = np.diff(model_offsets)
+        result_counts = np.diff(result_offsets)
+        if not np.array_equal(model_counts, result_counts):
+            return empty
+        model_node_ids = np.asarray(
+            model_grid.point_data["node_id"],
+            dtype=np.int64,
+        )
+        model_element_ids = np.asarray(
+            model_grid.cell_data["element_id"],
+            dtype=np.int64,
+        )
+        result_point_node_ids = np.fromiter(
+            (
+                0
+                if location is None or location.node_id is None
+                else int(location.node_id)
+                for location in topology.point_locations
+            ),
+            dtype=np.int64,
+            count=len(topology.point_locations),
+        )
+        model_flat_node_ids = model_node_ids[model_connectivity]
+        result_flat_node_ids = result_point_node_ids[result_connectivity]
+        if (
+            bool(np.all(result_flat_node_ids > 0))
+            and np.array_equal(model_flat_node_ids, result_flat_node_ids)
+        ):
+            return model_element_ids.copy()
+        recovered = empty.copy()
+        for node_count in np.unique(result_counts):
+            cell_indices = np.flatnonzero(result_counts == node_count)
+            positions = (
+                result_offsets[cell_indices, None]
+                + np.arange(int(node_count), dtype=np.int64)
+            )
+            result_rows = result_flat_node_ids[positions]
+            model_positions = (
+                model_offsets[cell_indices, None]
+                + np.arange(int(node_count), dtype=np.int64)
+            )
+            model_rows = model_flat_node_ids[model_positions]
+            matches = (
+                np.all(result_rows > 0, axis=1)
+                & np.all(
+                    np.sort(result_rows, axis=1)
+                    == np.sort(model_rows, axis=1),
+                    axis=1,
+                )
+            )
+            matched_cells = cell_indices[matches]
+            recovered[matched_cells] = model_element_ids[matched_cells]
+        return recovered
 
     def _rendered_result_payload(self) -> ResultRenderPayload | None:
         """Return the rendered payload, honoring VTK-reported modifications.
@@ -6671,19 +6892,29 @@ class FEMViewport(QWidget):
         source: object | None = None
         if self._sketch_authoring_active:
             data = self._sketch_draft_render_data
+            extent_points = (
+                (() if data is None else tuple(data.points))
+                + self._sketch_support_points
+                + tuple(
+                    point.position for point in self._sketch_reference_points
+                )
+            )
             return _sketch_camera_bounds(
-                () if data is None else data.points,
+                extent_points,
                 self._sketch_grid_spacing,
                 None if data is None else data.plane,
             )
         if self._wire_authoring_active:
-            if (
-                self._wire_draft_render_data is None
-                or not self._wire_draft_render_data.points
-            ):
-                return None
-            source = self._wire_draft_render_data
-            points = self._wire_draft_render_data.points
+            data = self._wire_draft_render_data
+            if data is None or not data.points:
+                return _wire_camera_bounds(
+                    np.empty((0, 3), dtype=float),
+                    self._wire_work_plane,
+                    self._wire_plane_offset,
+                    self._wire_grid_spacing,
+                )
+            source = data
+            points = data.points
         elif self._geometry_preview is not None:
             source = self._geometry_preview
             points = self._geometry_preview.points

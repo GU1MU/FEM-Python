@@ -34,6 +34,7 @@ def test_new_part_dialog_collects_name_and_dimension() -> None:
 
     assert dialog.windowTitle() == "新建部件"
     assert dialog.part_name() == "部件-2"
+    assert dialog.sketch_size() == 50.0
     assert dialog.creation_kind() == "1d"
     dialog.dimension_list.setCurrentRow(2)
     assert dialog.creation_kind() == "3d"

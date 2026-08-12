@@ -345,10 +345,12 @@ def test_main_window_preserves_body_highlight_semantics() -> None:
     selected = {MeshEntityRef.element(1, part_id="P1")}
     calls = []
     topology = SimpleNamespace(
+        element_owners={1: "P1"},
         expand=lambda _kind, _reference: tuple(selected),
     )
     fake = SimpleNamespace(
         document=SimpleNamespace(model=object()),
+        _current_gui_model=lambda: object(),
         _selected_mesh_scope_refs=selected,
         _mesh_selection_topology=lambda: topology,
         viewport_panel=SimpleNamespace(
@@ -381,6 +383,7 @@ def test_main_window_preserves_body_highlight_semantics() -> None:
 def test_element_pick_uses_loaded_owner_map_without_topology_rebuild() -> None:
     fake = SimpleNamespace(
         document=SimpleNamespace(model=object()),
+        _current_gui_model=lambda: object(),
         _pending_analysis_selection=None,
         viewport=SimpleNamespace(_mesh_body_owner_by_element_id={7: "P2"}),
         _mesh_selection_topology=lambda: (_ for _ in ()).throw(

@@ -67,6 +67,8 @@ def test_geometry_creation_dialog_uses_dimension_list_without_3d_shape_field() -
     assert dialog.creation_kind() == "1d"
     assert not hasattr(dialog, "dimension_combo")
     assert not hasattr(dialog, "solid_combo")
+    assert dialog.sketch_size() == 50.0
+    assert dialog.sketch_size_spin.text() == "50"
     assert dialog.dimension_list.count() == 3
     assert all(
         "1D 与 2D 将进入视口草图编辑器" not in label.text()
@@ -74,7 +76,7 @@ def test_geometry_creation_dialog_uses_dimension_list_without_3d_shape_field() -
     )
     assert {
         label.text() for label in dialog.findChildren(QLabel)
-    } == {"部件名称", "建模维度"}
+    } == {"部件名称", "草图尺寸", "建模维度"}
 
     dialog.dimension_list.setCurrentRow(1)
     assert dialog.creation_kind() == "2d"

@@ -260,12 +260,12 @@ class WireEditorPanel(QWidget):
             except (RuntimeError, TypeError):
                 pass
 
-    def begin(self, viewport) -> None:
+    def begin(self, viewport, *, display_size: float | None = None) -> None:
         if self._controller is None:
             raise RuntimeError("wire editor requires a draft controller")
         self.attach_viewport(viewport)
         self.show()
-        self._send_render_data(start=True)
+        self._send_render_data(start=True, display_size=display_size)
 
     def end(self) -> None:
         if self._viewport is not None:
@@ -312,7 +312,12 @@ class WireEditorPanel(QWidget):
             pending_member_start=pending,
         )
 
-    def _send_render_data(self, *, start: bool = False) -> None:
+    def _send_render_data(
+        self,
+        *,
+        start: bool = False,
+        display_size: float | None = None,
+    ) -> None:
         if self._viewport is None or self._controller is None:
             return
         data = self.render_data()
@@ -323,6 +328,7 @@ class WireEditorPanel(QWidget):
                 offset=self.offset_spin.value(),
                 snap=True,
                 spacing=self.spacing_spin.value(),
+                display_size=display_size,
             )
         else:
             self._viewport.update_wire_draft(data)

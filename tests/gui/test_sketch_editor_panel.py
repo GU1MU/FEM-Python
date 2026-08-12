@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from fem.geometry import (
     LogicalEntityRef,
+    RectangleGeometry,
     SketchCircle,
     SketchExternalReference,
     SketchExternalReferenceType,
@@ -38,6 +39,7 @@ from fem.geometry import (
 )
 import fem_gui.main_window as main_window_module
 import fem_gui.widgets.sketch_editor_panel as sketch_editor_panel_module
+from fem_gui.geometry_preview import GeometryPreview
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.sketch_preferences import load_sketch_preferences
 from fem_gui.sketch_editor import SketchDraftController
@@ -154,6 +156,54 @@ def test_panel_keeps_advanced_sketch_behavior_internal() -> None:
     assert panel._preferences.snap_centers
     assert panel._preferences.snap_intersections
     assert panel._preferences.auto_constraints
+
+
+def test_new_controller_discards_reference_points_from_previous_sketch() -> None:
+    _application()
+    panel = SketchEditorPanel(SketchDraftController("previous-sketch"))
+    panel.set_reference_points((_reference_point(1.0, 2.0),))
+
+    panel.set_controller(SketchDraftController("new-sketch"))
+
+    assert panel._reference_points == ()
+    panel.close()
+
+
+def test_new_sketch_after_part_deletion_has_no_stale_reference_points(
+    monkeypatch,
+) -> None:
+    _application()
+    window = FEMMainWindow()
+    window._create_native_model("模型-1")
+    window._apply_session_delta(
+        window.session.add_native_part(
+            RectangleGeometry("旧草图", 2.0, 1.0),
+            name="旧部件",
+        )
+    )
+    stale_reference = _reference_point(1.0, 2.0)
+    window.sketch_editor_panel.set_reference_points((stale_reference,))
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (
+            main_window_module.QMessageBox.StandardButton.Yes
+        ),
+    )
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: ("新部件", True),
+    )
+
+    window.delete_geometry()
+    window.start_sketch_geometry()
+
+    assert window.document.parts == ()
+    assert window.sketch_editor_panel._reference_points == ()
+    assert window.viewport._sketch_reference_points == ()
+    window.cancel_sketch_geometry()
+    window.close()
 
 
 def test_constraint_type_click_starts_choice_without_extra_confirmation() -> None:
@@ -348,6 +398,59 @@ def test_empty_sketch_camera_fit_uses_compact_default_work_area() -> None:
     viewport.close()
 
 
+def test_sketch_display_size_does_not_change_camera_fit() -> None:
+    expected = _sketch_camera_bounds((), 0.1)
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_active = True
+    viewport._sketch_grid_spacing = 0.1
+    viewport._sketch_display_size = 50.0
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+    )
+
+    assert viewport._fit_bounds() == pytest.approx(expected)
+    viewport.close()
+
+
+def test_selected_drawing_face_expands_sketch_space_outward() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._sketch_authoring_active = True
+    viewport._sketch_grid_spacing = 0.1
+    viewport._sketch_draft_render_data = SketchDraftRenderData(
+        (),
+        (),
+        (),
+        (),
+    )
+    preview = GeometryPreview(
+        (
+            (10.0, 20.0, 0.0),
+            (110.0, 20.0, 0.0),
+            (110.0, 70.0, 0.0),
+            (10.0, 70.0, 0.0),
+        ),
+        ((0, 1, 2, 3),),
+        (),
+        ("face:target",),
+    )
+
+    viewport.show_sketch_reference_preview(
+        preview,
+        support_face_id="face:target",
+    )
+
+    assert viewport._sketch_support_points == preview.points
+    assert viewport._fit_bounds() == pytest.approx(
+        (0.0, 120.0, 10.0, 80.0, -6.0e-5, 6.0e-5)
+    )
+    viewport.close()
+
+
 def test_sketch_uv_overlay_uses_two_decimals_and_bold_black_text() -> None:
     _application()
     viewport = FEMViewport()
@@ -517,23 +620,55 @@ def test_editor_content_scrolls_without_expanding_the_window_minimum_height() ->
     panel.close()
 
 
-def test_dimension_dialog_blocks_wheel_and_hides_driving_choice() -> None:
+def test_dimension_dialog_accepts_precise_input_and_blocks_wheel() -> None:
     _application()
     dialog = sketch_editor_panel_module._DimensionEditorDialog(
-        "长度",
+        "半径",
         2.0,
     )
     value = dialog.value_spin.value()
 
     QApplication.sendEvent(dialog.value_spin, _wheel_event())
 
-    assert dialog.value_spin.decimals() == 1
+    assert dialog.value_spin.decimals() == 12
     assert dialog.value_spin.singleStep() == 0.1
     assert dialog.value_spin.text() == "2.0"
     assert dialog.value_spin.value() == value
+    dialog.value_spin.selectAll()
+    QTest.keyClicks(dialog.value_spin, "0.25")
+    QTest.keyClick(dialog.value_spin, Qt.Key.Key_Return)
+    assert dialog.value_spin.value() == 0.25
+    assert dialog.value_spin.text() == "0.25"
     assert not hasattr(dialog, "driving_check")
     assert "驱动尺寸" not in {label.text() for label in dialog.findChildren(QLabel)}
     dialog.close()
+
+
+def test_sketch_numeric_editors_share_full_precision() -> None:
+    _application()
+    panel = SketchEditorPanel(SketchDraftController("precise-inputs"))
+    fixed_dialog = sketch_editor_panel_module._FixedConstraintEditorDialog(
+        0.123456789012,
+        -0.123456789012,
+        use_xy_labels=True,
+    )
+
+    editors = (
+        fixed_dialog.u_spin,
+        fixed_dialog.v_spin,
+        panel.line_length_spin,
+        panel.circle_radius_spin,
+        panel.arc_radius_spin,
+        panel.arc_start_angle_spin,
+        panel.arc_end_angle_spin,
+        panel.constraint_value_spin,
+    )
+    assert all(editor.decimals() == 12 for editor in editors)
+    assert fixed_dialog.u_spin.value() == 0.123456789012
+    assert fixed_dialog.v_spin.value() == -0.123456789012
+
+    fixed_dialog.close()
+    panel.close()
 
 
 def test_event_filter_tolerates_non_wheel_event_during_panel_construction() -> None:
@@ -1526,6 +1661,9 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
         def part_name(self) -> str:
             return "Part-1"
 
+        def sketch_size(self) -> float:
+            return 75.0
+
     monkeypatch.setattr(
         main_window_module,
         "GeometryCreationDialog",
@@ -1538,8 +1676,49 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
 
     assert window._sketch_editor_controller is not None
     assert window._sketch_editor_part_name == "Part-1"
+    assert window.viewport._sketch_display_size == 75.0
     assert window._wire_editor_controller is None
     window._exit_sketch_editor()
+    window.close_model(confirm=False)
+    window.close()
+
+
+def test_unified_create_command_routes_size_to_wire_editor(
+    monkeypatch,
+) -> None:
+    _application()
+
+    class _CreationDialog:
+        def __init__(self, _parent, *, default_part_name) -> None:
+            assert default_part_name == "部件-1"
+
+        def exec(self) -> bool:
+            return True
+
+        def creation_kind(self) -> str:
+            return "1d"
+
+        def part_name(self) -> str:
+            return "Wire-1"
+
+        def sketch_size(self) -> float:
+            return 60.0
+
+    monkeypatch.setattr(
+        main_window_module,
+        "GeometryCreationDialog",
+        _CreationDialog,
+    )
+    window = FEMMainWindow()
+    window._apply_session_delta(window.session.new_native_project())
+
+    window.create_geometry()
+
+    assert window._wire_editor_controller is not None
+    assert window._wire_editor_part_name == "Wire-1"
+    assert window.viewport._wire_display_size == 60.0
+    assert window._sketch_editor_controller is None
+    window._exit_wire_editor()
     window.close_model(confirm=False)
     window.close()
 

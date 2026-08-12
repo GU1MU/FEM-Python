@@ -160,6 +160,37 @@ def test_single_wire_point_builds_a_snap_aligned_grid_without_an_exception() -> 
         fine_layout.plane_size / fine_layout.resolution,
         0.01,
     )
+    sized_layout = _wire_grid_layout(
+        np.empty((0, 3), dtype=float),
+        "XY",
+        0.0,
+        0.1,
+        50.0,
+    )
+    assert np.isclose(sized_layout.plane_size, 50.0)
+    expanded_layout = _wire_grid_layout(
+        np.asarray(((-22.5, 0.0, 0.0), (22.5, 0.0, 0.0))),
+        "XY",
+        0.0,
+        0.1,
+        50.0,
+    )
+    assert expanded_layout.plane_size > sized_layout.plane_size
+
+
+def test_wire_display_size_does_not_change_origin_camera_fit() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._wire_authoring_active = True
+    viewport._wire_grid_spacing = 0.1
+    viewport._wire_display_size = 50.0
+    viewport._wire_draft_render_data = WireDraftRenderData((), (), (), ())
+
+    bounds = viewport._fit_bounds()
+
+    assert bounds is not None
+    assert np.allclose(bounds[:4], (-5.0, 5.0, -5.0, 5.0))
+    viewport.close()
 
 
 def test_wire_viewport_click_applies_enabled_grid_snapping() -> None:
