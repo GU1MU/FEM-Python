@@ -86,6 +86,7 @@ from fem.application.results import (
     NodalAveragingPolicy,
     OutputRequestProjection,
     ResultCapabilityCatalog,
+    ResultCatalog,
     ResultQuery,
     ResultQueryResult,
     ResultQueryValidationError,
@@ -291,7 +292,12 @@ from .task_controller import (
     TaskApplyOutcome,
     TaskCompletion,
 )
-from .workspace import FEMWorkspace, WorkspaceDocument, canonical_path
+from .workspace import (
+    DocumentPresentationState,
+    FEMWorkspace,
+    WorkspaceDocument,
+    canonical_path,
+)
 from .viewport_background import (
     ViewportBackgroundSettings,
     load_background_settings,
@@ -768,7 +774,7 @@ class FEMMainWindow(QMainWindow):
         self._background_settings, self._remember_background = load_background_settings(
             self._application_settings
         )
-        self._contour_options: dict[str, Any] = {
+        self._default_contour_options: dict[str, Any] = {
             "manual": False, "minimum": 0.0, "maximum": 1.0,
             "levels": 12, "colormap": ABAQUS_RAINBOW,
             "style": "segmented", "legend": True,
@@ -783,6 +789,9 @@ class FEMMainWindow(QMainWindow):
             "edges": True,
             "averaging_threshold": 75.0,
         }
+        self._contour_options: dict[str, Any] = dict(
+            self._default_contour_options
+        )
         self._result_visualization_provider_cache: (
             tuple[
                 ResultSourceKey,
@@ -818,7 +827,9 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self._update_action_states()
         self._refresh_model_tree_for_context(self._active_context)
+        self._refresh_result_tree_for_context(self._active_context)
         self.model_tree.set_active_document(self._active_context.document_id)
+        self.result_tree.set_active_document(self._active_context.document_id)
 
     @property
     def busy(self) -> bool:
@@ -863,6 +874,7 @@ class FEMMainWindow(QMainWindow):
             and previous_active_id == context.document_id
         ):
             self.model_tree.set_active_document(context.document_id)
+            self.result_tree.set_active_document(context.document_id)
             return True
         # Embedded editors own transient geometry and cannot be detached from
         # the current viewport safely.  Keep the current context active.
@@ -972,6 +984,7 @@ class FEMMainWindow(QMainWindow):
                     self.viewport.fit()
                 self.viewport.render()
             self.model_tree.set_active_document(context.document_id)
+            self.result_tree.set_active_document(context.document_id)
             return True
         except Exception:
             logging.exception("workspace document activation failed")
@@ -1015,8 +1028,10 @@ class FEMMainWindow(QMainWindow):
         )
         if previous_context is None:
             self.model_tree.set_active_document(None)
+            self.result_tree.set_active_document(None)
         elif self.workspace.active_document_id == previous_context.document_id:
             self.model_tree.set_active_document(previous_context.document_id)
+            self.result_tree.set_active_document(previous_context.document_id)
         return applied
 
     def _restore_failed_workspace_activation(
@@ -1133,6 +1148,10 @@ class FEMMainWindow(QMainWindow):
         state.result_selection = self.result_selection
         state.display_state = self._display
         state.selection_mode = getattr(self.viewport, "_selection_mode", None)
+        state.result_scale_mode = str(self._scale_mode)
+        state.result_scale_value = float(self._scale_value)
+        state.contour_options = dict(self._contour_options)
+        state.overlay_undeformed = bool(self._overlay_undeformed)
         plotter = getattr(self.viewport, "_plotter", None)
         state.camera_state = (
             _capture_camera_state(plotter) if plotter is not None else None
@@ -1177,6 +1196,25 @@ class FEMMainWindow(QMainWindow):
             if isinstance(state.result_selection, ScalarFieldSelection)
             else None
         )
+        scale_mode = state.result_scale_mode
+        self._scale_mode = (
+            scale_mode
+            if scale_mode in {"auto", "real", "custom"}
+            else "auto"
+        )
+        try:
+            self._scale_value = float(state.result_scale_value)
+        except (TypeError, ValueError):
+            self._scale_value = 1.0
+        saved_contour_options = (
+            state.contour_options
+            if isinstance(state.contour_options, dict)
+            and state.contour_options
+            else self._default_contour_options
+        )
+        self._contour_options = dict(self._default_contour_options)
+        self._contour_options.update(saved_contour_options)
+        self._overlay_undeformed = bool(state.overlay_undeformed)
         selection_mode = state.selection_mode
         if isinstance(selection_mode, str):
             if selection_mode.startswith("geometry_"):
@@ -1226,6 +1264,38 @@ class FEMMainWindow(QMainWindow):
                 if action is not None:
                     with QSignalBlocker(action):
                         action.setChecked(checked)
+        self.result_scale_combo.blockSignals(True)
+        scale_index = self.result_scale_combo.findData(self._scale_mode)
+        if scale_index >= 0:
+            self.result_scale_combo.setCurrentIndex(scale_index)
+        self.result_scale_combo.blockSignals(False)
+        self.result_scale_value.blockSignals(True)
+        self.result_scale_value.setValue(float(self._scale_value))
+        self.result_scale_value.blockSignals(False)
+        overlay_action = self.actions.get("overlay")
+        if overlay_action is not None:
+            with QSignalBlocker(overlay_action):
+                overlay_action.setChecked(self._overlay_undeformed)
+        try:
+            self.viewport.set_undeformed_overlay_visible(
+                self._overlay_undeformed
+            )
+            self.viewport.set_contour_options(
+                {
+                    key: value
+                    for key, value in self._contour_options.items()
+                    if key != "averaging_threshold"
+                }
+            )
+            self.viewport.set_contour_metadata(
+                {
+                    "averaging_threshold": float(
+                        self._contour_options.get("averaging_threshold", 20.0)
+                    )
+                }
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
         selection_mode = state.selection_mode
         if isinstance(selection_mode, str):
             try:
@@ -1880,119 +1950,6 @@ class FEMMainWindow(QMainWindow):
                 command_id,
                 "task.start.rejected",
                 "the result save task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
-
-    def open_result_path(self, path: str | Path) -> GuiCommandReceipt:
-        """Strictly decode and atomically install a result-only document."""
-
-        command_id = self._next_command_id()
-        if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
-        if self._active_editor():
-            return self._rejected_command(
-                command_id,
-                "editor.active",
-                "请先完成或取消当前编辑",
-            )
-        try:
-            spec = ResultArchiveOpenSpec(Path(path))
-            base_session_id = self.session.session_id
-            base_session_revision = self.session.session_revision
-            completion = GuiCommandCompletion(command_id)
-
-            def workload(context: TaskContext):
-                context.report("正在读取并验证分析结果……")
-                context.checkpoint()
-                loaded = load_result_archive(spec.path)
-                context.checkpoint()
-                started = perf_counter()
-                model_view = build_result_archive_model_view(
-                    loaded.snapshot.model_projection,
-                    loaded.snapshot.profile,
-                    name=str(loaded.snapshot.origin.model_name or "结果"),
-                )
-                geometry = build_result_archive_geometry(
-                    loaded.snapshot.model_projection,
-                )
-                timings = {
-                    "结果显示适配器构建": perf_counter() - started,
-                }
-                context.checkpoint()
-                return _ResultArchiveDisplayPayload(
-                    loaded=loaded,
-                    geometry=geometry,
-                    model_view=model_view,
-                    timings=timings,
-                )
-
-            def apply_result(payload: object) -> TaskApplyOutcome:
-                if type(payload) is not _ResultArchiveDisplayPayload:
-                    raise TypeError(
-                        "result open worker must return display payload"
-                    )
-                if self.session.session_id != base_session_id:
-                    return TaskApplyOutcome.stale("结果打开目标会话已变化，未应用")
-                if self.session.session_revision != base_session_revision:
-                    return TaskApplyOutcome.stale("结果打开目标文档已变化，未应用")
-                delta = self.session.replace_from_result_archive(
-                    payload.loaded,
-                    expected_session_revision=base_session_revision,
-                )
-                return self._session_task_outcome(delta, payload)
-
-            def on_success(value: object) -> None:
-                if (
-                    type(value) is not tuple
-                    or len(value) != 2
-                    or type(value[0]) is not SessionDelta
-                ):
-                    raise TypeError("accepted result open must carry SessionDelta")
-                delta, payload = value
-                if type(payload) is not _ResultArchiveDisplayPayload:
-                    raise TypeError("accepted result open has invalid payload")
-                self._accepted_command(
-                    command_id,
-                    delta,
-                    model_geometry=payload.geometry,
-                    result_model_view=payload.model_view,
-                    timings=payload.timings,
-                    source_label=spec.path.name,
-                )
-                result_module_was_current = (
-                    self._current_module_name() == "结果"
-                )
-                self.ribbon.set_current("结果")
-                if result_module_was_current:
-                    self._on_module_changed("结果")
-                self.status_panel.set_state(
-                    f"结果文件已打开：{spec.path.name}",
-                    6000,
-                )
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "打开分析结果失败",
-                task_name="打开分析结果",
-                apply_result=apply_result,
-                completion=completion,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.open.rejected",
-                error,
-            )
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result open task could not be started",
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
@@ -2743,7 +2700,16 @@ class FEMMainWindow(QMainWindow):
         ):
             current_selection = self.result_selection
             if type(current_selection) is ScalarFieldSelection:
-                self.result_tree.select_selection(current_selection)
+                active_context = self.workspace.active_document()
+                self.result_tree.select_selection(
+                    current_selection,
+                    document_id=(
+                        None
+                        if active_context is None
+                        else active_context.document_id
+                    ),
+                    source=projected.source,
+                )
         self._refresh_result_controls()
         self._update_action_states()
 
@@ -3316,6 +3282,7 @@ class FEMMainWindow(QMainWindow):
             ):
                 target_context.presentation_cache.invalidate_result()
             self._refresh_model_tree_for_context(target_context)
+            self._refresh_result_tree_for_context(target_context)
             return True
         if revision <= self._applied_session_revision:
             return False
@@ -3638,7 +3605,11 @@ class FEMMainWindow(QMainWindow):
                 and selection_is_current
                 and viewport_is_current
                 and self.result_tree.catalog is provider.catalog()
-                and self.result_tree.has_selection(self.result_selection)
+                and self.result_tree.has_selection(
+                    self.result_selection,
+                    document_id=target_context.document_id,
+                    source=(None if provider is None else provider.source),
+                )
                 and (
                     self.inspection_service is None
                     or self.inspection_service.result_provider is provider
@@ -3659,6 +3630,7 @@ class FEMMainWindow(QMainWindow):
         self._sync_step_combos()
         self._refresh_result_controls()
         self._update_action_states()
+        self._refresh_result_tree_for_context(target_context)
         if not self._workspace_activation:
             self._project_viewport_for_module(self._current_module_name())
         self.model_tree.set_active_document(target_context.document_id)
@@ -3764,7 +3736,12 @@ class FEMMainWindow(QMainWindow):
                 self.model_tree.clear_model()
             else:
                 self._refresh_model_tree_for_context(active_context)
-        self.result_tree.clear_result()
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        elif self.result_tree.roots:
+            # Empty workspaces retain the historical placeholder.
+            self.result_tree.clear_result()
         self.navigation.show_model()
         self.viewport.clear_model()
         self.status_panel.set_step(self._current_step_name)
@@ -3781,7 +3758,11 @@ class FEMMainWindow(QMainWindow):
         self.result_selection = None
         self._result_visualization_provider_cache = None
         self._display = DisplayState()
-        self.result_tree.clear_result()
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        else:
+            self.result_tree.clear_result()
         self.navigation.show_model()
         self.status_panel.set_result()
         if not had_projection:
@@ -3865,15 +3846,12 @@ class FEMMainWindow(QMainWindow):
             self._clear_result_projection()
             self.result_provider = provider
             self.result_selection = None
-            self.result_tree.set_catalog(
-                self._current_step_name
-                or self.session.default_step_name()
-                or "",
-                catalog,
-                section_point_labels=result_provider_section_point_labels(
-                    provider
-                ),
-            )
+            active_context = self.workspace.active_document()
+            if active_context is not None:
+                self._refresh_result_tree_for_context(
+                    active_context,
+                    catalog=catalog,
+                )
             if inspection is not None:
                 inspection.update_result_provider(provider)
             self.status_panel.set_result()
@@ -3905,14 +3883,19 @@ class FEMMainWindow(QMainWindow):
             None if inspection is None else inspection.result_provider
         )
         try:
-            self.result_tree.set_catalog(
-                step_name or "",
-                catalog,
-                section_point_labels=result_provider_section_point_labels(
-                    provider
-                ),
-            )
-            if not self.result_tree.select_selection(selection):
+            active_context = self.workspace.active_document()
+            if active_context is not None:
+                self._refresh_result_tree_for_context(
+                    active_context,
+                    catalog=catalog,
+                )
+            if not self.result_tree.select_selection(
+                selection,
+                document_id=active_context.document_id
+                if active_context is not None
+                else None,
+                source=provider.source,
+            ):
                 raise RuntimeError(
                     "installed selection is missing from the result tree"
                 )
@@ -3926,22 +3909,21 @@ class FEMMainWindow(QMainWindow):
         except Exception:
             try:
                 if previous_catalog is None:
-                    self.result_tree.clear_result()
+                    active_context = self.workspace.active_document()
+                    if active_context is not None:
+                        self._refresh_result_tree_for_context(active_context)
                 else:
-                    self.result_tree.set_catalog(
-                        previous_catalog.source.step_name,
-                        previous_catalog,
-                        section_point_labels=(
-                            result_provider_section_point_labels(
-                                previous_provider
-                            )
-                            if type(previous_provider) is ResultProvider
-                            else None
-                        ),
-                    )
+                    active_context = self.workspace.active_document()
+                    if active_context is not None:
+                        self._refresh_result_tree_for_context(
+                            active_context,
+                            catalog=previous_catalog,
+                        )
                     if type(previous_selection) is ScalarFieldSelection:
                         self.result_tree.select_selection(
-                            previous_selection
+                            previous_selection,
+                            document_id=active_context.document_id,
+                            source=previous_catalog.source,
                         )
             except Exception:
                 logging.exception(
@@ -4420,8 +4402,11 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.renameRequested[int, str, object].connect(
             self._rename_tree_entry
         )
-        self.result_tree.fieldSelectionActivated.connect(
-            self._activate_result_selection
+        self.result_tree.fieldSelectionRouted.connect(
+            self._activate_routed_result_selection
+        )
+        self.result_tree.runActivated.connect(
+            self._activate_routed_result_run
         )
         self.viewport.entityPicked.connect(self._on_viewport_pick)
         self.viewport.geometryEntityPicked.connect(
@@ -9649,7 +9634,7 @@ class FEMMainWindow(QMainWindow):
             "",
             "FEM-Python 结果 (*.femres);;所有文件 (*)",
         )
-        if not path or not self._confirm_document_transition():
+        if not path:
             return
         receipt = self.open_result_path(path)
         if receipt.diagnostic is not None:
@@ -10100,6 +10085,199 @@ class FEMMainWindow(QMainWindow):
             source_path=snapshot.source_path or snapshot.project_path,
         )
 
+    def _refresh_result_tree_for_context(
+        self,
+        context: WorkspaceDocument,
+        *,
+        catalog: object | None = None,
+    ) -> None:
+        """Incrementally project one model/archive result root.
+
+        ResultTree owns one indexed root per workspace context.  This helper
+        deliberately performs no viewport, ribbon, or result-control work, so
+        deltas for inactive documents stay on the cheap tree-only path.
+        """
+
+        provider = None
+        if catalog is None:
+            try:
+                provider = context.session.current_result_provider()
+            except (AttributeError, RuntimeError, ValueError):
+                provider = None
+            if provider is not None:
+                try:
+                    catalog = provider.catalog()
+                except (AttributeError, RuntimeError, ValueError):
+                    catalog = None
+        labels = None
+        if provider is not None:
+            try:
+                labels = result_provider_section_point_labels(provider)
+            except (AttributeError, RuntimeError, ValueError):
+                labels = None
+        source_path = context.source_path or getattr(
+            context.projection,
+            "project_path",
+            None,
+        )
+        if context.is_result:
+            self.result_tree.upsert_archive(
+                context.document_id,
+                context.projection,
+                display_name=context.display_name,
+                source_path=source_path,
+                catalog=catalog if isinstance(catalog, ResultCatalog) else None,
+                section_point_labels=labels,
+            )
+        else:
+            self.result_tree.upsert_model_runs(
+                context.document_id,
+                context.projection,
+                display_name=context.display_name,
+                source_path=source_path,
+                catalog=catalog if isinstance(catalog, ResultCatalog) else None,
+                section_point_labels=labels,
+            )
+
+    def open_result_path(self, path: str | Path) -> GuiCommandReceipt:
+        """Decode an archive in the background and append it to the workspace."""
+
+        command_id = self._next_command_id()
+        if self._active_editor():
+            return self._rejected_command(
+                command_id,
+                "editor.active",
+                "active editor must be completed before opening a result",
+            )
+        try:
+            spec = ResultArchiveOpenSpec(Path(path))
+            existing_id = self.workspace.result_paths.get(canonical_path(spec.path))
+            if existing_id is not None:
+                context = self.workspace.document(existing_id)
+                if not self._activate_workspace_context(context):
+                    return self._rejected_command(
+                        command_id,
+                        "result.activate.rejected",
+                        "the existing result document could not be activated",
+                    )
+                self.ribbon.set_current("结果")
+                return GuiCommandReceipt.accepted(
+                    command_id,
+                    outcome=GuiCommandOutcome(output_path=spec.path),
+                )
+            open_controller = self.workspace.ensure_open_controller()
+            if open_controller.busy:
+                return self._rejected_command(
+                    command_id,
+                    "task.busy",
+                    "a result archive is already being opened",
+                )
+            completion = GuiCommandCompletion(command_id)
+
+            def workload(task_context: TaskContext):
+                task_context.report("reading and validating result archive")
+                task_context.checkpoint()
+                loaded = load_result_archive(spec.path)
+                task_context.checkpoint()
+                started = perf_counter()
+                model_view = build_result_archive_model_view(
+                    loaded.snapshot.model_projection,
+                    loaded.snapshot.profile,
+                    name=str(loaded.snapshot.origin.model_name or "Result"),
+                )
+                geometry = build_result_archive_geometry(
+                    loaded.snapshot.model_projection,
+                )
+                timings = {"result display adapters": perf_counter() - started}
+                task_context.checkpoint()
+                return _ResultArchiveDisplayPayload(
+                    loaded=loaded,
+                    geometry=geometry,
+                    model_view=model_view,
+                    timings=timings,
+                )
+
+            def on_success(value: object) -> None:
+                if type(value) is not _ResultArchiveDisplayPayload:
+                    raise TypeError("result open worker must return display payload")
+                payload = value
+                session = ModelSession()
+                delta = session.replace_from_result_archive(
+                    payload.loaded,
+                    path=spec.path,
+                )
+                if not delta.accepted:
+                    raise RuntimeError(delta.reason or "result archive was rejected")
+                projection = session.projection_snapshot()
+                display_name = str(
+                    projection.model_name
+                    or payload.loaded.snapshot.origin.model_name
+                    or spec.path.stem
+                )
+                previous_context = self.workspace.active_document()
+                context = self.workspace.add_result(
+                    session=session,
+                    projection=projection,
+                    display_name=display_name,
+                    source_path=spec.path,
+                )
+                context.presentation_state.module_name = "结果"
+                artifact = projection.artifact
+                context.presentation_cache.artifact_id = (
+                    None if artifact is None else artifact.artifact_id
+                )
+                context.presentation_cache.model_geometry = payload.geometry
+                context.presentation_cache.result_model_view = payload.model_view
+                identity = session.current_result_identity()
+                if identity is not None:
+                    context.presentation_cache.result_source = identity[0]
+                    context.presentation_cache.result_generation = identity[1]
+                try:
+                    self._refresh_result_tree_for_context(context)
+                    if not self._activate_workspace_context(context):
+                        raise RuntimeError(
+                            "result document could not be activated"
+                        )
+                    result_module_was_current = (
+                        self._current_module_name() == "结果"
+                    )
+                    self.ribbon.set_current("结果")
+                    if result_module_was_current:
+                        self._on_module_changed("结果")
+                    self.status_panel.set_state(
+                        f"结果文件已打开：{spec.path.name}",
+                        6000,
+                    )
+                except Exception:
+                    self.result_tree.remove_archive(context.document_id)
+                    self.workspace.remove(context)
+                    if previous_context is not None:
+                        try:
+                            self._activate_workspace_context(previous_context)
+                        except Exception:
+                            logging.exception(
+                                "failed to restore prior context after result open rollback"
+                            )
+                    raise
+
+            started = self._start_task(
+                workload,
+                on_success,
+                "打开分析结果失败",
+                task_name="打开分析结果",
+                completion=completion,
+                controller=open_controller,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(command_id, "result.open.rejected", error)
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the result open task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
     def _install_model(
         self,
         model: object,
@@ -10157,7 +10335,11 @@ class FEMMainWindow(QMainWindow):
             context=self.workspace.active_document(),
         )
         timings["模型树更新"] = perf_counter() - started
-        self.result_tree.clear_result()
+        active_context = self.workspace.active_document()
+        if active_context is not None:
+            self._refresh_result_tree_for_context(active_context)
+        else:
+            self.result_tree.clear_result()
         self.navigation.show_model()
         element_count = len(model.mesh.elements)
         node_count = len(model.mesh.nodes)
@@ -10428,7 +10610,14 @@ class FEMMainWindow(QMainWindow):
             self._show_command_rejection("关闭模型", receipt)
             return False
         closed_id = target_context.document_id
-        self.model_tree.remove_document(closed_id)
+        target_context.presentation_cache.invalidate_model()
+        target_context.presentation_cache.invalidate_result()
+        target_context.presentation_state = DocumentPresentationState()
+        if target_context.is_result:
+            self.result_tree.remove_archive(closed_id)
+        else:
+            self.model_tree.remove_document(closed_id)
+            self.result_tree.remove_model_runs(closed_id)
         self.workspace.remove(target_context)
         replacement = self.workspace.active_document()
         if replacement is not None:
@@ -12287,12 +12476,17 @@ class FEMMainWindow(QMainWindow):
             return
         if not self._viewport_result_scene_is_current(provider, selection):
             self._apply_display()
-        self.result_tree.set_catalog(
-            f"{job.name} · {job.step_name}",
-            provider.catalog(),
-            section_point_labels=result_provider_section_point_labels(provider),
-        )
-        if not self.result_tree.select_selection(selection):
+        context = self.workspace.active_document()
+        if context is not None:
+            self._refresh_result_tree_for_context(
+                context,
+                catalog=provider.catalog(),
+            )
+        if not self.result_tree.select_selection(
+            selection,
+            document_id=context.document_id if context is not None else None,
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "current result selection is missing from the result tree"
             )
@@ -14016,7 +14210,14 @@ class FEMMainWindow(QMainWindow):
             render_provider,
             render_selection,
         )
-        if not self.result_tree.has_selection(selection):
+        active_context = self.workspace.active_document()
+        if not self.result_tree.has_selection(
+            selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field is missing from the result tree"
             )
@@ -14026,7 +14227,13 @@ class FEMMainWindow(QMainWindow):
             contour_enabled=self._display.contour_enabled,
         )
         self.result_selection = selection
-        if not self.result_tree.select_selection(selection):
+        if not self.result_tree.select_selection(
+            selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field disappeared from the result tree"
             )
@@ -14161,7 +14368,16 @@ class FEMMainWindow(QMainWindow):
                 current is provider
                 and type(installed) is ScalarFieldSelection
             ):
-                self.result_tree.select_selection(installed)
+                active_context = self.workspace.active_document()
+                self.result_tree.select_selection(
+                    installed,
+                    document_id=(
+                        None
+                        if active_context is None
+                        else active_context.document_id
+                    ),
+                    source=(None if provider is None else provider.source),
+                )
             self.status_panel.set_state(
                 receipt.diagnostic.message,
                 5000,
@@ -14196,6 +14412,77 @@ class FEMMainWindow(QMainWindow):
                 True,
             )
         self.status_panel.set_result(self._result_status_text())
+
+    def _activate_routed_result_selection(
+        self,
+        document_id: int,
+        run_id: str,
+        source: object,
+        selection: ScalarFieldSelection,
+    ) -> None:
+        """Activate the owning document/run before applying a field choice."""
+
+        if type(selection) is not ScalarFieldSelection:
+            return
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if self.workspace.active_document_id != context.document_id:
+            if not self._activate_workspace_context(context):
+                return
+        if not context.is_result and run_id:
+            identity = context.session.current_result_identity()
+            if identity is None or identity[0].run_id != str(run_id):
+                try:
+                    receipt = self.select_run_result(str(run_id))
+                except (RuntimeError, TypeError, ValueError):
+                    return
+                if receipt.diagnostic is not None:
+                    return
+        identity = context.session.current_result_identity()
+        if source is not None and (
+            identity is None or identity[0] != source
+        ):
+            return
+        self._activate_result_selection(selection)
+
+    def _activate_routed_result_run(
+        self,
+        document_id: int,
+        run_id: str,
+    ) -> None:
+        """Activate a run item after routing to its owning workspace document."""
+
+        try:
+            context = self.workspace.document(int(document_id))
+        except (KeyError, TypeError, ValueError):
+            return
+        if self.workspace.active_document_id != context.document_id:
+            if not self._activate_workspace_context(context):
+                return
+        if context.is_result:
+            was_result = self._current_module_name() == "结果"
+            self.ribbon.set_current("结果")
+            if was_result:
+                self._on_module_changed("结果")
+            return
+        identity = context.session.current_result_identity()
+        if identity is not None and identity[0].run_id == str(run_id):
+            self._refresh_result_tree_for_context(context)
+            was_result = self._current_module_name() == "结果"
+            self.ribbon.set_current("结果")
+            if was_result:
+                self._on_module_changed("结果")
+            return
+        try:
+            receipt = self.select_run_result(str(run_id))
+        except (RuntimeError, TypeError, ValueError):
+            return
+        if receipt.diagnostic is not None:
+            return
+        self._refresh_result_tree_for_context(context)
+        self.ribbon.set_current("结果")
 
     def _finish_activated_result_selection(
         self,
@@ -14419,7 +14706,14 @@ class FEMMainWindow(QMainWindow):
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._show_error("结果显示失败", str(error))
             return
-        if not self.result_tree.has_selection(settings.selection):
+        active_context = self.workspace.active_document()
+        if not self.result_tree.has_selection(
+            settings.selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             self._show_error(
                 "结果显示失败",
                 "selected field is missing from the result tree",
@@ -14444,7 +14738,13 @@ class FEMMainWindow(QMainWindow):
         self._scale_mode = settings.scale_mode
         self._scale_value = settings.scale_value
         self._overlay_undeformed = settings.overlay_undeformed
-        if not self.result_tree.select_selection(settings.selection):
+        if not self.result_tree.select_selection(
+            settings.selection,
+            document_id=(
+                None if active_context is None else active_context.document_id
+            ),
+            source=provider.source,
+        ):
             raise RuntimeError(
                 "selected field disappeared from the result tree"
             )

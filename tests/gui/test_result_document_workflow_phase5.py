@@ -48,15 +48,30 @@ def _application() -> QApplication:
 def _wait_idle(window: FEMMainWindow, timeout_ms: int = 2000) -> None:
     app = _application()
     deadline = __import__("time").monotonic() + timeout_ms / 1000.0
-    while window.busy and __import__("time").monotonic() < deadline:
+    open_controller = window.workspace.open_controller
+    while (
+        (
+            window.busy
+            or (
+                open_controller is not None
+                and open_controller.busy
+            )
+        )
+        and __import__("time").monotonic() < deadline
+    ):
         app.processEvents()
         __import__("time").sleep(0.001)
     app.processEvents()
-    if window.busy:
+    if window.busy or (
+        open_controller is not None and open_controller.busy
+    ):
         print(
             "PHASE5 busy timeout",
             window.task_controller.state,
             window.task_controller.current_task_name,
+            None
+            if open_controller is None
+            else open_controller.state,
             flush=True,
         )
         raise AssertionError(
@@ -644,6 +659,7 @@ def test_result_transition_confirmation_exposes_unsaved_run(monkeypatch, tmp_pat
     _wait_idle(window)
     window.close_model(confirm=False)
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+    monkeypatch.setattr(window, "_confirm_workspace_context_close", lambda *_args: True)
     window.close()
 
 
@@ -658,7 +674,8 @@ def test_transition_cancel_blocks_open_new_close_and_result_mutation(
     window.document = window.session.projection_snapshot(window.document)
     window._update_action_states()
     assert window.document.result_dirty
-    before = _projection_identity(window)
+    dirty_context_id = window.workspace.active_document_id
+    assert dirty_context_id is not None
     target = tmp_path / "other.femres"
     save_result_archive(target, _snapshot(make_continuum_nodal_semantics_result, "other"))
     monkeypatch.setattr(
@@ -668,25 +685,37 @@ def test_transition_cancel_blocks_open_new_close_and_result_mutation(
     )
     monkeypatch.setattr(window, "_confirm_document_transition", lambda **_kwargs: False)
     window.open_result_file()
-    assert _projection_identity(window) == before
+    _wait_idle(window)
+    assert window.workspace.document_count == 3
+    dirty_context = window.workspace.document(dirty_context_id)
+    assert dirty_context.projection.result_dirty
+    assert window.workspace.active_document_id != dirty_context_id
 
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: False)
+    monkeypatch.setattr(
+        window,
+        "_confirm_workspace_context_close",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(window, "_show_error", lambda *_args: None)
     monkeypatch.setattr(
         main_window_module.QInputDialog,
         "getText",
         lambda *_args, **_kwargs: ("replacement", True),
     )
     window.new_native_model()
-    assert _projection_identity(window) == before
-    assert not window.close_model(confirm=True)
-    edit = MeshInputEdit(window.document.session_revision, None)
-    rejected = window.apply_mesh_input_edit(edit)
-    assert rejected.diagnostic is not None
-    assert rejected.diagnostic.code == "document.transition.cancelled"
-    assert _projection_identity(window) == before
+    assert window.workspace.document_count == 4
+    assert window.workspace.document(dirty_context_id).projection.result_dirty
+    assert not window.close_model(confirm=True, document_id=dirty_context_id)
+    assert window.workspace.document(dirty_context_id).projection.result_dirty
     _wait_idle(window)
     window.close_model(confirm=False)
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+    monkeypatch.setattr(
+        window,
+        "_confirm_workspace_context_close",
+        lambda *_args: True,
+    )
     window.close()
 
 

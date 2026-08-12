@@ -48,6 +48,10 @@ class DocumentPresentationState:
     display_state: object | None = None
     camera_state: object | None = None
     selection_mode: str | None = None
+    result_scale_mode: str = "auto"
+    result_scale_value: float = 1.0
+    contour_options: dict[str, object] = field(default_factory=dict)
+    overlay_undeformed: bool = False
 
 
 @dataclass(slots=True)
@@ -343,7 +347,11 @@ class FEMWorkspace:
                 path_index.pop(old_key, None)
 
         target.projection = projection
-        path = getattr(projection, "path", None)
+        path = (
+            getattr(projection, "path", None)
+            or getattr(projection, "source_path", None)
+            or getattr(projection, "project_path", None)
+        )
         target.source_path = None if path is None else Path(path)
         if target.source_path is not None:
             path_index[canonical_path(target.source_path)] = target.document_id
