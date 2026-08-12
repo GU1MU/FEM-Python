@@ -615,6 +615,18 @@ def test_assignment_nodes_show_orientation_and_route_edit_by_index():
         ),
         key=lambda item: item.data(0, ROLE_KEY),
     )
+    assignment_category = next(
+        item
+        for item in items
+        if item.data(0, ROLE_KIND) == "category"
+        and item.text(0) == "截面分配 (2)"
+    )
+    section_assign_icon_key = model_tree_module.icon("section_assign").cacheKey()
+    assert assignment_category.icon(0).cacheKey() == section_assign_icon_key
+    assert all(
+        item.icon(0).cacheKey() == section_assign_icon_key
+        for item in assignment_items
+    )
     assert [item.text(0) for item in assignment_items] == [
         "Beam-A → SET-A",
         "Beam-B → SET-B",

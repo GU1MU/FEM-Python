@@ -8609,10 +8609,13 @@ class FEMViewport(QWidget):
         if payload is not None:
             dataset = payload.dataset
             node_ids = self._typed_result_point_ids(payload.dataset)
-        elif self._geometry is not None:
+        elif (
+            self._pick_grid is not None
+            and "node_id" in self._pick_grid.point_data
+        ):
             dataset = self._pick_grid
             node_ids = np.asarray(
-                self._geometry.point_index_to_node_id,
+                dataset.point_data["node_id"],
                 dtype=np.int64,
             )
         else:

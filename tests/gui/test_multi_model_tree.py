@@ -752,7 +752,7 @@ def test_create_native_models_append_roots_without_global_tree_clear(
         assert {
             context.display_name
             for context in window.workspace.models.values()
-        } == {"Model-1", "Model-2", "Model-3"}
+        } == {"模型-1", "Model-2", "Model-3"}
     finally:
         dispose_gui_widget(window)
 

@@ -450,7 +450,7 @@ def test_failed_or_cancelled_materialization_can_retry(
     assert session.current_result().materialization.generation == 1
 
 
-def test_model_edit_makes_materialization_task_stale() -> None:
+def test_model_edit_keeps_historical_materialization_task_valid() -> None:
     session = _session()
     solve = _succeed(session, "Job-1", marker=7.0)
     key = _key(session.current_result(), FieldPosition.CENTROID)
@@ -464,13 +464,10 @@ def test_model_edit_makes_materialization_task_stale() -> None:
         (AnalysisStep("Step-A"),),
     )
     before_revision = session.session_revision
-    rejected = session.accept_result_materialization(task.token, patch)
+    accepted = session.accept_result_materialization(task.token, patch)
 
-    assert not rejected.accepted
-    assert rejected.token_status in {
-        TokenStatus.STALE_ARTIFACT,
-        TokenStatus.STALE_REVISION,
-        TokenStatus.STALE_RUN,
-    }
-    assert session.session_revision == before_revision
+    assert accepted.accepted
+    assert session.session_revision == before_revision + 1
     assert session.current_result() is None
+    session.select_result(solve.run_id)
+    assert session.current_result().materialization.generation == 1

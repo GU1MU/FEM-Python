@@ -47,6 +47,23 @@ def test_successful_constrained_edit_is_one_atomic_undo_step() -> None:
     assert controller.snapshot() == before
 
 
+def test_replacing_constraint_preserves_its_original_order() -> None:
+    controller = _controller()
+    horizontal = SketchHorizontalConstraint("H", "L1")
+    distance = SketchDistanceDimension("D", "P1", "P2", 3.0)
+    assert controller.add_constraint_and_solve(horizontal).succeeded
+    assert controller.add_constraint_and_solve(distance).succeeded
+    before_ids = tuple(item.id for item in controller.constraints)
+
+    result = controller.replace_constraint_and_solve(
+        "D",
+        SketchDistanceDimension("D", "P1", "P2", 4.0),
+    )
+
+    assert result.succeeded
+    assert tuple(item.id for item in controller.constraints) == before_ids
+
+
 def test_conflicting_atomic_edit_preserves_geometry_constraints_revision_and_history() -> None:
     controller = _controller()
     before = controller.snapshot()

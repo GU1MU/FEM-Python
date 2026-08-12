@@ -238,7 +238,7 @@ def test_multiple_successful_runs_keep_independent_file_state() -> None:
     assert session.snapshot().result_path == Path("b.femres")
 
 
-def test_model_invalidation_clears_result_file_states_and_save_token() -> None:
+def test_model_change_retains_result_file_state_and_active_save() -> None:
     session = _session()
     solve = _succeed(session, "Job-1", marker=1.0)
     payload = session.prepare_result_archive_save(solve.run_id)
@@ -247,14 +247,18 @@ def test_model_invalidation_clears_result_file_states_and_save_token() -> None:
 
     session.replace_model_definitions((), (), (), session.snapshot().steps)
 
-    assert session.snapshot().result_file_states == {}
+    assert session.snapshot().result_file_states[solve.run_id].path == Path(
+        "job.femres"
+    )
     assert not session.snapshot().has_unsaved_results
     late = session.accept_result_archive_saved(late_payload.token, "late.femres")
-    assert not late.accepted
-    assert late.token_status in {
-        TokenStatus.STALE_REVISION,
-        TokenStatus.STALE_ARTIFACT,
-        TokenStatus.STALE_RUN,
-        TokenStatus.STALE_RESULT,
-        TokenStatus.ALREADY_COMPLETED,
-    }
+    assert late.accepted
+    assert session.result_path_for(solve.run_id) == Path("late.femres")
+    historical = session.prepare_result_archive_save(solve.run_id)
+    assert dict(historical.token.dependency_revisions)["model_revision"] == (
+        solve.token.result_source.model_revision
+    )
+    assert session.accept_result_archive_saved(
+        historical.token,
+        "historical.femres",
+    ).accepted

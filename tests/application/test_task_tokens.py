@@ -273,7 +273,7 @@ def test_repeated_completion_is_explicitly_rejected() -> None:
     assert session.session_revision == revision
 
 
-def test_result_projection_token_becomes_stale_with_its_model() -> None:
+def test_result_projection_token_remains_bound_to_historical_result() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
@@ -296,10 +296,8 @@ def test_result_projection_token_becomes_stale_with_its_model() -> None:
 
     session.replace_model_definitions((), (), (), (AnalysisStep("Step-A"),))
 
-    assert session.validate_task_token(projection.token) in {
-        TokenStatus.STALE_REVISION,
-        TokenStatus.STALE_ARTIFACT,
-    }
+    assert session.validate_task_token(projection.token) is TokenStatus.CURRENT
+    assert session.accept_result_projection(projection.token).accepted
 
 
 def test_orientation_edit_rejects_old_validation_and_solve_callbacks() -> None:

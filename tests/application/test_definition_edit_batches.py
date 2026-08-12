@@ -432,7 +432,7 @@ def test_named_region_batch_compare_and_swap_conflict_is_atomic() -> None:
     assert dict(after.named_regions) == dict(before.named_regions)
 
 
-def test_definition_batch_recompiles_artifact_and_invalidates_computations() -> None:
+def test_definition_batch_recompiles_artifact_and_retains_completed_result() -> None:
     session, _recipe = _definition_session()
     generated_model = FEMModel(
         mesh=Mesh3D(
@@ -486,15 +486,19 @@ def test_definition_batch_recompiles_artifact_and_invalidates_computations() -> 
     assert after.artifact is not None
     assert after.artifact.artifact_id != before.artifact.artifact_id
     assert not after.validations
-    assert not after.runs
+    assert tuple(run.run_id for run in after.runs) == (solve.run_id,)
+    assert after.runs[0].has_result
     assert after.displayed_result is None
     assert {
         ArtifactKind.MODEL,
         ArtifactKind.VALIDATIONS,
         ArtifactKind.RUNS,
-        ArtifactKind.RESULTS,
         ArtifactKind.DISPLAYED_RESULT,
     }.issubset(delta.invalidated)
+    assert ArtifactKind.RESULTS not in delta.invalidated
+
+    session.select_result(solve.run_id)
+    assert session.current_result() is not None
 
     properties["E"] = 1.0
     assert after.materials[0].properties["E"] == 200_000.0

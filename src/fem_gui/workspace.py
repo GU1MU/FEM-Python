@@ -461,12 +461,12 @@ class FEMWorkspace:
                 name = f"Result-{self._next_result_number}"
                 self._next_result_number += 1
             else:
-                name = f"Model-{self._next_model_number}"
+                name = f"模型-{self._next_model_number}"
                 self._next_model_number += 1
         elif (
             kind == "model"
             and path is None
-            and name == f"Model-{self._next_model_number}"
+            and name == f"模型-{self._next_model_number}"
         ):
             self._next_model_number += 1
         name = self._unique_display_name(kind, name)

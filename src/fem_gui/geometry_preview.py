@@ -12,6 +12,7 @@ from fem.geometry import (
     CylinderGeometry,
     DiskGeometry,
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     LogicalEntityRef,
     MovedGeometry,
     MultiBodyGeometry,
@@ -27,6 +28,7 @@ from fem.geometry import (
     StrictBodyBooleanPreview,
     StrictPlanarBooleanPreview,
     SketchLine,
+    SketchProfileAnalysis,
     WireGeometry,
     analyze_sketch_profiles,
     axis_aligned_rectangle,
@@ -262,6 +264,7 @@ def build_strict_sketch_draft_preview(
     recipe: SketchGeometry,
     *,
     segments: int = 48,
+    analysis: SketchProfileAnalysis | None = None,
 ) -> GeometryPreview:
     """Preview analyzable profiles even while other draft curves are invalid."""
 
@@ -271,6 +274,7 @@ def build_strict_sketch_draft_preview(
         recipe,
         max(12, int(segments)),
         allow_partial=True,
+        analysis=analysis,
     )
 
 
@@ -306,6 +310,111 @@ def build_face_sketch_boolean_result_preview(
         (None,) * len(boolean_preview.points),
         body_id,
         3,
+    )
+
+
+def build_face_sketch_boolean_committed_preview(
+    recipe: FaceSketchBooleanGeometry,
+    boolean_preview: StrictBodyBooleanPreview,
+    *,
+    segments: int = 48,
+) -> GeometryPreview:
+    """Reuse the already-proven OCC result as the committed display mesh."""
+
+    if type(recipe) is not FaceSketchBooleanGeometry:
+        raise TypeError("recipe must be a FaceSketchBooleanGeometry")
+    if type(boolean_preview) is not StrictBodyBooleanPreview:
+        raise TypeError("boolean_preview must be StrictBodyBooleanPreview")
+    target_body_id = boolean_preview.target_body_id
+    if not isinstance(recipe.base, MultiBodyGeometry):
+        if target_body_id != "body:domain":
+            raise ValueError("single-body face Boolean preview has an invalid target")
+        return GeometryPreview(
+            boolean_preview.points,
+            boolean_preview.faces,
+            boolean_preview.edges,
+            boolean_preview.face_logical_ids,
+            boolean_preview.edge_logical_ids,
+            boolean_preview.point_logical_ids,
+            target_body_id,
+            3,
+        )
+
+    if not target_body_id.startswith("body:"):
+        raise ValueError("multi-body face Boolean preview has an invalid target")
+    target_id = target_body_id.removeprefix("body:")
+    recipe.base.body(target_id)
+    point_rows: list[tuple[float, float, float]] = []
+    face_rows: list[tuple[int, ...]] = []
+    edge_rows: list[tuple[int, ...]] = []
+    face_ids: list[str | None] = []
+    edge_ids: list[str | None] = []
+    point_ids: list[str | None] = []
+    face_bodies: list[str | None] = []
+    edge_bodies: list[str | None] = []
+    point_bodies: list[str | None] = []
+
+    def body_namespace(body_id: str, logical_id: str | None) -> str | None:
+        if logical_id is None:
+            return None
+        reference = LogicalEntityRef(logical_id)
+        if reference.kind == "body":
+            return f"body:{body_id}"
+        _kind, local_name = logical_id.split(":", 1)
+        return f"{reference.kind}:{body_id}/{local_name}"
+
+    for body in recipe.base.bodies:
+        offset = len(point_rows)
+        body_logical_id = f"body:{body.id}"
+        if body.id == target_id:
+            local_points = boolean_preview.points
+            local_faces = boolean_preview.faces
+            local_edges = boolean_preview.edges
+            local_face_ids = boolean_preview.face_logical_ids
+            local_edge_ids = boolean_preview.edge_logical_ids
+            local_point_ids = boolean_preview.point_logical_ids
+        else:
+            local = _build_geometry_preview(body.recipe, max(12, int(segments)))
+            local_points = local.points
+            local_faces = local.faces
+            local_edges = local.edges
+            local_face_ids = tuple(
+                body_namespace(body.id, value)
+                for value in local.face_logical_ids
+            )
+            local_edge_ids = tuple(
+                body_namespace(body.id, value)
+                for value in local.edge_logical_ids
+            )
+            local_point_ids = tuple(
+                body_namespace(body.id, value)
+                for value in local.point_logical_ids
+            )
+        point_rows.extend(local_points)
+        face_rows.extend(
+            tuple(offset + point for point in face) for face in local_faces
+        )
+        edge_rows.extend(
+            tuple(offset + point for point in edge) for edge in local_edges
+        )
+        face_ids.extend(local_face_ids)
+        edge_ids.extend(local_edge_ids)
+        point_ids.extend(local_point_ids)
+        face_bodies.extend((body_logical_id,) * len(local_faces))
+        edge_bodies.extend((body_logical_id,) * len(local_edges))
+        point_bodies.extend((body_logical_id,) * len(local_points))
+    return GeometryPreview(
+        tuple(point_rows),
+        tuple(face_rows),
+        tuple(edge_rows),
+        tuple(face_ids),
+        tuple(edge_ids),
+        tuple(point_ids),
+        None,
+        3,
+        tuple(face_bodies),
+        tuple(edge_bodies),
+        tuple(point_bodies),
     )
 
 
@@ -712,12 +821,16 @@ def _strict_sketch_preview(
     segments: int,
     *,
     allow_partial: bool = False,
+    analysis: SketchProfileAnalysis | None = None,
 ) -> GeometryPreview:
     """Tessellate a strict sketch while retaining every stable logical ID."""
 
     if not recipe.is_strict or recipe.plane is None:
         raise TypeError("strict sketch preview requires a curve-first sketch")
-    analysis = analyze_sketch_profiles(recipe)
+    if analysis is None:
+        analysis = analyze_sketch_profiles(recipe)
+    elif type(analysis) is not SketchProfileAnalysis:
+        raise TypeError("analysis must be a SketchProfileAnalysis")
     if (
         (analysis.blocking_diagnostics and not allow_partial)
         or not analysis.profiles
@@ -2149,6 +2262,7 @@ __all__ = [
     "FaceSketchBooleanDisplay",
     "GeometryPreview",
     "build_face_sketch_boolean_display",
+    "build_face_sketch_boolean_committed_preview",
     "build_face_sketch_boolean_result_preview",
     "build_geometry_preview",
     "build_strict_body_boolean_preview",

@@ -556,10 +556,8 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
         "action_new_native",
         "action_open_project",
         "action_save_project",
-        "action_save_project_as",
         "action_open",
         "action_save_result",
-        "action_save_result_as",
         "action_open_result",
         "action_model_info",
     ]

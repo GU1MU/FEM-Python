@@ -26,8 +26,8 @@ class CAEStatusBar(QStatusBar):
             320,
             stretch=3,
         )
-        self.selection_label = self._add_field("statusSelection", "选择：节点", 100)
-        self.object_label = self._add_field("statusObject", "对象：—", 110)
+        self.selection_label = self._add_field("statusSelection", "选择：节点", 90)
+        self.object_label = self._add_field("statusObject", "对象：—", 130)
         self.coordinate_label = self._add_field("statusCoordinate", "坐标：—", 245)
         self.step_label = self._add_field("statusStep", "Step：—", 145)
         self.result_label = self._add_field("statusResult", "结果：—", 180)
@@ -81,15 +81,15 @@ class CAEStatusBar(QStatusBar):
         labels = {
             "node": "节点",
             "element": "单元",
-            "geometry_point": "几何点",
-            "geometry_edge": "几何边",
-            "geometry_face": "几何面",
-            "geometry_body": "几何体",
+            "geometry_point": "点",
+            "geometry_edge": "边",
+            "geometry_face": "面",
+            "geometry_body": "体",
             "mesh_node": "节点",
             "mesh_element": "单元",
-            "mesh_edge": "拓扑边",
-            "mesh_face": "拓扑面",
-            "mesh_body": "部件",
+            "mesh_edge": "边",
+            "mesh_face": "面",
+            "mesh_body": "体",
         }
         self.selection_label.setText(f"选择：{labels.get(mode, '节点')}")
 

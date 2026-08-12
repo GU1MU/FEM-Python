@@ -231,12 +231,14 @@ from .mesh_browser import MeshBrowserDialog
 from .geometry_preview import (
     GeometryPreview,
     build_geometry_preview,
+    build_face_sketch_boolean_committed_preview,
     build_face_sketch_boolean_display,
     build_face_sketch_boolean_result_preview,
     namespace_part_geometry_preview,
     build_strict_body_boolean_previews,
     build_strict_part_boolean_preview,
     build_strict_planar_boolean_preview,
+    build_strict_sketch_draft_preview,
 )
 from .face_sketch_boolean_dialog import (
     FaceSketchBooleanDialog,
@@ -246,7 +248,10 @@ from .face_sketch_editor import (
     FaceSketchBooleanFeatureRequest,
     FaceSupportedSketchController,
 )
-from .part_geometry_preview import build_multi_part_geometry_preview
+from .part_geometry_preview import (
+    build_multi_part_geometry_preview,
+    localize_part_geometry_preview,
+)
 from .scope_selection import (
     MeshSelectionTopology,
     ScopeSelectionTopology,
@@ -643,7 +648,7 @@ class FEMMainWindow(QMainWindow):
         self._active_context = self.workspace.add_model(
             session=self._session_alias,
             projection=self._document_alias,
-            display_name="Model-1",
+            display_name="模型-1",
             task_controller=self._task_controller_alias,
         )
         self.workspace.activate(self._active_context)
@@ -3779,6 +3784,12 @@ class FEMMainWindow(QMainWindow):
                     if cached_is_current
                     else build_multi_part_geometry_preview(visible_parts)
                 )
+                if not cached_is_current:
+                    self._geometry_preview_cache = (
+                        snapshot.session_id,
+                        preview_key,
+                        preview,
+                    )
                 selectable_ids = {
                     logical_id
                     for values in (
@@ -3930,7 +3941,8 @@ class FEMMainWindow(QMainWindow):
         result_identity = self.session.current_result_identity()
         if result_identity is None:
             self._clear_result_projection()
-        elif artifact is not None and self.geometry is not None:
+            target_cache.invalidate_result()
+        else:
             source, generation = result_identity
             provider = self.result_provider
             provider_changed = (
@@ -3983,8 +3995,6 @@ class FEMMainWindow(QMainWindow):
             target_cache.result_generation = generation
             target_cache.result_model_view = self._result_archive_model_view
             target_cache.inspection_service = self.inspection_service
-        else:
-            target_cache.invalidate_result()
 
         self._sync_step_combos()
         self._refresh_result_controls()
@@ -4169,17 +4179,6 @@ class FEMMainWindow(QMainWindow):
                 "provider does not match the current accepted result"
             )
         source = provider.source
-        if (
-            self.document.artifact is None
-            or source.artifact_id
-            != self.document.artifact.artifact_id
-            or self.geometry is None
-            or self.geometry.artifact_id != source.artifact_id
-            or self.viewport.artifact_id != source.artifact_id
-        ):
-            raise RuntimeError(
-                "provider projection does not match the current model"
-            )
         previous_provider = self.result_provider
         if (
             type(previous_provider) is ResultProvider
@@ -4234,7 +4233,7 @@ class FEMMainWindow(QMainWindow):
             render_provider,
             render_selection,
         )
-        step_name = self._current_step_name or self.session.default_step_name()
+        self._prepare_viewport_for_result_source(source)
         previous_catalog = self.result_tree.catalog
         previous_selection = self.result_selection
         inspection = self.inspection_service
@@ -4313,6 +4312,15 @@ class FEMMainWindow(QMainWindow):
             and render_selection != visual_selection
         ):
             self._defer_ui(self._apply_result_averaging_threshold)
+
+    def _prepare_viewport_for_result_source(
+        self,
+        source: ResultSourceKey,
+    ) -> None:
+        """Detach a different model scene before installing run-owned mesh."""
+
+        if self.viewport.artifact_id not in {None, source.artifact_id}:
+            self.viewport.clear_model()
 
     def _build_actions(self) -> None:
         self.actions = build_actions(self)
@@ -4403,10 +4411,8 @@ class FEMMainWindow(QMainWindow):
                     "new_native",
                     "open_project",
                     "save_project",
-                    "save_project_as",
                     "open",
                     "save_result",
-                    "save_result_as",
                     "open_result",
                     "model_info",
                 ),
@@ -4931,10 +4937,15 @@ class FEMMainWindow(QMainWindow):
             if provider is not None and type(selection) is ScalarFieldSelection:
                 if self._viewport_result_scene_is_current(provider, selection):
                     return
-                self._restore_viewport_model_scene(
-                    render=False,
-                    reset_camera=reset_camera,
-                )
+                artifact = self.document.artifact
+                if (
+                    artifact is not None
+                    and artifact.artifact_id == provider.source.artifact_id
+                ):
+                    self._restore_viewport_model_scene(
+                        render=False,
+                        reset_camera=reset_camera,
+                    )
                 self._apply_display(render=render)
             else:
                 self._project_mesh_or_geometry_fallback(
@@ -5022,6 +5033,16 @@ class FEMMainWindow(QMainWindow):
             )
             else build_multi_part_geometry_preview((active,))
         )
+        if (
+            cached is None
+            or cached[0] != self.document.session_id
+            or cached[1] != preview_key
+        ):
+            self._geometry_preview_cache = (
+                self.document.session_id,
+                preview_key,
+                preview,
+            )
         suppressed_parts = tuple(
             part
             for part in self.document.parts
@@ -5913,12 +5934,23 @@ class FEMMainWindow(QMainWindow):
             base_snapshot=draft.snapshot(),
         )
         self.sketch_editor_panel.set_reference_points(
-            self._face_sketch_reference_points
+            self._face_sketch_reference_points,
+            refresh_controller=False,
         )
         self.sketch_editor_panel.begin(self.viewport, purpose="face_sketch")
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         launch = controller.launch_snapshot
-        source_preview = build_geometry_preview(launch.part.geometry_recipe)
+        cached = self._geometry_preview_cache
+        preview_key = self._native_part_preview_cache_key(self.document)
+        source_preview = (
+            localize_part_geometry_preview(launch.part_id, cached[2])
+            if (
+                cached is not None
+                and cached[0] == self.document.session_id
+                and cached[1] == preview_key
+            )
+            else build_geometry_preview(launch.part.geometry_recipe)
+        )
         self.viewport.show_sketch_reference_preview(
             source_preview,
             support_face_id=launch.workplane.support_face_id,
@@ -5933,9 +5965,14 @@ class FEMMainWindow(QMainWindow):
         controller = self._face_sketch_controller
         if controller is None:
             return
+        analysis = (
+            controller.draft.derive_profiles()
+            if type(controller) is FaceSupportedSketchController
+            else analyze_sketch_profiles(sketch)
+        )
         material_ids = tuple(
             profile.id
-            for profile in analyze_sketch_profiles(sketch).profiles
+            for profile in analysis.profiles
             if profile.is_material
         )
         previous = self._face_sketch_parameters
@@ -6108,7 +6145,17 @@ class FEMMainWindow(QMainWindow):
                 parameters.distance,
             )
             exact = build_face_sketch_boolean_result_preview(payload.preview)
-            target = build_geometry_preview(launch.part.geometry_recipe)
+            cached = self._geometry_preview_cache
+            preview_key = self._native_part_preview_cache_key(self.document)
+            target = (
+                localize_part_geometry_preview(launch.part_id, cached[2])
+                if (
+                    cached is not None
+                    and cached[0] == self.document.session_id
+                    and cached[1] == preview_key
+                )
+                else build_geometry_preview(launch.part.geometry_recipe)
+            )
             self._face_sketch_preview_result = payload
             self.viewport.show_face_sketch_boolean_preview(
                 target,
@@ -6245,7 +6292,17 @@ class FEMMainWindow(QMainWindow):
                 expected_preview_generation=payload.preview_generation,
                 preview_generation=self._face_sketch_preview_generation,
             )
-            if not self._apply_session_delta(delta):
+            committed_preview = namespace_part_geometry_preview(
+                launch.part_id,
+                build_face_sketch_boolean_committed_preview(
+                    payload.geometry,
+                    result.preview,
+                ),
+            )
+            if not self._apply_session_delta(
+                delta,
+                geometry_preview=committed_preview,
+            ):
                 raise RuntimeError("Session 未接受拉伸布尔提交")
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             dialog.set_preview_invalid(
@@ -6459,6 +6516,40 @@ class FEMMainWindow(QMainWindow):
             return
         if not self._confirm_result_invalidation(preserve_editor=True):
             return
+        rendered_draft = self.viewport._sketch_draft_render_data
+        local_preview = (
+            GeometryPreview(
+                rendered_draft.points,
+                rendered_draft.faces,
+                rendered_draft.curves,
+                tuple(f"face:{value}" for value in rendered_draft.face_ids),
+                tuple(f"edge:{value}" for value in rendered_draft.curve_ids),
+                tuple(
+                    None if value is None else f"point:{value}"
+                    for value in rendered_draft.point_ids
+                ),
+                "body:domain",
+                2,
+            )
+            if (
+                rendered_draft is not None
+                and rendered_draft.geometry_revision
+                == controller.snapshot().revision
+                and rendered_draft.faces
+            )
+            else build_strict_sketch_draft_preview(
+                root,
+                analysis=controller.derive_profiles(),
+            )
+        )
+        geometry_preview = (
+            namespace_part_geometry_preview(
+                self.session.next_native_part_id,
+                local_preview,
+            )
+            if original is None
+            else None
+        )
         try:
             if original is None:
                 delta = self.session.add_native_part(
@@ -6478,7 +6569,10 @@ class FEMMainWindow(QMainWindow):
                     ),
                     expected_session_revision=base_revision,
                 )
-            self._apply_session_delta(delta)
+            self._apply_session_delta(
+                delta,
+                geometry_preview=geometry_preview,
+            )
         except (RuntimeError, TypeError, ValueError, KeyError) as error:
             self.sketch_editor_panel.show_status(
                 f"geometry.part.edit-rejected: {error}"
@@ -7297,16 +7391,17 @@ class FEMMainWindow(QMainWindow):
             draft,
             base_snapshot=draft.snapshot(),
         )
-        self.sketch_editor_panel.begin(
-            self.viewport,
-            purpose="planar_boolean_tool",
-        )
-        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
-        self.viewport.set_view("front")
         cached = self._geometry_preview_cache
+        active_part_id = self.document.active_part_id
+        cache_key = self._native_part_preview_cache_key(self.document)
         source_preview = (
-            cached[2]
-            if cached is not None and cached[1] == controller.geometry
+            localize_part_geometry_preview(active_part_id, cached[2])
+            if (
+                cached is not None
+                and active_part_id is not None
+                and cached[0] == self.document.session_id
+                and cached[1] == cache_key
+            )
             else build_geometry_preview(controller.geometry)
         )
         target_faces = tuple(
@@ -7328,6 +7423,12 @@ class FEMMainWindow(QMainWindow):
                     plane=draft.plane,
                 )
             )
+        self.sketch_editor_panel.begin(
+            self.viewport,
+            purpose="planar_boolean_tool",
+        )
+        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
+        self.viewport.set_view("front")
         if target_faces:
             self.viewport.show_sketch_reference_preview(
                 GeometryPreview(
@@ -8677,6 +8778,7 @@ class FEMMainWindow(QMainWindow):
                         active_id
                     ),
                     expected_session_revision=expected_session_revision,
+                    authenticate_geometry=geometry_preview is None,
                 )
             if not self._apply_session_delta(
                 delta,
@@ -10028,7 +10130,7 @@ class FEMMainWindow(QMainWindow):
             self,
             "新建模型",
             "模型名称：",
-            text=f"Model-{self.workspace.next_model_number}",
+            text=f"模型-{self.workspace.next_model_number}",
         )
         if not accepted:
             return
@@ -10841,11 +10943,9 @@ class FEMMainWindow(QMainWindow):
         return self._confirm_document_transition()
 
     def _confirm_result_invalidation(self, *, preserve_editor: bool = False) -> bool:
-        """Gate mutations that would invalidate an unsaved accepted result."""
+        """Allow model edits; completed results are immutable run history."""
 
-        if not self.document.result_dirty:
-            return True
-        return self._confirm_document_transition(preserve_editor=preserve_editor)
+        return True
 
     def _confirm_document_transition(self, *, preserve_editor: bool = False) -> bool:
         """Confirm editor, project, and result transitions before mutation."""
@@ -13570,6 +13670,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.show_boundary_and_loads()
         self._sync_step_combos()
         self._refresh_result_controls()
+        self._refresh_job_manager()
         self._update_action_states()
         self._applied_session_revision = revision
 
@@ -13861,6 +13962,14 @@ class FEMMainWindow(QMainWindow):
                 if report is not None and report.topological_dimension == 1:
                     selection_filter = "edge"
         changed = selection_filter != self._selection_context.active_filter
+        if changed:
+            self.selection.clear()
+            self._selected_geometry_refs.clear()
+            self._selected_mesh_scope_refs.clear()
+            self.viewport.clear_selection()
+            self.viewport_panel.scope_creation_bar.set_selection_ready(False)
+            self.status_panel.set_object()
+            self.actions["selected_info"].setEnabled(False)
         self._selection_context.set_filter(selection_filter)
         self.actions[self._selection_action_name(selection_filter)].setChecked(True)
         if self._selection_context.space == "geometry":
@@ -14185,7 +14294,7 @@ class FEMMainWindow(QMainWindow):
             wire_single_label
             if wire_single_label is not None
             else (
-                f"已选择 {selected_count} 个"
+                f"{selected_count} 个"
                 f"{labels.get(kind, '几何实体')}"
             )
             if selected_count
@@ -14382,7 +14491,7 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_selection_mode(f"mesh_{status_kind}")
         self.status_panel.set_object(
             (
-                f"已选择 {semantic_count} 个"
+                f"{semantic_count} 个"
                 f"{labels.get(kind, '网格实体')}"
             )
             if references
@@ -14652,17 +14761,11 @@ class FEMMainWindow(QMainWindow):
 
         provider = self.result_provider
         identity = self.session.current_result_identity()
-        artifact = self.document.artifact
-        geometry = self.geometry
         if (
             type(provider) is not ResultProvider
             or identity is None
-            or artifact is None
-            or geometry is None
             or provider.source != identity[0]
             or provider.snapshot.generation != identity[1]
-            or provider.source.artifact_id != artifact.artifact_id
-            or geometry.artifact_id != artifact.artifact_id
         ):
             return None
         return provider
@@ -15409,6 +15512,7 @@ class FEMMainWindow(QMainWindow):
             else self._model_edges_visible
         )
         self.actions["edges"].setChecked(show_edges)
+        self._prepare_viewport_for_result_source(render_provider.source)
         self.viewport.set_edges_visible(show_edges, render=False)
         self.viewport.set_result_render_payload(payload)
         self.viewport.set_display(

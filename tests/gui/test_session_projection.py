@@ -467,7 +467,7 @@ def test_hidden_run_materialization_does_not_replace_displayed_actor(
     window.close()
 
 
-def test_artifact_and_run_mismatches_never_leave_stale_gui_caches() -> None:
+def test_artifact_change_clears_display_but_retains_historical_result() -> None:
     window = _window_with_imported_model()
     old_run_id = _install_successful_result(window)
     old_artifact_id = window.document.artifact.artifact_id
@@ -489,13 +489,94 @@ def test_artifact_and_run_mismatches_never_leave_stale_gui_caches() -> None:
     assert window.geometry.artifact_id == current_artifact_id
     assert window.viewport.artifact_id == current_artifact_id
     assert window.document.displayed_result_run_id is None
-    assert window.session.find_run(old_run_id) is None
+    old_run = window.session.find_run(old_run_id)
+    assert old_run is not None and old_run.has_result
     assert window.inspection_service is not None
     assert window.inspection_service.result_provider is None
     assert window.result_provider is None
     assert window.result_selection is None
     assert not window.actions["query"].isEnabled()
     assert not window.result_variable_combo.isEnabled()
+    window.close()
+
+
+def test_boundary_edit_keeps_old_result_and_allows_new_job(monkeypatch) -> None:
+    window = _window_with_imported_model(with_displacement_output=True)
+    old_run_id = _install_successful_result(window, run_name="Job-1")
+    old_artifact_id = window.document.artifact.artifact_id
+    snapshot = window.document
+    old_step = snapshot.steps[0]
+    changed_boundary = replace(old_step.boundaries[0], target=1)
+    changed_step = replace(
+        old_step,
+        boundaries=(changed_boundary, *old_step.boundaries[1:]),
+    )
+    batch = DefinitionEditBatch(
+        base_session_revision=snapshot.session_revision,
+        materials=snapshot.materials,
+        sections=snapshot.sections,
+        assignments=snapshot.assignments,
+        steps=(changed_step,),
+    )
+
+    def unexpected_transition(**_kwargs):
+        raise AssertionError("model edits must not prompt for historical results")
+
+    monkeypatch.setattr(
+        window,
+        "_confirm_document_transition",
+        unexpected_transition,
+    )
+
+    receipt = window.apply_definition_edit(batch)
+
+    assert receipt.diagnostic is None
+    assert window.document.artifact.artifact_id != old_artifact_id
+    assert window.document.displayed_result_run_id is None
+    old_run = window.session.find_run(old_run_id)
+    assert old_run is not None and old_run.has_result
+    assert window.document.unsaved_result_count == 1
+    assert window.result_tree.topLevelItem(0).text(0) == "Job-1"
+
+    window.open_job_result("Job-1")
+    assert window.document.displayed_result_run_id == old_run_id
+    assert window.result_provider is not None
+    assert window.result_provider.source.artifact_id == old_artifact_id
+    assert window.result_selection is not None
+    assert window.viewport._result_render_payload is not None
+    assert window.viewport.run_id == old_run_id
+
+    validation = window.session.prepare_validation("pull")
+    assert window._apply_session_delta(
+        window.session.accept_validation(
+            validation.token,
+            passing_preflight_report(validation.token),
+        )
+    )
+    created = window.create_run("Job-2", "pull")
+    assert created.diagnostic is None
+    solve_task = window.session.prepare_run_solve("Job-2")
+    assert window._apply_session_delta(
+        window.session.begin_run(solve_task.token)
+    )
+    result = solve(solve_task.model, solve_task.step_name, name="Job-2")
+    assert window._apply_session_delta(
+        window.session.accept_run_succeeded(
+            solve_task.token,
+            build_solve_result_bundle(solve_task, result),
+        )
+    )
+
+    new_run = window.session.find_run("Job-2")
+    assert new_run is not None and new_run.has_result
+    assert new_run.artifact_id == window.document.artifact.artifact_id
+    assert new_run.artifact_id != old_run.artifact_id
+    assert window.document.unsaved_result_count == 2
+    assert {
+        window.result_tree.topLevelItem(index).text(0)
+        for index in range(window.result_tree.topLevelItemCount())
+    } == {"Job-1", "Job-2"}
+    window._confirm_discard_changes = lambda: True
     window.close()
 
 

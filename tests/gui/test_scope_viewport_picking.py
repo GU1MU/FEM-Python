@@ -264,6 +264,44 @@ def test_geometry_box_selection_intersects_all_entity_kinds_in_both_directions(
     viewport.close()
 
 
+def test_mesh_node_box_selection_uses_aligned_point_node_ids(
+    monkeypatch,
+) -> None:
+    _application()
+    viewport = FEMViewport()
+    dataset = pv.PolyData(
+        np.asarray(
+            (
+                (5.0, 5.0, 0.0),
+                (20.0, 20.0, 0.0),
+                (6.0, 4.0, 0.0),
+            )
+        )
+    )
+    dataset.point_data["node_id"] = np.asarray((10, 20, 30))
+    viewport._pick_grid = dataset
+    monkeypatch.setattr(
+        viewport,
+        "_world_points_to_display",
+        lambda points: np.column_stack(
+            (np.asarray(points)[:, :2], np.full(len(points), 0.5))
+        ),
+    )
+    monkeypatch.setattr(
+        viewport,
+        "_vtk_rectangle",
+        lambda *_args: (4.0, 6.0, 4.0, 6.0),
+    )
+
+    selected = viewport._mesh_nodes_in_qt_rectangle(
+        (0.0, 0.0),
+        (10.0, 10.0),
+    )
+
+    assert selected == (MeshEntityRef.node(10), MeshEntityRef.node(30))
+    viewport.close()
+
+
 @pytest.mark.parametrize("mode", ("mesh_edge", "mesh_face", "mesh_body"))
 def test_mesh_box_selection_intersects_edge_face_and_body_without_cell_loops(
     monkeypatch,

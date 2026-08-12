@@ -832,12 +832,14 @@ class SketchEditorPanel(QWidget):
     def set_reference_points(
         self,
         reference_points: tuple[SketchReferencePoint, ...],
+        *,
+        refresh_controller: bool = True,
     ) -> None:
         values = tuple(reference_points)
         if any(type(item) is not SketchReferencePoint for item in values):
             raise TypeError("reference_points must contain SketchReferencePoint values")
         self._reference_points = values
-        if self._controller is not None:
+        if refresh_controller and self._controller is not None:
             self._controller.refresh_external_references(values)
         if self._viewport is not None:
             self._viewport.set_sketch_reference_points(values)
@@ -1001,14 +1003,16 @@ class SketchEditorPanel(QWidget):
         snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         selected_kind = snapshot.selected_kind
         selected_id = snapshot.selected_ids[0] if snapshot.selected_ids else None
-        if controller.profiles:
+        profile_analysis = controller.derive_profiles()
+        if profile_analysis.profiles:
             preview = build_strict_sketch_draft_preview(
                 SketchGeometry(
                     snapshot.name or "草图预览",
                     snapshot.plane,
                     snapshot.points,
                     snapshot.curves,
-                )
+                ),
+                analysis=profile_analysis,
             )
             point_ids = tuple(
                 (
@@ -2131,6 +2135,36 @@ class SketchEditorPanel(QWidget):
         if setter is not None:
             setter(targets)
 
+    @staticmethod
+    def _constraint_highlight_targets(
+        constraint: SketchConstraint,
+        snapshot: SketchDraftSnapshot,
+    ) -> tuple[tuple[str, str], ...]:
+        if isinstance(constraint, SketchDistanceDimension):
+            endpoint_ids = {
+                constraint.first_point_id,
+                constraint.second_point_id,
+            }
+            direct_lines = tuple(
+                curve.id
+                for curve in snapshot.curves
+                if isinstance(curve, SketchLine)
+                and {curve.start_point_id, curve.end_point_id} == endpoint_ids
+            )
+            if direct_lines:
+                return tuple(("curve", curve_id) for curve_id in direct_lines)
+
+        point_ids = {point.id for point in snapshot.points}
+        curve_ids = {curve.id for curve in snapshot.curves}
+        return tuple(
+            (
+                "point" if entity_id in point_ids else "curve",
+                entity_id,
+            )
+            for entity_id in sketch_constraint_entity_ids(constraint)
+            if entity_id in point_ids or entity_id in curve_ids
+        )
+
     def _constraint_row_changed(self) -> None:
         constraint_id = self._selected_constraint_id()
         self.delete_constraint_button.setEnabled(constraint_id is not None)
@@ -2164,17 +2198,9 @@ class SketchEditorPanel(QWidget):
         )
         if self._viewport is not None and self._constraint_command_kind is None:
             snapshot = self._controller.snapshot()
-            point_ids = {point.id for point in snapshot.points}
-            curve_ids = {curve.id for curve in snapshot.curves}
-            targets = tuple(
-                (
-                    "point" if entity_id in point_ids else "curve",
-                    entity_id,
-                )
-                for entity_id in sketch_constraint_entity_ids(constraint)
-                if entity_id in point_ids or entity_id in curve_ids
+            self._set_constraint_table_highlight(
+                self._constraint_highlight_targets(constraint, snapshot)
             )
-            self._set_constraint_table_highlight(targets)
 
     def _edit_selected_constraint(self) -> None:
         constraint_id = self._selected_constraint_id()
@@ -2892,6 +2918,10 @@ class SketchEditorPanel(QWidget):
         self.draftChanged.emit(snapshot)
 
     def _refresh_constraints(self, snapshot: SketchDraftSnapshot) -> None:
+        selected_constraint_id = self._selected_constraint_id()
+        current_column = max(0, self.constraints_table.currentColumn())
+        scroll_bar = self.constraints_table.verticalScrollBar()
+        scroll_position = scroll_bar.value()
         related = list(
             constraints_for_entities(snapshot.constraints, snapshot.selected_ids)
             if snapshot.selected_ids
@@ -2912,32 +2942,48 @@ class SketchEditorPanel(QWidget):
                 for curve in selected_curves.values()
             ) and constraint not in related:
                 related.append(constraint)
-        self.constraints_table.setRowCount(len(related))
-        point_map = {point.id: point for point in snapshot.points}
-        curve_map = {curve.id: curve for curve in snapshot.curves}
-        for row, constraint in enumerate(related):
-            type_item = QTableWidgetItem(constraint_type_text(constraint))
-            type_item.setData(Qt.ItemDataRole.UserRole, constraint.id)
-            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            value_text = ""
-            if isinstance(
-                constraint,
-                (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
-            ):
-                value = constraint.value
-                if not constraint.driving:
-                    measured = measured_dimension_value(
-                        constraint, point_map, curve_map
-                    )
-                    if measured is not None:
-                        value = measured
-                value_text = f"{value:g}"
-            elif isinstance(constraint, SketchFixedConstraint):
-                value_text = f"{constraint.u:.2f}, {constraint.v:.2f}"
-            self.constraints_table.setItem(row, 0, type_item)
-            value_item = QTableWidgetItem(value_text)
-            value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.constraints_table.setItem(row, 1, value_item)
+        previous_blocked = self.constraints_table.blockSignals(True)
+        try:
+            self.constraints_table.setRowCount(len(related))
+            point_map = {point.id: point for point in snapshot.points}
+            curve_map = {curve.id: curve for curve in snapshot.curves}
+            selected_row = None
+            for row, constraint in enumerate(related):
+                type_item = QTableWidgetItem(constraint_type_text(constraint))
+                type_item.setData(Qt.ItemDataRole.UserRole, constraint.id)
+                type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                value_text = ""
+                if isinstance(
+                    constraint,
+                    (
+                        SketchDistanceDimension,
+                        SketchRadiusDimension,
+                        SketchAngleDimension,
+                    ),
+                ):
+                    value = constraint.value
+                    if not constraint.driving:
+                        measured = measured_dimension_value(
+                            constraint, point_map, curve_map
+                        )
+                        if measured is not None:
+                            value = measured
+                    value_text = f"{value:g}"
+                elif isinstance(constraint, SketchFixedConstraint):
+                    value_text = f"{constraint.u:.2f}, {constraint.v:.2f}"
+                self.constraints_table.setItem(row, 0, type_item)
+                value_item = QTableWidgetItem(value_text)
+                value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.constraints_table.setItem(row, 1, value_item)
+                if constraint.id == selected_constraint_id:
+                    selected_row = row
+            if selected_row is None:
+                self.constraints_table.clearSelection()
+            else:
+                self.constraints_table.setCurrentCell(selected_row, current_column)
+            scroll_bar.setValue(scroll_position)
+        finally:
+            self.constraints_table.blockSignals(previous_blocked)
         self._constraint_row_changed()
 
     def _refresh(self, *, selected_id: str | None = None) -> None:
@@ -2960,9 +3006,9 @@ class SketchEditorPanel(QWidget):
                 if diagnostics
                 else ""
             )
-            can_finish = controller.can_finish or self._can_close_planar_boolean_arcs(
-                controller
-            )
+            can_finish = not any(item.blocking for item in diagnostics)
+            if not can_finish:
+                can_finish = self._can_close_planar_boolean_arcs(controller)
             self.finish_button.setEnabled(can_finish)
             self.finish_button.setToolTip(
                 "完成草图"

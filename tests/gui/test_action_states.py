@@ -209,7 +209,7 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
 
     window.new_native_model()
 
-    assert prompts == [("新建模型", "模型名称：", "Model-2")]
+    assert prompts == [("新建模型", "模型名称：", "模型-2")]
     assert window.document.model_name == "支架模型"
     assert window.document.parts == ()
     assert window.document.active_part_id is None
@@ -826,7 +826,7 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
     assert window._geometry_selection_kind() == "edge"
     assert window._selected_geometry_refs == {bottom, top}
     assert window._canonical_geometry_selection() == (bottom, top)
-    assert window.status_panel.object_label.text() == "对象：已选择 2 个边"
+    assert window.status_panel.object_label.text() == "对象：2 个边"
     assert not window.actions["geometry_region"].isEnabled()
 
     window._on_geometry_entity_pick(top)
@@ -877,6 +877,27 @@ def test_switching_from_fem_to_geometry_selection_clears_stale_highlight(
     assert window.selection.element_id is None
     assert cleared == [True]
     assert not window.actions["selected_info"].isEnabled()
+    window.close()
+
+
+def test_switching_mesh_selection_filter_invalidates_previous_scope(
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    window._set_selection_filter("body")
+    window._selected_mesh_scope_refs = {MeshEntityRef.element(1)}
+
+    window._set_selection_filter("face")
+
+    assert window.viewport._selection_mode == "mesh_face"
+    assert window._selected_mesh_scope_refs == set()
+    assert window.status_panel.object_label.text() == "对象：—"
     window.close()
 
 

@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Iterable, Mapping
 
 from fem.application import NativePart
-from fem.geometry.part_namespace import part_id_sort_key
+from fem.geometry.part_namespace import (
+    normalize_part_id,
+    part_id_from_logical_id,
+    part_id_sort_key,
+    strip_part_logical_id,
+)
 
 from .geometry_preview import (
     GeometryPreview,
@@ -26,6 +31,87 @@ def build_multi_part_geometry_preview(
         parts,
         include_suppressed=include_suppressed,
         segments=segments,
+    )
+
+
+def localize_part_geometry_preview(
+    part_id: str,
+    preview: GeometryPreview,
+) -> GeometryPreview:
+    """Extract one Part and strip its namespace from a cached scene preview."""
+
+    normalized = normalize_part_id(part_id)
+
+    if any(value is not None for value in preview.point_part_ids):
+        point_indices = tuple(
+            index
+            for index, owner in enumerate(preview.point_part_ids)
+            if owner == normalized
+        )
+        point_map = {
+            source: target for target, source in enumerate(point_indices)
+        }
+        face_indices = tuple(
+            index
+            for index, owner in enumerate(preview.face_part_ids)
+            if owner == normalized
+        )
+        edge_indices = tuple(
+            index
+            for index, owner in enumerate(preview.edge_part_ids)
+            if owner == normalized
+        )
+        preview = GeometryPreview(
+            tuple(preview.points[index] for index in point_indices),
+            tuple(
+                tuple(point_map[point] for point in preview.faces[index])
+                for index in face_indices
+            ),
+            tuple(
+                tuple(point_map[point] for point in preview.edges[index])
+                for index in edge_indices
+            ),
+            tuple(preview.face_logical_ids[index] for index in face_indices),
+            tuple(preview.edge_logical_ids[index] for index in edge_indices),
+            tuple(preview.point_logical_ids[index] for index in point_indices),
+            None,
+            preview.topological_dimension,
+            tuple(
+                preview.face_body_logical_ids[index]
+                for index in face_indices
+            ),
+            tuple(
+                preview.edge_body_logical_ids[index]
+                for index in edge_indices
+            ),
+            tuple(
+                preview.point_body_logical_ids[index]
+                for index in point_indices
+            ),
+        )
+
+    def localize(value: str | None) -> str | None:
+        if value is None:
+            return None
+        owner = part_id_from_logical_id(value)
+        if owner is None:
+            return value
+        if owner != normalized:
+            raise ValueError("geometry preview contains a foreign Part namespace")
+        return strip_part_logical_id(normalized, value)
+
+    return GeometryPreview(
+        preview.points,
+        preview.faces,
+        preview.edges,
+        tuple(localize(value) for value in preview.face_logical_ids),
+        tuple(localize(value) for value in preview.edge_logical_ids),
+        tuple(localize(value) for value in preview.point_logical_ids),
+        localize(preview.body_logical_id),
+        preview.topological_dimension,
+        tuple(localize(value) for value in preview.face_body_logical_ids),
+        tuple(localize(value) for value in preview.edge_body_logical_ids),
+        tuple(localize(value) for value in preview.point_body_logical_ids),
     )
 
 
@@ -131,5 +217,6 @@ def merge_multi_part_geometry_previews(
 
 __all__ = [
     "build_multi_part_geometry_preview",
+    "localize_part_geometry_preview",
     "merge_multi_part_geometry_previews",
 ]

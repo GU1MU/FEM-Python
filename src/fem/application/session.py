@@ -37,7 +37,6 @@ from fem.geometry import (
 )
 from fem.geometry.recipe_topology import (
     can_preserve_logical_references,
-    describe_recipe_topology,
     logical_reference_transition_map,
     surviving_logical_reference_ids,
 )
@@ -163,7 +162,6 @@ _MODEL_INVALIDATIONS = frozenset(
         ArtifactKind.MODEL,
         ArtifactKind.VALIDATIONS,
         ArtifactKind.RUNS,
-        ArtifactKind.RESULTS,
         ArtifactKind.DISPLAYED_RESULT,
     }
 )
@@ -171,8 +169,14 @@ _COMPUTATION_INVALIDATIONS = frozenset(
     {
         ArtifactKind.VALIDATIONS,
         ArtifactKind.RUNS,
-        ArtifactKind.RESULTS,
         ArtifactKind.DISPLAYED_RESULT,
+    }
+)
+_RESULT_TASK_KINDS = frozenset(
+    {
+        "result_archive_save",
+        "result_materialization",
+        "result_projection",
     }
 )
 
@@ -479,8 +483,6 @@ class FaceSketchBooleanUndoRecord:
         if self.before_part.id != self.part_id or self.after_part.id != self.part_id:
             raise ValueError("面草图撤销记录的 Part ID 不一致")
         for field_name in (
-            "before_part",
-            "after_part",
             "before_named_regions",
             "after_named_regions",
             "before_assignments",
@@ -488,7 +490,7 @@ class FaceSketchBooleanUndoRecord:
             "before_steps",
             "after_steps",
         ):
-            object.__setattr__(self, field_name, deepcopy(getattr(self, field_name)))
+            object.__setattr__(self, field_name, tuple(getattr(self, field_name)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1411,10 +1413,10 @@ class ModelSession:
         if type(unit_context) is not UnitContext:
             raise TypeError("unit_context must be UnitContext")
         if type(draft) is NativePart:
-            recipe = deepcopy(draft.geometry_recipe)
+            recipe = draft.geometry_recipe
             allocated_name = draft.name if part_name is None else str(part_name)
         else:
-            recipe = deepcopy(draft)
+            recipe = draft
             allocated_name = "部件-1" if part_name is None else str(part_name)
         if recipe is None:
             raise ValueError("first Part draft must contain geometry")
@@ -1424,7 +1426,7 @@ class ModelSession:
             geometry_recipe=recipe,
             mesh_settings=None,
         )
-        _validate_native_part_inputs(part, authenticate_geometry=True)
+        _validate_native_part_inputs(part, authenticate_geometry=False)
 
         self._session_id = new_identity("session")
         self._clear_content()
@@ -1993,7 +1995,7 @@ class ModelSession:
         accepted_units = self._unit_context or unit_context
         allocated_id = self.next_native_part_id
         if type(draft) is NativePart:
-            recipe = deepcopy(draft.geometry_recipe)
+            recipe = draft.geometry_recipe
             part_name = draft.name if name is None else str(name)
             requested_settings: MeshSettings | None | Unset = (
                 draft.mesh_settings
@@ -2001,7 +2003,7 @@ class ModelSession:
                 else mesh_settings
             )
         else:
-            recipe = deepcopy(draft)
+            recipe = draft
             part_name = (
                 f"部件-{part_id_sort_key(allocated_id)}"
                 if name is None
@@ -2027,7 +2029,7 @@ class ModelSession:
             geometry_recipe=recipe,
             mesh_settings=owned_settings,
         )
-        _validate_native_part_inputs(part, authenticate_geometry=True)
+        _validate_native_part_inputs(part, authenticate_geometry=False)
         self._unit_context = deepcopy(accepted_units)
         self._parts = validate_native_parts((*self._parts, part))
         self._part_revisions[part.id] = 0
@@ -2116,6 +2118,7 @@ class ModelSession:
         mesh_settings: MeshSettings | None | Unset = UNSET,
         expected_part_revision: int | None = None,
         expected_session_revision: int | None = None,
+        authenticate_geometry: bool = True,
     ) -> SessionDelta:
         """Replace only one Part recipe and transition only its namespace."""
 
@@ -2127,26 +2130,9 @@ class ModelSession:
         before_regions = tuple(self._named_regions.values())
         before_assignments = self._assignments
         before_steps = self._steps
-        candidate_recipe = deepcopy(recipe)
-        candidate_regions = _transition_part_named_regions(
-            before_regions,
-            normalized,
-            current.geometry_recipe,
-            candidate_recipe,
-        )
-        removed_region_names = set(self._named_regions).difference(
-            region.name for region in candidate_regions
-        )
-        candidate_assignments = tuple(
-            assignment
-            for assignment in before_assignments
-            if assignment.region_name not in removed_region_names
-        )
-        candidate_steps = (
-            _without_geometry_dependent_steps(before_steps)
-            if _region_references((), before_steps) & removed_region_names
-            else before_steps
-        )
+        if type(authenticate_geometry) is not bool:
+            raise TypeError("authenticate_geometry must be a bool")
+        candidate_recipe = recipe
         current_local_settings = _localize_part_mesh_settings(
             normalized,
             current.mesh_settings,
@@ -2171,6 +2157,27 @@ class ModelSession:
                 candidate_recipe,
             )
         )
+        candidate_regions = _transition_part_named_regions(
+            before_regions,
+            normalized,
+            current.geometry_recipe,
+            candidate_recipe,
+            preserve_references=preserve,
+            local_rewrites=rewrites,
+        )
+        removed_region_names = set(self._named_regions).difference(
+            region.name for region in candidate_regions
+        )
+        candidate_assignments = tuple(
+            assignment
+            for assignment in before_assignments
+            if assignment.region_name not in removed_region_names
+        )
+        candidate_steps = (
+            _without_geometry_dependent_steps(before_steps)
+            if _region_references((), before_steps) & removed_region_names
+            else before_steps
+        )
         local_settings, mesh_effects = _transition_mesh_settings(
             current_local_settings,
             candidate_recipe,
@@ -2194,7 +2201,10 @@ class ModelSession:
                 local_settings,
             ),
         )
-        _validate_native_part_inputs(updated, authenticate_geometry=True)
+        _validate_native_part_inputs(
+            updated,
+            authenticate_geometry=authenticate_geometry,
+        )
         self._replace_part(updated)
         self._named_regions = {
             region.name: region for region in candidate_regions
@@ -2299,10 +2309,6 @@ class ModelSession:
             target_body_id,
             recipe,
         )
-        topology = describe_recipe_topology(candidate)
-        if not topology.exact or not topology.transition.proven:
-            raise ValueError("拉伸布尔最终逻辑拓扑证明不完整，未修改模型")
-
         before_regions = tuple(self._named_regions.values())
         before_assignments = self._assignments
         before_steps = self._steps
@@ -2311,19 +2317,20 @@ class ModelSession:
             candidate,
             expected_part_revision=expected_part_revision,
             expected_session_revision=expected_session_revision,
+            authenticate_geometry=False,
         )
         after = self._require_part(normalized)
         record = FaceSketchBooleanUndoRecord(
             feature_id,
             normalized,
-            deepcopy(current),
-            deepcopy(after),
-            deepcopy(before_regions),
-            deepcopy(tuple(self._named_regions.values())),
-            deepcopy(before_assignments),
-            deepcopy(self._assignments),
-            deepcopy(before_steps),
-            deepcopy(self._steps),
+            current,
+            after,
+            before_regions,
+            tuple(self._named_regions.values()),
+            before_assignments,
+            self._assignments,
+            before_steps,
+            self._steps,
         )
         self._face_sketch_boolean_undo_records.setdefault(normalized, []).append(
             record
@@ -5761,6 +5768,9 @@ class ModelSession:
                     "installed archive snapshot is not the current provider source"
                 )
         else:
+            solved_model = (
+                None if record.result is None else record.result.model
+            )
             archive_run = ResultArchiveRun(
                 name=run.name,
                 step_name=run.step_name,
@@ -5773,19 +5783,26 @@ class ModelSession:
             )
             archive = build_result_archive_snapshot(
                 record,
-                model_name=self._model_name or "Model-1",
+                model_name=(
+                    str(getattr(solved_model, "name", "") or "").strip()
+                    or self._model_name
+                    or "Model-1"
+                ),
                 source_basename=self._result_source_basename(),
                 unit_context=self._unit_context,
                 model_fingerprint=model_fingerprint,
                 run=archive_run,
                 summaries={},
-                **self._result_archive_region_kwargs(record.materialization.topology),
+                **self._result_archive_region_kwargs(
+                    record.materialization.topology,
+                    model=solved_model,
+                ),
             )
         token = self._issue_token(
             "result_archive_save",
             (
                 ("materialization_generation", current_generation),
-                ("model_revision", self._model_revision),
+                ("model_revision", record.provenance.model_revision),
             ),
             artifact_id=source.artifact_id,
             step_name=source.step_name,
@@ -5892,7 +5909,7 @@ class ModelSession:
                     "materialization_generation",
                     record.materialization.generation,
                 ),
-                ("model_revision", self._model_revision),
+                ("model_revision", record.provenance.model_revision),
             ),
             artifact_id=record.provenance.artifact_id,
             step_name=record.provenance.step_name,
@@ -5959,7 +5976,7 @@ class ModelSession:
             "result_materialization",
             (
                 ("materialization_generation", generation),
-                ("model_revision", self._model_revision),
+                ("model_revision", record.provenance.model_revision),
             ),
             artifact_id=record.provenance.artifact_id,
             step_name=record.provenance.step_name,
@@ -6512,6 +6529,33 @@ class ModelSession:
         if token.task_kind == "result_archive_save" and token.run_id is not None:
             if self._active_result_save_tasks.get(token.run_id) != token.task_id:
                 return TokenStatus.STALE_REVISION
+        if token.task_kind in _RESULT_TASK_KINDS:
+            run = self._runs.get(str(token.run_id))
+            if run is None:
+                return TokenStatus.STALE_RUN
+            record = self._current_result_record(token.run_id)
+            if record is None or record.result_id != token.result_id:
+                return TokenStatus.STALE_RESULT
+            if (
+                token.artifact_id != run.artifact_id
+                or record.provenance.artifact_id != run.artifact_id
+            ):
+                return TokenStatus.STALE_ARTIFACT
+            if (
+                token.step_name != run.step_name
+                or record.provenance.step_name != run.step_name
+            ):
+                return TokenStatus.STALE_STEP
+            for name, revision in token.dependency_revisions:
+                if name == "materialization_generation":
+                    if record.materialization.generation != revision:
+                        return TokenStatus.STALE_REVISION
+                elif name == "model_revision":
+                    if run.model_revision != revision:
+                        return TokenStatus.STALE_REVISION
+                elif self._revision_value(name) != revision:
+                    return TokenStatus.STALE_REVISION
+            return TokenStatus.CURRENT
         for name, revision in token.dependency_revisions:
             if name == "materialization_generation":
                 record = self._current_result_record(token.run_id)
@@ -6752,20 +6796,29 @@ class ModelSession:
         )
 
     def _drop_computations(self) -> None:
+        """Invalidate current-revision solve state while retaining history."""
+
         for task_id, token in self._issued_tokens.items():
-            if token.task_kind in {
-                "result_materialization",
-                "solve",
-                "result_archive_save",
-            }:
+            if token.task_kind == "solve":
                 self._task_data.pop(task_id, None)
         self._validations.clear()
         self._prepared_system = None
-        self._runs.clear()
-        self._results.clear()
-        self._result_model_fingerprints.clear()
-        self._result_file_states.clear()
-        self._active_result_save_tasks.clear()
+        terminal = {
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }
+        discarded_run_ids = tuple(
+            run_id
+            for run_id, run in self._runs.items()
+            if run.status not in terminal
+        )
+        for run_id in discarded_run_ids:
+            self._runs.pop(run_id, None)
+            self._results.pop(run_id, None)
+            self._result_model_fingerprints.pop(run_id, None)
+            self._result_file_states.pop(run_id, None)
+            self._active_result_save_tasks.pop(run_id, None)
         self._selected_run_id = None
         self._displayed_result_run_id = None
 
@@ -6881,7 +6934,7 @@ class ModelSession:
     def _current_result_record(
         self, run_id: str | None
     ) -> ResultRecord | None:
-        if run_id is None or self._artifact is None:
+        if run_id is None:
             return None
         run = self._runs.get(run_id)
         record = self._results.get(run_id)
@@ -6895,8 +6948,8 @@ class ModelSession:
         provenance = record.provenance
         if (
             provenance.session_id != self._session_id
-            or provenance.artifact_id != self._artifact.artifact_id
-            or provenance.model_revision != self._model_revision
+            or provenance.artifact_id != run.artifact_id
+            or provenance.model_revision != run.model_revision
             or provenance.step_name != run.step_name
             or provenance.run_id != run.run_id
         ):
@@ -6912,10 +6965,13 @@ class ModelSession:
     def _result_archive_region_kwargs(
         self,
         topology: Any | None = None,
+        *,
+        model: Any | None = None,
     ) -> dict[str, Mapping[str, tuple[int, ...]]]:
         """Project only small named-region ID metadata into an archive DTO."""
 
-        model = None if self._artifact is None else self._artifact.model
+        if model is None:
+            model = None if self._artifact is None else self._artifact.model
         allowed_nodes = (
             frozenset(getattr(topology, "node_ids", ()))
             if topology is not None
@@ -7965,13 +8021,24 @@ def _transition_part_named_regions(
     part_id: str,
     before_recipe: object,
     after_recipe: object,
+    *,
+    preserve_references: bool | None = None,
+    local_rewrites: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[NamedRegion, ...]:
     normalized = normalize_part_id(part_id)
-    preserve = can_preserve_logical_references(before_recipe, after_recipe)
-    local_rewrites = (
+    preserve = (
+        can_preserve_logical_references(before_recipe, after_recipe)
+        if preserve_references is None
+        else preserve_references
+    )
+    rewrites = (
         {}
         if preserve
-        else logical_reference_transition_map(before_recipe, after_recipe)
+        else (
+            logical_reference_transition_map(before_recipe, after_recipe)
+            if local_rewrites is None
+            else local_rewrites
+        )
     )
     transitioned: list[NamedRegion] = []
     for region in regions:
@@ -7991,7 +8058,7 @@ def _transition_part_named_regions(
             targets = (
                 (local_id,)
                 if preserve
-                else local_rewrites.get(local_id, ())
+                else rewrites.get(local_id, ())
             )
             references.extend(
                 LogicalEntityRef(

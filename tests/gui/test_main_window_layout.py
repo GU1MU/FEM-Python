@@ -332,12 +332,8 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_vtk"] not in project_actions
     assert window.actions["model_info"] in project_actions
     assert window.actions["submit_job"] not in project_actions
-    assert project_action_order.index(window.actions["save_project_as"]) == (
-        project_action_order.index(window.actions["save_project"]) + 1
-    )
-    assert project_action_order.index(window.actions["save_result_as"]) == (
-        project_action_order.index(window.actions["save_result"]) + 1
-    )
+    assert window.actions["save_project_as"] not in project_action_order
+    assert window.actions["save_result_as"] not in project_action_order
     project_group_titles = {
         label.text()
         for label in window.ribbon.stack.widget(

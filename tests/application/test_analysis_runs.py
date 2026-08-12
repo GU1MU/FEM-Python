@@ -557,7 +557,7 @@ def test_cancelled_new_run_preserves_previous_successful_display() -> None:
     assert session.snapshot().displayed_result_run_id == first.run_id
 
 
-def test_model_revision_change_clears_run_history_and_display() -> None:
+def test_model_revision_change_retains_completed_run_and_clears_display() -> None:
     session = _session()
     solve = session.prepare_solve("Step-A", "Job-1")
     session.begin_run(solve.token)
@@ -569,7 +569,24 @@ def test_model_revision_change_clears_run_history_and_display() -> None:
     session.replace_model_definitions((), (), (), (AnalysisStep("Step-A"),))
     snapshot = session.snapshot()
 
-    assert snapshot.runs == ()
+    assert tuple(run.run_id for run in snapshot.runs) == (solve.run_id,)
+    assert snapshot.runs[0].status is RunStatus.SUCCEEDED
     assert snapshot.displayed_result_run_id is None
     assert snapshot.displayed_result is None
     assert session.current_result() is None
+
+    selected = session.select_result(solve.run_id)
+    assert selected.changed == frozenset({ChangeKind.DISPLAYED_RESULT})
+    assert session.current_result() is not None
+    assert session.current_result().result.U[0] == 1.0
+
+
+def test_model_revision_change_removes_unsubmitted_run_only() -> None:
+    session = _session()
+    session.create_run("Step-A", "Job-1")
+
+    session.replace_model_definitions((), (), (), (AnalysisStep("Step-A"),))
+
+    assert session.snapshot().runs == ()
+    with pytest.raises(KeyError, match="unknown run"):
+        session.prepare_run_solve("Job-1")

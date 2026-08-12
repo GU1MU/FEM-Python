@@ -1431,8 +1431,10 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     assert isinstance(recipe, SketchGeometry)
     assert recipe.is_strict
     assert window.document.parts[0].name == "支架部件"
+    active_document_id = window.workspace.active_document_id
+    assert active_document_id is not None
     assert (
-        window.model_tree.topLevelItem(0).child(0).text(0)
+        window.model_tree.roots[active_document_id].child(0).text(0)
         == "支架部件"
     )
     assert window._sketch_editor_controller is None

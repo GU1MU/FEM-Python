@@ -278,7 +278,11 @@ def test_result_invalidating_definition_waits_for_gui_confirmation() -> None:
     assert receipt.state is ProposalState.SUCCEEDED
     assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
     assert "材料-附加" in {item.name for item in after.materials}
-    assert not any(run.has_result for run in after.runs)
+    assert tuple(run.run_id for run in after.runs) == tuple(
+        run.run_id for run in before.runs
+    )
+    assert any(run.has_result for run in after.runs)
+    assert after.displayed_result_run_id is None
 
 
 def test_result_invalidating_edit_waits_for_gui_confirmation() -> None:
@@ -329,7 +333,11 @@ def test_result_invalidating_edit_waits_for_gui_confirmation() -> None:
     assert receipt.state is ProposalState.SUCCEEDED
     assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
     assert after.steps[0].edge_loads[0].vector == (25.0, 0.0)
-    assert not any(run.has_result for run in after.runs)
+    assert tuple(run.run_id for run in after.runs) == tuple(
+        run.run_id for run in before.runs
+    )
+    assert any(run.has_result for run in after.runs)
+    assert after.displayed_result_run_id is None
 
 
 def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:

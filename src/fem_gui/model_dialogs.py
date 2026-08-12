@@ -113,16 +113,22 @@ class ElasticBehaviorDialog(QDialog):
     def __init__(self, properties: dict[str, object], parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("线弹性")
+        has_elastic_modulus = "E" in properties
         self.elastic_spin = _number(
             self,
-            float(properties.get("E", 210000.0)),
+            float(properties["E"]) if has_elastic_modulus else 1.0e-12,
             minimum=1.0e-12,
         )
+        if not has_elastic_modulus:
+            self.elastic_spin.clear()
+        has_poisson_ratio = "nu" in properties
         self.poisson_spin = _number(
             self,
-            float(properties.get("nu", 0.3)),
+            float(properties["nu"]) if has_poisson_ratio else -0.999999,
             minimum=-0.999999,
         )
+        if not has_poisson_ratio:
+            self.poisson_spin.clear()
         self.poisson_spin.setMaximum(0.499999)
         form = QFormLayout()
         configure_form_layout(form)
@@ -133,16 +139,28 @@ class ElasticBehaviorDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("确定")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        self.elastic_spin.textChanged.connect(self._update_ok_button)
+        self.poisson_spin.textChanged.connect(self._update_ok_button)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(buttons)
         self.setMinimumWidth(330)
+        self._update_ok_button()
+
+    def _update_ok_button(self) -> None:
+        self.ok_button.setEnabled(
+            bool(self.elastic_spin.text().strip())
+            and bool(self.poisson_spin.text().strip())
+        )
 
     def values(self) -> dict[str, float]:
+        if not self.ok_button.isEnabled():
+            raise ValueError("弹性模量和泊松比不能为空")
         return {
             "E": self.elastic_spin.value(),
             "nu": self.poisson_spin.value(),

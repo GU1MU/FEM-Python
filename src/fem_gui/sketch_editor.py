@@ -216,6 +216,8 @@ class SketchDraftController:
         self._redo: list[_SketchGeometryState] = []
         self._history_limit = history_limit
         self._known_profile_ids: set[str] = set()
+        self._profile_analysis_cache: SketchProfileAnalysis | None = None
+        self._solve_result_cache: SketchSolveResult | None = None
 
     @classmethod
     def from_geometry(cls, root: SketchGeometry) -> "SketchDraftController":
@@ -245,6 +247,7 @@ class SketchDraftController:
             constraint.id: constraint for constraint in strict.constraints
         }
         controller._revision = 0
+        controller._invalidate_derived()
         return controller
 
     def restore_from_geometry(self, root: SketchGeometry) -> None:
@@ -269,7 +272,7 @@ class SketchDraftController:
         self._unresolved_reference_ids.clear()
         self._undo.clear()
         self._redo.clear()
-        self._known_profile_ids.clear()
+        self._invalidate_derived()
 
     restore_from_committed = restore_from_geometry
 
@@ -415,12 +418,24 @@ class SketchDraftController:
         )
         if unknown_removal is not None:
             raise KeyError(unknown_removal)
-        retained = tuple(
+        removal_ids = set(removals)
+        additions_by_id = {constraint.id: constraint for constraint in additions}
+        inserted_ids: set[str] = set()
+        candidate_constraints_list: list[SketchConstraint] = []
+        for constraint in self._constraints.values():
+            if constraint.id not in removal_ids:
+                candidate_constraints_list.append(constraint)
+                continue
+            replacement = additions_by_id.get(constraint.id)
+            if replacement is not None:
+                candidate_constraints_list.append(replacement)
+                inserted_ids.add(replacement.id)
+        candidate_constraints_list.extend(
             constraint
-            for constraint in self._constraints.values()
-            if constraint.id not in set(removals)
+            for constraint in additions
+            if constraint.id not in inserted_ids
         )
-        candidate_constraints = (*retained, *additions)
+        candidate_constraints = tuple(candidate_constraints_list)
         result = self.solve_constraints_temporary(
             point_coordinates=point_coordinates,
             constraints=candidate_constraints,
@@ -491,7 +506,11 @@ class SketchDraftController:
     def current_solve_result(self) -> SketchSolveResult:
         """Return derived solve diagnostics without changing state or history."""
 
-        return self.solve_constraints_temporary()
+        cached = self._solve_result_cache
+        if cached is None:
+            cached = self.solve_constraints_temporary()
+            self._solve_result_cache = cached
+        return cached
 
     def add_inferred_line(
         self,
@@ -786,6 +805,7 @@ class SketchDraftController:
                 continue
             self._points[point_id] = SketchPoint(point_id, resolved.u, resolved.v)
         self._unresolved_reference_ids = unresolved
+        self._invalidate_derived()
 
     def delete_point(self, point_id: str) -> None:
         self._require_point(point_id)
@@ -1705,6 +1725,9 @@ class SketchDraftController:
     restore = restore_snapshot
 
     def derive_profiles(self) -> SketchProfileAnalysis:
+        cached = self._profile_analysis_cache
+        if cached is not None:
+            return cached
         try:
             sketch = self._to_strict_unchecked()
         except (TypeError, ValueError) as error:
@@ -1722,6 +1745,7 @@ class SketchDraftController:
         else:
             analysis = analyze_sketch_profiles(sketch)
         self._known_profile_ids = {profile.id for profile in analysis.profiles}
+        self._profile_analysis_cache = analysis
         return analysis
 
     @property
@@ -1759,11 +1783,11 @@ class SketchDraftController:
         if not self._name:
             diagnostics.append(SketchDiagnostic("sketch.blank-name", "草图名称不能为空"))
         try:
-            sketch = self._to_strict_unchecked()
+            self._to_strict_unchecked()
         except (TypeError, ValueError) as error:
             diagnostics.append(SketchDiagnostic("sketch.invalid-domain", str(error)))
             return _DiagnosticTuple(_unique_diagnostics(diagnostics))
-        analysis = analyze_sketch_profiles(sketch)
+        analysis = self.derive_profiles()
         diagnostics.extend(analysis.diagnostics)
         if not analysis.profiles:
             diagnostics.append(
@@ -1808,7 +1832,7 @@ class SketchDraftController:
         after = self._geometry_state(include_interaction=include_interaction)
         if after == before:
             return result
-        self._known_profile_ids.clear()
+        self._invalidate_derived()
         self._undo.append(before)
         if len(self._undo) > self._history_limit:
             del self._undo[0]
@@ -1860,7 +1884,7 @@ class SketchDraftController:
             for coincidence in state.external_coincidences
         }
         self._unresolved_reference_ids = set(state.unresolved_reference_ids)
-        self._known_profile_ids.clear()
+        self._invalidate_derived()
         self._validate_associations()
         self._validate_constraints()
 
@@ -1882,7 +1906,7 @@ class SketchDraftController:
             self._selected_kind = None
         elif all(entity_id in self._curves for entity_id in self._selected_ids):
             self._selected_kind = "edge"
-        self._known_profile_ids.clear()
+        self._invalidate_derived()
 
     def _restore_interaction_state(self, state: _SketchInteractionState) -> None:
         self._selected_ids = state.selected_ids
@@ -1920,9 +1944,14 @@ class SketchDraftController:
             for coincidence in snapshot.external_coincidences
         }
         self._unresolved_reference_ids = set(snapshot.unresolved_reference_ids)
-        self._known_profile_ids.clear()
+        self._invalidate_derived()
         self._validate_associations()
         self._validate_constraints()
+
+    def _invalidate_derived(self) -> None:
+        self._known_profile_ids.clear()
+        self._profile_analysis_cache = None
+        self._solve_result_cache = None
 
     def _bind_external_reference(
         self,

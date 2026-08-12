@@ -255,7 +255,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references(
     window.close()
 
 
-def test_named_region_change_invalidates_model_validation_runs_and_results() -> None:
+def test_named_region_change_retains_completed_result_history() -> None:
     window = _new_window()
     window._create_native_model("Model-1")
     window._set_native_geometry(
@@ -330,12 +330,14 @@ def test_named_region_change_invalidates_model_validation_runs_and_results() -> 
     }
     assert window.document.artifact is None
     assert not window.document.validations
-    assert not window.document.runs
-    assert window.session.find_run(run_id) is None
+    assert tuple(run.run_id for run in window.document.runs) == (run_id,)
+    retained = window.session.find_run(run_id)
+    assert retained is not None and retained.has_result
     assert window.result_provider is None
     assert window.result_selection is None
     assert window.viewport._result_render_payload is None
     _assert_result_entries_disabled(window)
+    window._confirm_discard_changes = lambda: True
     window.close()
 
 
@@ -373,7 +375,7 @@ def test_native_geometry_module_restores_pre_mesh_geometry() -> None:
     window.close()
 
 
-def test_definition_change_replaces_artifact_and_invalidates_check_and_result() -> None:
+def test_definition_change_replaces_artifact_and_retains_result_history() -> None:
     window = _new_window()
     _install_imported(window)
     _succeed_run(window)
@@ -391,12 +393,14 @@ def test_definition_change_replaces_artifact_and_invalidates_check_and_result() 
 
     assert window.document.artifact.artifact_id != old_artifact_id
     assert not window.document.validations
-    assert not window.document.runs
+    assert len(window.document.runs) == 1
+    assert window.document.runs[0].has_result
     assert window.session.current_result() is None
     assert window.result_provider is None
     assert window.result_selection is None
     assert not window.actions["submit_job"].isEnabled()
     _assert_result_entries_disabled(window)
+    window._confirm_discard_changes = lambda: True
     window.close()
 
 

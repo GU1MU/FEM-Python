@@ -118,7 +118,7 @@ def test_unnamed_result_context_uses_result_identity(gui_application):
     model = workspace.add_model()
 
     assert result.display_name == f"Result-{result.document_id}"
-    assert model.display_name == "Model-1"
+    assert model.display_name == "模型-1"
 
 
 def test_model_default_names_use_model_sequence_across_result_ids(gui_application):
@@ -127,8 +127,8 @@ def test_model_default_names_use_model_sequence_across_result_ids(gui_applicatio
     workspace.add_result()
     second = workspace.add_model()
 
-    assert first.display_name == "Model-1"
-    assert second.display_name == "Model-2"
+    assert first.display_name == "模型-1"
+    assert second.display_name == "模型-2"
 
 
 def test_workspace_disambiguates_real_model_and_result_names(gui_application, tmp_path):

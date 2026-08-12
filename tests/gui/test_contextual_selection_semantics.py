@@ -264,7 +264,7 @@ def test_native_mesh_topology_uses_exact_catalog_and_numeric_part_order() -> Non
     assert [reference.part_id for reference in ordered] == ["P2", "P10"]
 
 
-def test_mesh_filters_share_mesh_reference_collection_and_group_toggle(
+def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
     monkeypatch,
 ) -> None:
     _application()
@@ -321,7 +321,7 @@ def test_mesh_filters_share_mesh_reference_collection_and_group_toggle(
     )
     window._on_mesh_scope_entity_pick(whole_edge[0])
     assert window._selected_mesh_scope_refs == set(whole_edge)
-    assert window.status_panel.object_label.text() == "对象：已选择 1 个拓扑边"
+    assert window.status_panel.object_label.text() == "对象：1 个拓扑边"
 
     monkeypatch.setattr(
         window,
@@ -342,17 +342,15 @@ def test_mesh_filters_share_mesh_reference_collection_and_group_toggle(
         MeshEntityRef.element(10, part_id="P2"),
         MeshEntityRef.element(11, part_id="P2"),
     )
-    assert window.status_panel.object_label.text() == "对象：已选择 1 个部件"
+    assert window.status_panel.object_label.text() == "对象：1 个部件"
     window._set_selection_filter("element")
-    assert len(window._selected_mesh_scope_refs) == 2
-    window._selected_mesh_scope_refs = {
-        MeshEntityRef.element(10, part_id="P2")
+    assert not window._selected_mesh_scope_refs
+    window._on_mesh_scope_entity_pick(MeshEntityRef.element(10))
+    assert window._selected_mesh_scope_refs == {
+        MeshEntityRef.element(10, part_id="P2"),
     }
     window._set_selection_filter("body")
-    assert window._canonical_mesh_scope_selection() == (
-        MeshEntityRef.element(10, part_id="P2"),
-        MeshEntityRef.element(11, part_id="P2"),
-    )
+    assert not window._selected_mesh_scope_refs
     window._set_selection_filter("point")
     assert not window._selected_mesh_scope_refs
     window.close()

@@ -157,14 +157,12 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         )
         if button.defaultAction() is not None
     ]
-    assert project_buttons[:9] == [
+    assert project_buttons[:7] == [
         "action_new_native",
         "action_open_project",
         "action_save_project",
-        "action_save_project_as",
         "action_open",
         "action_save_result",
-        "action_save_result_as",
         "action_open_result",
         "action_model_info",
     ]

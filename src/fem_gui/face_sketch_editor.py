@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from fem.application import NativePart, SessionSnapshot
@@ -177,14 +176,14 @@ def _body_snapshot(
         return FaceSketchBodySnapshot(
             target_body_id,
             body.name,
-            deepcopy(body.recipe),
+            body.recipe,
         )
     if target_body_id != "body:domain":
         raise ValueError("工作面目标 Body 与 Part 几何不一致")
     return FaceSketchBodySnapshot(
         target_body_id,
         part.body_name,
-        deepcopy(recipe),
+        recipe,
     )
 
 

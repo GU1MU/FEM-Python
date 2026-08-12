@@ -263,6 +263,36 @@ def test_fixed_constraint_lists_coordinates_and_edit_moves_circle(
     assert (restored.u, restored.v) == (5.0, 4.0)
 
 
+def test_editing_constraint_value_preserves_table_order_and_selection() -> None:
+    _application()
+    controller = SketchDraftController("稳定约束列表")
+    for point_id, u in (("P1", 0.0), ("P2", 1.0), ("P3", 2.0)):
+        controller.add_circle(
+            (u, 0.0),
+            0.25,
+            point_id=point_id,
+            curve_id=f"C{point_id[-1]}",
+        )
+        controller.add_constraint(
+            SketchFixedConstraint(f"F{point_id[-1]}", point_id, u, 0.0)
+        )
+    panel = SketchEditorPanel(controller)
+    before_ids = tuple(item.id for item in controller.constraints)
+    panel.constraints_table.setCurrentCell(1, 1)
+
+    assert panel.edit_fixed_constraint("F2", u=1.5, v=0.5)
+
+    table_ids = tuple(
+        panel.constraints_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        for row in range(panel.constraints_table.rowCount())
+    )
+    assert tuple(item.id for item in controller.constraints) == before_ids
+    assert table_ids == before_ids
+    assert panel._selected_constraint_id() == "F2"
+    assert panel.constraints_table.currentRow() == 1
+    assert panel.constraints_table.currentColumn() == 1
+
+
 def test_constraint_table_selection_highlights_its_sketch_entities() -> None:
     _application()
     controller = _line_controller()
@@ -287,6 +317,32 @@ def test_constraint_table_selection_highlights_its_sketch_entities() -> None:
 
     panel.constraints_table.clearSelection()
     assert viewport._sketch_constraint_selection == ()
+    viewport.close()
+
+
+def test_distance_table_highlight_prefers_direct_line_then_falls_back_to_points() -> None:
+    _application()
+    controller = _line_controller()
+    controller.add_point("P3", 0.0, 2.0)
+    controller.add_point("P4", 2.0, 2.0)
+    controller.add_constraint(
+        SketchDistanceDimension("D1", "P1", "P2", 2.0, driving=False)
+    )
+    controller.add_constraint(
+        SketchDistanceDimension("D2", "P3", "P4", 2.0, driving=False)
+    )
+    panel = SketchEditorPanel(controller)
+    viewport = FEMViewport()
+    panel.attach_viewport(viewport)
+
+    panel.constraints_table.setCurrentCell(0, 0)
+    assert viewport._sketch_constraint_selection == (("curve", "L1"),)
+
+    panel.constraints_table.setCurrentCell(1, 0)
+    assert viewport._sketch_constraint_selection == (
+        ("point", "P3"),
+        ("point", "P4"),
+    )
     viewport.close()
 
 

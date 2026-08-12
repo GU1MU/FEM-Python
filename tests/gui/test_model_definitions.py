@@ -39,6 +39,12 @@ def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
     material = material_dialog.material()
     elastic_dialog = ElasticBehaviorDialog(material.properties)
     density_dialog = DensityBehaviorDialog(material.properties)
+    assert elastic_dialog.elastic_spin.text() == ""
+    assert elastic_dialog.poisson_spin.text() == ""
+    assert not elastic_dialog.ok_button.isEnabled()
+    elastic_dialog.elastic_spin.setValue(70000.0)
+    elastic_dialog.poisson_spin.setValue(0.33)
+    assert elastic_dialog.ok_button.isEnabled()
     configured_material = MaterialDefinition(
         material.name,
         elastic_dialog.values(),
@@ -54,11 +60,15 @@ def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
 
     assert material.name == "Aluminium"
     assert material.properties == {}
-    assert elastic_dialog.values()["nu"] == 0.3
+    assert elastic_dialog.values() == {"E": 70000.0, "nu": 0.33}
     assert density_dialog.value() > 0.0
     assert section.material == "Aluminium"
     assert section.properties["plane_type"] == "stress"
     assert section.properties["thickness"] > 0.0
+
+    existing_elastic = ElasticBehaviorDialog({"E": 210000.0, "nu": 0.3})
+    assert existing_elastic.ok_button.isEnabled()
+    assert existing_elastic.values() == {"E": 210000.0, "nu": 0.3}
 
 
 def test_section_dialog_uses_dimension_specific_supported_parameters():

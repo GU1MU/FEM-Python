@@ -132,7 +132,12 @@ def _accept_beam_computations(session: ModelSession) -> None:
         validation.token,
         passing_preflight_report(validation.token),
     )
-    solve = session.prepare_solve("UniformLoad", "Beam-Job")
+    run_name = (
+        "Beam-Job"
+        if session.find_run("Beam-Job") is None
+        else session.next_run_name()
+    )
+    solve = session.prepare_solve("UniformLoad", run_name)
     session.begin_run(solve.token)
     session.accept_run_succeeded(
         solve.token,
@@ -223,13 +228,14 @@ def test_topology_compatible_geometry_edit_preserves_inputs_and_drops_artifacts(
     assert tuple(step.name for step in snapshot.steps) == ("Step-A",)
     assert snapshot.artifact is None
     assert not snapshot.validations
-    assert not snapshot.runs
+    assert tuple(run.name for run in snapshot.runs) == ("Job-1",)
+    assert snapshot.runs[0].has_result
     assert snapshot.displayed_result is None
     assert {
         ArtifactKind.MODEL,
-        ArtifactKind.RESULTS,
         ArtifactKind.DISPLAYED_RESULT,
     }.issubset(delta.invalidated)
+    assert ArtifactKind.RESULTS not in delta.invalidated
 
 
 @pytest.mark.parametrize(
@@ -341,7 +347,6 @@ def test_topology_change_preserves_only_geometry_independent_steps() -> None:
         ArtifactKind.MODEL,
         ArtifactKind.VALIDATIONS,
         ArtifactKind.RUNS,
-        ArtifactKind.RESULTS,
         ArtifactKind.DISPLAYED_RESULT,
     }
     assert after.session_revision == before.session_revision + 1
@@ -373,7 +378,7 @@ def test_topology_change_preserves_only_geometry_independent_steps() -> None:
     ],
     ids=["mesh-settings", "named-regions", "clear-generated-model"],
 )
-def test_model_input_changes_invalidate_all_computations(operation) -> None:
+def test_model_input_changes_retain_completed_run_history(operation) -> None:
     session = _session_with_artifacts()
     previous = session.snapshot()
 
@@ -383,16 +388,16 @@ def test_model_input_changes_invalidate_all_computations(operation) -> None:
     assert ArtifactKind.MODEL in delta.invalidated
     assert ArtifactKind.VALIDATIONS in delta.invalidated
     assert ArtifactKind.RUNS in delta.invalidated
-    assert ArtifactKind.RESULTS in delta.invalidated
+    assert ArtifactKind.RESULTS not in delta.invalidated
     assert current.artifact is None
     assert not current.validations
-    assert not current.runs
+    assert current.runs == previous.runs
     assert current.displayed_result is None
     assert not current.has_result
     assert current.project_revision == previous.project_revision + 1
 
 
-def test_definition_change_recompiles_model_and_invalidates_derived_state() -> None:
+def test_definition_change_recompiles_model_and_retains_run_history() -> None:
     session = _session_with_artifacts()
     previous = session.snapshot()
 
@@ -410,7 +415,7 @@ def test_definition_change_recompiles_model_and_invalidates_derived_state() -> N
     assert current.model_revision == previous.model_revision + 1
     assert current.mesh_input_revision == previous.mesh_input_revision
     assert not current.validations
-    assert not current.runs
+    assert current.runs == previous.runs
     assert current.displayed_result is None
     assert current.model.materials["Steel"].properties["E"] == 2.0
 
@@ -450,15 +455,15 @@ def test_beam_orientation_edit_and_clear_recompile_and_invalidate() -> None:
             orientation
         )
         assert not current.validations
-        assert not current.runs
+        assert all(run.has_result for run in current.runs)
         assert current.displayed_result is None
         assert not current.has_result
         assert {
             ArtifactKind.MODEL,
             ArtifactKind.VALIDATIONS,
             ArtifactKind.RUNS,
-            ArtifactKind.RESULTS,
         }.issubset(delta.invalidated)
+        assert ArtifactKind.RESULTS not in delta.invalidated
 
         if orientation is not None:
             _accept_beam_computations(session)
