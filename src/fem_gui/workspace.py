@@ -198,6 +198,23 @@ class FEMWorkspace:
     def document_count(self) -> int:
         return len(self.models) + len(self.results)
 
+    def documents(self) -> tuple[WorkspaceDocument, ...]:
+        """Return all live contexts without copying Session payloads."""
+
+        return tuple((*self.models.values(), *self.results.values()))
+
+    def busy_documents(self) -> tuple[WorkspaceDocument, ...]:
+        """Return contexts with an active cooperative background task."""
+
+        return tuple(
+            context for context in self.documents() if context.task_controller.busy
+        )
+
+    def any_busy(self) -> bool:
+        """Return whether any model/result context owns a running task."""
+
+        return any(context.task_controller.busy for context in self.documents())
+
     def add_model(
         self,
         session: ModelSession | None = None,

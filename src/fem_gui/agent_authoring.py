@@ -716,6 +716,8 @@ def _composite_path(value: object, *, name: str) -> WireGeometry:
 
 def authoring_context_from_snapshot(
     snapshot: _SessionSnapshot,
+    *,
+    document_id: str | int | None = None,
 ) -> AuthoringContext:
     """Copy a session projection into a bounded, provider-safe DTO."""
 
@@ -723,7 +725,11 @@ def authoring_context_from_snapshot(
     source_kind = "blank" if snapshot.source_kind is None else str(snapshot.source_kind)
     supported = source_kind in {"blank", "native"}
     binding = LocalModelBinding(
-        document_id=f"document:{session_id}",
+        document_id=(
+            f"document:{session_id}"
+            if document_id is None
+            else str(document_id)
+        ),
         session_id=session_id,
         session_revision=int(snapshot.session_revision),
         source_kind=source_kind,
@@ -1065,6 +1071,28 @@ class SessionResultQueryPort:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
         self._session = session
+
+    @property
+    def session(self) -> ModelSession:
+        """Return the currently bound model Session."""
+
+        return self._session
+
+    def bind_session(
+        self,
+        session: ModelSession,
+        *,
+        idle: Callable[[], bool] | None = None,
+    ) -> None:
+        """Rebind the read-only adapter while the shared Agent is idle."""
+
+        if type(session) is not ModelSession:
+            raise TypeError("session must be ModelSession")
+        if idle is not None and not idle():
+            raise RuntimeError("Agent runtime must be idle before rebinding")
+        self._session = session
+
+    rebind_session = bind_session
 
     def catalog(self) -> AgentResultCatalogResponse:
         provider = self._session.current_result_provider()
@@ -1532,6 +1560,28 @@ class SessionGeometryAuthoringPort:
         self._preflight_counter = 0
         self._record_listener: Callable[[ProposalPortRecord], None] | None = None
 
+    @property
+    def session(self) -> ModelSession:
+        """Return the currently bound model Session."""
+
+        return self._session
+
+    def bind_session(
+        self,
+        session: ModelSession,
+        *,
+        idle: Callable[[], bool] | None = None,
+    ) -> None:
+        """Rebind all authoring writes to one idle document Session."""
+
+        if type(session) is not ModelSession:
+            raise TypeError("session must be ModelSession")
+        if idle is not None and not idle():
+            raise RuntimeError("Agent runtime must be idle before rebinding")
+        self._session = session
+
+    rebind_session = bind_session
+
     def set_record_listener(
         self,
         callback: Callable[[ProposalPortRecord], None],
@@ -1643,9 +1693,15 @@ class SessionGeometryAuthoringPort:
         proposal = record.proposal
         current_id = self._session.session_id
         current_revision = self._session.session_revision
+        bound_context = self._context
+        current_document_id = (
+            bound_context.binding.document_id
+            if bound_context is not None
+            else f"document:{current_id}"
+        )
         if (
             proposal.target_session_id != current_id
-            or proposal.target_document_id != f"document:{current_id}"
+            or proposal.target_document_id != current_document_id
             or proposal.base_session_revision != current_revision
         ):
             raise AuthoringContractError("authoring proposal target is stale")
@@ -2069,10 +2125,15 @@ class SessionGeometryAuthoringPort:
                 )
             return replace(current, replayed=True)
         snapshot = self._session.snapshot()
+        current_document_id = (
+            self._context.binding.document_id
+            if self._context is not None
+            else f"document:{snapshot.session_id}"
+        )
         if (
             patch.target_session_id != snapshot.session_id
             or patch.target_document_id
-            != f"document:{snapshot.session_id}"
+            != current_document_id
             or patch.base_session_revision != snapshot.session_revision
         ):
             raise AuthoringContractError("automatic patch target is stale")
@@ -2356,10 +2417,15 @@ class SessionGeometryAuthoringPort:
         step_name, job_name, artifact_id, model_revision, stamp = identity
         snapshot = self._session.snapshot()
         current_stamp = validation_stamp_for_snapshot(snapshot, step_name)
+        current_document_id = (
+            self._context.binding.document_id
+            if self._context is not None
+            else f"document:{snapshot.session_id}"
+        )
         if (
             proposal.target_session_id != snapshot.session_id
             or proposal.target_document_id
-            != f"document:{snapshot.session_id}"
+            != current_document_id
             or proposal.base_session_revision != snapshot.session_revision
             or artifact_id
             != getattr(snapshot.artifact, "artifact_id", None)
@@ -2597,8 +2663,12 @@ class AgentAuthoringBridge:
     def bind_snapshot(
         self,
         snapshot: _SessionSnapshot,
+        *,
+        document_id: str | int | None = None,
     ) -> tuple[str, ...]:
-        return self.bind_context(authoring_context_from_snapshot(snapshot))
+        return self.bind_context(
+            authoring_context_from_snapshot(snapshot, document_id=document_id)
+        )
 
     def bind_context(self, context: AuthoringContext) -> tuple[str, ...]:
         if type(context) is not AuthoringContext:
@@ -3035,6 +3105,15 @@ def create_session_authoring_workflow_controller(
             raise AuthoringContractError("there is no current authoring binding")
         return context
 
+    def current_session() -> ModelSession:
+        """Resolve the Session through the rebindable authoring port."""
+
+        port = authoring_bridge.port
+        session_reader = getattr(port, "session", None)
+        if type(session_reader) is not ModelSession:
+            raise AuthoringContractError("there is no current model Session")
+        return session_reader
+
     def envelope(
         controller: AuthoringWorkflowController,
         prefix: str,
@@ -3451,7 +3530,7 @@ def create_session_authoring_workflow_controller(
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         part_id = str(arguments["part_id"])
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         part = next(
             (
                 candidate
@@ -3545,7 +3624,7 @@ def create_session_authoring_workflow_controller(
 
     def _profile_transform_part(part_id: object):
         normalized_part_id = str(part_id).strip()
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         if snapshot.source_kind != "native":
             raise AuthoringContractError(
                 "profile-transform.part-not-found: current document is not a "
@@ -3973,7 +4052,7 @@ def create_session_authoring_workflow_controller(
             raise TypeError("edit must be an object")
         edit = dict(raw_edit)
         operation = str(edit.pop("operation"))
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         part = next(
             (
                 candidate
@@ -4043,8 +4122,8 @@ def create_session_authoring_workflow_controller(
                     part,
                     tool,
                     boolean_operation,
-                    result_part_id=session.next_native_part_id,
-                    feature_id=session.next_part_boolean_feature_id,
+                    result_part_id=current_session().next_native_part_id,
+                    feature_id=current_session().next_part_boolean_feature_id,
                     result_name=result_name,
                 )
             except BooleanLineageResolutionError as error:
@@ -4481,7 +4560,7 @@ def create_session_authoring_workflow_controller(
             raise
 
     def mesh_refinement_entities():
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         part = next(
             (
                 candidate
@@ -4547,7 +4626,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         model = getattr(snapshot.artifact, "model", None)
         if (
             snapshot.source_kind != "native"
@@ -4759,7 +4838,7 @@ def create_session_authoring_workflow_controller(
             patch_id=f"patch-{suffix}",
             proposal_id=f"proposal-{suffix}",
             context=current_context(),
-            snapshot=session.snapshot(),
+            snapshot=current_session().snapshot(),
             action=arguments["action"],
             parameters=arguments["parameters"],
             **metadata,
@@ -4817,7 +4896,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        steps = tuple(session.snapshot().steps)
+        steps = tuple(current_session().snapshot().steps)
         if len(steps) != 1:
             raise AuthoringContractError(
                 "preflight requires exactly one current analysis step"
@@ -4838,7 +4917,7 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         metadata = envelope(controller, "solve")
         suffix = str(metadata.pop("identity_suffix"))
-        steps = tuple(session.snapshot().steps)
+        steps = tuple(current_session().snapshot().steps)
         if len(steps) != 1:
             raise AuthoringContractError(
                 "solve requires exactly one current analysis step"
@@ -4846,7 +4925,7 @@ def create_session_authoring_workflow_controller(
         step_name = str(steps[0].name)
         proposal = create_solve_proposal(
             proposal_id=f"proposal-{suffix}",
-            snapshot=session.snapshot(),
+            snapshot=current_session().snapshot(),
             step_name=step_name,
             job_name=f"作业-{step_name.removeprefix('分析步-')}",
             **metadata,
@@ -4907,7 +4986,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        catalog = deletable_object_catalog(session.snapshot(), limit=128)
+        catalog = deletable_object_catalog(current_session().snapshot(), limit=128)
         visible = catalog[:100]
         return AuthoringToolOutcome(
             "Current deletable native model objects read locally.",
@@ -4936,7 +5015,7 @@ def create_session_authoring_workflow_controller(
         proposal, target = create_delete_proposal(
             proposal_id=f"proposal-{suffix}",
             context=current_context(),
-            snapshot=session.snapshot(),
+            snapshot=current_session().snapshot(),
             object_type=arguments["object_type"],
             target_id=arguments["target_id"],
             step_name=arguments.get("step_name"),
@@ -4954,7 +5033,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        catalog = editable_object_catalog(session.snapshot(), limit=128)
+        catalog = editable_object_catalog(current_session().snapshot(), limit=128)
         visible = catalog[:100]
         return AuthoringToolOutcome(
             "Current editable model objects read locally.",
@@ -4984,7 +5063,7 @@ def create_session_authoring_workflow_controller(
         patch, target = create_edit_patch(
             patch_id=f"patch-{suffix}",
             context=current_context(),
-            snapshot=session.snapshot(),
+            snapshot=current_session().snapshot(),
             object_type=arguments["object_type"],
             target_id=arguments["target_id"],
             step_name=arguments.get("step_name"),
@@ -5068,7 +5147,7 @@ def create_session_authoring_workflow_controller(
         _arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        snapshot = session.snapshot()
+        snapshot = current_session().snapshot()
         active_parts = tuple(
             part
             for part in snapshot.parts
