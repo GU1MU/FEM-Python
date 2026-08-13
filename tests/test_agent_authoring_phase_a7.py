@@ -186,7 +186,14 @@ def test_a7_tool_catalog_exposes_query_without_display_or_confirmation() -> None
     )
 
     assert catalog_schema["name"] == "read_accepted_result_catalog"
-    assert catalog_schema["input_schema"]["properties"] == {}
+    assert catalog_schema["input_schema"]["properties"] == {
+        "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+        }
+    }
+    assert "required" not in catalog_schema["input_schema"]
     assert query_schema["name"] == "query_accepted_result"
     assert query_schema["input_schema"]["additionalProperties"] is False
     assert "display" not in encoded.casefold()

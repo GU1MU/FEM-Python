@@ -446,6 +446,12 @@ class AuthoringContext:
     capabilities: tuple[CapabilitySummary, ...] = ()
     unit_context: UnitContextSummary | None = None
     schema_version: str = AUTHORING_SCHEMA_VERSION
+    # Keep additive fields after the original constructor surface so legacy
+    # positional callers retain their previous meaning.
+    run_count: int = 0
+    result_count: int = 0
+    selected_run_id: str | None = None
+    displayed_result_run_id: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.binding) is not LocalModelBinding:
@@ -484,6 +490,22 @@ class AuthoringContext:
         )
         if not isinstance(self.result_available, bool):
             raise AuthoringContractError("result_available must be boolean")
+        for field_name in ("run_count", "result_count"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0 or value > 1_000_000:
+                raise AuthoringContractError(
+                    f"{field_name} must be an integer from 0 through 1000000"
+                )
+        if self.result_count > self.run_count:
+            raise AuthoringContractError("result_count cannot exceed run_count")
+        for field_name in ("selected_run_id", "displayed_result_run_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _require_identifier(value, field_name),
+                )
         capabilities = tuple(self.capabilities)
         if any(type(item) is not CapabilitySummary for item in capabilities):
             raise AuthoringContractError(
@@ -514,6 +536,10 @@ class AuthoringContext:
             "validation_status": self.validation_status,
             "job_status": self.job_status,
             "result_available": self.result_available,
+            "run_count": self.run_count,
+            "result_count": self.result_count,
+            "selected_run_id": self.selected_run_id,
+            "displayed_result_run_id": self.displayed_result_run_id,
             "capabilities": [
                 item.to_dict() for item in self.capabilities
             ],

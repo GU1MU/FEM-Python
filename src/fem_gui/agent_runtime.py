@@ -530,9 +530,18 @@ class QtAgentRuntime(QObject):
         generation = previous.snapshot_generation + 1
         if snapshot is None or snapshot.snapshot_generation < generation:
             snapshot = AuthoringTurnSnapshot.unavailable(generation=generation)
+        global_read_definitions = (
+            ()
+            if controller is None
+            else tuple(
+                item
+                for item in controller.definitions
+                if item.name == "read_workspace_documents"
+            )
+        )
         with self._lock:
             self._authoring_snapshot = snapshot
-            self._authoring_definitions = ()
+            self._authoring_definitions = global_read_definitions
             self._authoring_snapshot_blocked = True
         return snapshot
 
@@ -595,7 +604,11 @@ class QtAgentRuntime(QObject):
             # later owner-thread refresh/observe call clears this block.
             with self._lock:
                 self._authoring_snapshot = controller_snapshot
-                self._authoring_definitions = ()
+                self._authoring_definitions = tuple(
+                    item
+                    for item in controller.definitions
+                    if item.name == "read_workspace_documents"
+                )
             return
         try:
             definitions = tuple(controller.definitions)

@@ -133,7 +133,10 @@ from fem_agent.solve_authoring import (
     validation_stamp_for_snapshot,
 )
 from fem_agent.result_authoring import (
+    ANALYSIS_RUN_CATALOG_MAX_LIMIT,
     AcceptedResultSource,
+    AnalysisRunCatalog,
+    AnalysisRunCatalogEntry,
     AgentResultAggregation,
     AgentResultCatalog,
     AgentResultCatalogResponse,
@@ -145,6 +148,7 @@ from fem_agent.result_authoring import (
     AgentResultVariable,
     AgentResultQueryBridge,
 )
+from fem_agent.workspace_catalog import WorkspaceCatalogBridge
 from fem.geometry import (
     BooleanGeometry,
     BooleanLineageResolutionError,
@@ -172,6 +176,7 @@ from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 class _SessionSnapshot(Protocol):
     session_id: str
     session_revision: int
+    model_revision: int
     source_kind: str | None
     can_save: bool
     model_name: str | None
@@ -185,6 +190,8 @@ class _SessionSnapshot(Protocol):
     artifact: object | None
     validations: object
     runs: object
+    selected_run_id: str | None
+    displayed_result_run_id: str | None
     displayed_result: object | None
     mesh_current: bool
     unit_context: object | None
@@ -765,10 +772,16 @@ def authoring_context_from_snapshot(
         records = tuple(validations.values())  # type: ignore[union-attr]
         validation_status = (
             "passed"
-            if records and all(bool(getattr(item, "passed", False)) for item in records)
+            if records and any(bool(getattr(item, "passed", False)) for item in records)
             else "blocked"
         )
     runs = tuple(getattr(snapshot, "runs", ()))
+    result_count = sum(
+        1
+        for item in runs
+        if getattr(item, "result_id", None) is not None
+        and str(getattr(item, "status", "")).casefold().endswith("succeeded")
+    )
     job_status = "idle"
     if any(
         str(getattr(item, "status", "")).casefold().endswith("running") for item in runs
@@ -902,14 +915,14 @@ def authoring_context_from_snapshot(
             (
                 supported
                 and source_kind == "native"
-                and snapshot.displayed_result is not None
+                and result_count > 0
             ),
             (
                 None
                 if (
                     supported
                     and source_kind == "native"
-                    and snapshot.displayed_result is not None
+                    and result_count > 0
                 )
                 else "结果查询需要当前已接受的 native 结果"
             ),
@@ -942,6 +955,14 @@ def authoring_context_from_snapshot(
         validation_status=validation_status,
         job_status=job_status,
         result_available=snapshot.displayed_result is not None,
+        run_count=len(runs),
+        result_count=result_count,
+        selected_run_id=getattr(snapshot, "selected_run_id", None),
+        displayed_result_run_id=getattr(
+            snapshot,
+            "displayed_result_run_id",
+            None,
+        ),
         capabilities=capabilities,
         unit_context=(
             None
@@ -1094,9 +1115,22 @@ class SessionResultQueryPort:
 
     rebind_session = bind_session
 
-    def catalog(self) -> AgentResultCatalogResponse:
-        provider = self._session.current_result_provider()
-        identity = self._session.current_result_identity()
+    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
+        projection = self._session.projection_snapshot()
+        uses_displayed_result = run_id is None
+        target_run_id = (
+            projection.displayed_result_run_id
+            if run_id is None
+            else str(run_id).strip()
+        )
+        if not target_run_id:
+            return _result_catalog_failure(
+                "result.catalog.no_accepted_result",
+                "No accepted native result is available for the requested run.",
+                retryable=True,
+            )
+        provider = self._session.result_provider_for(target_run_id)
+        identity = self._session.result_identity_for(target_run_id)
         if provider is None or identity is None:
             return _result_catalog_failure(
                 "result.catalog.no_accepted_result",
@@ -1113,7 +1147,6 @@ class SessionResultQueryPort:
                 "The current accepted result provider identity is inconsistent.",
                 retryable=True,
             )
-        projection = self._session.projection_snapshot()
         units = projection.unit_context
         if projection.source_kind != "native" or units is None:
             return _result_catalog_failure(
@@ -1148,7 +1181,16 @@ class SessionResultQueryPort:
                 "The accepted result has no READY U, RF, or S fields.",
                 clarification_required=True,
             )
-        named_regions = tuple(projection.named_regions.values())
+        result_regions_are_current = _result_regions_are_current(
+            projection,
+            source,
+            target_run_id,
+        )
+        named_regions = (
+            tuple(projection.named_regions.values())
+            if result_regions_are_current
+            else ()
+        )
         nodal_regions = (
             "all_nodes",
             *tuple(
@@ -1172,7 +1214,14 @@ class SessionResultQueryPort:
             nodal_regions=tuple(dict.fromkeys(nodal_regions)),
             element_regions=tuple(dict.fromkeys(element_regions)),
         )
-        if self._session.current_result_identity() != (source, generation):
+        if (
+            uses_displayed_result
+            and self._session.projection_snapshot().displayed_result_run_id
+            != target_run_id
+        ) or self._session.result_identity_for(target_run_id) != (
+            source,
+            generation,
+        ):
             return _result_catalog_failure(
                 "result.catalog.stale",
                 "The accepted result changed before the catalog was returned.",
@@ -1183,8 +1232,9 @@ class SessionResultQueryPort:
     def query(self, request: AgentResultQuery) -> AgentResultQueryResponse:
         if type(request) is not AgentResultQuery:
             raise TypeError("request must be AgentResultQuery")
-        provider = self._session.current_result_provider()
-        identity = self._session.current_result_identity()
+        target_run_id = request.expected_source.run_id
+        provider = self._session.result_provider_for(target_run_id)
+        identity = self._session.result_identity_for(target_run_id)
         if provider is None or identity is None:
             return _result_query_failure(
                 "result.query.no_accepted_result",
@@ -1221,7 +1271,17 @@ class SessionResultQueryPort:
             )
 
         try:
-            _require_published_result_region(projection, request)
+            _require_published_result_region(
+                projection,
+                request,
+                allow_named=(
+                    _result_regions_are_current(
+                        projection,
+                        source,
+                        target_run_id,
+                    )
+                ),
+            )
             availability = _resolve_result_availability(provider, request)
             native_query = _native_result_query(
                 provider,
@@ -1284,7 +1344,7 @@ class SessionResultQueryPort:
                 clarification_required=True,
             )
 
-        if self._session.current_result_identity() != (source, generation):
+        if self._session.result_identity_for(target_run_id) != (source, generation):
             return _result_query_failure(
                 "result.query.stale",
                 "The accepted result changed before the query completed.",
@@ -1304,6 +1364,21 @@ class _AgentResultQueryRejected(ValueError):
         self.code = code
         self.clarification_required = clarification_required
         super().__init__(message)
+
+
+def _result_regions_are_current(
+    projection: _SessionSnapshot,
+    source: ResultSourceKey,
+    run_id: str,
+) -> bool:
+    artifact = getattr(projection, "artifact", None)
+    return bool(
+        run_id == projection.displayed_result_run_id
+        and artifact is not None
+        and str(getattr(artifact, "artifact_id", "")) == source.artifact_id
+        and int(getattr(projection, "model_revision", -1))
+        == source.model_revision
+    )
 
 
 def _resolve_result_availability(
@@ -1348,9 +1423,16 @@ def _resolve_result_availability(
 def _require_published_result_region(
     projection: _SessionSnapshot,
     request: AgentResultQuery,
+    *,
+    allow_named: bool = True,
 ) -> None:
     if request.region in {"all_nodes", "all_elements"}:
         return
+    if not allow_named:
+        raise _AgentResultQueryRejected(
+            "result.query.region_not_published",
+            "Historical results expose only all_nodes and all_elements.",
+        )
     regions = tuple(projection.named_regions.values())[:127]  # type: ignore[union-attr]
     matches = tuple(
         region for region in regions if region.name == request.region
@@ -3089,6 +3171,9 @@ def create_session_authoring_workflow_controller(
     session: ModelSession,
     authoring_bridge: AgentAuthoringBridge,
     result_bridge: AgentResultQueryBridge,
+    *,
+    next_job_name: Callable[[], str] | None = None,
+    workspace_catalog_bridge: WorkspaceCatalogBridge | None = None,
 ) -> AuthoringWorkflowController:
     """Wire A1-A7 handlers to one GUI-owner A8 controller."""
 
@@ -3098,6 +3183,15 @@ def create_session_authoring_workflow_controller(
         raise TypeError("authoring_bridge must be AgentAuthoringBridge")
     if type(result_bridge) is not AgentResultQueryBridge:
         raise TypeError("result_bridge must be AgentResultQueryBridge")
+    if next_job_name is not None and not callable(next_job_name):
+        raise TypeError("next_job_name must be callable or None")
+    if (
+        workspace_catalog_bridge is not None
+        and type(workspace_catalog_bridge) is not WorkspaceCatalogBridge
+    ):
+        raise TypeError(
+            "workspace_catalog_bridge must be WorkspaceCatalogBridge or None"
+        )
 
     def current_context() -> AuthoringContext:
         context = authoring_bridge.context
@@ -3113,6 +3207,35 @@ def create_session_authoring_workflow_controller(
         if type(session_reader) is not ModelSession:
             raise AuthoringContractError("there is no current model Session")
         return session_reader
+
+    def resolved_step_name(
+        arguments: Mapping[str, object],
+        *,
+        operation: str,
+    ) -> str:
+        if set(arguments) - {"step_name"}:
+            raise AuthoringContractError(f"{operation} has unknown fields")
+        runnable = current_session().runnable_step_names()
+        if "step_name" not in arguments:
+            if len(runnable) != 1:
+                raise AuthoringContractError(
+                    f"{operation} requires step_name when multiple steps are runnable"
+                )
+            return runnable[0]
+        value = arguments["step_name"]
+        if (
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or len(value) > 160
+        ):
+            raise AuthoringContractError("step_name must be a nonblank string")
+        step_name = value
+        if step_name not in runnable:
+            raise AuthoringContractError(
+                f"{operation} requires a current runnable analysis step"
+            )
+        return step_name
 
     def envelope(
         controller: AuthoringWorkflowController,
@@ -4893,15 +5016,15 @@ def create_session_authoring_workflow_controller(
         return final
 
     def run_preflight(
-        _arguments: Mapping[str, object],
+        arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        steps = tuple(current_session().snapshot().steps)
-        if len(steps) != 1:
+        step_name = resolved_step_name(arguments, operation="preflight")
+        if not current_session().can_check(step_name):
             raise AuthoringContractError(
-                "preflight requires exactly one current analysis step"
+                "preflight requires a current runnable analysis step"
             )
-        record = authoring_bridge.request_preflight(str(steps[0].name))
+        record = authoring_bridge.request_preflight(step_name)
         return AuthoringToolOutcome(
             "Native preflight was submitted through the existing GUI task.",
             {
@@ -4912,22 +5035,30 @@ def create_session_authoring_workflow_controller(
         )
 
     def prepare_solve(
-        _arguments: Mapping[str, object],
+        arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         metadata = envelope(controller, "solve")
         suffix = str(metadata.pop("identity_suffix"))
-        steps = tuple(current_session().snapshot().steps)
-        if len(steps) != 1:
+        step_name = resolved_step_name(arguments, operation="solve")
+        if not current_session().can_submit(step_name):
             raise AuthoringContractError(
-                "solve requires exactly one current analysis step"
+                "solve requires a current validated runnable analysis step"
             )
-        step_name = str(steps[0].name)
+        supplied_job_name = (
+            current_session().next_run_name()
+            if next_job_name is None
+            else next_job_name()
+        )
+        if type(supplied_job_name) is not str or not supplied_job_name.strip():
+            raise AuthoringContractError(
+                "next_job_name must return a nonblank string"
+            )
         proposal = create_solve_proposal(
             proposal_id=f"proposal-{suffix}",
             snapshot=current_session().snapshot(),
             step_name=step_name,
-            job_name=f"作业-{step_name.removeprefix('分析步-')}",
+            job_name=supplied_job_name.strip(),
             **metadata,
         )
         return proposal_outcome(
@@ -5133,14 +5264,88 @@ def create_session_authoring_workflow_controller(
         return final
 
     def read_catalog(
-        _arguments: Mapping[str, object],
+        arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        response = result_bridge.catalog()
+        if set(arguments) - {"run_id"}:
+            raise AuthoringContractError("result catalog has unknown fields")
+        response = result_bridge.catalog(arguments.get("run_id"))
         return AuthoringToolOutcome(
             "Accepted result catalog read locally.",
             response.to_dict(),
             ok=response.ok,
+        )
+
+    def read_analysis_run_catalog(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if set(arguments) - {"cursor", "limit"}:
+            raise AuthoringContractError("run catalog has unknown fields")
+        cursor = arguments.get("cursor", 0)
+        limit = arguments.get("limit", 20)
+        if type(cursor) is not int or cursor < 0:
+            raise AuthoringContractError("cursor must be a non-negative integer")
+        if (
+            type(limit) is not int
+            or limit < 1
+            or limit > ANALYSIS_RUN_CATALOG_MAX_LIMIT
+        ):
+            raise AuthoringContractError("limit is outside the run catalog bound")
+        snapshot = current_session().snapshot()
+        runs = tuple(snapshot.runs)
+        if cursor > len(runs):
+            raise AuthoringContractError("cursor exceeds the run catalog")
+        page = runs[cursor : cursor + limit]
+        entries = tuple(
+            AnalysisRunCatalogEntry(
+                run_id=str(run.run_id),
+                name=str(run.name),
+                step_name=str(run.step_name),
+                status=str(getattr(run.status, "value", run.status)),
+                artifact_id=str(run.artifact_id),
+                model_revision=int(run.model_revision),
+                source_run_id=(
+                    None if run.source_run_id is None else str(run.source_run_id)
+                ),
+                result_id=(None if run.result_id is None else str(run.result_id)),
+                materialization_generation=snapshot.result_generations.get(
+                    run.run_id
+                ),
+            )
+            for run in page
+        )
+        next_cursor = cursor + len(entries)
+        catalog = AnalysisRunCatalog(
+            document_id=current_context().binding.document_id,
+            session_id=str(snapshot.session_id),
+            session_revision=int(snapshot.session_revision),
+            selected_run_id=snapshot.selected_run_id,
+            displayed_result_run_id=snapshot.displayed_result_run_id,
+            cursor=cursor,
+            limit=limit,
+            runs=entries,
+            next_cursor=(next_cursor if next_cursor < len(runs) else None),
+            total_count=len(runs),
+        )
+        return AuthoringToolOutcome(
+            "Analysis run catalog read locally.",
+            catalog.to_dict(),
+        )
+
+    def read_workspace_documents(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if arguments:
+            raise AuthoringContractError(
+                "read_workspace_documents accepts no arguments"
+            )
+        if workspace_catalog_bridge is None:
+            raise AuthoringContractError("workspace catalog is unavailable")
+        return AuthoringToolOutcome(
+            "Workspace document catalog read locally.",
+            workspace_catalog_bridge.catalog().to_dict(),
         )
 
     def read_geometry_feature_catalog(
@@ -5221,8 +5426,14 @@ def create_session_authoring_workflow_controller(
             "read_editable_model_objects": read_editable_objects,
             "edit_model_object": edit_model_object,
             "read_accepted_result_catalog": read_catalog,
+            "read_analysis_run_catalog": read_analysis_run_catalog,
             "read_geometry_feature_catalog": read_geometry_feature_catalog,
             "query_accepted_result": query_result,
+            **(
+                {}
+                if workspace_catalog_bridge is None
+                else {"read_workspace_documents": read_workspace_documents}
+            ),
         },
     )
     controller.observe_binding(current_context())

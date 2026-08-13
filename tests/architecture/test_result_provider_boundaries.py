@@ -227,11 +227,13 @@ def test_agent_imports_are_confined_to_gui_runtime_adapters() -> None:
 
     runtime_path = Path("src/fem_gui/agent_runtime.py")
     authoring_path = Path("src/fem_gui/agent_authoring.py")
+    workspace_catalog_path = Path("src/fem_gui/agent_workspace_catalog.py")
     actual = set(_forbidden_imports(GUI_ROOT, ("fem_agent",)))
     assert actual
     assert {path for path, _symbol in actual} == {
         runtime_path,
         authoring_path,
+        workspace_catalog_path,
     }
 
 

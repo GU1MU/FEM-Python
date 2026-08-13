@@ -435,7 +435,7 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
     )
 
 
-def test_a7_rejects_stale_source_generation_and_result_switch() -> None:
+def test_a7_rejects_stale_source_generation_and_keeps_historical_run_addressable() -> None:
     session = _solved_session()
     port = SessionResultQueryPort(session)
     request = _query(
@@ -489,7 +489,10 @@ def test_a7_rejects_stale_source_generation_and_result_switch() -> None:
         solve_task.token,
         build_solve_result_bundle(solve_task, result),
     ).accepted
-    assert port.query(request).diagnostics[0].code == "result.query.stale"
+    historical = port.query(request)
+    assert historical.ok
+    assert historical.scalar is not None
+    assert historical.scalar.source.run_id == request.expected_source.run_id
 
 
 def test_a7_generation_advance_stales_old_query_without_materializing_it() -> None:
@@ -534,17 +537,17 @@ def test_a7_rechecks_source_and_generation_after_native_aggregation(
         region="all_nodes",
         aggregation=AgentResultAggregation.MAXIMUM,
     )
-    original_identity = session.current_result_identity
+    original_identity = session.result_identity_for
     calls = 0
 
-    def changing_identity():
+    def changing_identity(run_id: str):
         nonlocal calls
         calls += 1
-        return original_identity() if calls == 1 else None
+        return original_identity(run_id) if calls == 1 else None
 
     monkeypatch.setattr(
         session,
-        "current_result_identity",
+        "result_identity_for",
         changing_identity,
     )
 

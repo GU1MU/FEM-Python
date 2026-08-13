@@ -13,6 +13,8 @@ from typing import Mapping, Protocol
 RESULT_QUERY_SCHEMA_VERSION = "1.0"
 RESULT_QUERY_TOOL_NAME = "query_accepted_result"
 RESULT_CATALOG_TOOL_NAME = "read_accepted_result_catalog"
+ANALYSIS_RUN_CATALOG_TOOL_NAME = "read_analysis_run_catalog"
+ANALYSIS_RUN_CATALOG_MAX_LIMIT = 20
 
 
 class ResultAuthoringError(ValueError):
@@ -23,6 +25,135 @@ class AgentResultVariable(str, Enum):
     DISPLACEMENT = "U"
     REACTION_FORCE = "RF"
     STRESS = "S"
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisRunCatalogEntry:
+    """Provider-safe identity and lifecycle metadata for one analysis run."""
+
+    run_id: str
+    name: str
+    step_name: str
+    status: str
+    artifact_id: str
+    model_revision: int
+    source_run_id: str | None
+    result_id: str | None
+    materialization_generation: int | None
+
+    def __post_init__(self) -> None:
+        for field_name in ("run_id", "artifact_id"):
+            _bounded_text(getattr(self, field_name), field_name, maximum=128)
+        _bounded_text(self.name, "name", maximum=160)
+        _bounded_text(self.step_name, "step_name", maximum=256)
+        _bounded_text(self.status, "status", maximum=16)
+        if self.status not in {
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+        }:
+            raise ResultAuthoringError("run status is unsupported")
+        _nonnegative_integer(self.model_revision, "model_revision")
+        for field_name in ("source_run_id", "result_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _bounded_text(value, field_name, maximum=128)
+        if self.materialization_generation is not None:
+            _nonnegative_integer(
+                self.materialization_generation,
+                "materialization_generation",
+            )
+        if (self.result_id is None) != (
+            self.materialization_generation is None
+        ):
+            raise ResultAuthoringError(
+                "result_id and materialization_generation must appear together"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "name": self.name,
+            "step_name": self.step_name,
+            "status": self.status,
+            "artifact_id": self.artifact_id,
+            "model_revision": self.model_revision,
+            "source_run_id": self.source_run_id,
+            "result_id": self.result_id,
+            "materialization_generation": self.materialization_generation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisRunCatalog:
+    """One bounded offset page over accepted local analysis-run metadata."""
+
+    document_id: str
+    session_id: str
+    session_revision: int
+    selected_run_id: str | None
+    displayed_result_run_id: str | None
+    cursor: int
+    limit: int
+    runs: tuple[AnalysisRunCatalogEntry, ...]
+    next_cursor: int | None
+    total_count: int
+
+    def __post_init__(self) -> None:
+        for field_name in ("document_id", "session_id"):
+            _bounded_text(getattr(self, field_name), field_name, maximum=128)
+        _nonnegative_integer(self.session_revision, "session_revision")
+        for field_name in ("selected_run_id", "displayed_result_run_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _bounded_text(value, field_name, maximum=256)
+        _nonnegative_integer(self.cursor, "cursor")
+        if (
+            type(self.limit) is not int
+            or self.limit < 1
+            or self.limit > ANALYSIS_RUN_CATALOG_MAX_LIMIT
+        ):
+            raise ResultAuthoringError("run catalog limit is outside its bound")
+        if type(self.runs) is not tuple or any(
+            type(item) is not AnalysisRunCatalogEntry for item in self.runs
+        ):
+            raise TypeError("runs must be a tuple of AnalysisRunCatalogEntry")
+        if len(self.runs) > self.limit:
+            raise ResultAuthoringError("run catalog page exceeds its limit")
+        _nonnegative_integer(self.total_count, "total_count")
+        if self.cursor > self.total_count:
+            raise ResultAuthoringError("run catalog cursor exceeds total_count")
+        if self.next_cursor is not None:
+            _nonnegative_integer(self.next_cursor, "next_cursor")
+            if self.next_cursor <= self.cursor or self.next_cursor > self.total_count:
+                raise ResultAuthoringError("next_cursor is invalid")
+
+    @property
+    def truncated(self) -> bool:
+        return self.next_cursor is not None
+
+    @property
+    def omitted_run_count(self) -> int:
+        return max(0, self.total_count - self.cursor - len(self.runs))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": RESULT_QUERY_SCHEMA_VERSION,
+            "document_id": self.document_id,
+            "session_id": self.session_id,
+            "session_revision": self.session_revision,
+            "selected_run_id": self.selected_run_id,
+            "displayed_result_run_id": self.displayed_result_run_id,
+            "cursor": self.cursor,
+            "limit": self.limit,
+            "runs": [item.to_dict() for item in self.runs],
+            "next_cursor": self.next_cursor,
+            "total_count": self.total_count,
+            "truncated": self.truncated,
+            "omitted_run_count": self.omitted_run_count,
+        }
 
 
 class AgentResultAggregation(str, Enum):
@@ -549,7 +680,7 @@ class AgentResultCatalogResponse:
 class AgentResultQueryPort(Protocol):
     """Cross-layer read-only protocol; implementations return bounded DTOs."""
 
-    def catalog(self) -> AgentResultCatalogResponse: ...
+    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse: ...
 
     def query(self, request: AgentResultQuery) -> AgentResultQueryResponse: ...
 
@@ -569,6 +700,7 @@ class FakeAgentResultQueryPort:
         self._responses = dict(responses or {})
         self.calls: list[AgentResultQuery] = []
         self.catalog_calls = 0
+        self.catalog_run_ids: list[str | None] = []
         self._catalog_response = catalog_response
 
     def register(
@@ -596,8 +728,9 @@ class FakeAgentResultQueryPort:
                 clarification_required=True,
             )
 
-    def catalog(self) -> AgentResultCatalogResponse:
+    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
         self.catalog_calls += 1
+        self.catalog_run_ids.append(run_id)
         if self._catalog_response is not None:
             return self._catalog_response
         return AgentResultCatalogResponse.failure(
@@ -639,8 +772,15 @@ class AgentResultQueryBridge:
         )
         return response
 
-    def catalog(self) -> AgentResultCatalogResponse:
-        response = self._port.catalog()
+    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
+        if run_id is not None:
+            run_id = _exact_string(run_id, "run_id")
+            _bounded_text(run_id, "run_id", maximum=128)
+        response = (
+            self._port.catalog()
+            if run_id is None
+            else self._port.catalog(run_id)
+        )
         if type(response) is not AgentResultCatalogResponse:
             raise TypeError(
                 "result query port must return AgentResultCatalogResponse"
@@ -649,20 +789,50 @@ class AgentResultQueryBridge:
 
 
 def result_catalog_tool_schema() -> dict[str, object]:
-    """Return the closed no-argument schema for current result discovery."""
+    """Return the closed schema for displayed or explicitly selected results."""
 
     return {
         "name": RESULT_CATALOG_TOOL_NAME,
         "description": (
-            "Read bounded field and named-region identities for the exact "
-            "current accepted FEM result."
+            "Read bounded field and named-region identities for the selected "
+            "result or for one exact accepted run_id."
         ),
         "input_schema": {
             "type": "object",
             "additionalProperties": False,
-            "properties": {},
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                }
+            },
         },
     }
+
+
+def analysis_run_catalog_tool_schema() -> dict[str, object]:
+    """Return the closed, hard-bounded run-catalog pagination schema."""
+
+    return {
+        "name": ANALYSIS_RUN_CATALOG_TOOL_NAME,
+        "description": "Read one bounded page of local analysis-run metadata.",
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "cursor": {"type": "integer", "minimum": 0},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": ANALYSIS_RUN_CATALOG_MAX_LIMIT,
+                },
+            },
+        },
+    }
+
+
+read_analysis_run_catalog_tool_schema = analysis_run_catalog_tool_schema
 
 
 def result_query_tool_schema() -> dict[str, object]:
@@ -830,6 +1000,10 @@ def _positive_integer(value: object, label: str) -> int:
 
 
 __all__ = [
+    "ANALYSIS_RUN_CATALOG_MAX_LIMIT",
+    "ANALYSIS_RUN_CATALOG_TOOL_NAME",
+    "AnalysisRunCatalog",
+    "AnalysisRunCatalogEntry",
     "RESULT_CATALOG_TOOL_NAME",
     "RESULT_QUERY_SCHEMA_VERSION",
     "RESULT_QUERY_TOOL_NAME",
@@ -848,7 +1022,9 @@ __all__ = [
     "AgentResultVariable",
     "FakeAgentResultQueryPort",
     "ResultAuthoringError",
+    "analysis_run_catalog_tool_schema",
     "explain_result_response",
     "result_catalog_tool_schema",
+    "read_analysis_run_catalog_tool_schema",
     "result_query_tool_schema",
 ]

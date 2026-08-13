@@ -99,6 +99,30 @@ def _materialize(task):
     return provider.materialize(task.field_keys)
 
 
+def test_results_remain_addressable_by_exact_run_identity() -> None:
+    session = _session()
+    first = _succeed(session, "Job-1", marker=1.0)
+    first_record = session.current_result()
+    first_identity = session.current_result_identity()
+    first_provider = session.current_result_provider()
+    second = _succeed(session, "Job-2", marker=2.0)
+
+    assert session.current_result().provenance.run_id == second.run_id
+    historical = session.result_for(first.run_id)
+    assert historical.result_id == first_record.result_id
+    assert historical.provenance == first_record.provenance
+    assert historical.materialization.source == first_record.materialization.source
+    assert (
+        historical.materialization.generation
+        == first_record.materialization.generation
+    )
+    assert session.result_identity_for(first.run_id) == first_identity
+    assert session.result_provider_for(first.run_id) is first_provider
+    assert session.result_for("missing-run") is None
+    assert session.result_identity_for("missing-run") is None
+    assert session.result_provider_for("missing-run") is None
+
+
 def test_materialization_advances_only_runtime_result_generation() -> None:
     session = _session()
     solve = _succeed(session, "Job-1", marker=1.0)

@@ -25,10 +25,14 @@ from .diagnostics import DiagnosticCode, make_diagnostic
 from .geometry_authoring import geometry_feature_catalog_tool_schema
 from .providers.base import ToolDefinition
 from .result_authoring import (
+    ANALYSIS_RUN_CATALOG_TOOL_NAME,
+    RESULT_CATALOG_TOOL_NAME,
     RESULT_QUERY_TOOL_NAME,
+    analysis_run_catalog_tool_schema,
     result_catalog_tool_schema,
     result_query_tool_schema,
 )
+from .workspace_catalog import workspace_documents_tool_schema
 from .schemas import ToolResult
 
 if TYPE_CHECKING:
@@ -1971,7 +1975,17 @@ _APPLY_DEFINITION = _tool(
 _RUN_PREFLIGHT = _tool(
     "run_native_preflight",
     "Run the existing deterministic native preflight without solving.",
-    _NO_ARGUMENTS,
+    {
+        "type": "object",
+        "properties": {
+            "step_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            }
+        },
+        "additionalProperties": False,
+    },
 )
 _PREPARE_SOLVE = _tool(
     "prepare_solve_proposal",
@@ -1979,7 +1993,17 @@ _PREPARE_SOLVE = _tool(
         "Build and present a revision/stamp-bound solve proposal. The solver "
         "is not started until the GUI control is clicked."
     ),
-    _NO_ARGUMENTS,
+    {
+        "type": "object",
+        "properties": {
+            "step_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            }
+        },
+        "additionalProperties": False,
+    },
 )
 _REQUEST_PROJECT_SAVE = _tool(
     "request_project_save",
@@ -2195,6 +2219,12 @@ _EDIT_MODEL_OBJECT = _tool(
 )
 _RESULT_CATALOG = _result_tool_definition(result_catalog_tool_schema())
 _RESULT_QUERY = _result_tool_definition(result_query_tool_schema())
+_ANALYSIS_RUN_CATALOG = _result_tool_definition(
+    analysis_run_catalog_tool_schema()
+)
+_WORKSPACE_DOCUMENTS = _result_tool_definition(
+    workspace_documents_tool_schema()
+)
 _GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
     geometry_feature_catalog_tool_schema()
 )
@@ -2591,6 +2621,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _PREPARE_MESH,
         _READ_MODEL_TOPOLOGY_CONTEXT,
         _APPLY_DEFINITION,
+        _RUN_PREFLIGHT,
         _PREPARE_SOLVE,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
@@ -2608,6 +2639,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_MESH_REFINEMENT_CONTEXT,
         _PREPARE_MESH,
         _READ_MODEL_TOPOLOGY_CONTEXT,
+        _RUN_PREFLIGHT,
+        _PREPARE_SOLVE,
         _RESULT_CATALOG,
         _RESULT_QUERY,
         _READ_GEOMETRY_EDIT_CONTEXT,
@@ -2853,7 +2886,25 @@ class AuthoringWorkflowController:
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
         with self._lock:
-            definitions = _STAGE_TOOLS[self._stage]
+            definitions = list(_STAGE_TOOLS[self._stage])
+            if _WORKSPACE_DOCUMENTS.name in self._handlers:
+                definitions.append(_WORKSPACE_DOCUMENTS)
+            if (
+                self._stage in _PROJECT_SAVE_READY_STAGES
+                and self._observed_context is not None
+                and self._observed_context.run_count > 0
+            ):
+                historical_definitions = [_ANALYSIS_RUN_CATALOG]
+                if self._observed_context.result_count > 0:
+                    historical_definitions.extend(
+                        (_RESULT_CATALOG, _RESULT_QUERY)
+                    )
+                for result_definition in historical_definitions:
+                    if all(
+                        item.name != result_definition.name
+                        for item in definitions
+                    ):
+                        definitions.append(result_definition)
             requirement_group = self._current_requirement_group()
             requirements_complete = (
                 requirement_group is not None
@@ -2904,6 +2955,21 @@ class AuthoringWorkflowController:
                             _SET_REQUIREMENTS.name,
                         }
                         or item.name in self._handlers
+                    )
+                    and (
+                        item.name != _ANALYSIS_RUN_CATALOG.name
+                        or (
+                            self._observed_context is not None
+                            and self._observed_context.run_count > 0
+                        )
+                    )
+                    and (
+                        item.name
+                        not in {_RESULT_CATALOG.name, _RESULT_QUERY.name}
+                        or (
+                            self._observed_context is not None
+                            and self._observed_context.result_count > 0
+                        )
                     )
                     and (
                         item.name != _REQUEST_PROJECT_SAVE.name
@@ -2958,6 +3024,10 @@ class AuthoringWorkflowController:
                 else:
                     _require_exact_fields(arguments, set()) if name not in {
                         RESULT_QUERY_TOOL_NAME,
+                        RESULT_CATALOG_TOOL_NAME,
+                        ANALYSIS_RUN_CATALOG_TOOL_NAME,
+                        _RUN_PREFLIGHT.name,
+                        _PREPARE_SOLVE.name,
                         _PREPARE_DELETE.name,
                         _PREPARE_GEOMETRY.name,
                         _READ_GEOMETRY_EDIT_CONTEXT.name,

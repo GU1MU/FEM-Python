@@ -241,6 +241,7 @@ from .geometry_preview import (
     build_strict_planar_boolean_preview,
     build_strict_sketch_draft_preview,
 )
+from .agent_workspace_catalog import create_workspace_catalog_bridge
 from .face_sketch_boolean_dialog import (
     FaceSketchBooleanDialog,
     FaceSketchBooleanParameters,
@@ -678,6 +679,10 @@ class FEMMainWindow(QMainWindow):
                 self.session,
                 self.agent_authoring_bridge,
                 self.agent_result_query_bridge,
+                next_job_name=self.workspace.next_job_name,
+                workspace_catalog_bridge=create_workspace_catalog_bridge(
+                    self.workspace
+                ),
             )
         )
         self._applied_session_revision = self.document.session_revision

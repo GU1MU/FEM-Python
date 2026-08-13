@@ -6430,22 +6430,28 @@ class ModelSession:
         record = self._validation_record(str(step_name))
         return None if record is None else deepcopy(record)
 
-    def current_result(self) -> ResultRecord | None:
-        record = self._current_result_record(self._displayed_result_run_id)
+    def result_for(self, run_id: str) -> ResultRecord | None:
+        """Return the accepted result for one exact run, if it remains valid."""
+
+        record = self._current_result_record(str(run_id))
         return (
             None
             if record is None
             else detached_result_record(record)
         )
 
-    def current_result_identity(
-        self,
-    ) -> tuple[ResultSourceKey, int] | None:
-        """Return immutable displayed-result identity without detaching data."""
+    def current_result(self) -> ResultRecord | None:
+        if self._displayed_result_run_id is None:
+            return None
+        return self.result_for(self._displayed_result_run_id)
 
-        record = self._current_result_record(
-            self._displayed_result_run_id
-        )
+    def result_identity_for(
+        self,
+        run_id: str,
+    ) -> tuple[ResultSourceKey, int] | None:
+        """Return immutable result identity for one exact accepted run."""
+
+        record = self._current_result_record(str(run_id))
         if record is None:
             return None
         return (
@@ -6453,17 +6459,27 @@ class ModelSession:
             record.materialization.generation,
         )
 
+    def current_result_identity(
+        self,
+    ) -> tuple[ResultSourceKey, int] | None:
+        """Return immutable displayed-result identity without detaching data."""
+
+        if self._displayed_result_run_id is None:
+            return None
+        return self.result_identity_for(self._displayed_result_run_id)
+
+    def result_provider_for(self, run_id: str) -> ResultProvider | None:
+        """Return the immutable provider projection for one accepted run."""
+
+        record = self._current_result_record(str(run_id))
+        return None if record is None else result_record_provider(record)
+
     def current_result_provider(self) -> ResultProvider | None:
         """Return the immutable provider projection for the displayed result."""
 
-        record = self._current_result_record(
-            self._displayed_result_run_id
-        )
-        return (
-            None
-            if record is None
-            else result_record_provider(record)
-        )
+        if self._displayed_result_run_id is None:
+            return None
+        return self.result_provider_for(self._displayed_result_run_id)
 
     def find_run(self, run_id_or_name: str | None) -> AnalysisRun | None:
         normalized = str(run_id_or_name or "").strip()
