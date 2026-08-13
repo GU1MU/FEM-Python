@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from fem.core.result import ModelResult
 from fem.elements import get_element_capabilities
-from fem.post.fields import result_region_key_for_element
+from fem.post.fields import ResultRegionKey, result_region_key_for_element
 
 from .data import (
     FieldAvailability,
@@ -811,7 +811,9 @@ def _build_topology(
     coordinates = np.asarray(
         [_node_coordinates(node_lookup[node_id]) for node_id in node_ids],
         dtype=float,
-    ).reshape((len(node_ids), 3))
+    )
+    if coordinates.shape != (len(node_ids), 3):
+        coordinates = coordinates.reshape((len(node_ids), 3)).copy()
     nodal_displacements = np.asarray(
         [
             _nodal_translation(
@@ -823,13 +825,18 @@ def _build_topology(
             for node_id in node_ids
         ],
         dtype=float,
-    ).reshape((len(node_ids), 3))
+    )
+    if nodal_displacements.shape != (len(node_ids), 3):
+        nodal_displacements = nodal_displacements.reshape(
+            (len(node_ids), 3)
+        ).copy()
 
     element_ids: list[int] = []
     seen_element_ids: set[int] = set()
     element_types: list[str] = []
     connectivity: list[tuple[int, ...]] = []
     element_region_keys = []
+    region_cache: dict[tuple[tuple[object, object], ...], ResultRegionKey] = {}
     for element in raw_elements:
         try:
             element_id = _positive_id(element.id, label="element id")
@@ -864,17 +871,29 @@ def _build_topology(
         seen_element_ids.add(element_id)
         element_types.append(descriptor.canonical_type)
         connectivity.append(connected)
-        element_region_keys.append(result_region_key_for_element(element))
+        try:
+            props_key = tuple(sorted(element.props.items()))
+            region_key = region_cache.get(props_key)
+        except TypeError:
+            props_key = None
+            region_key = None
+        if region_key is None:
+            region_key = result_region_key_for_element(element)
+            if props_key is not None:
+                region_cache[props_key] = region_key
+        element_region_keys.append(region_key)
 
-    return ResultTopologyProjection(
-        source=source,
-        node_ids=node_ids,
-        node_coordinates=coordinates,
-        nodal_displacements=nodal_displacements,
-        element_ids=tuple(element_ids),
-        element_types=tuple(element_types),
-        connectivity=tuple(connectivity),
-        element_region_keys=tuple(element_region_keys),
+    coordinates.setflags(write=False)
+    nodal_displacements.setflags(write=False)
+    return ResultTopologyProjection._from_owned_arrays(
+        source,
+        node_ids,
+        coordinates,
+        nodal_displacements,
+        tuple(element_ids),
+        tuple(element_types),
+        tuple(connectivity),
+        tuple(element_region_keys),
     )
 
 
@@ -927,20 +946,23 @@ def _primary_field(
         magnitude = np.linalg.norm(values, axis=1, keepdims=True)
         values = np.hstack((values, magnitude))
 
-    coordinates = topology.node_coordinates
-    displacements = topology.nodal_displacements
+    coordinates = topology._node_coordinates
+    displacements = topology._nodal_displacements
     locations = tuple(
-        FieldLocation(
-            association=FieldAssociation.NODE,
-            coordinates=tuple(float(value) for value in coordinates[index]),
-            displacement=tuple(
+        FieldLocation._from_finite_components(
+            FieldAssociation.NODE,
+            tuple(float(value) for value in coordinates[index]),
+            tuple(
                 float(value) for value in displacements[index]
             ),
             node_id=node_id,
         )
         for index, node_id in enumerate(topology.node_ids)
     )
-    return FieldData(
+    if not values.flags.owndata:
+        values = values.copy()
+    values.setflags(write=False)
+    return FieldData._from_materialized_values(
         descriptor=descriptor,
         source=source,
         key=entry.default_key(),

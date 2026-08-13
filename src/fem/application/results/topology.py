@@ -150,6 +150,69 @@ class ResultFieldTopology:
 
         return _public_array_copy(self._values)
 
+    @classmethod
+    def _from_projected_arrays(
+        cls,
+        *,
+        source: ResultSourceKey,
+        materialization_generation: int,
+        selection: ScalarFieldSelection,
+        deformation_scale: float,
+        points: np.ndarray,
+        cells: tuple[tuple[int, ...], ...],
+        cell_kinds: tuple[ResultCellKind, ...],
+        canonical_element_types: tuple[str | None, ...],
+        values: np.ndarray,
+        value_layout: ResultValueLayout,
+        point_locations: tuple[FieldLocation | None, ...],
+        cell_locations: tuple[FieldLocation | None, ...],
+    ) -> "ResultFieldTopology":
+        """Adopt arrays produced by the validated internal projector."""
+
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "source", source)
+        object.__setattr__(
+            instance,
+            "materialization_generation",
+            materialization_generation,
+        )
+        object.__setattr__(instance, "selection", selection)
+        object.__setattr__(instance, "deformation_scale", deformation_scale)
+        object.__setattr__(
+            instance,
+            "_points",
+            _adopt_projected_array(
+                points,
+                shape=(len(point_locations), 3),
+                label="points",
+            ),
+        )
+        object.__setattr__(instance, "cells", cells)
+        object.__setattr__(instance, "cell_kinds", cell_kinds)
+        object.__setattr__(
+            instance,
+            "canonical_element_types",
+            canonical_element_types,
+        )
+        expected_values = (
+            len(point_locations)
+            if value_layout is ResultValueLayout.POINT
+            else len(cell_locations)
+        )
+        object.__setattr__(
+            instance,
+            "_values",
+            _adopt_projected_array(
+                values,
+                shape=(expected_values,),
+                label="values",
+            ),
+        )
+        object.__setattr__(instance, "value_layout", value_layout)
+        object.__setattr__(instance, "point_locations", point_locations)
+        object.__setattr__(instance, "cell_locations", cell_locations)
+        return instance
+
 
 @dataclass(frozen=True, slots=True, eq=False, init=False)
 class ResultFieldTopologyTemplate:
@@ -266,7 +329,10 @@ def project_scalar_field_topology(
     scale = _finite_scale(deformation_scale)
     _validate_export_snapshot(export)
     field_data = export.field
-    scalar_values = field_data.component_values(export.selection.component)
+    scalar_values = _component_values_view(
+        field_data,
+        export.selection.component,
+    )
     association = field_data.descriptor.association
 
     if association is FieldAssociation.NODE:
@@ -314,7 +380,7 @@ def project_scalar_field_topology(
     else:
         raise ValueError(f"unsupported field association {association.value}")
 
-    return ResultFieldTopology(
+    return ResultFieldTopology._from_projected_arrays(
         source=export.source,
         materialization_generation=export.materialization_generation,
         selection=export.selection,
@@ -342,7 +408,8 @@ def project_scalar_field_topology_from_template(
     if not template.matches(export, deformation_scale):
         raise ValueError("template does not match the result export")
     field_data = export.field
-    component_values = field_data.component_values(
+    component_values = _component_values_view(
+        field_data,
         export.selection.component
     )
     values = component_values[template._row_indices]
@@ -358,46 +425,20 @@ def _topology_from_template(
     selection: ScalarFieldSelection,
     values: np.ndarray,
 ) -> ResultFieldTopology:
-    expected_values = (
-        len(template._points)
-        if template.value_layout is ResultValueLayout.POINT
-        else len(template.cells)
+    return ResultFieldTopology._from_projected_arrays(
+        source=template.source,
+        materialization_generation=template.materialization_generation,
+        selection=selection,
+        deformation_scale=template.deformation_scale,
+        points=template._points,
+        cells=template.cells,
+        cell_kinds=template.cell_kinds,
+        canonical_element_types=template.canonical_element_types,
+        values=values,
+        value_layout=template.value_layout,
+        point_locations=template.point_locations,
+        cell_locations=template.cell_locations,
     )
-    owned_values = _owned_values(values, expected_values)
-    instance = object.__new__(ResultFieldTopology)
-    object.__setattr__(instance, "source", template.source)
-    object.__setattr__(
-        instance,
-        "materialization_generation",
-        template.materialization_generation,
-    )
-    object.__setattr__(instance, "selection", selection)
-    object.__setattr__(
-        instance,
-        "deformation_scale",
-        template.deformation_scale,
-    )
-    object.__setattr__(instance, "_points", template._points)
-    object.__setattr__(instance, "cells", template.cells)
-    object.__setattr__(instance, "cell_kinds", template.cell_kinds)
-    object.__setattr__(
-        instance,
-        "canonical_element_types",
-        template.canonical_element_types,
-    )
-    object.__setattr__(instance, "_values", owned_values)
-    object.__setattr__(instance, "value_layout", template.value_layout)
-    object.__setattr__(
-        instance,
-        "point_locations",
-        template.point_locations,
-    )
-    object.__setattr__(
-        instance,
-        "cell_locations",
-        template.cell_locations,
-    )
-    return instance
 
 
 def _validate_export_snapshot(export: ResultExportSnapshot) -> None:
@@ -409,6 +450,19 @@ def _validate_export_snapshot(export: ResultExportSnapshot) -> None:
         raise ValueError("selection field key must match export field key")
     if export.selection.component not in export.field.descriptor.columns:
         raise ValueError("selection component is not in the field descriptor")
+
+
+def _component_values_view(
+    field_data: FieldData,
+    component: str,
+) -> np.ndarray:
+    """Return an internal immutable component view for immediate projection."""
+
+    try:
+        component_index = field_data.descriptor.columns.index(component)
+    except ValueError as error:
+        raise KeyError(component) from error
+    return field_data._values[:, component_index]
 
 
 def _project_node(
@@ -425,8 +479,8 @@ def _project_node(
     used: set[int] = set()
     locations: list[FieldLocation] = []
     values: list[float] = []
-    coordinates = topology.node_coordinates
-    displacements = topology.nodal_displacements
+    coordinates = topology._node_coordinates
+    displacements = topology._nodal_displacements
     for index, node_id in enumerate(topology.node_ids):
         row_index = _required_row(rows, node_id, label=f"node {node_id}")
         location = field_data.locations[row_index]
@@ -477,8 +531,8 @@ def _project_element(
     return _fem_projection(
         topology,
         points=_deformed_points(
-            topology.node_coordinates,
-            topology.nodal_displacements,
+            topology._node_coordinates,
+            topology._nodal_displacements,
             scale,
         ),
         values=np.asarray(values, dtype=float),
@@ -701,8 +755,8 @@ def _project_element_local_rows(
         raise TypeError("reusable_point_key must be callable or None")
     point_cache = {} if projected_by_key is None else projected_by_key
     node_order = {node_id: index for index, node_id in enumerate(topology.node_ids)}
-    coordinates = topology.node_coordinates
-    displacements = topology.nodal_displacements
+    coordinates = topology._node_coordinates
+    displacements = topology._nodal_displacements
     projected_rows: list[int] = []
     projected_node_indices: list[int] = []
     cells: list[tuple[int, ...]] = []
@@ -994,6 +1048,29 @@ def _owned_finite_array(value: np.ndarray, *, label: str) -> np.ndarray:
     owned = np.array(value, dtype=float, order="C", copy=True)
     if not bool(np.isfinite(owned).all()):
         raise ValueError(f"{label} must contain only finite values")
+    owned.setflags(write=False)
+    return owned
+
+
+def _adopt_projected_array(
+    value: np.ndarray,
+    *,
+    shape: tuple[int, ...],
+    label: str,
+) -> np.ndarray:
+    """Freeze one validated projector array, copying only non-owned views."""
+
+    if type(value) is not np.ndarray:
+        raise TypeError(f"{label} must be a numpy.ndarray")
+    if value.shape != shape:
+        raise ValueError(f"{label} must have shape {shape}")
+    if value.dtype == np.dtype(float) and value.flags.c_contiguous:
+        if value.flags.writeable and not value.flags.owndata:
+            owned = np.array(value, dtype=float, order="C", copy=True)
+        else:
+            owned = value
+    else:
+        owned = np.array(value, dtype=float, order="C", copy=True)
     owned.setflags(write=False)
     return owned
 

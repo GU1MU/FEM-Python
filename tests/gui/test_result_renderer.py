@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import fem.application.results.topology as topology_module
 from fem.application.results import (
     FieldAssociation,
     FieldLocation,
@@ -25,6 +26,7 @@ from fem_gui.visualization.result_renderer import (
     build_result_render_payload,
     validate_result_render_payload,
 )
+import fem_gui.visualization.result_renderer as renderer_module
 
 
 def _source() -> ResultSourceKey:
@@ -222,6 +224,38 @@ def test_dataset_owns_points_and_values_independently() -> None:
         payload.dataset.point_data[RESULT_SCALAR_NAME],
         (3.0, 4.0),
     )
+
+
+def test_renderer_uses_owned_topology_and_cached_validation_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    topology = _topology(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))),
+        cells=((0, 1),),
+        cell_kinds=(ResultCellKind.FEM_ELEMENT,),
+        canonical_element_types=("Truss2",),
+        values=np.asarray((3.0, 4.0)),
+        value_layout=ResultValueLayout.POINT,
+        point_locations=(
+            _location(1, (0.0, 0.0, 0.0)),
+            _location(2, (1.0, 0.0, 0.0)),
+        ),
+        cell_locations=(None,),
+    )
+
+    def fail_copy(_owner: np.ndarray) -> np.ndarray:
+        raise AssertionError("renderer must not request detached public arrays")
+
+    monkeypatch.setattr(topology_module, "_public_array_copy", fail_copy)
+    payload = build_result_render_payload(topology)
+
+    def fail_rebuild(_topology: ResultFieldTopology) -> np.ndarray:
+        raise AssertionError("validation must reuse cached VTK topology arrays")
+
+    monkeypatch.setattr(renderer_module, "_flat_cell_array", fail_rebuild)
+    monkeypatch.setattr(renderer_module, "_cell_type_array", fail_rebuild)
+
+    assert validate_result_render_payload(payload) is payload
 
 
 @pytest.mark.parametrize(

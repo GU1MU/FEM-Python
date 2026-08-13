@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Mapping
 from types import MappingProxyType
-from itertools import chain
 from typing import Any
 
 import numpy as np
@@ -15,6 +14,7 @@ from fem.core.model import (
     ElementSet,
     NodeSet,
 )
+from fem.elements import canonical_element_type
 from fem.post.vtk import cells as vtk_cells
 
 
@@ -26,6 +26,8 @@ class ModelGeometry:
     cells: tuple[tuple[int, ...], ...]
     cell_array: np.ndarray
     cell_types: np.ndarray
+    node_ids: np.ndarray
+    element_ids: np.ndarray
     node_id_to_point_index: dict[int, int]
     point_index_to_node_id: dict[int, int]
     element_id_to_cell_index: dict[int, int]
@@ -110,40 +112,74 @@ def _profile_spatial_dimension(profile: ElementResultProfile) -> int:
 def build_model_geometry(model: Any) -> ModelGeometry:
     """使用正式 VTK 单元映射构造 GUI 几何。"""
     mesh = model.mesh
-    point_rows = [
-        (float(node.x), float(node.y), float(getattr(node, "z", 0.0)))
-        for node in mesh.nodes
-    ]
     node_id_to_point_index = {
         int(node.id): index for index, node in enumerate(mesh.nodes)
     }
     if len(node_id_to_point_index) != len(mesh.nodes):
         raise ValueError("节点编号必须唯一")
-    cells, cell_types, elements = vtk_cells.build(mesh)
-    if len(cells) != len(mesh.elements):
-        converted = {int(element.id) for element in elements}
-        missing = [
-            int(element.id)
-            for element in mesh.elements
-            if int(element.id) not in converted
-        ]
-        raise ValueError(f"以下单元无法转换为 VTK：{missing}")
+    points = np.fromiter(
+        (
+            coordinate
+            for node in mesh.nodes
+            for coordinate in (
+                float(node.x),
+                float(node.y),
+                float(getattr(node, "z", 0.0)),
+            )
+        ),
+        dtype=float,
+        count=3 * len(mesh.nodes),
+    ).reshape((-1, 3))
+
+    elements = mesh.elements
     element_id_to_cell_index = {
         int(element.id): index for index, element in enumerate(elements)
     }
     if len(element_id_to_cell_index) != len(elements):
         raise ValueError("单元编号必须唯一")
-    connectivity = tuple(tuple(int(value) for value in cell[1:]) for cell in cells)
-    flat_cells = np.fromiter(
-        chain.from_iterable(cells),
-        dtype=np.int64,
-        count=sum(len(cell) for cell in cells),
-    )
+
+    flat_cells: list[int] = []
+    cell_types = np.empty(len(elements), dtype=np.uint8)
+    connectivity: list[tuple[int, ...]] = []
+    missing: list[int] = []
+    for index, element in enumerate(elements):
+        try:
+            canonical_type = canonical_element_type(element.type)
+            expected_nodes, cell_type = vtk_cells.vtk_cell_spec(canonical_type)
+        except (
+            NotImplementedError,
+            vtk_cells.UnsupportedVTKCellTypeError,
+        ) as error:
+            raise vtk_cells.UnsupportedVTKCellTypeError(
+                f"Unsupported element type for VTK export: {element.type}"
+            ) from error
+        if len(element.node_ids) != expected_nodes:
+            missing.append(int(element.id))
+            continue
+        point_ids = tuple([
+            node_id_to_point_index[int(node_id)]
+            for node_id in element.node_ids
+        ])
+        connectivity.append(point_ids)
+        flat_cells.extend((expected_nodes, *point_ids))
+        cell_types[index] = cell_type
+    if missing:
+        raise ValueError(f"以下单元无法转换为 VTK：{missing}")
     return ModelGeometry(
-        points=np.asarray(point_rows, dtype=float).reshape((-1, 3)),
-        cells=connectivity,
-        cell_array=flat_cells,
-        cell_types=np.asarray(cell_types, dtype=np.uint8),
+        points=points,
+        cells=tuple(connectivity),
+        cell_array=np.asarray(flat_cells, dtype=np.int64),
+        cell_types=cell_types,
+        node_ids=np.fromiter(
+            (int(node.id) for node in mesh.nodes),
+            dtype=np.int64,
+            count=len(mesh.nodes),
+        ),
+        element_ids=np.fromiter(
+            (int(element.id) for element in elements),
+            dtype=np.int64,
+            count=len(elements),
+        ),
         node_id_to_point_index=node_id_to_point_index,
         point_index_to_node_id={
             index: node_id for node_id, index in node_id_to_point_index.items()
@@ -175,7 +211,7 @@ def build_result_archive_geometry(
     node_id_to_point_index = {node_id: index for index, node_id in enumerate(node_ids)}
     cells: list[tuple[int, ...]] = []
     flat: list[int] = []
-    cell_types: list[int] = []
+    cell_types = np.empty(len(topology.element_ids), dtype=np.uint8)
     element_id_to_cell_index: dict[int, int] = {}
     for index, (element_id, element_type, connectivity) in enumerate(
         zip(
@@ -188,13 +224,19 @@ def build_result_archive_geometry(
         point_ids = tuple(node_id_to_point_index[int(value)] for value in connectivity)
         cells.append(point_ids)
         flat.extend((len(point_ids), *point_ids))
-        cell_types.append(vtk_cells.vtk_cell_type(element_type))
+        cell_types[index] = vtk_cells.vtk_cell_type(element_type)
         element_id_to_cell_index[int(element_id)] = index
     return ModelGeometry(
         points=coordinates,
         cells=tuple(cells),
         cell_array=np.asarray(flat, dtype=np.int64),
-        cell_types=np.asarray(cell_types, dtype=np.uint8),
+        cell_types=cell_types,
+        node_ids=np.asarray(node_ids, dtype=np.int64),
+        element_ids=np.fromiter(
+            (int(value) for value in topology.element_ids),
+            dtype=np.int64,
+            count=len(topology.element_ids),
+        ),
         node_id_to_point_index=node_id_to_point_index,
         point_index_to_node_id={
             index: node_id for node_id, index in node_id_to_point_index.items()

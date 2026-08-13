@@ -232,6 +232,25 @@ class FieldLocation:
         object.__setattr__(location, "section_point", section_point)
         return location
 
+    @classmethod
+    def _from_finite_components(
+        cls,
+        association: FieldAssociation,
+        coordinates: tuple[float, float, float],
+        displacement: tuple[float, float, float] | None,
+        **identity: object,
+    ) -> "FieldLocation":
+        """Build a recovered location after its numeric tuples were checked."""
+
+        location = cls._from_validated_components(
+            association,
+            coordinates,
+            displacement,
+            **identity,
+        )
+        _validate_location_identity(location)
+        return location
+
 @dataclass(frozen=True, slots=True)
 class ResultDiagnostic:
     """Detached, machine-readable result-domain diagnostic."""
@@ -587,6 +606,27 @@ class FieldData:
             _copy_values=False,
             _finite_checked=True,
             _trusted_locations=True,
+        )
+
+    @classmethod
+    def _from_materialized_values(
+        cls,
+        descriptor: FieldDescriptor,
+        source: ResultSourceKey,
+        key: FieldMaterializationKey,
+        locations: tuple[FieldLocation, ...],
+        values: np.ndarray,
+    ) -> "FieldData":
+        """Adopt recovered values while retaining full location validation."""
+
+        return cls(
+            descriptor,
+            source,
+            key,
+            locations,
+            values,
+            _copy_values=False,
+            _finite_checked=True,
         )
 
     @property

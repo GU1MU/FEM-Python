@@ -11,6 +11,7 @@ from fem.application.results import (
 from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import FEMModel
 from fem.post.fields import ResultRegionKey, make_result_region_signature
+import fem_gui.visualization.model_adapter as model_adapter_module
 from fem_gui.visualization.model_adapter import (
     build_model_geometry,
     build_result_archive_geometry,
@@ -69,6 +70,26 @@ def test_mixed_mesh_keeps_connectivity_and_bidirectional_ids():
     assert geometry.cells == ((0, 1, 2), (1, 3, 4, 2))
     assert geometry.element_id_to_cell_index == {70: 0, 90: 1}
     assert geometry.cell_index_to_element_id == {0: 70, 1: 90}
+    np.testing.assert_array_equal(geometry.node_ids, (11, 21, 31, 41, 51))
+    np.testing.assert_array_equal(geometry.element_ids, (70, 90))
+
+
+def test_geometry_builder_avoids_legacy_nested_cell_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mesh = Mesh2D(
+        [Node2D(10, 0.0, 0.0), Node2D(20, 1.0, 0.0)],
+        [Element2D(30, [10, 20], "Truss2")],
+    )
+
+    def fail_legacy_build(_mesh: object) -> object:
+        raise AssertionError("geometry must build its flat VTK array directly")
+
+    monkeypatch.setattr(model_adapter_module.vtk_cells, "build", fail_legacy_build)
+
+    geometry = build_model_geometry(FEMModel(mesh))
+
+    np.testing.assert_array_equal(geometry.cell_array, (2, 0, 1))
 
 
 def test_archive_geometry_keeps_inverse_node_and_element_maps() -> None:

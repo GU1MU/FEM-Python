@@ -1373,6 +1373,7 @@ def _reuse_result_render_dataset(
     current: ResultRenderPayload,
     candidate: ResultRenderPayload,
     *,
+    current_validated: bool = False,
     candidate_validated: bool = False,
 ) -> tuple[ResultRenderPayload, bool]:
     from ..visualization.result_renderer import (
@@ -1382,6 +1383,7 @@ def _reuse_result_render_dataset(
     return reuse_result_render_dataset(
         current,
         candidate,
+        current_validated=current_validated,
         candidate_validated=candidate_validated,
     )
 
@@ -5537,13 +5539,17 @@ class FEMViewport(QWidget):
             and "result" in self._actors
         )
         if can_reuse:
-            geometry_changed = not np.array_equal(
-                np.asarray(current.dataset.points),
-                np.asarray(checked.dataset.points),
+            current_points = current.topology._points
+            candidate_points = checked.topology._points
+            geometry_changed = not (
+                current_points is candidate_points
+                or np.array_equal(current_points, candidate_points)
             )
+            shared_dataset = checked.dataset is current.dataset
             checked, reused = _reuse_result_render_dataset(
                 current,
                 checked,
+                current_validated=shared_dataset,
                 candidate_validated=True,
             )
         else:
@@ -5834,20 +5840,19 @@ class FEMViewport(QWidget):
             self._mesh_scope_edges = None
             self._mesh_scope_faces = None
             return
-        coordinates: dict[int, np.ndarray] = {}
         result_points = np.asarray(payload.dataset.points)
+        projected_points = np.asarray(self._geometry.points, dtype=float).copy()
+        projected_node_ids: set[int] = set()
+        point_indexes = self._geometry.node_id_to_point_index
         for index, location in enumerate(payload.topology.point_locations):
             if location is None or location.node_id is None:
                 continue
-            coordinates.setdefault(
-                int(location.node_id),
-                result_points[index],
-            )
-        projected_points = np.asarray(self._geometry.points, dtype=float).copy()
-        for node_id, point_index in self._geometry.node_id_to_point_index.items():
-            point = coordinates.get(int(node_id))
-            if point is not None:
-                projected_points[int(point_index)] = point
+            node_id = int(location.node_id)
+            point_index = point_indexes.get(node_id)
+            if point_index is None:
+                continue
+            projected_points[int(point_index)] = result_points[index]
+            projected_node_ids.add(node_id)
         edge_node_ids = {
             int(node_id)
             for _element_id, _local_index, node_ids in self._mesh_scope_edge_rows
@@ -5858,7 +5863,10 @@ class FEMViewport(QWidget):
             for _element_id, _local_index, node_ids in self._mesh_scope_face_rows
             for node_id in _face_display_node_ids(node_ids)
         }
-        if self._mesh_scope_edge_rows and edge_node_ids.issubset(coordinates):
+        if (
+            self._mesh_scope_edge_rows
+            and edge_node_ids.issubset(projected_node_ids)
+        ):
             if (
                 self._mesh_scope_edges is not None
                 and int(self._mesh_scope_edges.n_points)
@@ -5874,7 +5882,10 @@ class FEMViewport(QWidget):
                 )
         else:
             self._mesh_scope_edges = None
-        if self._mesh_scope_face_rows and face_node_ids.issubset(coordinates):
+        if (
+            self._mesh_scope_face_rows
+            and face_node_ids.issubset(projected_node_ids)
+        ):
             if (
                 self._mesh_scope_faces is not None
                 and int(self._mesh_scope_faces.n_points)
@@ -8004,20 +8015,28 @@ class FEMViewport(QWidget):
         grid = _pyvista.UnstructuredGrid(
             pyvista_cell_array(self._geometry), self._geometry.cell_types, np.asarray(points, dtype=float)
         )
-        grid.point_data["node_id"] = np.asarray(
-            [
-                self._geometry.point_index_to_node_id[index]
-                for index in range(len(self._geometry.points))
-            ],
-            dtype=np.int64,
-        )
-        grid.cell_data["element_id"] = np.asarray(
-            [
-                self._geometry.cell_index_to_element_id[index]
-                for index in range(len(self._geometry.cells))
-            ],
-            dtype=np.int64,
-        )
+        node_ids = getattr(self._geometry, "node_ids", None)
+        if node_ids is None:
+            node_ids = np.fromiter(
+                (
+                    self._geometry.point_index_to_node_id[index]
+                    for index in range(len(self._geometry.points))
+                ),
+                dtype=np.int64,
+                count=len(self._geometry.points),
+            )
+        element_ids = getattr(self._geometry, "element_ids", None)
+        if element_ids is None:
+            element_ids = np.fromiter(
+                (
+                    self._geometry.cell_index_to_element_id[index]
+                    for index in range(len(self._geometry.cells))
+                ),
+                dtype=np.int64,
+                count=len(self._geometry.cells),
+            )
+        grid.point_data["node_id"] = node_ids
+        grid.cell_data["element_id"] = element_ids
         return grid
 
     def _model_display_points(self) -> np.ndarray:

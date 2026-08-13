@@ -47,37 +47,58 @@ def derive_stress_invariants(
     component_names,
 ) -> StressInvariants:
     """Calculate Mises and principal stresses from named tensor components."""
-    values = {
-        str(name).upper(): float(value)
-        for name, value in zip(component_names, components)
-    }
-    aliases = {
-        "SIG_X": "S11",
-        "SIG_Y": "S22",
-        "SIG_Z": "S33",
-        "TAU_XY": "S12",
-        "TAU_YZ": "S23",
-        "TAU_ZX": "S13",
-    }
-    for source, target in aliases.items():
-        if source in values and target not in values:
-            values[target] = values[source]
+    names = tuple(component_names)
+    raw = tuple(float(value) for value in components)
+    if len(raw) == 4 and names == ("S11", "S22", "S33", "S12"):
+        s11, s22, s33, s12 = raw
+        s13 = 0.0
+        s23 = 0.0
+    elif len(raw) == 6 and names == (
+        "S11",
+        "S22",
+        "S33",
+        "S12",
+        "S23",
+        "S13",
+    ):
+        s11, s22, s33, s12, s23, s13 = raw
+    else:
+        values = {
+            str(name).upper(): value
+            for name, value in zip(names, raw)
+        }
+        aliases = {
+            "SIG_X": "S11",
+            "SIG_Y": "S22",
+            "SIG_Z": "S33",
+            "TAU_XY": "S12",
+            "TAU_YZ": "S23",
+            "TAU_ZX": "S13",
+        }
+        for source, target in aliases.items():
+            if source in values and target not in values:
+                values[target] = values[source]
+        s11 = values.get("S11", 0.0)
+        s22 = values.get("S22", 0.0)
+        s33 = values.get("S33", 0.0)
+        s12 = values.get("S12", 0.0)
+        s13 = values.get("S13", 0.0)
+        s23 = values.get("S23", 0.0)
 
-    s11 = values.get("S11", 0.0)
-    s22 = values.get("S22", 0.0)
-    s33 = values.get("S33", 0.0)
-    s12 = values.get("S12", 0.0)
-    s13 = values.get("S13", 0.0)
-    s23 = values.get("S23", 0.0)
-    tensor = np.array(
-        [
-            [s11, s12, s13],
-            [s12, s22, s23],
-            [s13, s23, s33],
-        ],
-        dtype=float,
-    )
-    principal = np.linalg.eigvalsh(tensor)
+    if s13 == 0.0 and s23 == 0.0:
+        mean = 0.5 * (s11 + s22)
+        radius = float(np.hypot(0.5 * (s11 - s22), s12))
+        principal = sorted((mean - radius, mean + radius, s33))
+    else:
+        tensor = np.array(
+            [
+                [s11, s12, s13],
+                [s12, s22, s23],
+                [s13, s23, s33],
+            ],
+            dtype=float,
+        )
+        principal = np.linalg.eigvalsh(tensor)
     return StressInvariants(
         mises=von_mises_3d(s11, s22, s33, s12, s23, s13),
         max_principal=float(principal[2]),

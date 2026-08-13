@@ -25,19 +25,30 @@ class UnsupportedVTKCellTypeError(ValueError):
     """Raised when a canonical FEM element has no VTK Legacy cell type."""
 
 
-def vtk_cell_type(canonical_type: str) -> int:
-    """Return the exact VTK Legacy cell type for a canonical FEM type."""
+def vtk_cell_spec(canonical_type: str) -> tuple[int, int]:
+    """Return required node count and VTK type for a canonical FEM type."""
 
     if type(canonical_type) is not str:
         raise TypeError("canonical_type must be a string")
     try:
-        _node_count, vtk_type = _VTK_CELL_TYPES[canonical_type]
+        return _VTK_CELL_TYPES[canonical_type]
     except KeyError as error:
         raise UnsupportedVTKCellTypeError(
             "Unsupported canonical element type for VTK export: "
             f"{canonical_type}"
         ) from error
-    return vtk_type
+
+
+def vtk_cell_type(canonical_type: str) -> int:
+    """Return the exact VTK Legacy cell type for a canonical FEM type."""
+
+    return vtk_cell_spec(canonical_type)[1]
+
+
+def vtk_cell_node_count(canonical_type: str) -> int:
+    """Return the required connectivity length for one canonical VTK cell."""
+
+    return vtk_cell_spec(canonical_type)[0]
 
 
 @dataclass(frozen=True)
@@ -212,5 +223,7 @@ __all__ = [
     "UnsupportedVTKCellTypeError",
     "build",
     "build_result",
+    "vtk_cell_node_count",
+    "vtk_cell_spec",
     "vtk_cell_type",
 ]

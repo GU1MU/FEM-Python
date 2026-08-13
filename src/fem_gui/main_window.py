@@ -15105,8 +15105,12 @@ class FEMMainWindow(QMainWindow):
             raise ValueError("unknown deformation scale mode")
         else:
             topology = provider.snapshot.topology
-            coordinates = topology.node_coordinates
-            displacements = topology.nodal_displacements
+            coordinates = getattr(topology, "_node_coordinates", None)
+            if coordinates is None:
+                coordinates = topology.node_coordinates
+            displacements = getattr(topology, "_nodal_displacements", None)
+            if displacements is None:
+                displacements = topology.nodal_displacements
             if len(coordinates) == 0:
                 scale = 1.0
             else:
@@ -15153,6 +15157,17 @@ class FEMMainWindow(QMainWindow):
             scale_mode=scale_mode,
             scale_value=scale_value,
         )
+        current_payload = self.viewport._result_render_payload
+        if current_payload is not None:
+            current_topology = current_payload.topology
+            if (
+                current_topology.source == export.source
+                and current_topology.materialization_generation
+                == export.materialization_generation
+                and current_topology.selection == export.selection
+                and current_topology.deformation_scale == deformation_scale
+            ):
+                return current_payload
         cache = self._result_topology_template_cache
         if (
             cache is not None
@@ -15469,7 +15484,8 @@ class FEMMainWindow(QMainWindow):
         previous_payload = self.viewport._result_render_payload
         previous_display = self.viewport._display
         try:
-            self.viewport.set_result_render_payload(payload)
+            if payload is not previous_payload:
+                self.viewport.set_result_render_payload(payload)
             self.viewport.set_display(
                 shape_mode,
                 contour_enabled,
@@ -15765,7 +15781,8 @@ class FEMMainWindow(QMainWindow):
         self.actions["edges"].setChecked(show_edges)
         self._prepare_viewport_for_result_source(render_provider.source)
         self.viewport.set_edges_visible(show_edges, render=False)
-        self.viewport.set_result_render_payload(payload)
+        if payload is not self.viewport._result_render_payload:
+            self.viewport.set_result_render_payload(payload)
         self.viewport.set_display(
             self._display.shape_mode,
             self._display.contour_enabled,

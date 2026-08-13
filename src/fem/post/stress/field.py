@@ -429,6 +429,7 @@ def _collect_element_integration_points(
     checkpoint: Callable[[], None] | None,
 ) -> list[_ElementIntegrationPointField]:
     fields: list[_ElementIntegrationPointField] = []
+    region_cache: dict[tuple[tuple[object, object], ...], ResultRegionKey] = {}
     for elem in mesh.elements:
         _run_checkpoint(checkpoint)
         type_key = dispatch.type_key_from_name(elem.type)
@@ -452,10 +453,14 @@ def _collect_element_integration_points(
         raw_values = np.asarray(raw_components, dtype=float)
         if group == "plane":
             plane_type, nu = kernel._plane_data(elem)
-            complete = np.asarray([
-                complete_plane_components(row, plane_type, nu)
-                for row in raw_values
-            ], dtype=float)
+            complete = np.empty((len(raw_values), 4), dtype=float)
+            complete[:, :2] = raw_values[:, :2]
+            complete[:, 2] = (
+                float(nu) * (raw_values[:, 0] + raw_values[:, 1])
+                if plane_type == "strain"
+                else 0.0
+            )
+            complete[:, 3] = raw_values[:, 2]
         else:
             complete = raw_values
         expected = len(
@@ -473,6 +478,16 @@ def _collect_element_integration_points(
             if type_key in {"tet4", "tet10"}
             else 1.0
         )
+        try:
+            props_key = tuple(sorted(elem.props.items()))
+            region_key = region_cache.get(props_key)
+        except TypeError:
+            props_key = None
+            region_key = None
+        if region_key is None:
+            region_key = result_region_key_for_element(elem)
+            if props_key is not None:
+                region_cache[props_key] = region_key
         fields.append(
             _ElementIntegrationPointField(
                 elem=elem,
@@ -481,7 +496,7 @@ def _collect_element_integration_points(
                 gauss_order=order,
                 natural_coordinates=np.asarray(natural, dtype=float),
                 components=complete,
-                region_key=result_region_key_for_element(elem),
+                region_key=region_key,
                 weight=float(weight),
             )
         )

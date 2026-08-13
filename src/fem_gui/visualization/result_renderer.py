@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import chain
 
 import numpy as np
@@ -21,24 +21,81 @@ RESULT_SCALAR_NAME = "result_scalar"
 _VTK_VERTEX = 1
 
 
-@dataclass(frozen=True, slots=True, eq=False)
+@dataclass(frozen=True, slots=True, eq=False, init=False)
 class ResultRenderPayload:
     """One exact topology together with its detached PyVista representation."""
 
     topology: ResultFieldTopology
     dataset: pyvista.UnstructuredGrid
     scalar_name: str = RESULT_SCALAR_NAME
+    _cell_array: np.ndarray = field(repr=False)
+    _cell_types: np.ndarray = field(repr=False)
 
-    def __post_init__(self) -> None:
-        if type(self.topology) is not ResultFieldTopology:
+    def __init__(
+        self,
+        topology: ResultFieldTopology,
+        dataset: pyvista.UnstructuredGrid,
+        scalar_name: str = RESULT_SCALAR_NAME,
+    ) -> None:
+        if type(topology) is not ResultFieldTopology:
             raise TypeError("topology must be exactly ResultFieldTopology")
-        if not isinstance(self.dataset, pyvista.UnstructuredGrid):
-            raise TypeError("dataset must be a PyVista UnstructuredGrid")
-        if type(self.scalar_name) is not str:
-            raise TypeError("scalar_name must be a string")
-        if not self.scalar_name.strip():
-            raise ValueError("scalar_name must not be blank")
+        self._initialize(
+            topology,
+            dataset,
+            scalar_name,
+            _flat_cell_array(topology),
+            _cell_type_array(topology),
+        )
         validate_result_render_payload(self)
+
+    @classmethod
+    def _from_renderer_arrays(
+        cls,
+        topology: ResultFieldTopology,
+        dataset: pyvista.UnstructuredGrid,
+        scalar_name: str,
+        cell_array: np.ndarray,
+        cell_types: np.ndarray,
+    ) -> "ResultRenderPayload":
+        """Transfer renderer-owned immutable topology arrays without rescanning."""
+
+        payload = object.__new__(cls)
+        payload._initialize(
+            topology,
+            dataset,
+            scalar_name,
+            cell_array,
+            cell_types,
+        )
+        return payload
+
+    def _initialize(
+        self,
+        topology: ResultFieldTopology,
+        dataset: pyvista.UnstructuredGrid,
+        scalar_name: str,
+        cell_array: np.ndarray,
+        cell_types: np.ndarray,
+    ) -> None:
+        if type(topology) is not ResultFieldTopology:
+            raise TypeError("topology must be exactly ResultFieldTopology")
+        if not isinstance(dataset, pyvista.UnstructuredGrid):
+            raise TypeError("dataset must be a PyVista UnstructuredGrid")
+        if type(scalar_name) is not str:
+            raise TypeError("scalar_name must be a string")
+        if not scalar_name.strip():
+            raise ValueError("scalar_name must not be blank")
+        if type(cell_array) is not np.ndarray or cell_array.dtype != np.int64:
+            raise TypeError("cell_array must be an int64 numpy.ndarray")
+        if type(cell_types) is not np.ndarray or cell_types.dtype != np.uint8:
+            raise TypeError("cell_types must be a uint8 numpy.ndarray")
+        cell_array.setflags(write=False)
+        cell_types.setflags(write=False)
+        object.__setattr__(self, "topology", topology)
+        object.__setattr__(self, "dataset", dataset)
+        object.__setattr__(self, "scalar_name", scalar_name)
+        object.__setattr__(self, "_cell_array", cell_array)
+        object.__setattr__(self, "_cell_types", cell_types)
 
 
 def build_result_render_payload(
@@ -66,10 +123,10 @@ def build_result_render_payload(
     grid = pyvista.UnstructuredGrid(
         cells,
         cell_types,
-        topology.points,
+        topology._points,
         deep=True,
     )
-    values = topology.values
+    values = topology._values
     target = (
         grid.point_data
         if topology.value_layout is ResultValueLayout.POINT
@@ -86,9 +143,12 @@ def build_result_render_payload(
             "point" if topology.value_layout is ResultValueLayout.POINT else "cell"
         ),
     )
-    return ResultRenderPayload(
+    return ResultRenderPayload._from_renderer_arrays(
         topology=topology,
         dataset=grid,
+        scalar_name=RESULT_SCALAR_NAME,
+        cell_array=cells,
+        cell_types=cell_types,
     )
 
 
@@ -114,18 +174,18 @@ def validate_result_render_payload(
         raise ValueError("payload point provenance must match dataset points")
     if int(dataset.n_cells) != len(topology.cell_locations):
         raise ValueError("payload cell provenance must match dataset cells")
-    if not np.array_equal(np.asarray(dataset.points), topology.points):
+    if not np.array_equal(np.asarray(dataset.points), topology._points):
         raise ValueError("payload dataset points must exactly match topology points")
     if not np.array_equal(
         np.asarray(dataset.cells, dtype=np.int64),
-        _flat_cell_array(topology),
+        payload._cell_array,
     ):
         raise ValueError(
             "payload dataset connectivity must exactly match topology cells"
         )
     if not np.array_equal(
         np.asarray(dataset.celltypes, dtype=np.uint8),
-        _cell_type_array(topology),
+        payload._cell_types,
     ):
         raise ValueError(
             "payload dataset cell types must exactly match topology cell types"
@@ -149,7 +209,7 @@ def validate_result_render_payload(
     scalar_values = np.asarray(values)
     if scalar_values.shape != (expected_values,):
         raise ValueError("payload scalar must be one-dimensional")
-    if not np.array_equal(scalar_values, topology.values):
+    if not np.array_equal(scalar_values, topology._values):
         raise ValueError("payload scalar values must exactly match topology values")
     return payload
 
@@ -158,11 +218,18 @@ def reuse_result_render_dataset(
     current: ResultRenderPayload,
     candidate: ResultRenderPayload,
     *,
+    current_validated: bool = False,
     candidate_validated: bool = False,
 ) -> tuple[ResultRenderPayload, bool]:
     """Rebind a layout-compatible payload to the rendered VTK dataset."""
 
-    checked_current = validate_result_render_payload(current)
+    checked_current = (
+        current
+        if current_validated
+        else validate_result_render_payload(current)
+    )
+    if type(checked_current) is not ResultRenderPayload:
+        raise TypeError("current must be exactly ResultRenderPayload")
     checked_candidate = (
         candidate
         if candidate_validated
@@ -230,9 +297,12 @@ def _has_reusable_topology(
         _has_reusable_layout(current, candidate_topology)
         and current_topology.deformation_scale
         == candidate_topology.deformation_scale
-        and np.array_equal(
-            np.asarray(current.dataset.points),
-            candidate_topology.points,
+        and (
+            current_topology._points is candidate_topology._points
+            or np.array_equal(
+                current_topology._points,
+                candidate_topology._points,
+            )
         )
     )
 
@@ -287,10 +357,12 @@ def _payload_on_reused_dataset(
             else "cell"
         ),
     )
-    return ResultRenderPayload(
+    return ResultRenderPayload._from_renderer_arrays(
         topology=topology,
         dataset=dataset,
         scalar_name=scalar_name,
+        cell_array=current._cell_array,
+        cell_types=current._cell_types,
     )
 
 

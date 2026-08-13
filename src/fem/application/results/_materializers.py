@@ -117,11 +117,11 @@ def materialize_derived_fields(
     check_cancellation(cancellation)
     if not targets:
         return ()
-    lookup = _TopologyLookup(topology)
     if profile.family in {
         ResultModelFamily.PLANE_CONTINUUM,
         ResultModelFamily.SOLID_CONTINUUM,
     }:
+        lookup = _TopologyLookup(topology)
         fields = _materialize_continuum(
             source,
             result,
@@ -322,6 +322,27 @@ def _continuum_field_data(
         )
     locations = []
     values = []
+    component_indexes = {
+        name: component_index
+        for component_index, name in enumerate(recovered.component_names)
+    }
+    invariant_attributes = {
+        "Mises": "mises",
+        "MaxPrincipal": "max_principal",
+        "MidPrincipal": "mid_principal",
+        "MinPrincipal": "min_principal",
+    }
+    columns: list[tuple[int | None, str | None]] = []
+    for column in descriptor.columns:
+        component_index = component_indexes.get(column)
+        invariant_attribute = (
+            None
+            if component_index is not None
+            else invariant_attributes.get(column)
+        )
+        if component_index is None and invariant_attribute is None:
+            raise ValueError(f"unsupported stress result column {column!r}")
+        columns.append((component_index, invariant_attribute))
     for index, record in enumerate(recovered.records):
         if index % _CHECKPOINT_INTERVAL == 0:
             check_cancellation(cancellation)
@@ -335,16 +356,25 @@ def _continuum_field_data(
                 topology,
             )
         )
-        row_values = record.values(recovered.component_names)
         values.append(
-            tuple(float(row_values[column]) for column in descriptor.columns)
+            tuple(
+                (
+                    float(record.components[component_index])
+                    if component_index is not None
+                    else float(
+                        getattr(record.invariants, invariant_attribute)
+                    )
+                )
+                for component_index, invariant_attribute in columns
+            )
         )
-    return FieldData(
+    value_matrix = _value_matrix(values, len(descriptor.columns))
+    return FieldData._from_materialized_values(
         descriptor=descriptor,
         source=source,
         key=key,
         locations=tuple(locations),
-        values=_value_matrix(values, len(descriptor.columns)),
+        values=value_matrix,
     )
 
 
@@ -356,42 +386,42 @@ def _continuum_location(
     coordinates = _triplet(record.coordinates, label="stress coordinates")
     displacement = topology.displacement_for(record)
     if association is FieldAssociation.INTEGRATION_POINT:
-        return FieldLocation(
-            association=association,
-            coordinates=coordinates,
-            displacement=displacement,
+        return FieldLocation._from_finite_components(
+            association,
+            coordinates,
+            displacement,
             element_id=record.elem_id,
             integration_point=record.integration_point,
         )
     if association is FieldAssociation.ELEMENT:
-        return FieldLocation(
-            association=association,
-            coordinates=coordinates,
-            displacement=displacement,
+        return FieldLocation._from_finite_components(
+            association,
+            coordinates,
+            displacement,
             element_id=record.elem_id,
         )
     if association is FieldAssociation.ELEMENT_NODE:
-        return FieldLocation(
-            association=association,
-            coordinates=coordinates,
-            displacement=displacement,
+        return FieldLocation._from_finite_components(
+            association,
+            coordinates,
+            displacement,
             element_id=record.elem_id,
             local_node=record.local_node,
             node_id=record.node_id,
         )
     if association is FieldAssociation.NODE_REGION:
-        return FieldLocation(
-            association=association,
-            coordinates=coordinates,
-            displacement=displacement,
+        return FieldLocation._from_finite_components(
+            association,
+            coordinates,
+            displacement,
             node_id=record.node_id,
             region_key=record.region_key,
         )
     if association is FieldAssociation.RESOLVED_NODAL:
-        return FieldLocation(
-            association=association,
-            coordinates=coordinates,
-            displacement=displacement,
+        return FieldLocation._from_finite_components(
+            association,
+            coordinates,
+            displacement,
             node_id=record.node_id,
             region_key=record.region_key,
             averaged=record.averaged,
@@ -432,13 +462,13 @@ def _simple_rows_field(
         )
         if association is FieldAssociation.ELEMENT:
             locations.append(
-                FieldLocation(
-                    association=association,
-                    coordinates=_triplet(
+                FieldLocation._from_finite_components(
+                    association,
+                    _triplet(
                         row.coordinates,
                         label="element coordinates",
                     ),
-                    displacement=_triplet(
+                    _triplet(
                         row.displacement,
                         label="element displacement",
                     ),
@@ -447,13 +477,13 @@ def _simple_rows_field(
             )
         elif association is FieldAssociation.ELEMENT_NODE:
             locations.append(
-                FieldLocation(
-                    association=association,
-                    coordinates=_triplet(
+                FieldLocation._from_finite_components(
+                    association,
+                    _triplet(
                         row.coordinates,
                         label="element-node coordinates",
                     ),
-                    displacement=_triplet(
+                    _triplet(
                         row.displacement,
                         label="element-node displacement",
                     ),
@@ -465,13 +495,13 @@ def _simple_rows_field(
             )
         elif association is FieldAssociation.INTEGRATION_POINT:
             locations.append(
-                FieldLocation(
-                    association=association,
-                    coordinates=_triplet(
+                FieldLocation._from_finite_components(
+                    association,
+                    _triplet(
                         row.coordinates,
                         label="integration-point coordinates",
                     ),
-                    displacement=_triplet(
+                    _triplet(
                         row.displacement,
                         label="integration-point displacement",
                     ),
@@ -482,13 +512,13 @@ def _simple_rows_field(
             )
         elif association is FieldAssociation.NODE:
             locations.append(
-                FieldLocation(
-                    association=association,
-                    coordinates=_triplet(
+                FieldLocation._from_finite_components(
+                    association,
+                    _triplet(
                         row.coordinates,
                         label="node coordinates",
                     ),
-                    displacement=_triplet(
+                    _triplet(
                         row.displacement,
                         label="node displacement",
                     ),
@@ -499,12 +529,13 @@ def _simple_rows_field(
             raise ValueError(
                 f"unsupported simple row association {association.value}"
             )
-    return FieldData(
+    value_matrix = _value_matrix(values, len(descriptor.columns))
+    return FieldData._from_materialized_values(
         descriptor=descriptor,
         source=source,
         key=key,
         locations=tuple(locations),
-        values=_value_matrix(values, len(descriptor.columns)),
+        values=value_matrix,
     )
 
 
@@ -529,6 +560,10 @@ class _TopologyLookup:
     _node_order: dict[int, int] = field(init=False, repr=False)
     _element_order: dict[int, int] = field(init=False, repr=False)
     _nodal_displacements: np.ndarray = field(init=False, repr=False)
+    _connectivity_indices: tuple[np.ndarray, ...] = field(
+        init=False,
+        repr=False,
+    )
     _regions_by_node: dict[int, set[ResultRegionKey]] = field(
         init=False,
         repr=False,
@@ -548,13 +583,26 @@ class _TopologyLookup:
         object.__setattr__(
             self,
             "_nodal_displacements",
-            self.topology.nodal_displacements,
+            self.topology._nodal_displacements,
         )
         regions_by_node: dict[int, set[ResultRegionKey]] = {}
+        connectivity_indices: list[np.ndarray] = []
         for index, connected in enumerate(self.topology.connectivity):
             region_key = self.topology.element_region_keys[index]
+            indices = np.fromiter(
+                (node_order[node_id] for node_id in connected),
+                dtype=np.int64,
+                count=len(connected),
+            )
+            indices.setflags(write=False)
+            connectivity_indices.append(indices)
             for node_id in connected:
                 regions_by_node.setdefault(node_id, set()).add(region_key)
+        object.__setattr__(
+            self,
+            "_connectivity_indices",
+            tuple(connectivity_indices),
+        )
         object.__setattr__(self, "_regions_by_node", regions_by_node)
 
     def validate_region(self, record: StressRecord) -> None:
@@ -626,13 +674,9 @@ class _TopologyLookup:
             raise ValueError(
                 "stress sample shape values do not match element connectivity"
             )
-        displacements = np.asarray(
-            [
-                self._nodal_displacements[self._node_order[node_id]]
-                for node_id in connected
-            ],
-            dtype=float,
-        )
+        displacements = self._nodal_displacements[
+            self._connectivity_indices[element_index]
+        ]
         interpolated = shape_values @ displacements
         return tuple(float(value) for value in interpolated)
 
@@ -665,7 +709,13 @@ def _value_matrix(
     rows: list[tuple[float, ...]],
     columns: int,
 ) -> np.ndarray:
-    return np.asarray(rows, dtype=float).reshape((len(rows), columns))
+    values = np.asarray(rows, dtype=float)
+    if values.shape != (len(rows), columns):
+        values = values.reshape((len(rows), columns))
+    if not values.flags.owndata:
+        values = values.copy()
+    values.setflags(write=False)
+    return values
 
 
 __all__ = [

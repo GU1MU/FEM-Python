@@ -107,12 +107,27 @@ class Quad4Kernel:
             [(xi, eta) for xi, eta, _ in gauss_points],
             dtype=float,
         )
-        values = np.asarray([
-            self.stress_at(
-                mesh, elem, U, xi, eta, node_lookup=node_lookup
-            )
-            for xi, eta in points
-        ], dtype=float)
+        nodes = self._nodes(mesh, elem, node_lookup)
+        x, y = self._coords(nodes)
+        D, _thickness = self._material_data(elem)
+        element_u = U[mesh.element_dofs(elem)]
+        values = np.asarray(
+            [
+                D
+                @ (
+                    self._B_matrix_from_coordinates(
+                        elem,
+                        xi,
+                        eta,
+                        x,
+                        y,
+                    )[0]
+                    @ element_u
+                )
+                for xi, eta in points
+            ],
+            dtype=float,
+        )
         return points, values
 
     @staticmethod
@@ -270,8 +285,10 @@ class Quad4Kernel:
                 f"Quad4 element {elem.id} requires 4 nodes, got {len(elem.node_ids)}; "
                 f"node_ids={elem.node_ids}"
             )
+        nodes = self._nodes(mesh, elem, node_lookup)
+        x, y = self._coords(nodes)
         return [
-            (*self._B_matrix(mesh, elem, xi, eta, node_lookup), w)
+            (*self._B_matrix_from_coordinates(elem, xi, eta, x, y), w)
             for xi, eta, w in quad4_gauss_points(gauss_order)
         ]
 
@@ -290,11 +307,27 @@ class Quad4Kernel:
         nodes = self._nodes(mesh, elem, node_lookup)
         x, y = self._coords(nodes)
 
+        return self._B_matrix_from_coordinates(elem, xi, eta, x, y)
+
+    def _B_matrix_from_coordinates(
+        self,
+        elem: Any,
+        xi: float,
+        eta: float,
+        x: np.ndarray,
+        y: np.ndarray,
+    ):
+        """Return B and detJ using coordinates already gathered for an element."""
+
         dN = quad4_shape_grad_xi_eta(xi, eta)
         J = self._jacobian(x, y, dN)
         detJ = self._checked_det_jacobian(elem, J)
 
-        dN_xy = np.linalg.inv(J) @ dN
+        inverse = np.asarray(
+            ((J[1, 1], -J[0, 1]), (-J[1, 0], J[0, 0])),
+            dtype=float,
+        ) / detJ
+        dN_xy = inverse @ dN
         B = np.zeros((3, 8), dtype=float)
         for a_i in range(4):
             dN_dx = dN_xy[0, a_i]
@@ -326,7 +359,7 @@ class Quad4Kernel:
 
     def _checked_det_jacobian(self, elem: Any, J: np.ndarray) -> float:
         """Return detJ and reject singular or inverted elements."""
-        detJ = float(np.linalg.det(J))
+        detJ = float(J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0])
         if detJ <= 0.0:
             raise ValueError(
                 f"Quad4 element {elem.id} has non-positive Jacobian determinant "
@@ -509,12 +542,27 @@ class Quad8Kernel:
             [(xi, eta) for xi, eta, _ in gauss_points],
             dtype=float,
         )
-        values = np.asarray([
-            self.stress_at(
-                mesh, elem, U, xi, eta, node_lookup=node_lookup
-            )
-            for xi, eta in points
-        ], dtype=float)
+        nodes = self._nodes(mesh, elem, node_lookup)
+        x, y = self._coords(nodes)
+        D, _thickness = self._material_data(elem)
+        element_u = U[mesh.element_dofs(elem)]
+        values = np.asarray(
+            [
+                D
+                @ (
+                    self._B_matrix_from_coordinates(
+                        elem,
+                        xi,
+                        eta,
+                        x,
+                        y,
+                    )[0]
+                    @ element_u
+                )
+                for xi, eta in points
+            ],
+            dtype=float,
+        )
         return points, values
 
     @staticmethod
@@ -670,11 +718,27 @@ class Quad8Kernel:
         nodes = self._nodes(mesh, elem, node_lookup)
         x, y = self._coords(nodes)
 
+        return self._B_matrix_from_coordinates(elem, xi, eta, x, y)
+
+    def _B_matrix_from_coordinates(
+        self,
+        elem: Any,
+        xi: float,
+        eta: float,
+        x: np.ndarray,
+        y: np.ndarray,
+    ):
+        """Return B and detJ using coordinates already gathered for an element."""
+
         _, dN_dxi, dN_deta = quad8_shape_funcs_grads(xi, eta)
         J = self._jacobian(x, y, dN_dxi, dN_deta)
         detJ = self._checked_det_jacobian(elem, J)
 
-        dN_xy = np.linalg.inv(J) @ np.vstack([dN_dxi, dN_deta])
+        inverse = np.asarray(
+            ((J[1, 1], -J[0, 1]), (-J[1, 0], J[0, 0])),
+            dtype=float,
+        ) / detJ
+        dN_xy = inverse @ np.vstack([dN_dxi, dN_deta])
         B = np.zeros((3, 16), dtype=float)
         for a_i in range(8):
             dN_dx = dN_xy[0, a_i]
@@ -703,7 +767,7 @@ class Quad8Kernel:
 
     def _checked_det_jacobian(self, elem: Any, J: np.ndarray) -> float:
         """Return detJ and reject singular or inverted elements."""
-        detJ = float(np.linalg.det(J))
+        detJ = float(J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0])
         if detJ <= 0.0:
             raise ValueError(
                 f"Quad8 element {elem.id} has non-positive Jacobian determinant "
