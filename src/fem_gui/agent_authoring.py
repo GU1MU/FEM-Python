@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -97,6 +98,7 @@ from fem_agent.editing_authoring import (
     editable_object_catalog,
 )
 from fem_agent.geometry_authoring import (
+    apply_planar_edit_batch,
     add_planar_circle,
     add_planar_polygon,
     add_planar_rectangle,
@@ -108,6 +110,7 @@ from fem_agent.geometry_authoring import (
     create_profile_path_sweep_proposal,
     create_profile_revolution_proposal,
     cylinder_geometry,
+    delete_planar_circles,
     geometry_draft,
     feature_topology_catalog,
     geometry_recipe_from_payload,
@@ -116,6 +119,7 @@ from fem_agent.geometry_authoring import (
     planar_sketch_geometry,
     profile_transform_context,
     rotate_geometry,
+    replace_planar_circle_pattern,
     translate_geometry,
     update_planar_circle,
     update_planar_point,
@@ -1739,6 +1743,10 @@ class SessionGeometryAuthoringPort:
         start_preflight_task: (
             Callable[[AgentPreflightTaskRequest], bool] | None
         ) = None,
+        geometry_edit_mode: Callable[[], str] | None = None,
+        commit_geometry_edit: (
+            Callable[[str, object, int], Mapping[str, object]] | None
+        ) = None,
     ) -> None:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
@@ -1749,6 +1757,14 @@ class SessionGeometryAuthoringPort:
         self._start_mesh_task = start_mesh_task
         self._start_solve_task = start_solve_task
         self._start_preflight_task = start_preflight_task
+        if geometry_edit_mode is not None and not callable(geometry_edit_mode):
+            raise TypeError("geometry_edit_mode must be callable or None")
+        if commit_geometry_edit is not None and not callable(commit_geometry_edit):
+            raise TypeError("commit_geometry_edit must be callable or None")
+        self._geometry_edit_mode_callback = geometry_edit_mode
+        self._commit_geometry_edit_callback = commit_geometry_edit
+        self._latest_geometry_iteration_report: dict[str, object] | None = None
+        self._geometry_iteration_report_binding: tuple[str, str] | None = None
         if apply_definition_delta is not None and not callable(
             apply_definition_delta
         ):
@@ -1780,6 +1796,8 @@ class SessionGeometryAuthoringPort:
             raise TypeError("session must be ModelSession")
         if idle is not None and not idle():
             raise RuntimeError("Agent runtime must be idle before rebinding")
+        if session.session_id != self._session.session_id:
+            self._clear_geometry_iteration_report()
         self._session = session
 
     rebind_session = bind_session
@@ -1801,16 +1819,52 @@ class SessionGeometryAuthoringPort:
         self._start_preflight_task = None
         self._apply_definition_delta = None
         self._record_listener = None
+        self._geometry_edit_mode_callback = None
+        self._commit_geometry_edit_callback = None
+
+    def geometry_edit_mode(self) -> str:
+        callback = self._geometry_edit_mode_callback
+        mode = "in_place" if callback is None else str(callback())
+        if mode not in {"in_place", "branch"}:
+            raise AuthoringContractError("invalid geometry edit mode")
+        return mode
+
+    def latest_geometry_iteration_report(self) -> Mapping[str, object] | None:
+        report = self._latest_geometry_iteration_report
+        context = self._context
+        binding = None if context is None else (
+            context.binding.document_id,
+            context.binding.session_id,
+        )
+        if report is None or binding != self._geometry_iteration_report_binding:
+            return None
+        return deepcopy(report)
+
+    def _clear_geometry_iteration_report(self) -> None:
+        self._latest_geometry_iteration_report = None
+        self._geometry_iteration_report_binding = None
 
     def set_context(self, context: AuthoringContext) -> None:
         if type(context) is not AuthoringContext:
             raise AuthoringContractError("context must be AuthoringContext")
+        previous = self._context
+        previous_binding = None if previous is None else (
+            previous.binding.document_id,
+            previous.binding.session_id,
+        )
+        next_binding = (
+            context.binding.document_id,
+            context.binding.session_id,
+        )
+        if previous_binding is not None and previous_binding != next_binding:
+            self._clear_geometry_iteration_report()
         self._context = context
 
     def clear_context(self) -> None:
         """Detach the port from any document that is no longer editable."""
 
         self._context = None
+        self._clear_geometry_iteration_report()
 
     def present(self, proposal: AgentProposal) -> ProposalPortRecord:
         if proposal.proposal_kind not in {
@@ -2150,10 +2204,59 @@ class SessionGeometryAuthoringPort:
         recipe = geometry_recipe_from_payload(parameters["recipe"])
         snapshot = self._session.snapshot()
         if operation.kind is OperationKind.REPLACE_PART_GEOMETRY:
-            self._session.replace_part_geometry(
-                str(parameters["part_id"]),
-                recipe,
-                expected_session_revision=proposal.base_session_revision,
+            planned_mode = str(
+                proposal.preconditions.get("geometry_edit_mode", "in_place")
+            )
+            if planned_mode != self.geometry_edit_mode():
+                raise AuthoringContractError(
+                    "geometry edit policy changed after proposal creation"
+                )
+            commit = self._commit_geometry_edit_callback
+            if commit is None:
+                if planned_mode != "in_place":
+                    raise AuthoringContractError(
+                        "branch geometry edit requires a workspace-aware commit seam"
+                    )
+                self._session.replace_part_geometry(
+                    str(parameters["part_id"]),
+                    recipe,
+                    expected_session_revision=proposal.base_session_revision,
+                )
+                report = {
+                    "mode": "in_place",
+                    "target": {
+                        "document_id": current_document_id,
+                        "session_id": self._session.session_id,
+                    },
+                    "part_id": str(parameters["part_id"]),
+                    "requires_remesh": True,
+                    "validations": "reset",
+                    "runs": "not_migrated",
+                    "results": "not_migrated",
+                }
+            else:
+                report = dict(
+                    commit(
+                        str(parameters["part_id"]),
+                        recipe,
+                        proposal.base_session_revision,
+                    )
+                )
+            report.setdefault("mode", planned_mode)
+            if report.get("mode") != planned_mode:
+                raise AuthoringContractError(
+                    "geometry edit commit mode does not match its proposal"
+                )
+            provider_safe_authoring_payload(report)
+            self._latest_geometry_iteration_report = deepcopy(report)
+            context = self._context
+            self._geometry_iteration_report_binding = (
+                None
+                if context is None
+                else (
+                    context.binding.document_id,
+                    context.binding.session_id,
+                )
             )
             succeeded = replace(record, state=ProposalState.SUCCEEDED)
             self._records[proposal_id] = succeeded
@@ -3803,6 +3906,9 @@ def create_session_authoring_workflow_controller(
                 "add_polygon",
                 "update_point",
                 "update_circle",
+                "delete_circles",
+                "replace_circle_pattern",
+                "batch",
                 "translate",
                 "rotate",
             ]
@@ -4747,6 +4853,44 @@ def create_session_authoring_workflow_controller(
                 raise ValueError("update_circle fields do not match")
             draft = update_planar_circle(part.geometry_recipe, **edit)
             summary = f"更新部件 {part.name} 中的圆 {edit['circle_id']}"
+        elif operation == "delete_circles":
+            if set(edit) != {"circle_ids"}:
+                raise ValueError("delete_circles fields do not match")
+            draft = delete_planar_circles(part.geometry_recipe, **edit)
+            summary = (
+                f"从部件 {part.name} 的平面草图中删除 "
+                f"{len(edit['circle_ids'])} 个圆"
+            )
+        elif operation == "replace_circle_pattern":
+            if set(edit) != {
+                "target_circle_ids",
+                "count",
+                "start_center_x",
+                "start_center_y",
+                "spacing_x",
+                "spacing_y",
+                "radius",
+            }:
+                raise ValueError("replace_circle_pattern fields do not match")
+            draft = replace_planar_circle_pattern(part.geometry_recipe, **edit)
+            summary = (
+                f"将部件 {part.name} 中的圆替换为 "
+                f"{edit['count']} 孔线性阵列"
+            )
+        elif operation == "batch":
+            if set(edit) != {"edits"}:
+                raise ValueError("batch fields do not match")
+            raw_edits = edit["edits"]
+            if not isinstance(raw_edits, list):
+                raise TypeError("batch edits must be an array")
+            draft = apply_planar_edit_batch(
+                part.geometry_recipe,
+                edits=raw_edits,
+            )
+            summary = (
+                f"批量修改部件 {part.name} 的平面草图："
+                f"{len(raw_edits)} 个原子步骤"
+            )
         elif operation == "translate":
             if not {"dx", "dy"} <= set(edit) <= {"dx", "dy", "dz"}:
                 raise ValueError("translate fields do not match")
@@ -4763,19 +4907,28 @@ def create_session_authoring_workflow_controller(
             raise ValueError("unsupported incremental geometry edit")
         metadata = envelope(controller, "geometry-edit")
         suffix = str(metadata.pop("identity_suffix"))
+        mode_reader = getattr(authoring_bridge.port, "geometry_edit_mode", None)
+        edit_mode = "in_place" if not callable(mode_reader) else mode_reader()
         proposal = create_geometry_edit_proposal(
             proposal_id=f"proposal-{suffix}",
             context=current_context(),
             part_id=part_id,
             draft=draft,
             summary=summary,
+            edit_mode=edit_mode,
             **metadata,
         )
         return proposal_outcome(
             proposal,
             summary=summary,
-            impact="确认后原位更新该部件，并使旧网格与结果失效",
+            impact=(
+                "确认后创建迭代模型，迁移可保留的网格设置与模型定义；"
+                "实际网格、验证、运行和结果不迁移"
+                if edit_mode == "branch"
+                else "确认后在当前模型中更新该部件，并使旧网格与结果失效"
+            ),
             confirm_label="应用修改",
+            extra_data={"geometry_edit_mode": edit_mode},
         )
 
     def prepare_geometry_with_diagnostics(

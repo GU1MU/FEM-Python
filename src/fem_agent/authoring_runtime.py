@@ -1376,6 +1376,87 @@ _legacy_edit["oneOf"] = [
     .get("const")
     not in _PROFILE_TRANSFORM_OPERATION_CONSTS
 ]
+_DELETE_CIRCLES_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "delete_circles"},
+        "circle_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+    },
+    "required": ["operation", "circle_ids"],
+    "additionalProperties": False,
+}
+_REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "replace_circle_pattern"},
+        "target_circle_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+        "count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "start_center_x": {"type": "number"},
+        "start_center_y": {"type": "number"},
+        "spacing_x": {"type": "number"},
+        "spacing_y": {"type": "number"},
+        "radius": {"type": "number", "exclusiveMinimum": 0},
+    },
+    "required": [
+        "operation",
+        "target_circle_ids",
+        "count",
+        "start_center_x",
+        "start_center_y",
+        "spacing_x",
+        "spacing_y",
+        "radius",
+    ],
+    "additionalProperties": False,
+}
+_legacy_edit["oneOf"].extend(
+    [_DELETE_CIRCLES_EDIT_SCHEMA, _REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA]
+)
+_BATCH_PLANAR_OPERATION_CONSTS = frozenset(
+    {
+        "add_circle",
+        "add_rectangle",
+        "add_polygon",
+        "update_point",
+        "update_circle",
+        "delete_circles",
+        "replace_circle_pattern",
+    }
+)
+_batch_planar_branches = [
+    branch
+    for branch in _legacy_edit["oneOf"]
+    if branch.get("properties", {}).get("operation", {}).get("const")
+    in _BATCH_PLANAR_OPERATION_CONSTS
+]
+_legacy_edit["oneOf"].append(
+    {
+        "type": "object",
+        "properties": {
+            "operation": {"const": "batch"},
+            "edits": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 16,
+                "items": {"oneOf": _batch_planar_branches},
+            },
+        },
+        "required": ["operation", "edits"],
+        "additionalProperties": False,
+    }
+)
 _legacy_geometry_edit_parameters["properties"] = {
     **dict(_legacy_geometry_edit_parameters["properties"]),
     "edit": _legacy_edit,

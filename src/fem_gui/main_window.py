@@ -229,6 +229,7 @@ from .model_dialogs import (
 from .inspection_dialogs import EntityInfoDialog
 from .inspection_service import InspectionService
 from .mesh_browser import MeshBrowserDialog
+from .model_iteration import ModelIterationService, geometry_edit_policy
 from .geometry_preview import (
     GeometryPreview,
     build_geometry_preview,
@@ -665,6 +666,8 @@ class FEMMainWindow(QMainWindow):
                 self._apply_agent_definition_delta,
                 self._begin_agent_solve,
                 self._begin_agent_preflight,
+                self._agent_geometry_edit_mode,
+                self._commit_agent_geometry_edit,
             )
         )
         self.agent_authoring_bridge.set_result_invalidation_confirmation(
@@ -999,6 +1002,13 @@ class FEMMainWindow(QMainWindow):
         try:
             self._bind_agent_document(context)
         except (RuntimeError, TypeError, ValueError):
+            if previous_context is not None:
+                try:
+                    self._bind_agent_document(previous_context)
+                except (RuntimeError, TypeError, ValueError):
+                    logging.exception(
+                        "failed to restore Agent binding after partial bind"
+                    )
             return False
 
         if previous_context is not None:
@@ -13599,6 +13609,86 @@ class FEMMainWindow(QMainWindow):
             )
         ):
             raise RuntimeError("无法从最新 Session snapshot 重建界面")
+
+    def _agent_geometry_edit_mode(self) -> str:
+        context = self._active_workspace_context()
+        if context is None:
+            raise RuntimeError("没有活动模型可供几何修改")
+        return geometry_edit_policy(context).value
+
+    def _commit_agent_geometry_edit(
+        self,
+        part_id: str,
+        recipe: object,
+        expected_session_revision: int,
+    ) -> dict[str, object]:
+        """Commit only REPLACE_PART_GEOMETRY through workspace iteration policy."""
+
+        source = self._active_workspace_context()
+        if source is None or source.session is not self.session:
+            raise RuntimeError("Agent 几何修改源模型已改变")
+        mode = geometry_edit_policy(source)
+        if mode.value == "in_place":
+            source.session.replace_part_geometry(
+                part_id,
+                recipe,
+                expected_session_revision=expected_session_revision,
+            )
+            return {
+                "mode": "in_place",
+                "source": {
+                    "document_id": source.document_id,
+                    "session_id": source.session.session_id,
+                },
+                "target": {
+                    "document_id": source.document_id,
+                    "session_id": source.session.session_id,
+                },
+                "part_id": part_id,
+                "requires_remesh": True,
+                "validations": "reset",
+                "runs": "not_migrated",
+                "results": "not_migrated",
+            }
+        result = ModelIterationService(self.workspace).branch_geometry_edit(
+            source.document_id,
+            part_id,
+            recipe,
+            source_run_id=self._agent_geometry_edit_source_run_id(source),
+            expected_source_session_revision=expected_session_revision,
+            activate_child=self._activate_workspace_context,
+        )
+        return {"mode": "branch", **result.report.to_dict()}
+
+    def _agent_geometry_edit_source_run_id(
+        self,
+        source: WorkspaceDocument,
+    ) -> str | None:
+        """Choose deterministic accepted-result provenance for one branch."""
+
+        snapshot = source.session.snapshot()
+        candidates: list[str] = []
+        if snapshot.displayed_result_run_id is not None:
+            candidates.append(str(snapshot.displayed_result_run_id))
+        if snapshot.selected_run_id is not None:
+            candidates.append(str(snapshot.selected_run_id))
+        provider = self.result_provider
+        provider_source = None if provider is None else provider.source
+        if (
+            provider_source is not None
+            and provider_source.session_id == source.session.session_id
+        ):
+            candidates.append(str(provider_source.run_id))
+        candidates.extend(str(run.run_id) for run in reversed(snapshot.runs))
+        seen: set[str] = set()
+        for run_id in candidates:
+            if run_id in seen:
+                continue
+            seen.add(run_id)
+            identity = source.session.result_identity_for(run_id)
+            if identity is not None and identity[0].run_id == run_id:
+                return run_id
+        return None
 
     def _apply_agent_definition_delta(self, delta: SessionDelta) -> None:
         """Project A4 scopes/definitions without rebuilding mesh actors."""

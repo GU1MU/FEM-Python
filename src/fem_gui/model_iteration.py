@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import json
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from fem.application import ModelSession, RevisionConflictError, SessionSnapshot
 
@@ -261,6 +261,16 @@ class MigrationReport:
             "validations": "reset",
             "runs": "not_migrated",
             "results": "not_migrated",
+            "source_state": {
+                "runs": "retained",
+                "results": "retained",
+            },
+            "target_state": {
+                "mesh": "not_migrated",
+                "validations": "reset",
+                "runs": "not_migrated",
+                "results": "not_migrated",
+            },
         }
 
 
@@ -287,6 +297,7 @@ class ModelIterationService:
         target_model_name: str | None = None,
         source_run_id: str | None = None,
         expected_source_session_revision: int | None = None,
+        activate_child: Callable[[WorkspaceDocument], bool] | None = None,
     ) -> ModelIterationResult:
         source = self._workspace.document(source_document_id)
         geometry_edit_policy(source)
@@ -353,6 +364,8 @@ class ModelIterationService:
                 part_id,
                 normalized_run_id,
             )
+            if activate_child is not None and not activate_child(child):
+                raise RuntimeError("geometry iteration GUI activation failed")
             return ModelIterationResult(child, report)
         except Exception:
             self._rollback_workspace(workspace_state)

@@ -43,6 +43,7 @@ from fem.geometry import (
     analyze_sketch_profiles,
     legacy_sketch_to_strict,
     planar_geometry_normal,
+    sketch_constraint_entity_ids,
 )
 from fem.application.feature_history import derive_feature_history
 from fem.geometry.recipe_topology import (
@@ -632,13 +633,16 @@ def create_geometry_edit_proposal(
     part_id: str,
     draft: GeometryDraft,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
-    """Create a revision-bound in-place Part geometry edit proposal."""
+    """Create a revision-bound Part geometry edit proposal with explicit mode."""
 
     if type(context) is not AuthoringContext:
         raise TypeError("context must be AuthoringContext")
     if type(draft) is not GeometryDraft:
         raise TypeError("draft must be GeometryDraft")
+    if edit_mode not in {"in_place", "branch"}:
+        raise ValueError("edit_mode must be in_place or branch")
     target = next(
         (
             part
@@ -677,19 +681,30 @@ def create_geometry_edit_proposal(
         preconditions={
             "source_kind": "native",
             "part_id": target.part_id,
+            "geometry_edit_mode": edit_mode,
         },
         expected_changes={
             "part_count_delta": 0,
             "edited_part_id": target.part_id,
             "projection_refresh_count": 1,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
         },
-        invalidation_impact={
-            "mesh": True,
-            "definitions": True,
-            "results": True,
-        },
+        invalidation_impact=(
+            {"mesh": False, "definitions": False, "results": False}
+            if edit_mode == "branch"
+            else {"mesh": True, "definitions": True, "results": True}
+        ),
         display_summary={
             "title": f"修改部件 {target.name}",
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
+            "migration_summary": (
+                "创建迭代模型；迁移可保留的网格设置与模型定义；"
+                "不迁移实际网格、验证、运行或结果"
+                if edit_mode == "branch"
+                else "在当前模型中替换部件几何"
+            ),
             "target_model": context.model_name,
             "operation": OperationKind.REPLACE_PART_GEOMETRY.value,
             "part_id": target.part_id,
@@ -702,12 +717,36 @@ def create_geometry_edit_proposal(
             "expected_entity_count": draft.proof.expected_body_count,
             "summary": str(summary).strip(),
             "expected_new_objects": [],
-            "invalidated_objects": ["mesh", "definitions", "results"],
-            "invalidation_impact": {
-                "mesh": True,
-                "definitions": True,
-                "results": True,
-            },
+            "invalidated_objects": (
+                []
+                if edit_mode == "branch"
+                else ["mesh", "definitions", "results"]
+            ),
+            "source_state": (
+                {
+                    "mesh": "retained",
+                    "definitions": "retained",
+                    "runs": "retained",
+                    "results": "retained",
+                }
+                if edit_mode == "branch"
+                else {"mesh": "invalidated", "results": "invalidated"}
+            ),
+            "target_state": (
+                {
+                    "mesh": "not_migrated",
+                    "validations": "reset",
+                    "runs": "not_migrated",
+                    "results": "not_migrated",
+                }
+                if edit_mode == "branch"
+                else {"document": "current"}
+            ),
+            "invalidation_impact": (
+                {"mesh": False, "definitions": False, "results": False}
+                if edit_mode == "branch"
+                else {"mesh": True, "definitions": True, "results": True}
+            ),
             "base_session_revision": context.binding.session_revision,
             "preview": draft.preview.to_dict(),
             "proof": draft.proof.to_dict(),
@@ -1268,6 +1307,219 @@ def update_planar_circle(
             "curve_count": float(len(updated.curves)),
         },
     )
+
+
+def delete_planar_circles(
+    recipe: object,
+    *,
+    circle_ids: Sequence[str],
+) -> GeometryDraft:
+    """Atomically remove exact unconstrained circles from a detached sketch."""
+
+    sketch = _as_strict_planar_sketch(recipe)
+    target_ids = _exact_circle_ids(circle_ids, "circle_ids")
+    circle_by_id = {
+        curve.id: curve
+        for curve in sketch.curves
+        if isinstance(curve, SketchCircle) and curve.center_point_id is not None
+    }
+    if any(circle_id not in circle_by_id for circle_id in target_ids):
+        raise ValueError("circle_ids must identify existing editable circles")
+    removed_centers = {
+        str(circle_by_id[circle_id].center_point_id) for circle_id in target_ids
+    }
+    referenced_entities = set(target_ids) | removed_centers
+    if any(
+        referenced_entities.intersection(sketch_constraint_entity_ids(constraint))
+        for constraint in sketch.constraints
+    ):
+        raise AuthoringContractError(
+            "cannot delete circles or centers referenced by sketch constraints"
+        )
+    remaining_curves = tuple(
+        curve for curve in sketch.curves if curve.id not in set(target_ids)
+    )
+    remaining_point_references = {
+        entity_id
+        for curve in remaining_curves
+        for entity_id in _curve_point_ids(curve)
+    }
+    removable_centers = removed_centers - remaining_point_references
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        tuple(
+            point for point in sketch.points if point.id not in removable_centers
+        ),
+        remaining_curves,
+        sketch.constraints,
+    )
+    return _planar_edit_draft(updated)
+
+
+def replace_planar_circle_pattern(
+    recipe: object,
+    *,
+    target_circle_ids: Sequence[str],
+    count: int,
+    start_center_x: Real,
+    start_center_y: Real,
+    spacing_x: Real,
+    spacing_y: Real,
+    radius: Real,
+) -> GeometryDraft:
+    """Replace exact circles with one deterministic detached linear pattern."""
+
+    sketch = _as_strict_planar_sketch(recipe)
+    target_ids = _exact_circle_ids(target_circle_ids, "target_circle_ids")
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 32:
+        raise ValueError("count must be an integer between 1 and 32")
+    start_x = _finite(start_center_x, "start_center_x")
+    start_y = _finite(start_center_y, "start_center_y")
+    delta_x = _finite(spacing_x, "spacing_x")
+    delta_y = _finite(spacing_y, "spacing_y")
+    radius_value = _finite(radius, "radius")
+    if radius_value <= 0.0:
+        raise ValueError("radius must be positive")
+    if count > 1 and delta_x == 0.0 and delta_y == 0.0:
+        raise ValueError("spacing vector must be non-zero when count is greater than one")
+
+    circle_by_id = {
+        curve.id: curve
+        for curve in sketch.curves
+        if isinstance(curve, SketchCircle) and curve.center_point_id is not None
+    }
+    if any(circle_id not in circle_by_id for circle_id in target_ids):
+        raise ValueError("target_circle_ids must identify existing editable circles")
+    removed_centers = {
+        str(circle_by_id[circle_id].center_point_id) for circle_id in target_ids
+    }
+    referenced_entities = set(target_ids) | removed_centers
+    if any(
+        referenced_entities.intersection(sketch_constraint_entity_ids(constraint))
+        for constraint in sketch.constraints
+    ):
+        raise AuthoringContractError(
+            "cannot replace circles or centers referenced by sketch constraints"
+        )
+
+    new_point_ids = _next_sketch_ids(sketch, "P", count)
+    new_curve_ids = _next_sketch_ids(sketch, "C", count)
+    remaining_curves = tuple(
+        curve for curve in sketch.curves if curve.id not in set(target_ids)
+    )
+    remaining_point_references = {
+        entity_id
+        for curve in remaining_curves
+        for entity_id in _curve_point_ids(curve)
+    }
+    removable_centers = removed_centers - remaining_point_references
+    new_points = tuple(
+        SketchPoint(
+            point_id,
+            start_x + index * delta_x,
+            start_y + index * delta_y,
+        )
+        for index, point_id in enumerate(new_point_ids)
+    )
+    new_circles = tuple(
+        SketchCircle(curve_id, point_id, radius_value)
+        for curve_id, point_id in zip(new_curve_ids, new_point_ids, strict=True)
+    )
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        (
+            *(point for point in sketch.points if point.id not in removable_centers),
+            *new_points,
+        ),
+        (*remaining_curves, *new_circles),
+        sketch.constraints,
+    )
+    return _planar_edit_draft(updated)
+
+
+def apply_planar_edit_batch(
+    recipe: object,
+    *,
+    edits: Sequence[Mapping[str, object]],
+) -> GeometryDraft:
+    """Apply bounded non-nested planar edits to one detached draft."""
+
+    values = tuple(edits)
+    if not 1 <= len(values) <= 16:
+        raise ValueError("batch edits must contain between 1 and 16 operations")
+    current = _as_strict_planar_sketch(recipe)
+    handlers = {
+        "add_circle": add_planar_circle,
+        "add_rectangle": add_planar_rectangle,
+        "add_polygon": _batch_add_polygon,
+        "update_point": update_planar_point,
+        "update_circle": update_planar_circle,
+        "delete_circles": delete_planar_circles,
+        "replace_circle_pattern": replace_planar_circle_pattern,
+    }
+    for index, raw_edit in enumerate(values):
+        if not isinstance(raw_edit, Mapping):
+            raise TypeError(f"edits[{index}] must be an object")
+        edit = dict(raw_edit)
+        operation = edit.pop("operation", None)
+        if operation == "batch" or operation not in handlers:
+            raise ValueError(f"edits[{index}] uses an unsupported operation")
+        draft = handlers[str(operation)](current, **edit)
+        current = draft.recipe
+    return _planar_edit_draft(current)
+
+
+def _batch_add_polygon(recipe: object, *, vertices: object) -> GeometryDraft:
+    if not isinstance(vertices, Sequence) or isinstance(
+        vertices, (str, bytes, bytearray)
+    ):
+        raise TypeError("vertices must be an array")
+    coordinates: list[tuple[object, object]] = []
+    for vertex in vertices:
+        if not isinstance(vertex, Mapping) or set(vertex) != {"x", "y"}:
+            raise ValueError("vertices must contain closed x/y objects")
+        coordinates.append((vertex["x"], vertex["y"]))
+    return add_planar_polygon(recipe, vertices=coordinates)
+
+
+def _exact_circle_ids(values: Sequence[str], label: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise TypeError(f"{label} must be an array")
+    normalized = tuple(values)
+    if not 1 <= len(normalized) <= 32:
+        raise ValueError(f"{label} must contain between 1 and 32 IDs")
+    if any(type(value) is not str or not value for value in normalized):
+        raise TypeError(f"{label} must contain non-empty exact string IDs")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{label} must contain unique IDs")
+    return normalized
+
+
+def _curve_point_ids(curve: SketchLine | SketchArc | SketchCircle) -> tuple[str, ...]:
+    if isinstance(curve, SketchLine):
+        return curve.start_point_id, curve.end_point_id
+    if isinstance(curve, SketchArc):
+        return curve.start_point_id, curve.center_point_id, curve.end_point_id
+    if curve.center_point_id is None:
+        return ()
+    return (curve.center_point_id,)
+
+
+def _planar_edit_draft(sketch: SketchGeometry) -> GeometryDraft:
+    draft = _draft(
+        sketch,
+        {
+            "point_count": float(len(sketch.points)),
+            "curve_count": float(len(sketch.curves)),
+        },
+    )
+    if not draft.proof.exact:
+        raise AuthoringContractError(
+            "planar edit did not produce an exact valid closed geometry"
+        )
+    return draft
 
 
 def planar_geometry_catalog(recipe: object) -> dict[str, object]:
@@ -2824,6 +3076,7 @@ __all__ = [
     "GeometryDraft",
     "StaticGeometryPreview",
     "box_geometry",
+    "apply_planar_edit_batch",
     "add_planar_circle",
     "add_planar_polygon",
     "add_planar_rectangle",
@@ -2833,6 +3086,7 @@ __all__ = [
     "create_profile_path_sweep_proposal",
     "create_profile_revolution_proposal",
     "cylinder_geometry",
+    "delete_planar_circles",
     "disk_geometry",
     "geometry_recipe_from_payload",
     "geometry_recipe_to_payload",
@@ -2845,6 +3099,7 @@ __all__ = [
     "planar_polygon_geometry",
     "planar_sketch_geometry",
     "rectangle_geometry",
+    "replace_planar_circle_pattern",
     "rotate_geometry",
     "translate_geometry",
     "update_planar_circle",
