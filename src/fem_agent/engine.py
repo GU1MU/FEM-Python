@@ -248,10 +248,15 @@ project bundle. Before creating a scope, read the current model topology and
 reuse one returned Part ID, logical ID, mesh kind, and matched count exactly.
 Boundary conditions, loads, and result requests require the user's explicit
 unit, direction, distribution, target, and confirmation fields; ask only for
-missing fields of that requested object. If a definition or edit would
-invalidate an accepted result, present its destructive-edit card and wait for
-the GUI terminal state. Deletion and project saving also require their local
-GUI confirmation cards.
+missing fields of that requested object. Material, section, assignment,
+analysis-step, boundary-condition, load, and result-request additions or edits
+stay in the current document and apply directly. They retain completed
+run/result history, reset the current preflight and displayed result, and
+require a fresh preflight before another solve. Treat `properties` and
+`metadata` in edit requests as partial key updates and send only the keys the
+user asked to change; omitted keys remain unchanged. Do not request
+result-loss confirmation for these same-model definition changes. Deletion
+and project saving still require their local GUI confirmation cards.
 
 Never claim that a model is loaded, a workflow is active, or an operation
 completed unless typed context or a tool result confirms it. The `phase` field

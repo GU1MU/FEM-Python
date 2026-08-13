@@ -2062,17 +2062,47 @@ _PREPARE_DELETE = _tool(
 _READ_EDITABLE_OBJECTS = _tool(
     "read_editable_model_objects",
     (
-        "Read current named scopes, boundary conditions, and loads with their "
-        "bounded editable fields and stable identities."
+        "Read current native scopes, materials, sections, assignments, "
+        "analysis steps, boundary conditions, loads, and result requests "
+        "with bounded editable fields and stable identities."
     ),
     _NO_ARGUMENTS,
 )
+_EDIT_FLAT_VALUE_SCHEMA = {
+    "anyOf": [
+        {"type": "number"},
+        {"type": "string", "minLength": 1, "maxLength": 160},
+        {"type": "boolean"},
+        {"type": "null"},
+        {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+                "anyOf": [
+                    {"type": "number"},
+                    {"type": "string", "minLength": 1, "maxLength": 160},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ]
+            },
+        },
+    ]
+}
+_EDIT_BOUNDED_MAPPING_SCHEMA = {
+    "type": "object",
+    "description": "Partial key updates; omitted keys are retained.",
+    "propertyNames": {"type": "string", "minLength": 1, "maxLength": 96},
+    "maxProperties": 32,
+    "additionalProperties": _EDIT_FLAT_VALUE_SCHEMA,
+}
 _EDIT_MODEL_OBJECT = _tool(
     "edit_model_object",
     (
         "Immediately edit one exact object returned by "
-        "read_editable_model_objects and synchronize the GUI. An edit that "
-        "invalidates accepted results creates a confirmation card."
+        "read_editable_model_objects and synchronize the GUI. Definition "
+        "edits retain completed run/result history, reset the current "
+        "preflight and result display, and require a new preflight."
     ),
     {
         "type": "object",
@@ -2081,19 +2111,24 @@ _EDIT_MODEL_OBJECT = _tool(
                 "type": "string",
                 "enum": [
                     "named_region",
+                    "material",
+                    "section",
+                    "section_assignment",
+                    "analysis_step",
                     "boundary_condition",
                     "load",
+                    "result_request",
                 ],
             },
             "target_id": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 96,
+                "maxLength": 160,
             },
             "step_name": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 96,
+                "maxLength": 160,
             },
             "changes": {
                 "type": "object",
@@ -2101,7 +2136,7 @@ _EDIT_MODEL_OBJECT = _tool(
                     "new_name": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 96,
+                        "maxLength": 160,
                     },
                     "part_id": {
                         "type": "string",
@@ -2136,6 +2171,50 @@ _EDIT_MODEL_OBJECT = _tool(
                             },
                             {"type": "null"},
                         ]
+                    },
+                    "material": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "section_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "region_name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                    },
+                    "section_type": {
+                        "type": "string",
+                        "enum": [
+                            "solid",
+                            "truss",
+                            "rectangle",
+                            "solid_circle",
+                            "hollow_circle",
+                        ],
+                    },
+                    "properties": _EDIT_BOUNDED_MAPPING_SCHEMA,
+                    "procedure": {"type": "string", "enum": ["static"]},
+                    "metadata": _EDIT_BOUNDED_MAPPING_SCHEMA,
+                    "output_kind": {"type": "string", "enum": ["field"]},
+                    "kind": {"type": "string", "enum": ["field"]},
+                    "target": {
+                        "type": "string",
+                        "enum": ["node", "element"],
+                    },
+                    "variables": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["U", "RF", "S"],
+                        },
+                        "minItems": 1,
+                        "maxItems": 16,
+                        "uniqueItems": True,
                     },
                     "first_component": {
                         "type": "integer",
@@ -4071,9 +4150,13 @@ class AuthoringWorkflowController:
                 self._pending_operation = "destructive_edit"
             else:
                 self._stage = (
-                    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                    if object_type == "analysis_step"
-                    else AuthoringWorkflowStage.DEFINITIONS_READY
+                    _restored_stage_for_context(self._observed_context)
+                    if self._observed_context is not None
+                    else (
+                        AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                        if object_type == "analysis_step"
+                        else AuthoringWorkflowStage.DEFINITIONS_READY
+                    )
                 )
                 self._record_terminal(
                     "model_definition",
@@ -4084,8 +4167,13 @@ class AuthoringWorkflowController:
             object_type = outcome.data.get("edit_object_type")
             if object_type not in {
                 "named_region",
+                "material",
+                "section",
+                "section_assignment",
+                "analysis_step",
                 "boundary_condition",
                 "load",
+                "result_request",
             }:
                 raise ValueError(
                     "edit handler registered no exact edited object type"
@@ -4096,7 +4184,11 @@ class AuthoringWorkflowController:
                 self._stage = AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
                 self._pending_operation = "destructive_edit"
             else:
-                self._stage = AuthoringWorkflowStage.DEFINITIONS_READY
+                self._stage = (
+                    _restored_stage_for_context(self._observed_context)
+                    if self._observed_context is not None
+                    else AuthoringWorkflowStage.DEFINITIONS_READY
+                )
                 self._record_terminal(
                     "model_edit",
                     "succeeded",

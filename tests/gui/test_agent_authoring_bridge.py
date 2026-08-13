@@ -196,7 +196,7 @@ def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
     assert empty_context.mesh.element_count == 0
 
 
-def test_snapshot_adapter_skips_engineering_edits_without_units() -> None:
+def test_snapshot_adapter_retains_non_engineering_edits_without_units() -> None:
     model = FEMModel(make_selection_quad_mesh(), name="模型-无单位")
     snapshot = SimpleNamespace(
         session_id="session-without-units",
@@ -234,7 +234,7 @@ def test_snapshot_adapter_skips_engineering_edits_without_units() -> None:
         if item.operation == "edit_model_objects"
     )
 
-    assert not edit_capability.enabled
+    assert edit_capability.enabled
 
 
 def test_bridge_gui_authorization_replay_stale_and_exception_paths() -> None:

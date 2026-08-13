@@ -1203,9 +1203,20 @@ _STEP_CHILD_DELETE_TYPES = frozenset(
     {"boundary_condition", "load", "result_request"}
 )
 _EDIT_MODEL_OBJECT_TYPES = frozenset(
-    {"named_region", "boundary_condition", "load"}
+    {
+        "named_region",
+        "material",
+        "section",
+        "section_assignment",
+        "analysis_step",
+        "boundary_condition",
+        "load",
+        "result_request",
+    }
 )
-_STEP_CHILD_EDIT_TYPES = frozenset({"boundary_condition", "load"})
+_STEP_CHILD_EDIT_TYPES = frozenset(
+    {"boundary_condition", "load", "result_request"}
+)
 
 
 @dataclass(frozen=True, slots=True)

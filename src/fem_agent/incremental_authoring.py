@@ -326,9 +326,6 @@ def create_incremental_definition_patch(
         created_names = (name,)
 
     definitions = ModelDefinitions(materials, sections, assignments, steps)
-    result_invalidating = any(
-        bool(getattr(run, "has_result", False)) for run in snapshot.runs
-    )
     return ModelPatch.create(
         patch_id=patch_id,
         agent_session_id=agent_session_id,
@@ -352,7 +349,10 @@ def create_incremental_definition_patch(
         invalidation_impact={
             "model": True,
             "validation": True,
-            "results": result_invalidating,
+            "results": False,
+            "historical_results_retained": True,
+            "current_validation_reset": True,
+            "current_result_display_reset": True,
         },
         display_summary={
             "title": f"Agent {_ACTION_SUMMARIES[normalized_action]}",

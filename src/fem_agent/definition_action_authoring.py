@@ -2,8 +2,8 @@
 
 This module is the active A4/A5 boundary adapter.  It keeps each user-requested
 definition change small and reversible while retaining the original strict
-engineering checks for dimensions, directions, signs, units, scopes, and
-result invalidation.
+engineering checks for dimensions, directions, signs, units, and scopes while
+retaining completed run/result history across same-model iterations.
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ from .authoring import (
     AgentProposal,
     AuthoringContext,
     ModelPatch,
-    ProposalKind,
 )
 from .definition_authoring import definition_state_operations
 from .incremental_authoring import create_incremental_definition_patch
@@ -93,7 +92,7 @@ class _Snapshot(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DefinitionChange:
-    """One strict direct patch or its result-invalidating confirmation proposal."""
+    """One strict direct patch (or a legacy compatible proposal value)."""
 
     value: ModelPatch | AgentProposal
     action: str
@@ -113,7 +112,7 @@ def create_definition_change(
     action: object,
     parameters: object,
 ) -> DefinitionChange:
-    """Create one strict A4/A5 change and gate accepted-result invalidation."""
+    """Create one strict A4/A5 change that retains historical results."""
 
     normalized_action = _action(action)
     values = _mapping(parameters, "parameters")
@@ -168,33 +167,8 @@ def create_definition_change(
             else "named_region"
         )
 
-    if patch.invalidation_impact.get("results") is not True:
-        return DefinitionChange(patch, normalized_action, resume_object_type)
-    proposal = AgentProposal.create(
-        proposal_id=proposal_id,
-        proposal_kind=ProposalKind.DESTRUCTIVE_EDIT,
-        agent_session_id=patch.agent_session_id,
-        turn_id=patch.turn_id,
-        source_tool_call_ids=patch.source_tool_call_ids,
-        target_document_id=patch.target_document_id,
-        target_session_id=patch.target_session_id,
-        base_session_revision=patch.base_session_revision,
-        draft_revision=patch.draft_revision,
-        operations=patch.operations,
-        preconditions={
-            **patch.preconditions,
-            "accepted_result_confirmation_required": True,
-        },
-        expected_changes=patch.expected_changes,
-        invalidation_impact=patch.invalidation_impact,
-        display_summary={
-            **patch.display_summary,
-            "title": "定义修改将使已有结果失效",
-            "impact": "已有验证、作业和结果将失效",
-            "confirm_label": "确认修改",
-        },
-    )
-    return DefinitionChange(proposal, normalized_action, resume_object_type)
+    del proposal_id
+    return DefinitionChange(patch, normalized_action, resume_object_type)
 
 
 def require_strict_definition_batch(
@@ -669,9 +643,6 @@ def _patch(
     created_names: Sequence[str],
     details: Mapping[str, object],
 ) -> ModelPatch:
-    result_invalidating = any(
-        bool(getattr(run, "has_result", False)) for run in snapshot.runs
-    )
     summary = {
         "create_named_region": "已创建作用域",
         "create_boundary_condition": "已创建边界条件",
@@ -703,7 +674,10 @@ def _patch(
         invalidation_impact={
             "model": True,
             "validation": True,
-            "results": result_invalidating,
+            "results": False,
+            "historical_results_retained": True,
+            "current_validation_reset": True,
+            "current_result_display_reset": True,
         },
         display_summary={
             "title": f"Agent {summary}",

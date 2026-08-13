@@ -907,7 +907,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if editable_objects_available
-                else "当前 native 项目没有可编辑的作用域、边界条件或载荷"
+                else "当前 native 项目没有可编辑的定义对象"
             ),
         ),
         CapabilitySummary(
@@ -2228,10 +2228,10 @@ class SessionGeometryAuthoringPort:
         has_results = any(
             bool(getattr(run, "has_result", False)) for run in snapshot.runs
         )
-        if has_results and authoring_mode not in {
-            "direct_incremental",
-            "direct_edit",
-        }:
+        if (
+            has_results
+            and patch.invalidation_impact.get("results") is True
+        ):
             raise AuthoringAuthorizationError(
                 "a result-invalidating edit requires GUI confirmation"
             )
@@ -2295,7 +2295,10 @@ class SessionGeometryAuthoringPort:
             invalidation_impact={
                 "model": True,
                 "validation": True,
-                "results": has_results,
+                "results": False,
+                "historical_results_retained": True,
+                "current_validation_reset": True,
+                "current_result_display_reset": True,
             },
             display_summary={
                 "title": "撤销本次 Agent 修改",
@@ -5165,7 +5168,23 @@ def create_session_authoring_workflow_controller(
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         catalog = editable_object_catalog(current_session().snapshot(), limit=128)
-        visible = catalog[:100]
+        visible: list[object] = []
+        for item in catalog[:100]:
+            candidate = [
+                *(entry.to_provider_dict() for entry in visible),
+                item.to_provider_dict(),
+            ]
+            try:
+                provider_safe_authoring_payload(
+                    {
+                        "objects": candidate,
+                        "count": len(candidate),
+                        "truncated": len(candidate) < len(catalog),
+                    }
+                )
+            except ValueError:
+                break
+            visible.append(item)
         return AuthoringToolOutcome(
             "Current editable model objects read locally.",
             {
@@ -5201,41 +5220,6 @@ def create_session_authoring_workflow_controller(
             changes=arguments["changes"],
             **metadata,
         )
-        if patch.invalidation_impact.get("results") is True:
-            proposal = AgentProposal.create(
-                proposal_id=f"proposal-{suffix}",
-                proposal_kind=ProposalKind.DESTRUCTIVE_EDIT,
-                agent_session_id=patch.agent_session_id,
-                turn_id=patch.turn_id,
-                source_tool_call_ids=patch.source_tool_call_ids,
-                target_document_id=patch.target_document_id,
-                target_session_id=patch.target_session_id,
-                base_session_revision=patch.base_session_revision,
-                draft_revision=patch.draft_revision,
-                operations=patch.operations,
-                preconditions={
-                    **patch.preconditions,
-                    "accepted_result_confirmation_required": True,
-                },
-                expected_changes=patch.expected_changes,
-                invalidation_impact=patch.invalidation_impact,
-                display_summary={
-                    "title": "编辑将使已有结果失效",
-                    "summary": str(patch.display_summary["summary"]),
-                    "impact": "已有验证、作业和结果将失效",
-                    "confirm_label": "确认修改",
-                },
-            )
-            return proposal_outcome(
-                proposal,
-                summary=str(proposal.display_summary["summary"]),
-                impact=str(proposal.display_summary["impact"]),
-                confirm_label=str(proposal.display_summary["confirm_label"]),
-                extra_data={
-                    "edit_object_type": target.object_type,
-                    "target_id": target.target_id,
-                },
-            )
         provisional = AuthoringToolOutcome(
             str(patch.display_summary["summary"]),
             {

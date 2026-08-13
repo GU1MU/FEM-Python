@@ -276,12 +276,27 @@ def test_a4_automatic_apply_fails_closed_if_port_sees_accepted_result(
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(snapshot)
     monkeypatch.setattr(session, "snapshot", lambda: result_snapshot)
+    destructive = ModelPatch.create(
+        patch_id="patch-result-destructive",
+        agent_session_id=patch.agent_session_id,
+        turn_id=patch.turn_id,
+        source_tool_call_ids=patch.source_tool_call_ids,
+        target_document_id=patch.target_document_id,
+        target_session_id=patch.target_session_id,
+        base_session_revision=patch.base_session_revision,
+        draft_revision=patch.draft_revision,
+        operations=patch.operations,
+        preconditions=patch.preconditions,
+        expected_changes=patch.expected_changes,
+        invalidation_impact={"results": True},
+        display_summary=patch.display_summary,
+    )
 
     with pytest.raises(
         AuthoringAuthorizationError,
         match="requires GUI confirmation",
     ):
-        bridge.apply_automatic_patch(patch)
+        bridge.apply_automatic_patch(destructive)
 
     assert session.session_revision == snapshot.session_revision
 

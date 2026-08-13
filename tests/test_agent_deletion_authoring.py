@@ -667,5 +667,5 @@ def test_controller_applies_supported_edit_directly_and_refreshes_binding() -> N
     assert catalog.ok and result.ok
     assert result.data["gui_synchronized"] is True
     assert "proposal_id" not in result.data
-    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    assert controller.stage is AuthoringWorkflowStage.PREFLIGHT_READY
     assert session.snapshot().steps[0].edge_loads[0].vector == (25.0, 0.0)

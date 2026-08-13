@@ -234,7 +234,7 @@ def test_strict_production_action_supports_nodal_loads() -> None:
     assert stored.value == -5.0
 
 
-def test_result_invalidating_definition_waits_for_gui_confirmation() -> None:
+def test_definition_iteration_applies_directly_and_retains_history() -> None:
     session = _a5_session()
     controller, bridge = _production_controller(session)
     _apply_analysis_definitions(controller, session)
@@ -242,7 +242,7 @@ def test_result_invalidating_definition_waits_for_gui_confirmation() -> None:
     before = session.snapshot()
     assert any(run.has_result for run in before.runs)
 
-    proposed = _dispatch(
+    applied = _dispatch(
         controller,
         session,
         "apply_model_definition",
@@ -256,36 +256,59 @@ def test_result_invalidating_definition_waits_for_gui_confirmation() -> None:
         "result-invalidating-material",
     )
 
-    assert proposed.ok, proposed.to_json()
-    assert "proposal_id" in proposed.data
-    assert controller.stage is AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
-    pending = session.snapshot()
-    assert pending.session_revision == before.session_revision
-    assert pending.materials == before.materials
-    assert tuple(run.run_id for run in pending.runs) == tuple(
-        run.run_id for run in before.runs
-    )
-    assert any(run.has_result for run in pending.runs)
-
-    receipt = bridge.accept_from_gui_control(proposed.data["proposal_id"])
-    controller.record_proposal_state(
-        "destructive_edit",
-        receipt.state,
-        receipt.message,
-    )
-
+    assert applied.ok, applied.to_json()
+    assert applied.data["state"] == "succeeded"
+    assert "proposal_id" not in applied.data
     after = session.snapshot()
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
+    assert controller.stage is AuthoringWorkflowStage.PREFLIGHT_READY
     assert "材料-附加" in {item.name for item in after.materials}
     assert tuple(run.run_id for run in after.runs) == tuple(
         run.run_id for run in before.runs
     )
     assert any(run.has_result for run in after.runs)
     assert after.displayed_result_run_id is None
+    assert not after.validations
+    for run in before.runs:
+        if run.has_result:
+            assert session.result_for(run.run_id) is not None
+    assert {
+        "read_analysis_run_catalog",
+        "read_accepted_result_catalog",
+        "query_accepted_result",
+        "run_native_preflight",
+    }.issubset({item.name for item in controller.definitions})
+
+    preflight = _dispatch(
+        controller,
+        session,
+        "run_native_preflight",
+        {},
+        "iteration-preflight",
+    )
+    assert preflight.ok, preflight.to_json()
+    assert controller.stage is AuthoringWorkflowStage.SOLVE_READY
+    solve = _dispatch(
+        controller,
+        session,
+        "prepare_solve_proposal",
+        {},
+        "iteration-solve",
+    )
+    assert solve.ok, solve.to_json()
+    receipt = bridge.accept_from_gui_control(solve.data["proposal_id"])
+    controller.record_proposal_state("solve", receipt.state, receipt.message)
+    assert receipt.state is ProposalState.SUCCEEDED
+    rerun = session.snapshot()
+    assert len(rerun.runs) == len(before.runs) + 1
+    assert len({run.name for run in rerun.runs}) == len(rerun.runs)
+    assert all(
+        session.result_for(run.run_id) is not None
+        for run in rerun.runs
+        if run.has_result
+    )
 
 
-def test_result_invalidating_edit_waits_for_gui_confirmation() -> None:
+def test_definition_edit_applies_directly_and_retains_history() -> None:
     session = _a5_session()
     controller, bridge = _production_controller(session)
     _apply_analysis_definitions(controller, session)
@@ -293,7 +316,7 @@ def test_result_invalidating_edit_waits_for_gui_confirmation() -> None:
     before = session.snapshot()
     before_vector = before.steps[0].edge_loads[0].vector
 
-    proposed = _dispatch(
+    applied = _dispatch(
         controller,
         session,
         "edit_model_object",
@@ -314,30 +337,32 @@ def test_result_invalidating_edit_waits_for_gui_confirmation() -> None:
         "result-invalidating-load-edit",
     )
 
-    assert proposed.ok, proposed.to_json()
-    assert "proposal_id" in proposed.data
-    assert controller.stage is AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
-    pending = session.snapshot()
-    assert pending.session_revision == before.session_revision
-    assert pending.steps[0].edge_loads[0].vector == before_vector
-    assert any(run.has_result for run in pending.runs)
-
-    receipt = bridge.accept_from_gui_control(proposed.data["proposal_id"])
-    controller.record_proposal_state(
-        "destructive_edit",
-        receipt.state,
-        receipt.message,
-    )
-
+    assert applied.ok, applied.to_json()
+    assert applied.data["state"] == "succeeded"
+    assert "proposal_id" not in applied.data
     after = session.snapshot()
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert controller.stage is AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+    assert controller.stage is AuthoringWorkflowStage.PREFLIGHT_READY
+    assert before_vector != (25.0, 0.0)
     assert after.steps[0].edge_loads[0].vector == (25.0, 0.0)
     assert tuple(run.run_id for run in after.runs) == tuple(
         run.run_id for run in before.runs
     )
     assert any(run.has_result for run in after.runs)
     assert after.displayed_result_run_id is None
+    assert not after.validations
+
+    undone = bridge.undo_patch_from_gui_control(applied.data["patch_id"])
+    restored = session.snapshot()
+    assert undone.inverse_patch.invalidation_impact["results"] is False
+    assert restored.steps[0].edge_loads[0].vector == before_vector
+    assert tuple(run.run_id for run in restored.runs) == tuple(
+        run.run_id for run in before.runs
+    )
+    assert all(
+        session.result_for(run.run_id) is not None
+        for run in restored.runs
+        if run.has_result
+    )
 
 
 def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:

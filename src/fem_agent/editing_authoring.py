@@ -11,10 +11,14 @@ import math
 from typing import Protocol
 
 from fem.application import (
+    DefinitionEditBatch,
     MeshEntityRef,
     ModelSession,
     NamedRegion,
+    RegionAssignment,
+    RenameIntent,
     ScopedDefinitionBatch,
+    SectionDefinition,
     UnitContext,
     validate_logical_reference,
 )
@@ -23,12 +27,15 @@ from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
 from fem.core.model import (
+    AnalysisStep,
     BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
     LineLoad,
+    MaterialDefinition,
     NodalLoad,
+    OutputRequest,
     SurfaceLoad,
 )
 from fem.geometry import (
@@ -66,7 +73,21 @@ _STEP_REFERENCE_FIELDS = (
     ("body_loads", "target"),
     ("gravity_loads", "target"),
 )
-_EDIT_TYPES = frozenset({"named_region", "boundary_condition", "load"})
+_EDIT_TYPES = frozenset(
+    {
+        "named_region",
+        "material",
+        "section",
+        "section_assignment",
+        "analysis_step",
+        "boundary_condition",
+        "load",
+        "result_request",
+    }
+)
+_STEP_CHILD_EDIT_TYPES = frozenset(
+    {"boundary_condition", "load", "result_request"}
+)
 
 
 class _Snapshot(Protocol):
@@ -103,7 +124,7 @@ class EditableObject:
             if len(normalized) > 160:
                 raise ValueError(f"{field_name} must be at most 160 characters")
             object.__setattr__(self, field_name, normalized)
-        if self.object_type in {"boundary_condition", "load"}:
+        if self.object_type in _STEP_CHILD_EDIT_TYPES:
             if type(self.step_name) is not str or not self.step_name.strip():
                 raise ValueError("step_name is required for step child targets")
             normalized_step = self.step_name.strip()
@@ -131,7 +152,7 @@ def editable_object_catalog(
     *,
     limit: int = 100,
 ) -> tuple[EditableObject, ...]:
-    """Return current named scopes, boundaries, and loads with editable values."""
+    """Return bounded native definition objects with stable edit identities."""
 
     if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= 128:
         raise ValueError("limit must be an integer between 1 and 128")
@@ -169,12 +190,135 @@ def editable_object_catalog(
             )
         )
 
+    for material in tuple(snapshot.materials):
+        name = _optional_name(material)
+        if name is None or len(name) > 160:
+            continue
+        items.append(
+            EditableObject(
+                "material",
+                name,
+                name,
+                details={
+                    "properties": _provider_mapping(material.properties),
+                    "editable_fields": ["new_name", "properties"],
+                },
+            )
+        )
+
+    for section in tuple(snapshot.sections):
+        name = _optional_name(section)
+        if name is None or len(name) > 160:
+            continue
+        items.append(
+            EditableObject(
+                "section",
+                name,
+                name,
+                details={
+                    "material": _bounded_text(section.material),
+                    "section_type": _bounded_text(section.section_type),
+                    "properties": _provider_mapping(section.properties),
+                    "editable_fields": [
+                        "new_name",
+                        "material",
+                        "section_type",
+                        "properties",
+                    ],
+                },
+            )
+        )
+
+    assignment_region_counts: dict[str, int] = {}
+    for assignment in tuple(snapshot.assignments):
+        region_name = str(getattr(assignment, "region_name", "")).strip()
+        if region_name:
+            assignment_region_counts[region_name] = (
+                assignment_region_counts.get(region_name, 0) + 1
+            )
+    for assignment in tuple(snapshot.assignments):
+        region_name = str(getattr(assignment, "region_name", "")).strip()
+        if (
+            not region_name
+            or len(region_name) > 160
+            or assignment_region_counts.get(region_name) != 1
+        ):
+            continue
+        items.append(
+            EditableObject(
+                "section_assignment",
+                region_name,
+                region_name,
+                details={
+                    "region_name": region_name,
+                    "section_name": _bounded_text(assignment.section_name),
+                    "editable_fields": ["region_name", "section_name"],
+                },
+            )
+        )
+
     units = getattr(snapshot, "unit_context", None)
     for step in tuple(snapshot.steps):
-        if type(units) is not UnitContext:
-            continue
         step_name = str(getattr(step, "name", "")).strip()
         if not step_name or len(step_name) > 160:
+            continue
+        items.append(
+            EditableObject(
+                "analysis_step",
+                step_name,
+                step_name,
+                details={
+                    "procedure": _bounded_text(
+                        getattr(step, "procedure", "static")
+                    ),
+                    "metadata": _provider_mapping(
+                        getattr(step, "metadata", {})
+                    ),
+                    "boundary_count": len(tuple(step.boundaries)),
+                    "load_count": sum(
+                        len(tuple(getattr(step, collection_name, ())))
+                        for collection_name, _expected, _kind in _LOAD_COLLECTIONS
+                    ),
+                    "result_request_count": len(tuple(step.outputs)),
+                    "editable_fields": [
+                        "new_name",
+                        "procedure",
+                        "metadata",
+                    ],
+                },
+            )
+        )
+        for output in tuple(getattr(step, "outputs", ())):
+            name = _optional_name(output)
+            if name is None or len(name) > 160:
+                continue
+            details: dict[str, object] = {
+                "output_kind": _bounded_text(output.kind),
+                "target": _bounded_text(output.target),
+                "variables": [
+                    _bounded_text(value) for value in tuple(output.variables)[:32]
+                ],
+                "metadata": _provider_mapping(output.metadata),
+                "source_evidence_present": output.source_evidence is not None,
+                "editable_fields": [
+                    "new_name",
+                    "output_kind",
+                    "kind",
+                    "target",
+                    "variables",
+                    "metadata",
+                ],
+            }
+            items.append(
+                EditableObject(
+                    "result_request",
+                    name,
+                    name,
+                    step_name,
+                    details,
+                )
+            )
+        if type(units) is not UnitContext:
             continue
         for boundary in tuple(getattr(step, "boundaries", ())):
             name = _optional_name(boundary)
@@ -282,8 +426,13 @@ def create_edit_proposal(
         parameters["step_name"] = target.step_name
     label = {
         "named_region": "作用域",
+        "material": "材料",
+        "section": "截面",
+        "section_assignment": "截面指派",
+        "analysis_step": "分析步",
         "boundary_condition": "边界条件",
         "load": "载荷",
+        "result_request": "结果请求",
     }[target.object_type]
     changed_fields = "、".join(normalized_changes)
     proposal = AgentProposal.create(
@@ -312,12 +461,15 @@ def create_edit_proposal(
         invalidation_impact={
             "model": True,
             "validation": True,
-            "results": True,
+            "results": False,
+            "historical_results_retained": True,
+            "current_validation_reset": True,
+            "current_result_display_reset": True,
         },
         display_summary={
             "title": f"编辑{label}：{target.display_name}",
             "summary": f"修改{label}“{target.display_name}”的{changed_fields}",
-            "impact": "修改后相关预检、作业和结果将失效",
+            "impact": "修改后需重新预检；历史作业和结果继续保留",
             "confirm_label": "确认修改",
         },
     )
@@ -355,12 +507,14 @@ def create_edit_patch(
     )
     label = {
         "named_region": "作用域",
+        "material": "材料",
+        "section": "截面",
+        "section_assignment": "截面指派",
+        "analysis_step": "分析步",
         "boundary_condition": "边界条件",
         "load": "载荷",
+        "result_request": "结果请求",
     }[target.object_type]
-    result_invalidating = any(
-        bool(getattr(run, "has_result", False)) for run in snapshot.runs
-    )
     patch = ModelPatch.create(
         patch_id=patch_id,
         agent_session_id=proposal.agent_session_id,
@@ -378,7 +532,7 @@ def create_edit_patch(
         expected_changes=proposal.expected_changes,
         invalidation_impact={
             **proposal.invalidation_impact,
-            "results": result_invalidating,
+            "results": False,
         },
         display_summary={
             "title": f"Agent 已编辑{label}",
@@ -419,6 +573,8 @@ def apply_edit_operation(
         parameters["changes"],
     )
     regions = tuple(snapshot.named_regions.values())
+    materials = tuple(snapshot.materials)
+    sections = tuple(snapshot.sections)
     assignments = tuple(snapshot.assignments)
     steps = deepcopy(tuple(snapshot.steps))
 
@@ -445,6 +601,69 @@ def apply_edit_operation(
                 _rename_step_scope(step, old_name, replacement.name)
                 for step in steps
             )
+        return session.apply_scoped_definition_batch(
+            ScopedDefinitionBatch(
+                base_session_revision,
+                regions,
+                materials,
+                sections,
+                assignments,
+                steps,
+            )
+        )
+    if target.object_type == "material":
+        assert type(replacement) is MaterialDefinition
+        materials = tuple(
+            replacement if item.name == target.target_id else item
+            for item in materials
+        )
+        material_renames = (
+            (RenameIntent(target.target_id, replacement.name),)
+            if replacement.name != target.target_id
+            else ()
+        )
+        return session.apply_definition_edit(
+            DefinitionEditBatch(
+                base_session_revision,
+                materials,
+                sections,
+                assignments,
+                steps,
+                material_renames=material_renames,
+            )
+        )
+    if target.object_type == "section":
+        assert type(replacement) is SectionDefinition
+        sections = tuple(
+            replacement if item.name == target.target_id else item
+            for item in sections
+        )
+        section_renames = (
+            (RenameIntent(target.target_id, replacement.name),)
+            if replacement.name != target.target_id
+            else ()
+        )
+        return session.apply_definition_edit(
+            DefinitionEditBatch(
+                base_session_revision,
+                materials,
+                sections,
+                assignments,
+                steps,
+                section_renames=section_renames,
+            )
+        )
+    if target.object_type == "section_assignment":
+        assert type(replacement) is RegionAssignment
+        assignments = tuple(
+            replacement if item.region_name == target.target_id else item
+            for item in assignments
+        )
+    elif target.object_type == "analysis_step":
+        steps = tuple(
+            replacement if step.name == target.target_id else step
+            for step in steps
+        )
     else:
         steps = tuple(
             _replace_step_child(step, target, replacement)
@@ -453,12 +672,11 @@ def apply_edit_operation(
             for step in steps
         )
 
-    return session.apply_scoped_definition_batch(
-        ScopedDefinitionBatch(
+    return session.apply_definition_edit(
+        DefinitionEditBatch(
             base_session_revision,
-            regions,
-            tuple(snapshot.materials),
-            tuple(snapshot.sections),
+            materials,
+            sections,
             assignments,
             steps,
         )
@@ -500,9 +718,19 @@ def _validated_edit(
     changes = dict(raw_changes)
     if target.object_type == "named_region":
         return _validated_region_edit(snapshot, target, changes)
+    if target.object_type == "material":
+        return _validated_material_edit(snapshot, target, changes)
+    if target.object_type == "section":
+        return _validated_section_edit(snapshot, target, changes)
+    if target.object_type == "section_assignment":
+        return _validated_assignment_edit(snapshot, target, changes)
+    if target.object_type == "analysis_step":
+        return _validated_step_edit(snapshot, target, changes)
     if target.object_type == "boundary_condition":
         return _validated_boundary_edit(snapshot, target, changes)
-    return _validated_load_edit(snapshot, target, changes)
+    if target.object_type == "load":
+        return _validated_load_edit(snapshot, target, changes)
+    return _validated_output_edit(snapshot, target, changes)
 
 
 def _validated_region_edit(
@@ -608,6 +836,220 @@ def _validated_region_edit(
     replacement = replace(current, **updates)
     if replacement == current:
         raise ValueError("changes do not modify the selected named region")
+    return normalized, replacement
+
+
+def _validated_material_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    changes: dict[object, object],
+) -> tuple[dict[str, object], MaterialDefinition]:
+    _require_change_keys(changes, {"new_name", "properties"})
+    current = _find_named(snapshot.materials, target.target_id, "material")
+    updates: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+    if "new_name" in changes:
+        name = _safe_name(changes["new_name"], "new_name")
+        updates["name"] = name
+        normalized["new_name"] = name
+    if "properties" in changes:
+        property_updates = _bounded_mapping(
+            changes["properties"],
+            "properties",
+        )
+        updates["properties"] = {
+            **dict(current.properties),
+            **property_updates,
+        }
+        normalized["properties"] = deepcopy(property_updates)
+    replacement = replace(current, **updates)
+    if replacement == current:
+        raise ValueError("changes do not modify the selected material")
+    return normalized, replacement
+
+
+def _validated_section_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    changes: dict[object, object],
+) -> tuple[dict[str, object], SectionDefinition]:
+    _require_change_keys(
+        changes,
+        {"new_name", "material", "section_type", "properties"},
+    )
+    current = _find_named(snapshot.sections, target.target_id, "section")
+    updates: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+    if "new_name" in changes:
+        name = _safe_name(changes["new_name"], "new_name")
+        updates["name"] = name
+        normalized["new_name"] = name
+    if "material" in changes:
+        material = _required_text(changes["material"], "material")
+        _find_named(snapshot.materials, material, "material")
+        updates["material"] = material
+        normalized["material"] = material
+    if "section_type" in changes:
+        section_type = _required_text(
+            changes["section_type"], "section_type"
+        ).casefold()
+        if section_type not in {
+            "solid",
+            "truss",
+            "rectangle",
+            "solid_circle",
+            "hollow_circle",
+        }:
+            raise ValueError("section_type is unsupported")
+        updates["section_type"] = section_type
+        normalized["section_type"] = section_type
+    if "properties" in changes:
+        property_updates = _bounded_mapping(
+            changes["properties"],
+            "properties",
+        )
+        updates["properties"] = {
+            **dict(current.properties),
+            **property_updates,
+        }
+        normalized["properties"] = deepcopy(property_updates)
+    replacement = replace(current, **updates)
+    if replacement == current:
+        raise ValueError("changes do not modify the selected section")
+    return normalized, replacement
+
+
+def _validated_assignment_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    changes: dict[object, object],
+) -> tuple[dict[str, object], RegionAssignment]:
+    _require_change_keys(changes, {"region_name", "section_name"})
+    matches = tuple(
+        assignment
+        for assignment in tuple(snapshot.assignments)
+        if assignment.region_name == target.target_id
+    )
+    if len(matches) != 1:
+        raise ValueError("section assignment target is unavailable or ambiguous")
+    current = matches[0]
+    updates: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+    if "region_name" in changes:
+        region_name = _required_text(changes["region_name"], "region_name")
+        region = _require_region(snapshot, region_name)
+        if region.entity_kind != "element":
+            raise ValueError("assignment region must be an element scope")
+        if any(
+            assignment is not current
+            and assignment.region_name == region_name
+            for assignment in tuple(snapshot.assignments)
+        ):
+            raise ValueError("assignment region already has an assignment")
+        updates["region_name"] = region_name
+        normalized["region_name"] = region_name
+    if "section_name" in changes:
+        section_name = _required_text(
+            changes["section_name"], "section_name"
+        )
+        _find_named(snapshot.sections, section_name, "section")
+        updates["section_name"] = section_name
+        normalized["section_name"] = section_name
+    replacement = replace(current, **updates)
+    if replacement == current:
+        raise ValueError("changes do not modify the selected section assignment")
+    return normalized, replacement
+
+
+def _validated_step_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    changes: dict[object, object],
+) -> tuple[dict[str, object], AnalysisStep]:
+    _require_change_keys(changes, {"new_name", "procedure", "metadata"})
+    current = _require_step(snapshot, target.target_id)
+    if type(current) is not AnalysisStep:
+        raise ValueError("analysis step target has an unsupported type")
+    updates: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+    if "new_name" in changes:
+        name = _safe_name(changes["new_name"], "new_name")
+        updates["name"] = name
+        normalized["new_name"] = name
+    if "procedure" in changes:
+        procedure = _required_text(changes["procedure"], "procedure").casefold()
+        if procedure != "static":
+            raise ValueError("procedure is unsupported")
+        updates["procedure"] = procedure
+        normalized["procedure"] = procedure
+    if "metadata" in changes:
+        metadata_updates = _bounded_mapping(changes["metadata"], "metadata")
+        updates["metadata"] = {
+            **dict(current.metadata),
+            **metadata_updates,
+        }
+        normalized["metadata"] = deepcopy(metadata_updates)
+    replacement = replace(current, **updates)
+    if replacement == current:
+        raise ValueError("changes do not modify the selected analysis step")
+    return normalized, replacement
+
+
+def _validated_output_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    changes: dict[object, object],
+) -> tuple[dict[str, object], OutputRequest]:
+    _require_change_keys(
+        changes,
+        {"new_name", "output_kind", "kind", "target", "variables", "metadata"},
+    )
+    if "output_kind" in changes and "kind" in changes:
+        raise ValueError("use either output_kind or kind, not both")
+    current = _find_output(snapshot, target)
+    updates: dict[str, object] = {}
+    normalized: dict[str, object] = {}
+    if "new_name" in changes:
+        name = _safe_name(changes["new_name"], "new_name")
+        updates["name"] = name
+        normalized["new_name"] = name
+    kind_field = "output_kind" if "output_kind" in changes else "kind"
+    if kind_field in changes:
+        kind = _required_text(changes[kind_field], kind_field).casefold()
+        if kind != "field":
+            raise ValueError("output_kind is unsupported")
+        updates["kind"] = kind
+        normalized[kind_field] = kind
+    if "target" in changes:
+        output_target = _required_text(changes["target"], "target").casefold()
+        if output_target not in {"node", "element"}:
+            raise ValueError("result request target is unsupported")
+        updates["target"] = output_target
+        normalized["target"] = output_target
+    if "variables" in changes:
+        variables = _string_list(changes["variables"], "variables", max_items=16)
+        variables = tuple(value.upper() for value in variables)
+        updates["variables"] = variables
+        normalized["variables"] = list(variables)
+    if "metadata" in changes:
+        metadata_updates = _bounded_mapping(changes["metadata"], "metadata")
+        updates["metadata"] = {
+            **dict(current.metadata),
+            **metadata_updates,
+        }
+        normalized["metadata"] = deepcopy(metadata_updates)
+    replacement = replace(current, **updates)
+    supported = {"node": {"U", "RF"}, "element": {"S"}}
+    if replacement.kind != "field":
+        raise ValueError("output_kind is unsupported")
+    if replacement.target not in supported:
+        raise ValueError("result request target is unsupported")
+    if not replacement.variables:
+        raise ValueError("result request variables must not be empty")
+    if not set(replacement.variables).issubset(supported[replacement.target]):
+        raise ValueError("result variables do not match their target")
+    if replacement == current:
+        raise ValueError("changes do not modify the selected result request")
     return normalized, replacement
 
 
@@ -1083,6 +1525,21 @@ def _find_load(
     return matches[0]
 
 
+def _find_output(
+    snapshot: _Snapshot,
+    target: EditableObject,
+) -> OutputRequest:
+    step = _require_step(snapshot, target.step_name)
+    matches = tuple(
+        item
+        for item in tuple(getattr(step, "outputs", ()))
+        if _optional_name(item) == target.target_id
+    )
+    if len(matches) != 1 or type(matches[0]) is not OutputRequest:
+        raise ValueError("result request target is unavailable or ambiguous")
+    return matches[0]
+
+
 def _replace_step_child(
     step: object,
     target: EditableObject,
@@ -1096,6 +1553,16 @@ def _replace_step_child(
                 if _optional_name(item) == target.target_id
                 else item
                 for item in tuple(getattr(step, "boundaries", ()))
+            ),
+        )
+    if target.object_type == "result_request":
+        return replace(
+            step,
+            outputs=tuple(
+                replacement
+                if _optional_name(item) == target.target_id
+                else item
+                for item in tuple(getattr(step, "outputs", ()))
             ),
         )
     collection_name, _current, _kind = _find_load(
@@ -1183,6 +1650,17 @@ def _require_step(snapshot: object, step_name: str | None) -> object:
     )
     if len(matches) != 1:
         raise ValueError("analysis step is unavailable or ambiguous")
+    return matches[0]
+
+
+def _find_named(
+    values: Sequence[object],
+    name: str,
+    label: str,
+) -> object:
+    matches = tuple(item for item in values if getattr(item, "name", None) == name)
+    if len(matches) != 1:
+        raise ValueError(f"{label} target is unavailable or ambiguous")
     return matches[0]
 
 
@@ -1288,6 +1766,95 @@ def _controlled_name(
             f"{field_name} must use the {object_type}- prefix"
         )
     return name
+
+
+def _safe_name(value: object, field_name: str) -> str:
+    return NamePolicy().validate(_required_text(value, field_name))
+
+
+def _bounded_text(value: object) -> str:
+    text = str(value)
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _provider_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    for raw_key, raw_value in tuple(value.items())[:32]:
+        key = _bounded_text(raw_key)
+        if isinstance(raw_value, bool) or raw_value is None:
+            result[key] = raw_value
+        elif isinstance(raw_value, (int, float)) and math.isfinite(
+            float(raw_value)
+        ):
+            result[key] = raw_value
+        elif type(raw_value) is str:
+            result[key] = _bounded_text(raw_value)
+        elif isinstance(raw_value, Sequence) and not isinstance(
+            raw_value, (str, bytes, bytearray)
+        ):
+            values: list[object] = []
+            for item in tuple(raw_value)[:16]:
+                if isinstance(item, bool) or item is None:
+                    values.append(item)
+                elif isinstance(item, (int, float)) and math.isfinite(float(item)):
+                    values.append(item)
+                elif type(item) is str:
+                    values.append(_bounded_text(item))
+                else:
+                    values.append(None)
+            result[key] = values
+        else:
+            result[key] = None
+    return result
+
+
+def _bounded_mapping(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be an object")
+    if len(value) > 32:
+        raise ValueError(f"{field_name} must contain at most 32 fields")
+    result: dict[str, object] = {}
+    for raw_key, raw_value in value.items():
+        key = _required_text(raw_key, f"{field_name} key")
+        if len(key) > 96:
+            raise ValueError(f"{field_name} keys must be at most 96 characters")
+        if isinstance(raw_value, bool) or raw_value is None:
+            normalized: object = raw_value
+        elif isinstance(raw_value, (int, float)):
+            normalized = _finite_number(raw_value, f"{field_name}.{key}")
+        elif type(raw_value) is str:
+            normalized = _required_text(raw_value, f"{field_name}.{key}")
+        elif isinstance(raw_value, Sequence) and not isinstance(
+            raw_value, (str, bytes, bytearray)
+        ):
+            items = tuple(raw_value)
+            if not 1 <= len(items) <= 16:
+                raise ValueError(
+                    f"{field_name}.{key} arrays must contain 1 to 16 values"
+                )
+            normalized_items: list[object] = []
+            for item in items:
+                if isinstance(item, bool) or item is None:
+                    normalized_items.append(item)
+                elif isinstance(item, (int, float)):
+                    normalized_items.append(
+                        _finite_number(item, f"{field_name}.{key}")
+                    )
+                elif type(item) is str:
+                    normalized_items.append(
+                        _required_text(item, f"{field_name}.{key}")
+                    )
+                else:
+                    raise ValueError(
+                        f"{field_name}.{key} contains an unsupported value"
+                    )
+            normalized = normalized_items
+        else:
+            raise ValueError(f"{field_name}.{key} has an unsupported value")
+        result[key] = normalized
+    return result
 
 
 def _confirmed(value: object) -> bool:
