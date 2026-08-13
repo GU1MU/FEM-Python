@@ -27,9 +27,11 @@ from .providers.base import ToolDefinition
 from .result_authoring import (
     ANALYSIS_RUN_CATALOG_TOOL_NAME,
     RESULT_CATALOG_TOOL_NAME,
+    RESULT_COMPARISON_TOOL_NAME,
     RESULT_QUERY_TOOL_NAME,
     analysis_run_catalog_tool_schema,
     result_catalog_tool_schema,
+    result_comparison_tool_schema,
     result_query_tool_schema,
 )
 from .workspace_catalog import workspace_documents_tool_schema
@@ -2298,6 +2300,7 @@ _EDIT_MODEL_OBJECT = _tool(
 )
 _RESULT_CATALOG = _result_tool_definition(result_catalog_tool_schema())
 _RESULT_QUERY = _result_tool_definition(result_query_tool_schema())
+_RESULT_COMPARISON = _result_tool_definition(result_comparison_tool_schema())
 _ANALYSIS_RUN_CATALOG = _result_tool_definition(
     analysis_run_catalog_tool_schema()
 )
@@ -2722,6 +2725,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _PREPARE_SOLVE,
         _RESULT_CATALOG,
         _RESULT_QUERY,
+        _RESULT_COMPARISON,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
@@ -2978,6 +2982,8 @@ class AuthoringWorkflowController:
                     historical_definitions.extend(
                         (_RESULT_CATALOG, _RESULT_QUERY)
                     )
+                if self._observed_context.result_count >= 2:
+                    historical_definitions.append(_RESULT_COMPARISON)
                 for result_definition in historical_definitions:
                     if all(
                         item.name != result_definition.name
@@ -3044,10 +3050,19 @@ class AuthoringWorkflowController:
                     )
                     and (
                         item.name
-                        not in {_RESULT_CATALOG.name, _RESULT_QUERY.name}
+                        not in {
+                            _RESULT_CATALOG.name,
+                            _RESULT_QUERY.name,
+                            _RESULT_COMPARISON.name,
+                        }
                         or (
                             self._observed_context is not None
-                            and self._observed_context.result_count > 0
+                            and self._observed_context.result_count
+                            >= (
+                                2
+                                if item.name == _RESULT_COMPARISON.name
+                                else 1
+                            )
                         )
                     )
                     and (
@@ -3104,6 +3119,7 @@ class AuthoringWorkflowController:
                     _require_exact_fields(arguments, set()) if name not in {
                         RESULT_QUERY_TOOL_NAME,
                         RESULT_CATALOG_TOOL_NAME,
+                        RESULT_COMPARISON_TOOL_NAME,
                         ANALYSIS_RUN_CATALOG_TOOL_NAME,
                         _RUN_PREFLIGHT.name,
                         _PREPARE_SOLVE.name,

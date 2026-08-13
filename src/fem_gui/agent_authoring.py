@@ -140,6 +140,8 @@ from fem_agent.result_authoring import (
     AgentResultAggregation,
     AgentResultCatalog,
     AgentResultCatalogResponse,
+    AgentResultComparisonQuery,
+    AgentResultComparisonResponse,
     AgentResultField,
     AgentResultLocation,
     AgentResultQuery,
@@ -147,6 +149,7 @@ from fem_agent.result_authoring import (
     AgentResultScalar,
     AgentResultVariable,
     AgentResultQueryBridge,
+    compare_result_scalars,
 )
 from fem_agent.workspace_catalog import WorkspaceCatalogBridge
 from fem.geometry import (
@@ -927,6 +930,15 @@ def authoring_context_from_snapshot(
                 else "结果查询需要当前已接受的 native 结果"
             ),
         ),
+        CapabilitySummary(
+            "compare_accepted_results",
+            supported and source_kind == "native" and result_count >= 2,
+            (
+                None
+                if supported and source_kind == "native" and result_count >= 2
+                else "结果比较需要当前会话中至少两个已接受的 native 结果"
+            ),
+        ),
     )
     return AuthoringContext(
         binding=binding,
@@ -1352,6 +1364,81 @@ class SessionResultQueryPort:
             )
         return AgentResultQueryResponse.success(scalar)
 
+    def compare(
+        self,
+        request: AgentResultComparisonQuery,
+    ) -> AgentResultComparisonResponse:
+        if type(request) is not AgentResultComparisonQuery:
+            raise TypeError("request must be AgentResultComparisonQuery")
+        references = (request.baseline, request.candidate)
+        if any(
+            reference.expected_source.session_id != self._session.session_id
+            for reference in references
+        ):
+            return _result_comparison_failure(
+                "result.comparison.foreign_session",
+                "Both accepted results must belong to the current model session.",
+                clarification_required=True,
+            )
+
+        initial_identities = tuple(
+            self._session.result_identity_for(
+                reference.expected_source.run_id
+            )
+            for reference in references
+        )
+        if any(identity is None for identity in initial_identities):
+            return _result_comparison_failure(
+                "result.comparison.stale",
+                "One or both accepted results are no longer available.",
+                retryable=True,
+            )
+        for reference, identity in zip(
+            references,
+            initial_identities,
+            strict=True,
+        ):
+            source, generation = identity
+            if (
+                _accepted_source(source) != reference.expected_source
+                or generation
+                != reference.expected_materialization_generation
+            ):
+                return _result_comparison_failure(
+                    "result.comparison.stale",
+                    "One or both result identities or generations are stale.",
+                    retryable=True,
+                )
+
+        baseline_response = self.query(
+            request.result_query(request.baseline)
+        )
+        if not baseline_response.ok:
+            return _comparison_query_failure("baseline", baseline_response)
+        candidate_response = self.query(
+            request.result_query(request.candidate)
+        )
+        if not candidate_response.ok:
+            return _comparison_query_failure("candidate", candidate_response)
+
+        final_identities = tuple(
+            self._session.result_identity_for(
+                reference.expected_source.run_id
+            )
+            for reference in references
+        )
+        if final_identities != initial_identities:
+            return _result_comparison_failure(
+                "result.comparison.stale",
+                "An accepted result changed while the comparison was running.",
+                retryable=True,
+            )
+        baseline = baseline_response.scalar
+        candidate = candidate_response.scalar
+        if baseline is None or candidate is None:
+            raise RuntimeError("successful result query omitted its scalar")
+        return compare_result_scalars(request, baseline, candidate)
+
 
 class _AgentResultQueryRejected(ValueError):
     def __init__(
@@ -1580,6 +1667,39 @@ def _result_query_failure(
     clarification_required: bool = False,
 ) -> AgentResultQueryResponse:
     return AgentResultQueryResponse.failure(
+        code,
+        message,
+        retryable=retryable,
+        clarification_required=clarification_required,
+    )
+
+
+def _comparison_query_failure(
+    side: str,
+    response: AgentResultQueryResponse,
+) -> AgentResultComparisonResponse:
+    diagnostic = response.diagnostics[0]
+    if diagnostic.retryable:
+        return _result_comparison_failure(
+            "result.comparison.stale",
+            f"The {side} accepted result changed or is not ready; retry with a fresh catalog.",
+            retryable=True,
+        )
+    return _result_comparison_failure(
+        "result.comparison.not_comparable",
+        f"The {side} accepted result cannot answer the common query.",
+        clarification_required=diagnostic.clarification_required,
+    )
+
+
+def _result_comparison_failure(
+    code: str,
+    message: str,
+    *,
+    retryable: bool = False,
+    clarification_required: bool = False,
+) -> AgentResultComparisonResponse:
+    return AgentResultComparisonResponse.failure(
         code,
         message,
         retryable=retryable,
@@ -5388,6 +5508,17 @@ def create_session_authoring_workflow_controller(
             ok=response.ok,
         )
 
+    def compare_results(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        response = result_bridge.compare(arguments)
+        return AuthoringToolOutcome(
+            "Two accepted result scalars compared locally.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
     controller = AuthoringWorkflowController(
         current_context,
         {
@@ -5413,6 +5544,7 @@ def create_session_authoring_workflow_controller(
             "read_analysis_run_catalog": read_analysis_run_catalog,
             "read_geometry_feature_catalog": read_geometry_feature_catalog,
             "query_accepted_result": query_result,
+            "compare_accepted_results": compare_results,
             **(
                 {}
                 if workspace_catalog_bridge is None

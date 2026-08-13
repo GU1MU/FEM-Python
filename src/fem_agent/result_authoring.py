@@ -13,6 +13,7 @@ from typing import Mapping, Protocol
 RESULT_QUERY_SCHEMA_VERSION = "1.0"
 RESULT_QUERY_TOOL_NAME = "query_accepted_result"
 RESULT_CATALOG_TOOL_NAME = "read_accepted_result_catalog"
+RESULT_COMPARISON_TOOL_NAME = "compare_accepted_results"
 ANALYSIS_RUN_CATALOG_TOOL_NAME = "read_analysis_run_catalog"
 ANALYSIS_RUN_CATALOG_MAX_LIMIT = 20
 
@@ -356,6 +357,183 @@ class AgentResultQuery:
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptedResultReference:
+    """Exact accepted-result identity used by one side of a comparison."""
+
+    expected_source: AcceptedResultSource
+    expected_materialization_generation: int
+
+    def __post_init__(self) -> None:
+        if type(self.expected_source) is not AcceptedResultSource:
+            raise TypeError("expected_source must be AcceptedResultSource")
+        _nonnegative_integer(
+            self.expected_materialization_generation,
+            "expected_materialization_generation",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "expected_source": self.expected_source.to_dict(),
+            "expected_materialization_generation": (
+                self.expected_materialization_generation
+            ),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> AcceptedResultReference:
+        data = _strict_mapping(
+            value,
+            {
+                "expected_source",
+                "expected_materialization_generation",
+            },
+            "accepted result reference",
+        )
+        return cls(
+            expected_source=AcceptedResultSource.from_dict(
+                data["expected_source"]
+            ),
+            expected_materialization_generation=_exact_integer(
+                data["expected_materialization_generation"],
+                "expected_materialization_generation",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentResultQueryIdentity:
+    """The common engineering query applied to both accepted results."""
+
+    variable: AgentResultVariable
+    component: str
+    position: str
+    region: str
+    aggregation: AgentResultAggregation
+
+    def __post_init__(self) -> None:
+        if type(self.variable) is not AgentResultVariable:
+            raise TypeError("variable must be AgentResultVariable")
+        if type(self.aggregation) is not AgentResultAggregation:
+            raise TypeError("aggregation must be AgentResultAggregation")
+        for field_name in ("component", "position", "region"):
+            _bounded_text(getattr(self, field_name), field_name, maximum=256)
+        if (
+            self.aggregation is AgentResultAggregation.SUM
+            and self.variable is not AgentResultVariable.REACTION_FORCE
+        ):
+            raise ResultAuthoringError(
+                "sum is supported only for reaction force RF"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "variable": self.variable.value,
+            "component": self.component,
+            "position": self.position,
+            "region": self.region,
+            "aggregation": self.aggregation.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AgentResultComparisonQuery:
+    """One common query bound to distinct baseline and candidate results."""
+
+    query: AgentResultQueryIdentity
+    baseline: AcceptedResultReference
+    candidate: AcceptedResultReference
+
+    def __post_init__(self) -> None:
+        if type(self.query) is not AgentResultQueryIdentity:
+            raise TypeError("query must be AgentResultQueryIdentity")
+        for field_name in ("baseline", "candidate"):
+            if type(getattr(self, field_name)) is not AcceptedResultReference:
+                raise TypeError(
+                    f"{field_name} must be AcceptedResultReference"
+                )
+        if (
+            self.baseline.expected_source.run_id
+            == self.candidate.expected_source.run_id
+        ):
+            raise ResultAuthoringError(
+                "baseline and candidate run_id must be different"
+            )
+        if (
+            self.baseline.expected_source.session_id
+            != self.candidate.expected_source.session_id
+        ):
+            raise ResultAuthoringError(
+                "baseline and candidate must belong to the same session"
+            )
+
+    def result_query(self, reference: AcceptedResultReference) -> AgentResultQuery:
+        if type(reference) is not AcceptedResultReference:
+            raise TypeError("reference must be AcceptedResultReference")
+        return AgentResultQuery(
+            variable=self.query.variable,
+            component=self.query.component,
+            position=self.query.position,
+            region=self.query.region,
+            aggregation=self.query.aggregation,
+            expected_source=reference.expected_source,
+            expected_materialization_generation=(
+                reference.expected_materialization_generation
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": RESULT_QUERY_SCHEMA_VERSION,
+            **self.query.to_dict(),
+            "baseline": self.baseline.to_dict(),
+            "candidate": self.candidate.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> AgentResultComparisonQuery:
+        expected = {
+            "schema_version",
+            "variable",
+            "component",
+            "position",
+            "region",
+            "aggregation",
+            "baseline",
+            "candidate",
+        }
+        data = _strict_mapping(value, expected, "Agent result comparison query")
+        if data["schema_version"] != RESULT_QUERY_SCHEMA_VERSION:
+            raise ResultAuthoringError(
+                "Agent result comparison query schema version is unsupported"
+            )
+        return cls(
+            query=AgentResultQueryIdentity(
+                variable=_exact_enum(
+                    data["variable"], AgentResultVariable, "variable"
+                ),
+                component=_exact_string(data["component"], "component"),
+                position=_exact_string(data["position"], "position"),
+                region=_exact_string(data["region"], "region"),
+                aggregation=_exact_enum(
+                    data["aggregation"],
+                    AgentResultAggregation,
+                    "aggregation",
+                ),
+            ),
+            baseline=AcceptedResultReference.from_dict(data["baseline"]),
+            candidate=AcceptedResultReference.from_dict(data["candidate"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AgentResultCatalog:
     """Bounded fields and named regions for one exact accepted generation."""
 
@@ -506,6 +684,115 @@ class AgentResultScalar:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentResultComparison:
+    """Deterministic finite comparison of two fully proven result scalars."""
+
+    query: AgentResultQueryIdentity
+    baseline: AgentResultScalar
+    candidate: AgentResultScalar
+    unit: str
+    delta: float
+    absolute_delta: float
+    relative_change_percent: float | None
+    baseline_is_zero: bool
+    direction: str
+
+    def __post_init__(self) -> None:
+        if type(self.query) is not AgentResultQueryIdentity:
+            raise TypeError("query must be AgentResultQueryIdentity")
+        for field_name in ("baseline", "candidate"):
+            if type(getattr(self, field_name)) is not AgentResultScalar:
+                raise TypeError(f"{field_name} must be AgentResultScalar")
+        _bounded_text(self.unit, "unit", maximum=256)
+        for field_name in ("delta", "absolute_delta"):
+            object.__setattr__(
+                self,
+                field_name,
+                _finite_real(getattr(self, field_name), field_name),
+            )
+        if self.relative_change_percent is not None:
+            object.__setattr__(
+                self,
+                "relative_change_percent",
+                _finite_real(
+                    self.relative_change_percent,
+                    "relative_change_percent",
+                ),
+            )
+        if type(self.baseline_is_zero) is not bool:
+            raise TypeError("baseline_is_zero must be boolean")
+        if self.direction not in {"increased", "decreased", "unchanged"}:
+            raise ResultAuthoringError("comparison direction is unsupported")
+        identity = (
+            self.query.variable,
+            self.query.component,
+            self.query.position,
+            self.query.region,
+            self.query.aggregation,
+            self.unit,
+        )
+        for scalar in (self.baseline, self.candidate):
+            if (
+                scalar.variable,
+                scalar.component,
+                scalar.position,
+                scalar.region,
+                scalar.aggregation,
+                scalar.unit,
+            ) != identity:
+                raise ResultAuthoringError(
+                    "comparison scalars do not share the exact query identity"
+                )
+        if self.baseline.source.run_id == self.candidate.source.run_id:
+            raise ResultAuthoringError(
+                "comparison scalars must come from different runs"
+            )
+        if self.baseline.source.session_id != self.candidate.source.session_id:
+            raise ResultAuthoringError(
+                "comparison scalars must come from the same session"
+            )
+        expected_delta = math.fsum(
+            (self.candidate.value, -self.baseline.value)
+        )
+        if self.delta != expected_delta:
+            raise ResultAuthoringError("comparison delta is inconsistent")
+        expected_zero = self.baseline.value == 0.0
+        if self.baseline_is_zero != expected_zero:
+            raise ResultAuthoringError("baseline zero flag is inconsistent")
+        if expected_zero != (self.relative_change_percent is None):
+            raise ResultAuthoringError(
+                "relative change must be null exactly when baseline is zero"
+            )
+        if not expected_zero and self.relative_change_percent != (
+            expected_delta / abs(self.baseline.value) * 100.0
+        ):
+            raise ResultAuthoringError("relative change is inconsistent")
+        if self.absolute_delta != abs(self.delta):
+            raise ResultAuthoringError("absolute_delta is inconsistent")
+        expected_direction = (
+            "increased"
+            if self.delta > 0.0
+            else "decreased" if self.delta < 0.0 else "unchanged"
+        )
+        if self.direction != expected_direction:
+            raise ResultAuthoringError("comparison direction is inconsistent")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": RESULT_QUERY_SCHEMA_VERSION,
+            "query": self.query.to_dict(),
+            "baseline": self.baseline.to_dict(),
+            "candidate": self.candidate.to_dict(),
+            "unit": self.unit,
+            "delta": self.delta,
+            "absolute_delta": self.absolute_delta,
+            "relative_change_percent": self.relative_change_percent,
+            "baseline_is_zero": self.baseline_is_zero,
+            "direction": self.direction,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AgentResultDiagnostic:
     """Bounded, stable failure returned without any engineering scalar."""
 
@@ -591,6 +878,81 @@ class AgentResultQueryResponse:
         retryable: bool,
         clarification_required: bool,
     ) -> AgentResultQueryResponse:
+        return cls(
+            diagnostics=(
+                AgentResultDiagnostic(
+                    code=code,
+                    message=message,
+                    retryable=retryable,
+                    clarification_required=clarification_required,
+                ),
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentResultComparisonResponse:
+    """Exactly one complete comparison or one-or-more bounded diagnostics."""
+
+    comparison: AgentResultComparison | None = None
+    diagnostics: tuple[AgentResultDiagnostic, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.comparison is not None
+            and type(self.comparison) is not AgentResultComparison
+        ):
+            raise TypeError("comparison must be AgentResultComparison or None")
+        if type(self.diagnostics) is not tuple or any(
+            type(item) is not AgentResultDiagnostic for item in self.diagnostics
+        ):
+            raise TypeError(
+                "diagnostics must be a tuple of AgentResultDiagnostic"
+            )
+        if (self.comparison is None) == (not self.diagnostics):
+            raise ResultAuthoringError(
+                "response requires exactly one comparison or diagnostics"
+            )
+        if len(self.diagnostics) > 8:
+            raise ResultAuthoringError("response diagnostics exceed the A7 bound")
+
+    @property
+    def ok(self) -> bool:
+        return self.comparison is not None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": RESULT_QUERY_SCHEMA_VERSION,
+            "ok": self.ok,
+            "comparison": (
+                None if self.comparison is None else self.comparison.to_dict()
+            ),
+            "diagnostics": [item.to_dict() for item in self.diagnostics],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def success(
+        cls, comparison: AgentResultComparison
+    ) -> AgentResultComparisonResponse:
+        return cls(comparison=comparison)
+
+    @classmethod
+    def failure(
+        cls,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+        clarification_required: bool,
+    ) -> AgentResultComparisonResponse:
         return cls(
             diagnostics=(
                 AgentResultDiagnostic(
@@ -701,6 +1063,7 @@ class FakeAgentResultQueryPort:
         self.calls: list[AgentResultQuery] = []
         self.catalog_calls = 0
         self.catalog_run_ids: list[str | None] = []
+        self.comparison_calls: list[AgentResultComparisonQuery] = []
         self._catalog_response = catalog_response
 
     def register(
@@ -738,6 +1101,36 @@ class FakeAgentResultQueryPort:
             "The accepted-result catalog is not configured.",
             retryable=False,
             clarification_required=True,
+        )
+
+    def compare(
+        self, request: AgentResultComparisonQuery
+    ) -> AgentResultComparisonResponse:
+        if type(request) is not AgentResultComparisonQuery:
+            raise TypeError("request must be AgentResultComparisonQuery")
+        self.comparison_calls.append(request)
+        baseline = self.query(request.result_query(request.baseline))
+        if not baseline.ok:
+            diagnostic = baseline.diagnostics[0]
+            return AgentResultComparisonResponse.failure(
+                "result.comparison.not_comparable",
+                "The baseline accepted result could not be compared.",
+                retryable=diagnostic.retryable,
+                clarification_required=diagnostic.clarification_required,
+            )
+        candidate = self.query(request.result_query(request.candidate))
+        if not candidate.ok:
+            diagnostic = candidate.diagnostics[0]
+            return AgentResultComparisonResponse.failure(
+                "result.comparison.not_comparable",
+                "The candidate accepted result could not be compared.",
+                retryable=diagnostic.retryable,
+                clarification_required=diagnostic.clarification_required,
+            )
+        return compare_result_scalars(
+            request,
+            baseline.scalar,
+            candidate.scalar,
         )
 
 
@@ -784,6 +1177,30 @@ class AgentResultQueryBridge:
         if type(response) is not AgentResultCatalogResponse:
             raise TypeError(
                 "result query port must return AgentResultCatalogResponse"
+            )
+        return response
+
+    def compare(
+        self,
+        request: AgentResultComparisonQuery | Mapping[str, object],
+    ) -> AgentResultComparisonResponse:
+        normalized = (
+            request
+            if type(request) is AgentResultComparisonQuery
+            else AgentResultComparisonQuery.from_dict(request)
+        )
+        compare = getattr(self._port, "compare", None)
+        if not callable(compare):
+            return AgentResultComparisonResponse.failure(
+                "result.comparison.unsupported",
+                "The local result port does not support deterministic comparison.",
+                retryable=False,
+                clarification_required=True,
+            )
+        response = compare(normalized)
+        if type(response) is not AgentResultComparisonResponse:
+            raise TypeError(
+                "result query port must return AgentResultComparisonResponse"
             )
         return response
 
@@ -885,6 +1302,161 @@ def result_query_tool_schema() -> dict[str, object]:
             "properties": properties,
         },
     }
+
+
+def result_comparison_tool_schema() -> dict[str, object]:
+    """Return the closed schema for deterministic two-run comparison."""
+
+    source_properties = {
+        "result_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "artifact_id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "model_revision": {"type": "integer", "minimum": 0},
+        "step_name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    }
+    reference_properties = {
+        "expected_source": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(source_properties),
+            "properties": source_properties,
+        },
+        "expected_materialization_generation": {
+            "type": "integer",
+            "minimum": 0,
+        },
+    }
+    properties: dict[str, object] = {
+        "schema_version": {
+            "type": "string",
+            "const": RESULT_QUERY_SCHEMA_VERSION,
+        },
+        "variable": {
+            "type": "string",
+            "enum": [item.value for item in AgentResultVariable],
+        },
+        "component": {"type": "string", "minLength": 1, "maxLength": 256},
+        "position": {"type": "string", "minLength": 1, "maxLength": 256},
+        "region": {"type": "string", "minLength": 1, "maxLength": 256},
+        "aggregation": {
+            "type": "string",
+            "enum": [item.value for item in AgentResultAggregation],
+        },
+        "baseline": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(reference_properties),
+            "properties": reference_properties,
+        },
+        "candidate": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(reference_properties),
+            "properties": reference_properties,
+        },
+    }
+    return {
+        "name": RESULT_COMPARISON_TOOL_NAME,
+        "description": (
+            "Deterministically compare the same scalar query between distinct "
+            "baseline and candidate accepted runs. Delta is candidate minus "
+            "baseline."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(properties),
+            "properties": properties,
+        },
+    }
+
+
+def compare_result_scalars(
+    request: AgentResultComparisonQuery,
+    baseline: AgentResultScalar,
+    candidate: AgentResultScalar,
+) -> AgentResultComparisonResponse:
+    """Construct a comparison only after both exact scalar reads succeeded."""
+
+    if type(request) is not AgentResultComparisonQuery:
+        raise TypeError("request must be AgentResultComparisonQuery")
+    if (
+        type(baseline) is not AgentResultScalar
+        or type(candidate) is not AgentResultScalar
+    ):
+        raise TypeError("comparison requires two AgentResultScalar values")
+    for reference, scalar in zip(
+        (request.baseline, request.candidate),
+        (baseline, candidate),
+        strict=True,
+    ):
+        if (
+            scalar.source != reference.expected_source
+            or scalar.materialization_generation
+            != reference.expected_materialization_generation
+        ):
+            return AgentResultComparisonResponse.failure(
+                "result.comparison.stale",
+                "A result scalar did not match its requested identity and generation.",
+                retryable=True,
+                clarification_required=False,
+            )
+    identity = (
+        request.query.variable,
+        request.query.component,
+        request.query.position,
+        request.query.region,
+        request.query.aggregation,
+    )
+    if any(
+        (
+            scalar.variable,
+            scalar.component,
+            scalar.position,
+            scalar.region,
+            scalar.aggregation,
+        )
+        != identity
+        for scalar in (baseline, candidate)
+    ) or baseline.unit != candidate.unit:
+        return AgentResultComparisonResponse.failure(
+            "result.comparison.not_comparable",
+            "The accepted-result scalars do not share one exact query and unit.",
+            retryable=False,
+            clarification_required=True,
+        )
+    try:
+        delta = math.fsum((candidate.value, -baseline.value))
+        baseline_is_zero = baseline.value == 0.0
+        relative_change_percent = (
+            None
+            if baseline_is_zero
+            else delta / abs(baseline.value) * 100.0
+        )
+        comparison = AgentResultComparison(
+            query=request.query,
+            baseline=baseline,
+            candidate=candidate,
+            unit=baseline.unit,
+            delta=delta,
+            absolute_delta=abs(delta),
+            relative_change_percent=relative_change_percent,
+            baseline_is_zero=baseline_is_zero,
+            direction=(
+                "increased"
+                if delta > 0.0
+                else "decreased" if delta < 0.0 else "unchanged"
+            ),
+        )
+    except (OverflowError, ResultAuthoringError):
+        return AgentResultComparisonResponse.failure(
+            "result.comparison.not_comparable",
+            "The comparison could not be represented as finite scalar values.",
+            retryable=False,
+            clarification_required=True,
+        )
+    return AgentResultComparisonResponse.success(comparison)
 
 
 def explain_result_response(response: AgentResultQueryResponse) -> str:
@@ -999,22 +1571,37 @@ def _positive_integer(value: object, label: str) -> int:
     return value
 
 
+def _finite_real(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{label} must be a real number")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ResultAuthoringError(f"{label} must be finite")
+    return numeric
+
+
 __all__ = [
     "ANALYSIS_RUN_CATALOG_MAX_LIMIT",
     "ANALYSIS_RUN_CATALOG_TOOL_NAME",
     "AnalysisRunCatalog",
     "AnalysisRunCatalogEntry",
     "RESULT_CATALOG_TOOL_NAME",
+    "RESULT_COMPARISON_TOOL_NAME",
     "RESULT_QUERY_SCHEMA_VERSION",
     "RESULT_QUERY_TOOL_NAME",
     "AcceptedResultSource",
+    "AcceptedResultReference",
     "AgentResultAggregation",
     "AgentResultCatalog",
     "AgentResultCatalogResponse",
+    "AgentResultComparison",
+    "AgentResultComparisonQuery",
+    "AgentResultComparisonResponse",
     "AgentResultDiagnostic",
     "AgentResultField",
     "AgentResultLocation",
     "AgentResultQuery",
+    "AgentResultQueryIdentity",
     "AgentResultQueryBridge",
     "AgentResultQueryPort",
     "AgentResultQueryResponse",
@@ -1023,8 +1610,10 @@ __all__ = [
     "FakeAgentResultQueryPort",
     "ResultAuthoringError",
     "analysis_run_catalog_tool_schema",
+    "compare_result_scalars",
     "explain_result_response",
     "result_catalog_tool_schema",
+    "result_comparison_tool_schema",
     "read_analysis_run_catalog_tool_schema",
     "result_query_tool_schema",
 ]

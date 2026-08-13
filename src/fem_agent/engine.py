@@ -258,6 +258,16 @@ user asked to change; omitted keys remain unchanged. Do not request
 result-loss confirmation for these same-model definition changes. Deletion
 and project saving still require their local GUI confirmation cards.
 
+When comparing accepted results from two runs, first call
+read_analysis_run_catalog, then call read_accepted_result_catalog separately
+for the baseline run and the candidate run to obtain each exact source and
+materialization generation. Pass those identities with one common query to
+compare_accepted_results. Baseline is the reference and candidate is the new
+value: delta always means candidate minus baseline. Never calculate a
+two-result delta or percentage in model reasoning from separate scalar query
+outputs, and never present such arithmetic as the deterministic local
+comparison.
+
 Never claim that a model is loaded, a workflow is active, or an operation
 completed unless typed context or a tool result confirms it. The `phase` field
 describes only the separate import/solve session; `empty` does not mean native
