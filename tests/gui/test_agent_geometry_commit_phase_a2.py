@@ -61,8 +61,12 @@ def _proposal(
     draft=None,
     part_function: str = "偏心孔板",
     project_function: str | None = None,
+    document_id: str | int | None = None,
 ) -> AgentProposal:
-    context = authoring_context_from_snapshot(session.snapshot())
+    context = authoring_context_from_snapshot(
+        session.snapshot(),
+        document_id=document_id,
+    )
     return create_geometry_proposal(
         proposal_id=proposal_id,
         agent_session_id="agent-session-a2",
@@ -421,6 +425,40 @@ def test_a2_invalid_strict_profile_create_or_replace_is_atomic(
     assert refreshes == []
 
 
+@pytest.mark.parametrize(
+    "invalid_recipe",
+    (_open_sketch(), _self_intersecting_sketch()),
+    ids=("open-profile", "self-intersecting-profile"),
+)
+def test_a2_invalid_strict_profile_add_is_atomic(
+    invalid_recipe: SketchGeometry,
+) -> None:
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "模型-现有板",
+        _application_units(),
+        RectangleGeometry("实体-现有板", 4.0, 2.0),
+        part_name="部件-现有板",
+    )
+    refreshes: list[int] = []
+    bridge = _bridge(session, refreshes)
+    before = session.snapshot()
+    suffix = "open" if len(invalid_recipe.curves) == 2 else "self-intersecting"
+    proposal = _proposal(
+        session,
+        proposal_id=f"proposal-invalid-add-{suffix}",
+        draft=geometry_draft(invalid_recipe),
+        part_function="无效严格草图",
+    )
+
+    bridge.register_proposal(proposal)
+    receipt = bridge.accept_from_gui_control(proposal.proposal_id)
+
+    assert receipt.state is ProposalState.FAILED
+    assert session.snapshot() == before
+    assert refreshes == []
+
+
 def test_a2_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
@@ -488,10 +526,13 @@ def test_a2_main_window_projects_one_accepted_geometry_refresh(
 
     window.agent_authoring_bridge.port._refresh_callback = counted_rebuild
     monkeypatch.setattr(window, "_confirm_discard_changes", lambda: True)
+    active_document = window.workspace.active_document()
+    assert active_document is not None
     proposal = _proposal(
         window.session,
         proposal_id="proposal-main-window",
         project_function="偏心孔板",
+        document_id=active_document.document_id,
     )
     before_revision = window.document.session_revision
     before_preview = window.viewport._geometry_preview

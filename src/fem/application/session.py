@@ -1426,7 +1426,7 @@ class ModelSession:
             geometry_recipe=recipe,
             mesh_settings=None,
         )
-        _validate_native_part_inputs(part, authenticate_geometry=False)
+        _validate_native_part_inputs(part, authenticate_geometry=True)
 
         self._session_id = new_identity("session")
         self._clear_content()
@@ -2029,7 +2029,7 @@ class ModelSession:
             geometry_recipe=recipe,
             mesh_settings=owned_settings,
         )
-        _validate_native_part_inputs(part, authenticate_geometry=False)
+        _validate_native_part_inputs(part, authenticate_geometry=True)
         self._unit_context = deepcopy(accepted_units)
         self._parts = validate_native_parts((*self._parts, part))
         self._part_revisions[part.id] = 0
