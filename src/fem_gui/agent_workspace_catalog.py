@@ -10,6 +10,7 @@ from fem_agent.workspace_catalog import (
     WorkspaceCatalogBridge,
     WorkspaceDocumentCatalog,
     WorkspaceDocumentIdentity,
+    WorkspaceDocumentLineage,
     WorkspaceDocumentSummary,
 )
 
@@ -87,6 +88,7 @@ class FEMWorkspaceCatalogPort:
     @staticmethod
     def _summary(document: WorkspaceDocument) -> WorkspaceDocumentSummary:
         projection = document.projection
+        lineage = document.lineage
         return WorkspaceDocumentSummary(
             target=WorkspaceDocumentIdentity(
                 document_id=str(document.document_id),
@@ -98,6 +100,18 @@ class FEMWorkspaceCatalogPort:
             display_name=str(document.display_name),
             model_name=(
                 None if projection.model_name is None else str(projection.model_name)
+            ),
+            lineage=(
+                None
+                if lineage is None
+                else WorkspaceDocumentLineage(
+                    source_document_id=str(lineage.source_document_id),
+                    source_session_id=lineage.source_session_id,
+                    source_session_revision=lineage.source_session_revision,
+                    source_project_revision=lineage.source_project_revision,
+                    source_run_id=lineage.source_run_id,
+                    reason=lineage.reason,
+                )
             ),
         )
 

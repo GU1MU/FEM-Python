@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from fem.application import ModelSession, SessionSnapshot
 
@@ -127,6 +127,9 @@ class WorkspaceDocument:
     presentation_cache: DocumentPresentationCache = field(
         default_factory=DocumentPresentationCache
     )
+    # Additive metadata remains after the original positional constructor
+    # surface so existing callers keep their previous argument meanings.
+    lineage: DocumentLineage | None = None
 
     @property
     def revision(self) -> int:
@@ -155,6 +158,35 @@ class WorkspaceDocument:
             )
             == "result"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentLineage:
+    """Stable provenance for a model created from another workspace model."""
+
+    source_document_id: int
+    source_session_id: str
+    source_session_revision: int
+    source_project_revision: int
+    source_run_id: str | None = None
+    reason: Literal["geometry_edit"] = "geometry_edit"
+
+    def __post_init__(self) -> None:
+        if type(self.source_document_id) is not int or self.source_document_id < 1:
+            raise ValueError("source_document_id must be a positive integer")
+        if type(self.source_session_id) is not str or not self.source_session_id.strip():
+            raise ValueError("source_session_id must be a nonblank string")
+        object.__setattr__(self, "source_session_id", self.source_session_id.strip())
+        for field_name in ("source_session_revision", "source_project_revision"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        if self.source_run_id is not None:
+            if type(self.source_run_id) is not str or not self.source_run_id.strip():
+                raise ValueError("source_run_id must be a nonblank string or None")
+            object.__setattr__(self, "source_run_id", self.source_run_id.strip())
+        if self.reason != "geometry_edit":
+            raise ValueError("unsupported model lineage reason")
 
 
 ControllerFactory = Callable[[object | None], BackgroundTaskController]
@@ -258,6 +290,7 @@ class FEMWorkspace:
         display_name: str | None = None,
         source_path: str | os.PathLike[str] | Path | None = None,
         task_controller: BackgroundTaskController | None = None,
+        lineage: DocumentLineage | None = None,
     ) -> WorkspaceDocument:
         """Add or return a model context without copying Session data."""
 
@@ -268,6 +301,7 @@ class FEMWorkspace:
             display_name=display_name,
             source_path=source_path,
             task_controller=task_controller,
+            lineage=lineage,
         )
 
     def add_result(
@@ -288,6 +322,7 @@ class FEMWorkspace:
             display_name=display_name,
             source_path=source_path,
             task_controller=task_controller,
+            lineage=None,
         )
 
     def ensure_open_controller(self) -> BackgroundTaskController:
@@ -427,16 +462,21 @@ class FEMWorkspace:
         display_name: str | None,
         source_path: str | os.PathLike[str] | Path | None,
         task_controller: BackgroundTaskController | None,
+        lineage: DocumentLineage | None,
     ) -> WorkspaceDocument:
         if kind not in {"model", "result"}:
             raise ValueError("workspace document kind must be model or result")
+        if lineage is not None and type(lineage) is not DocumentLineage:
+            raise TypeError("lineage must be DocumentLineage or None")
+        if kind != "model" and lineage is not None:
+            raise ValueError("only model documents may have lineage")
         if session is None:
             session = ModelSession()
         if projection is None:
             projection = session.projection_snapshot()
 
-        raw_path = source_path
-        if raw_path is None:
+        raw_path = None if lineage is not None else source_path
+        if raw_path is None and lineage is None:
             raw_path = getattr(projection, "path", None)
         path = None if raw_path is None else Path(raw_path)
         path_index = self.model_paths if kind == "model" else self.result_paths
@@ -479,6 +519,7 @@ class FEMWorkspace:
             source_path=path,
             task_controller=controller,
             kind=kind,
+            lineage=lineage,
         )
         registry[document_id] = context
         self._remember_projection_job_names(projection)
@@ -529,6 +570,7 @@ class FEMWorkspace:
 
 
 __all__ = [
+    "DocumentLineage",
     "DocumentPresentationCache",
     "DocumentPresentationState",
     "FEMWorkspace",

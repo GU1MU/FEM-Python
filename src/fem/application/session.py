@@ -6132,8 +6132,47 @@ class ModelSession:
 
     # ------------------------------------------------------------------
     # Project snapshot save protocol
+    def project_snapshot_for_branch(
+        self,
+        model_name: str | None = None,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> ProjectSnapshot:
+        """Return detached native authoring inputs for a new model branch.
+
+        Branch snapshots deliberately omit file identity, compiled artifacts,
+        validations, runs, and results.  Unlike :meth:`prepare_project_save`,
+        this read-only query never issues a task token.
+        """
+
+        self._check_expected(expected_session_revision)
+        self._require_native()
+        target_name = self._model_name if model_name is None else model_name
+        return self._project_snapshot(
+            source_path=None,
+            model_name=str(target_name or "Model-1"),
+        )
+
     def prepare_project_save(self) -> ProjectSaveSnapshot:
         self._require_native()
+        project = self._project_snapshot(
+            source_path=self._project_path,
+            model_name=str(self._model_name or "Model-1"),
+        )
+        token = self._issue_token(
+            "project_save",
+            (("project_revision", self._project_revision),),
+        )
+        return ProjectSaveSnapshot(token, self._project_revision, project)
+
+    def _project_snapshot(
+        self,
+        *,
+        source_path: Path | None,
+        model_name: str,
+    ) -> ProjectSnapshot:
+        """Build the canonical detached native-input snapshot."""
+
         canonical_part_mode = self._canonical_part_state()
         save_parts = (
             _canonical_parts_for_save(
@@ -6146,8 +6185,8 @@ class ModelSession:
         )
         project = ProjectSnapshot(
             source_kind="native",
-            source_path=self._project_path,
-            model_name=str(self._model_name or "Model-1"),
+            source_path=source_path,
+            model_name=model_name,
             parts=save_parts,
             geometry_recipe=self._geometry_recipe,
             mesh_settings=self._mesh_settings,
@@ -6186,11 +6225,7 @@ class ModelSession:
                 self._face_sketch_boolean_redo_records
             ),
         )
-        token = self._issue_token(
-            "project_save",
-            (("project_revision", self._project_revision),),
-        )
-        return ProjectSaveSnapshot(token, self._project_revision, project)
+        return project
 
     def accept_project_saved(
         self, token: TaskToken, path: str | Path
