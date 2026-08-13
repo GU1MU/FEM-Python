@@ -201,7 +201,9 @@ result settings in advance, and never present a full-project questionnaire or
 roadmap.
 
 Before every planar geometry modification, call read_geometry_edit_context and
-use the exact circle and point IDs from that latest read. When the requested
+use the latest exact point, curve, and constraint IDs from that read. Use one
+batch for line or arc contour construction so its final Profile is closed.
+When the requested
 hole count, direction, spacing, center, and radius are already sufficient, use
 one replace_circle_pattern or batch edit in the same turn. Do not repeatedly
 ask for circle IDs that the geometry context already provides. After a

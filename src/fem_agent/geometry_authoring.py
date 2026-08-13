@@ -29,12 +29,27 @@ from fem.geometry import (
     RevolvedGeometry,
     RotatedGeometry,
     SketchArc,
+    SketchAngleDimension,
     SketchCircle,
+    SketchCoincidentConstraint,
+    SketchConcentricConstraint,
+    SketchConstraint,
+    SketchDistanceDimension,
+    SketchEqualLengthConstraint,
+    SketchEqualRadiusConstraint,
+    SketchFixedConstraint,
     SketchGeometry,
+    SketchHorizontalConstraint,
     SketchLine,
+    SketchParallelConstraint,
     SketchPlane,
     SketchPoint,
+    SketchPointOnCurveConstraint,
+    SketchPerpendicularConstraint,
+    SketchRadiusDimension,
     SketchRectangle,
+    SketchTangentConstraint,
+    SketchVerticalConstraint,
     SolidBody,
     WireGeometry,
     WireMember,
@@ -44,6 +59,7 @@ from fem.geometry import (
     legacy_sketch_to_strict,
     planar_geometry_normal,
     sketch_constraint_entity_ids,
+    solve_sketch_constraints,
 )
 from fem.application.feature_history import derive_feature_history
 from fem.geometry.recipe_topology import (
@@ -70,6 +86,7 @@ _MAX_RECIPE_BYTES = 65536
 _MAX_RECIPE_NODES = 128
 _MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 512
 _MAX_RECIPE_DEPTH = 16
+_SKETCH_AUTHORING_TOLERANCE = 1.0e-9
 GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
 PROFILE_TRANSFORM_CONTEXT_SCHEMA_VERSION = 1
 PROFILE_TRANSFORM_MAX_PROFILES = 32
@@ -184,6 +201,7 @@ class GeometryDraft:
             and (
                 len(self.recipe.points) > 128
                 or len(self.recipe.curves) > 128
+                or len(self.recipe.constraints) > 128
             )
         ):
             raise ValueError("planar sketch exceeds the 128-entity bound")
@@ -1121,6 +1139,20 @@ def add_planar_circle(
     center_y: Real,
     radius: Real,
 ) -> GeometryDraft:
+    return _planar_edit_draft(
+        _add_planar_circle_sketch(
+            recipe, center_x=center_x, center_y=center_y, radius=radius
+        )
+    )
+
+
+def _add_planar_circle_sketch(
+    recipe: object,
+    *,
+    center_x: Real,
+    center_y: Real,
+    radius: Real,
+) -> SketchGeometry:
     sketch = _as_strict_planar_sketch(recipe)
     point_id = _next_sketch_ids(sketch, "P", 1)[0]
     curve_id = _next_sketch_ids(sketch, "C", 1)[0]
@@ -1141,13 +1173,332 @@ def add_planar_circle(
         ),
         sketch.constraints,
     )
-    return _draft(
-        updated,
-        {
-            "point_count": float(len(updated.points)),
-            "curve_count": float(len(updated.curves)),
-        },
+    solved = _solve_planar_candidate(updated, fixed_point_ids={str(point_id)})
+    return solved
+
+
+def add_planar_line(
+    recipe: object,
+    *,
+    start: Mapping[str, object],
+    end: Mapping[str, object],
+) -> GeometryDraft:
+    return _planar_edit_draft(_add_planar_line_sketch(recipe, start, end))
+
+
+def _add_planar_line_sketch(
+    recipe: object,
+    start: Mapping[str, object],
+    end: Mapping[str, object],
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    sketch, start_id, _ = _resolve_planar_point_ref(sketch, start, "start")
+    sketch, end_id, _ = _resolve_planar_point_ref(sketch, end, "end")
+    line_id = _next_sketch_ids(sketch, "L", 1)[0]
+    return SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        (*sketch.curves, SketchLine(line_id, start_id, end_id)),
+        sketch.constraints,
     )
+
+
+def add_planar_arc(
+    recipe: object,
+    *,
+    start: Mapping[str, object],
+    center: Mapping[str, object],
+    end: Mapping[str, object],
+    orientation: str,
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _add_planar_arc_sketch(recipe, start, center, end, orientation)
+    )
+
+
+def _add_planar_arc_sketch(
+    recipe: object,
+    start: Mapping[str, object],
+    center: Mapping[str, object],
+    end: Mapping[str, object],
+    orientation: str,
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    sketch, start_id, _ = _resolve_planar_point_ref(sketch, start, "start")
+    sketch, center_id, _ = _resolve_planar_point_ref(sketch, center, "center")
+    sketch, end_id, _ = _resolve_planar_point_ref(sketch, end, "end")
+    arc_id = _next_sketch_ids(sketch, "A", 1)[0]
+    return SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        (
+            *sketch.curves,
+            SketchArc(arc_id, start_id, center_id, end_id, orientation),
+        ),
+        sketch.constraints,
+    )
+
+
+def update_planar_line(
+    recipe: object,
+    *,
+    line_id: str,
+    start: Mapping[str, object] | None = None,
+    end: Mapping[str, object] | None = None,
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _update_planar_line_sketch(recipe, line_id=line_id, start=start, end=end)
+    )
+
+
+def _update_planar_line_sketch(
+    recipe: object,
+    *,
+    line_id: str,
+    start: Mapping[str, object] | None = None,
+    end: Mapping[str, object] | None = None,
+) -> SketchGeometry:
+    if start is None and end is None:
+        raise ValueError("update_planar_line requires start or end")
+    sketch = _as_strict_planar_sketch(recipe)
+    target = next(
+        (item for item in sketch.curves if type(item) is SketchLine and item.id == line_id),
+        None,
+    )
+    if target is None:
+        raise ValueError("line_id does not identify one editable line")
+    fixed: set[str] = set()
+    start_id = target.start_point_id
+    end_id = target.end_point_id
+    if start is not None:
+        sketch, start_id, authored = _resolve_planar_point_ref(sketch, start, "start")
+        if authored:
+            fixed.add(start_id)
+    if end is not None:
+        sketch, end_id, authored = _resolve_planar_point_ref(sketch, end, "end")
+        if authored:
+            fixed.add(end_id)
+    candidate = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        tuple(
+            SketchLine(item.id, start_id, end_id) if item is target else item
+            for item in sketch.curves
+        ),
+        sketch.constraints,
+    )
+    return _solve_planar_candidate(candidate, fixed_point_ids=fixed)
+
+
+def update_planar_arc(
+    recipe: object,
+    *,
+    arc_id: str,
+    start: Mapping[str, object] | None = None,
+    center: Mapping[str, object] | None = None,
+    end: Mapping[str, object] | None = None,
+    orientation: str | None = None,
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _update_planar_arc_sketch(
+            recipe,
+            arc_id=arc_id,
+            start=start,
+            center=center,
+            end=end,
+            orientation=orientation,
+        )
+    )
+
+
+def _update_planar_arc_sketch(
+    recipe: object,
+    *,
+    arc_id: str,
+    start: Mapping[str, object] | None = None,
+    center: Mapping[str, object] | None = None,
+    end: Mapping[str, object] | None = None,
+    orientation: str | None = None,
+) -> SketchGeometry:
+    if start is None and center is None and end is None and orientation is None:
+        raise ValueError("update_planar_arc requires one changed field")
+    sketch = _as_strict_planar_sketch(recipe)
+    target = next(
+        (item for item in sketch.curves if type(item) is SketchArc and item.id == arc_id),
+        None,
+    )
+    if target is None:
+        raise ValueError("arc_id does not identify one editable arc")
+    refs = {
+        "start": target.start_point_id,
+        "center": target.center_point_id,
+        "end": target.end_point_id,
+    }
+    fixed: set[str] = set()
+    for label, value in (("start", start), ("center", center), ("end", end)):
+        if value is None:
+            continue
+        sketch, refs[label], authored = _resolve_planar_point_ref(sketch, value, label)
+        if authored:
+            fixed.add(refs[label])
+    candidate = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        tuple(
+            SketchArc(
+                item.id,
+                refs["start"],
+                refs["center"],
+                refs["end"],
+                item.orientation if orientation is None else orientation,
+            )
+            if item is target
+            else item
+            for item in sketch.curves
+        ),
+        sketch.constraints,
+    )
+    return _solve_planar_candidate(candidate, fixed_point_ids=fixed)
+
+
+def delete_planar_curves(
+    recipe: object,
+    *,
+    curve_ids: Sequence[str],
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _delete_planar_curves_sketch(recipe, curve_ids=curve_ids)
+    )
+
+
+def _delete_planar_curves_sketch(
+    recipe: object,
+    *,
+    curve_ids: Sequence[str],
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    ids = _exact_id_list(curve_ids, "curve_ids", maximum=32)
+    available = {
+        item.id for item in sketch.curves if type(item) in {SketchLine, SketchArc}
+    }
+    if not set(ids) <= available:
+        raise ValueError("curve_ids must identify exact line or arc IDs")
+    if any(
+        set(ids).intersection(sketch_constraint_entity_ids(item))
+        for item in sketch.constraints
+    ):
+        raise AuthoringContractError(
+            "cannot delete curves referenced by remaining sketch constraints"
+        )
+    return SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        tuple(item for item in sketch.curves if item.id not in set(ids)),
+        sketch.constraints,
+    )
+
+
+def add_planar_constraint(
+    recipe: object,
+    *,
+    constraint: Mapping[str, object],
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _add_planar_constraint_sketch(recipe, constraint=constraint)
+    )
+
+
+def _add_planar_constraint_sketch(
+    recipe: object,
+    *,
+    constraint: Mapping[str, object],
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    constraint_id = _next_sketch_ids(sketch, "K", 1)[0]
+    created = _constraint_from_agent_spec(sketch, constraint_id, constraint)
+    candidate = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        sketch.curves,
+        (*sketch.constraints, created),
+    )
+    solved = _solve_planar_candidate(candidate, new_constraint_ids=(constraint_id,))
+    return solved
+
+
+def replace_planar_constraint(
+    recipe: object,
+    *,
+    constraint_id: str,
+    constraint: Mapping[str, object],
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _replace_planar_constraint_sketch(
+            recipe,
+            constraint_id=constraint_id,
+            constraint=constraint,
+        )
+    )
+
+
+def _replace_planar_constraint_sketch(
+    recipe: object,
+    *,
+    constraint_id: str,
+    constraint: Mapping[str, object],
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    if constraint_id not in {item.id for item in sketch.constraints}:
+        raise ValueError("constraint_id does not identify one constraint")
+    replacement = _constraint_from_agent_spec(sketch, constraint_id, constraint)
+    candidate = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        sketch.curves,
+        tuple(
+            replacement if item.id == constraint_id else item
+            for item in sketch.constraints
+        ),
+    )
+    solved = _solve_planar_candidate(candidate, new_constraint_ids=(constraint_id,))
+    return solved
+
+
+def delete_planar_constraints(
+    recipe: object,
+    *,
+    constraint_ids: Sequence[str],
+) -> GeometryDraft:
+    return _planar_edit_draft(
+        _delete_planar_constraints_sketch(recipe, constraint_ids=constraint_ids)
+    )
+
+
+def _delete_planar_constraints_sketch(
+    recipe: object,
+    *,
+    constraint_ids: Sequence[str],
+) -> SketchGeometry:
+    sketch = _as_strict_planar_sketch(recipe)
+    ids = _exact_id_list(constraint_ids, "constraint_ids", maximum=32)
+    if not set(ids) <= {item.id for item in sketch.constraints}:
+        raise ValueError("constraint_ids must identify existing constraints")
+    updated = SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        sketch.points,
+        sketch.curves,
+        tuple(item for item in sketch.constraints if item.id not in set(ids)),
+    )
+    solve_sketch_constraints(updated)
+    return updated
 
 
 def add_planar_rectangle(
@@ -1158,6 +1509,21 @@ def add_planar_rectangle(
     width: Real,
     height: Real,
 ) -> GeometryDraft:
+    return _planar_edit_draft(
+        _add_planar_rectangle_sketch(
+            recipe, x=x, y=y, width=width, height=height
+        )
+    )
+
+
+def _add_planar_rectangle_sketch(
+    recipe: object,
+    *,
+    x: Real,
+    y: Real,
+    width: Real,
+    height: Real,
+) -> SketchGeometry:
     sketch = _as_strict_planar_sketch(recipe)
     x_value = _finite(x, "x")
     y_value = _finite(y, "y")
@@ -1192,13 +1558,7 @@ def add_planar_rectangle(
         (*sketch.curves, *lines),
         sketch.constraints,
     )
-    return _draft(
-        updated,
-        {
-            "point_count": float(len(updated.points)),
-            "curve_count": float(len(updated.curves)),
-        },
-    )
+    return updated
 
 
 def add_planar_polygon(
@@ -1206,6 +1566,16 @@ def add_planar_polygon(
     *,
     vertices: Sequence[Sequence[Real]],
 ) -> GeometryDraft:
+    return _planar_edit_draft(
+        _add_planar_polygon_sketch(recipe, vertices=vertices)
+    )
+
+
+def _add_planar_polygon_sketch(
+    recipe: object,
+    *,
+    vertices: Sequence[Sequence[Real]],
+) -> SketchGeometry:
     sketch = _as_strict_planar_sketch(recipe)
     values = tuple(vertices)
     if not 3 <= len(values) <= 64:
@@ -1246,13 +1616,7 @@ def add_planar_polygon(
         (*sketch.curves, *lines),
         sketch.constraints,
     )
-    return _draft(
-        updated,
-        {
-            "point_count": float(len(updated.points)),
-            "curve_count": float(len(updated.curves)),
-        },
-    )
+    return updated
 
 
 def update_planar_point(
@@ -1262,6 +1626,18 @@ def update_planar_point(
     x: Real | None = None,
     y: Real | None = None,
 ) -> GeometryDraft:
+    return _planar_edit_draft(
+        _update_planar_point_sketch(recipe, point_id=point_id, x=x, y=y)
+    )
+
+
+def _update_planar_point_sketch(
+    recipe: object,
+    *,
+    point_id: str,
+    x: Real | None = None,
+    y: Real | None = None,
+) -> SketchGeometry:
     sketch = _as_strict_planar_sketch(recipe)
     if x is None and y is None:
         raise ValueError("update_planar_point requires x or y")
@@ -1281,13 +1657,8 @@ def update_planar_point(
         sketch.curves,
         sketch.constraints,
     )
-    return _draft(
-        updated,
-        {
-            "point_count": float(len(updated.points)),
-            "curve_count": float(len(updated.curves)),
-        },
-    )
+    solved = _solve_planar_candidate(updated, fixed_point_ids={str(point_id)})
+    return solved
 
 
 def update_planar_circle(
@@ -1298,6 +1669,25 @@ def update_planar_circle(
     center_y: Real | None = None,
     radius: Real | None = None,
 ) -> GeometryDraft:
+    return _planar_edit_draft(
+        _update_planar_circle_sketch(
+            recipe,
+            circle_id=circle_id,
+            center_x=center_x,
+            center_y=center_y,
+            radius=radius,
+        )
+    )
+
+
+def _update_planar_circle_sketch(
+    recipe: object,
+    *,
+    circle_id: str,
+    center_x: Real | None = None,
+    center_y: Real | None = None,
+    radius: Real | None = None,
+) -> SketchGeometry:
     sketch = _as_strict_planar_sketch(recipe)
     target = next(
         (
@@ -1321,12 +1711,13 @@ def update_planar_circle(
                 point.v if center_y is None else _finite(center_y, "center_y"),
             )
         )
+    requested_radius = None if radius is None else _finite(radius, "radius")
     curves = tuple(
         (
             SketchCircle(
                 curve.id,
                 curve.center_point_id,
-                curve.radius if radius is None else _finite(radius, "radius"),
+                curve.radius if requested_radius is None else requested_radius,
             )
             if curve is target
             else curve
@@ -1340,13 +1731,31 @@ def update_planar_circle(
         curves,
         sketch.constraints,
     )
-    return _draft(
+    solved = _solve_planar_candidate(
         updated,
-        {
-            "point_count": float(len(updated.points)),
-            "curve_count": float(len(updated.curves)),
-        },
+        fixed_point_ids=(
+            {str(target.center_point_id)}
+            if center_x is not None or center_y is not None
+            else set()
+        ),
     )
+    if requested_radius is not None:
+        solved_target = next(
+            curve
+            for curve in solved.curves
+            if isinstance(curve, SketchCircle) and curve.id == target.id
+        )
+        if not math.isclose(
+            solved_target.radius,
+            requested_radius,
+            rel_tol=_SKETCH_AUTHORING_TOLERANCE,
+            abs_tol=_SKETCH_AUTHORING_TOLERANCE,
+        ):
+            raise AuthoringContractError(
+                "circle radius edit conflicts with a driving or equality "
+                "constraint; replace or remove that constraint first"
+            )
+    return solved
 
 
 def delete_planar_circles(
@@ -1355,6 +1764,17 @@ def delete_planar_circles(
     circle_ids: Sequence[str],
 ) -> GeometryDraft:
     """Atomically remove exact unconstrained circles from a detached sketch."""
+
+    return _planar_edit_draft(
+        _delete_planar_circles_sketch(recipe, circle_ids=circle_ids)
+    )
+
+
+def _delete_planar_circles_sketch(
+    recipe: object,
+    *,
+    circle_ids: Sequence[str],
+) -> SketchGeometry:
 
     sketch = _as_strict_planar_sketch(recipe)
     target_ids = _exact_circle_ids(circle_ids, "circle_ids")
@@ -1394,7 +1814,7 @@ def delete_planar_circles(
         remaining_curves,
         sketch.constraints,
     )
-    return _planar_edit_draft(updated)
+    return updated
 
 
 def replace_planar_circle_pattern(
@@ -1409,6 +1829,32 @@ def replace_planar_circle_pattern(
     radius: Real,
 ) -> GeometryDraft:
     """Replace exact circles with one deterministic detached linear pattern."""
+
+    return _planar_edit_draft(
+        _replace_planar_circle_pattern_sketch(
+            recipe,
+            target_circle_ids=target_circle_ids,
+            count=count,
+            start_center_x=start_center_x,
+            start_center_y=start_center_y,
+            spacing_x=spacing_x,
+            spacing_y=spacing_y,
+            radius=radius,
+        )
+    )
+
+
+def _replace_planar_circle_pattern_sketch(
+    recipe: object,
+    *,
+    target_circle_ids: Sequence[str],
+    count: int,
+    start_center_x: Real,
+    start_center_y: Real,
+    spacing_x: Real,
+    spacing_y: Real,
+    radius: Real,
+) -> SketchGeometry:
 
     sketch = _as_strict_planar_sketch(recipe)
     target_ids = _exact_circle_ids(target_circle_ids, "target_circle_ids")
@@ -1476,7 +1922,7 @@ def replace_planar_circle_pattern(
         (*remaining_curves, *new_circles),
         sketch.constraints,
     )
-    return _planar_edit_draft(updated)
+    return updated
 
 
 def apply_planar_edit_batch(
@@ -1491,13 +1937,13 @@ def apply_planar_edit_batch(
         raise ValueError("batch edits must contain between 1 and 16 operations")
     current = _as_strict_planar_sketch(recipe)
     handlers = {
-        "add_circle": add_planar_circle,
-        "add_rectangle": add_planar_rectangle,
-        "add_polygon": _batch_add_polygon,
-        "update_point": update_planar_point,
-        "update_circle": update_planar_circle,
-        "delete_circles": delete_planar_circles,
-        "replace_circle_pattern": replace_planar_circle_pattern,
+        "add_circle": _add_planar_circle_sketch,
+        "add_rectangle": _add_planar_rectangle_sketch,
+        "add_polygon": _batch_add_polygon_sketch,
+        "update_point": _update_planar_point_sketch,
+        "update_circle": _update_planar_circle_sketch,
+        "delete_circles": _delete_planar_circles_sketch,
+        "replace_circle_pattern": _replace_planar_circle_pattern_sketch,
     }
     for index, raw_edit in enumerate(values):
         if not isinstance(raw_edit, Mapping):
@@ -1505,13 +1951,56 @@ def apply_planar_edit_batch(
         edit = dict(raw_edit)
         operation = edit.pop("operation", None)
         if operation == "batch" or operation not in handlers:
-            raise ValueError(f"edits[{index}] uses an unsupported operation")
-        draft = handlers[str(operation)](current, **edit)
-        current = draft.recipe
+            if operation == "add_line":
+                current = _add_planar_line_sketch(
+                    current, edit.pop("start"), edit.pop("end")
+                )
+            elif operation == "add_arc":
+                current = _add_planar_arc_sketch(
+                    current,
+                    edit.pop("start"),
+                    edit.pop("center"),
+                    edit.pop("end"),
+                    edit.pop("orientation"),
+                )
+            elif operation == "update_line":
+                current = _update_planar_line_sketch(current, **edit)
+                edit.clear()
+            elif operation == "update_arc":
+                current = _update_planar_arc_sketch(current, **edit)
+                edit.clear()
+            elif operation == "delete_curves":
+                current = _delete_planar_curves_sketch(current, **edit)
+                edit.clear()
+            elif operation == "add_constraint":
+                current = _add_planar_constraint_sketch(current, **edit)
+                edit.clear()
+            elif operation == "replace_constraint":
+                current = _replace_planar_constraint_sketch(current, **edit)
+                edit.clear()
+            elif operation == "delete_constraints":
+                current = _delete_planar_constraints_sketch(current, **edit)
+                edit.clear()
+            else:
+                raise ValueError(f"edits[{index}] uses an unsupported operation")
+            if edit:
+                raise ValueError(f"edits[{index}] has unsupported fields")
+        else:
+            current = handlers[str(operation)](current, **edit)
     return _planar_edit_draft(current)
 
 
 def _batch_add_polygon(recipe: object, *, vertices: object) -> GeometryDraft:
+    return _planar_edit_draft(
+        _batch_add_polygon_sketch(recipe, vertices=vertices)
+    )
+
+
+def _batch_add_polygon_sketch(
+    recipe: object,
+    *,
+    vertices: object,
+) -> SketchGeometry:
     if not isinstance(vertices, Sequence) or isinstance(
         vertices, (str, bytes, bytearray)
     ):
@@ -1521,7 +2010,202 @@ def _batch_add_polygon(recipe: object, *, vertices: object) -> GeometryDraft:
         if not isinstance(vertex, Mapping) or set(vertex) != {"x", "y"}:
             raise ValueError("vertices must contain closed x/y objects")
         coordinates.append((vertex["x"], vertex["y"]))
-    return add_planar_polygon(recipe, vertices=coordinates)
+    return _add_planar_polygon_sketch(recipe, vertices=coordinates)
+
+
+def _resolve_planar_point_ref(
+    sketch: SketchGeometry,
+    value: Mapping[str, object],
+    label: str,
+) -> tuple[SketchGeometry, str, bool]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a point reference object")
+    data = dict(value)
+    if set(data) == {"point_id"}:
+        point_id = data["point_id"]
+        if type(point_id) is not str or not point_id:
+            raise ValueError(f"{label}.point_id must be a non-empty string")
+        if point_id not in {item.id for item in sketch.points}:
+            raise ValueError(f"{label}.point_id is unavailable")
+        return sketch, point_id, False
+    if set(data) != {"x", "y"}:
+        raise ValueError(f"{label} point reference fields do not match")
+    x = _finite(data["x"], f"{label}.x")
+    y = _finite(data["y"], f"{label}.y")
+    tolerance = _SKETCH_AUTHORING_TOLERANCE
+    matches = tuple(
+        item
+        for item in sketch.points
+        if math.hypot(item.u - x, item.v - y) <= tolerance
+    )
+    if len(matches) > 1:
+        raise AuthoringContractError(
+            f"{label} coordinate matches multiple points; use point_id"
+        )
+    if matches:
+        return sketch, matches[0].id, True
+    point_id = _next_sketch_ids(sketch, "P", 1)[0]
+    return (
+        SketchGeometry(
+            sketch.name,
+            sketch.plane,
+            (*sketch.points, SketchPoint(point_id, x, y)),
+            sketch.curves,
+            sketch.constraints,
+        ),
+        point_id,
+        True,
+    )
+
+
+def _constraint_from_agent_spec(
+    sketch: SketchGeometry,
+    constraint_id: str,
+    value: Mapping[str, object],
+) -> SketchConstraint:
+    if not isinstance(value, Mapping):
+        raise TypeError("constraint must be an object")
+    data = dict(value)
+    kind = data.get("kind")
+    enabled = data.pop("enabled", True)
+    data.pop("kind", None)
+    if type(enabled) is not bool:
+        raise TypeError("constraint enabled must be a bool")
+    simple: dict[str, tuple[type, tuple[str, ...]]] = {
+        "coincident": (SketchCoincidentConstraint, ("first_point_id", "second_point_id")),
+        "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id")),
+        "horizontal": (SketchHorizontalConstraint, ("line_id",)),
+        "vertical": (SketchVerticalConstraint, ("line_id",)),
+        "parallel": (SketchParallelConstraint, ("first_line_id", "second_line_id")),
+        "perpendicular": (SketchPerpendicularConstraint, ("first_line_id", "second_line_id")),
+        "equal_length": (SketchEqualLengthConstraint, ("first_line_id", "second_line_id")),
+        "equal_radius": (SketchEqualRadiusConstraint, ("first_curve_id", "second_curve_id")),
+        "concentric": (SketchConcentricConstraint, ("first_curve_id", "second_curve_id")),
+    }
+    if kind in simple:
+        constraint_type, fields = simple[str(kind)]
+        if set(data) != set(fields):
+            raise ValueError("constraint fields do not match its kind")
+        return constraint_type(
+            constraint_id,
+            *(data[field] for field in fields),
+            source="manual",
+            enabled=enabled,
+        )
+    if kind == "tangent":
+        allowed = {"first_curve_id", "second_curve_id", "branch_hint"}
+        if not {"first_curve_id", "second_curve_id"} <= set(data) <= allowed:
+            raise ValueError("constraint fields do not match tangent")
+        return SketchTangentConstraint(
+            constraint_id,
+            data["first_curve_id"],
+            data["second_curve_id"],
+            data.get("branch_hint", 0),
+            source="manual",
+            enabled=enabled,
+        )
+    if kind == "fixed":
+        if set(data) != {"point_id"}:
+            raise ValueError("fixed constraint requires point_id only")
+        point = next(
+            (item for item in sketch.points if item.id == data["point_id"]),
+            None,
+        )
+        if point is None:
+            raise ValueError("fixed constraint point_id is unavailable")
+        return SketchFixedConstraint(
+            constraint_id,
+            point.id,
+            point.u,
+            point.v,
+            source="manual",
+            enabled=enabled,
+        )
+    driving = data.pop("driving", True)
+    if type(driving) is not bool:
+        raise TypeError("dimension driving must be a bool")
+    if kind == "distance":
+        fields = {"first_point_id", "second_point_id", "value"}
+        if set(data) != fields:
+            raise ValueError("constraint fields do not match distance")
+        return SketchDistanceDimension(
+            constraint_id,
+            data["first_point_id"],
+            data["second_point_id"],
+            data["value"],
+            driving,
+            source="manual",
+            enabled=enabled,
+        )
+    if kind == "radius":
+        if set(data) != {"curve_id", "value"}:
+            raise ValueError("constraint fields do not match radius")
+        return SketchRadiusDimension(
+            constraint_id,
+            data["curve_id"],
+            data["value"],
+            driving,
+            source="manual",
+            enabled=enabled,
+        )
+    if kind == "angle":
+        fields = {"first_line_id", "second_line_id", "angle_degrees"}
+        if set(data) != fields:
+            raise ValueError("constraint fields do not match angle")
+        return SketchAngleDimension(
+            constraint_id,
+            data["first_line_id"],
+            data["second_line_id"],
+            math.radians(_finite(data["angle_degrees"], "angle_degrees")),
+            driving,
+            source="manual",
+            enabled=enabled,
+        )
+    raise ValueError("constraint kind is unsupported")
+
+
+def _solve_planar_candidate(
+    sketch: SketchGeometry,
+    *,
+    fixed_point_ids: set[str] | tuple[str, ...] = (),
+    new_constraint_ids: tuple[str, ...] = (),
+) -> SketchGeometry:
+    result = solve_sketch_constraints(
+        sketch,
+        fixed_point_ids=fixed_point_ids,
+        previous_solution=sketch,
+        new_constraint_ids=new_constraint_ids,
+    )
+    if not result.succeeded:
+        conflicts = ", ".join(result.conflicting_constraint_ids) or "none"
+        raise AuthoringContractError(
+            f"sketch constraint solve {result.status}; conflict IDs: {conflicts}"
+        )
+    return SketchGeometry(
+        sketch.name,
+        sketch.plane,
+        result.points,
+        result.curves,
+        sketch.constraints,
+    )
+
+
+def _exact_id_list(
+    values: Sequence[str],
+    label: str,
+    *,
+    maximum: int,
+) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise TypeError(f"{label} must be an array")
+    result = tuple(values)
+    if not 1 <= len(result) <= maximum:
+        raise ValueError(f"{label} must contain between 1 and {maximum} IDs")
+    if any(type(item) is not str or not item for item in result):
+        raise TypeError(f"{label} must contain non-empty exact string IDs")
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} must contain unique IDs")
+    return result
 
 
 def _exact_circle_ids(values: Sequence[str], label: str) -> tuple[str, ...]:
@@ -1601,11 +2285,23 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
                     "radius": curve.radius,
                 }
             )
+    solved = solve_sketch_constraints(sketch)
     return {
         "kind": "planar_sketch",
         "point_count": len(sketch.points),
         "curve_count": len(sketch.curves),
         "constraint_summary": _sketch_constraint_summary(sketch),
+        "constraints": [
+            _sketch_constraint_catalog_item(item)
+            for item in sketch.constraints
+        ],
+        "solve": {
+            "status": solved.status,
+            "remaining_dof": solved.remaining_dof,
+            "max_residual": solved.max_residual,
+            "redundant_constraint_ids": list(solved.redundant_constraint_ids),
+            "conflicting_constraint_ids": list(solved.conflicting_constraint_ids),
+        },
         "points": [
             {"id": point.id, "x": point.u, "y": point.v}
             for point in sketch.points
@@ -2120,7 +2816,9 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
             ),
         }
     if type(recipe) is SketchGeometry and recipe.is_strict:
-        result = {
+        if len(recipe.constraints) > 128:
+            raise ValueError("planar sketch constraints exceed the bounded schema")
+        return {
             "kind": "planar_sketch",
             "name": recipe.name,
             "plane": {
@@ -2136,15 +2834,11 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 _sketch_curve_to_payload(curve)
                 for curve in recipe.curves
             ],
+            "constraints": [
+                _sketch_constraint_to_payload(constraint)
+                for constraint in recipe.constraints
+            ],
         }
-        if recipe.constraints:
-            result["constraint_summary"] = _sketch_constraint_summary(recipe)
-            result["constraint_capability"] = {
-                "read": True,
-                "create": False,
-                "edit": False,
-            }
-        return result
     raise TypeError("recipe is outside the native Agent geometry subset")
 
 
@@ -2175,10 +2869,6 @@ def _geometry_recipe_from_payload(value: object) -> object:
         raise ValueError(
             "Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。"
         )
-    if kind == "planar_sketch" and (
-        "constraint_summary" in value or "constraint_capability" in value
-    ):
-        raise ValueError("Agent 可只读识别草图约束摘要，暂不支持创建或编辑约束。")
     fields: dict[str, set[str]] = {
         "rectangle": {"kind", "name", "width", "height"},
         "disk": {"kind", "name", "radius"},
@@ -2195,7 +2885,9 @@ def _geometry_recipe_from_payload(value: object) -> object:
         "cylinder": {"kind", "name", "radius", "height"},
         "translated": {"kind", "base", "dx", "dy", "dz"},
         "rotated": {"kind", "base", "axis", "angle_degrees"},
-        "planar_sketch": {"kind", "name", "plane", "points", "curves"},
+        "planar_sketch": {
+            "kind", "name", "plane", "points", "curves", "constraints",
+        },
         "wire": {"kind", "name", "points", "members"},
         "extruded": {"kind", "base", "height", "source_face_ids"},
         "revolved": {
@@ -2350,11 +3042,14 @@ def _geometry_recipe_from_payload(value: object) -> object:
             raise ValueError("planar sketch plane fields do not match")
         points = value["points"]
         curves = value["curves"]
+        constraints = value["constraints"]
         if (
             not isinstance(points, list)
             or not isinstance(curves, list)
+            or not isinstance(constraints, list)
             or not 1 <= len(points) <= 128
             or not 1 <= len(curves) <= 128
+            or len(constraints) > 128
         ):
             raise ValueError("planar sketch entities exceed the bounded schema")
         if any(
@@ -2375,6 +3070,10 @@ def _geometry_recipe_from_payload(value: object) -> object:
                 for item in points
             ),
             tuple(_sketch_curve_from_payload(item) for item in curves),
+            tuple(
+                _sketch_constraint_from_payload(item)
+                for item in constraints
+            ),
         )
     return RotatedGeometry(
         _geometry_recipe_from_payload(value["base"]),
@@ -2405,19 +3104,29 @@ def _validate_recipe_payload_budget(value: object) -> None:
         else _MAX_RECIPE_NODES
     )
 
-    def visit(item: object, depth: int) -> None:
+    def visit(item: object, depth: int, *, planar_entity: bool = False) -> None:
         nonlocal nodes
         if depth > _MAX_RECIPE_DEPTH:
             raise ValueError("geometry recipe payload exceeds the depth budget")
         if isinstance(item, Mapping):
-            nodes += 1
-            if nodes > node_budget:
-                raise ValueError("geometry recipe payload exceeds the node budget")
-            for child in item.values():
-                visit(child, depth + 1)
+            if not planar_entity:
+                nodes += 1
+                if nodes > node_budget:
+                    raise ValueError("geometry recipe payload exceeds the node budget")
+            sketch_fields = (
+                {"points", "curves", "constraints"}
+                if item.get("kind") == "planar_sketch"
+                else set()
+            )
+            for key, child in item.items():
+                visit(
+                    child,
+                    depth + 1,
+                    planar_entity=key in sketch_fields,
+                )
         elif isinstance(item, list):
             for child in item:
-                visit(child, depth + 1)
+                visit(child, depth + 1, planar_entity=planar_entity)
 
     visit(value, 0)
 
@@ -3007,17 +3716,17 @@ def _next_sketch_ids(
     count: int,
 ) -> tuple[str, ...]:
     used = {
-        item.id
-        for item in (*sketch.points, *sketch.curves)
+        item.id.casefold()
+        for item in (*sketch.points, *sketch.curves, *sketch.constraints)
         if getattr(item, "id", None) is not None
     }
     index = 1
     allocated: list[str] = []
     while len(allocated) < count:
         candidate = f"{prefix}{index}"
-        if candidate not in used:
+        if candidate.casefold() not in used:
             allocated.append(candidate)
-            used.add(candidate)
+            used.add(candidate.casefold())
         index += 1
     return tuple(allocated)
 
@@ -3031,8 +3740,17 @@ def _sketch_constraint_summary(sketch: SketchGeometry) -> dict[str, object]:
             bool(getattr(item, "driving", False)) for item in constraints
         ),
         "types": sorted({type(item).__name__ for item in constraints}),
-        "capability": {"read": True, "create": False, "edit": False},
+        "capability": {"read": True, "create": True, "edit": True},
     }
+
+
+def _sketch_constraint_catalog_item(
+    constraint: SketchConstraint,
+) -> dict[str, object]:
+    item = _sketch_constraint_to_payload(constraint)
+    if item["kind"] == "angle":
+        item["angle_degrees"] = math.degrees(float(item.pop("value")))
+    return item
 
 
 def _sketch_curve_to_payload(
@@ -3062,6 +3780,75 @@ def _sketch_curve_to_payload(
         "center_point_id": curve.center_point_id,
         "radius": curve.radius,
     }
+
+
+def _sketch_constraint_to_payload(
+    constraint: SketchConstraint,
+) -> dict[str, object]:
+    common: dict[str, object] = {
+        "id": constraint.id,
+        "source": constraint.source,
+        "enabled": constraint.enabled,
+    }
+    cases: tuple[tuple[type, str, tuple[str, ...]], ...] = (
+        (SketchCoincidentConstraint, "coincident", ("first_point_id", "second_point_id")),
+        (SketchPointOnCurveConstraint, "point_on_curve", ("point_id", "curve_id")),
+        (SketchHorizontalConstraint, "horizontal", ("line_id",)),
+        (SketchVerticalConstraint, "vertical", ("line_id",)),
+        (SketchParallelConstraint, "parallel", ("first_line_id", "second_line_id")),
+        (SketchPerpendicularConstraint, "perpendicular", ("first_line_id", "second_line_id")),
+        (SketchTangentConstraint, "tangent", ("first_curve_id", "second_curve_id", "branch_hint")),
+        (SketchEqualLengthConstraint, "equal_length", ("first_line_id", "second_line_id")),
+        (SketchEqualRadiusConstraint, "equal_radius", ("first_curve_id", "second_curve_id")),
+        (SketchConcentricConstraint, "concentric", ("first_curve_id", "second_curve_id")),
+        (SketchFixedConstraint, "fixed", ("point_id", "u", "v")),
+        (SketchDistanceDimension, "distance", ("first_point_id", "second_point_id", "value", "driving")),
+        (SketchRadiusDimension, "radius", ("curve_id", "value", "driving")),
+        (SketchAngleDimension, "angle", ("first_line_id", "second_line_id", "value", "driving")),
+    )
+    for expected, kind, fields in cases:
+        if type(constraint) is expected:
+            return {
+                "kind": kind,
+                **common,
+                **{field: getattr(constraint, field) for field in fields},
+            }
+    raise TypeError("unsupported sketch constraint type")
+
+
+def _sketch_constraint_from_payload(value: object) -> SketchConstraint:
+    if not isinstance(value, Mapping):
+        raise TypeError("sketch constraint payload must be an object")
+    data = dict(value)
+    kind = data.get("kind")
+    common = {"kind", "id", "source", "enabled"}
+    fields: dict[str, tuple[type, tuple[str, ...]]] = {
+        "coincident": (SketchCoincidentConstraint, ("first_point_id", "second_point_id")),
+        "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id")),
+        "horizontal": (SketchHorizontalConstraint, ("line_id",)),
+        "vertical": (SketchVerticalConstraint, ("line_id",)),
+        "parallel": (SketchParallelConstraint, ("first_line_id", "second_line_id")),
+        "perpendicular": (SketchPerpendicularConstraint, ("first_line_id", "second_line_id")),
+        "tangent": (SketchTangentConstraint, ("first_curve_id", "second_curve_id", "branch_hint")),
+        "equal_length": (SketchEqualLengthConstraint, ("first_line_id", "second_line_id")),
+        "equal_radius": (SketchEqualRadiusConstraint, ("first_curve_id", "second_curve_id")),
+        "concentric": (SketchConcentricConstraint, ("first_curve_id", "second_curve_id")),
+        "fixed": (SketchFixedConstraint, ("point_id", "u", "v")),
+        "distance": (SketchDistanceDimension, ("first_point_id", "second_point_id", "value", "driving")),
+        "radius": (SketchRadiusDimension, ("curve_id", "value", "driving")),
+        "angle": (SketchAngleDimension, ("first_line_id", "second_line_id", "value", "driving")),
+    }
+    if kind not in fields:
+        raise ValueError("sketch constraint kind is unsupported")
+    constraint_type, specific = fields[str(kind)]
+    if set(data) != common | set(specific):
+        raise ValueError("sketch constraint fields do not match its kind")
+    return constraint_type(
+        data["id"],
+        *(data[field] for field in specific),
+        source=data["source"],
+        enabled=data["enabled"],
+    )
 
 
 def _sketch_curve_from_payload(
@@ -3117,7 +3904,10 @@ __all__ = [
     "StaticGeometryPreview",
     "box_geometry",
     "apply_planar_edit_batch",
+    "add_planar_arc",
     "add_planar_circle",
+    "add_planar_constraint",
+    "add_planar_line",
     "add_planar_polygon",
     "add_planar_rectangle",
     "create_geometry_edit_proposal",
@@ -3127,6 +3917,8 @@ __all__ = [
     "create_profile_revolution_proposal",
     "cylinder_geometry",
     "delete_planar_circles",
+    "delete_planar_constraints",
+    "delete_planar_curves",
     "disk_geometry",
     "geometry_recipe_from_payload",
     "geometry_recipe_to_payload",
@@ -3140,9 +3932,12 @@ __all__ = [
     "planar_sketch_geometry",
     "rectangle_geometry",
     "replace_planar_circle_pattern",
+    "replace_planar_constraint",
     "rotate_geometry",
     "translate_geometry",
     "update_planar_circle",
+    "update_planar_arc",
+    "update_planar_line",
     "update_planar_point",
     "wire_geometry",
 ]

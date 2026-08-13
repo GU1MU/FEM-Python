@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from fem.geometry import (
     SketchAngleDimension,
     SketchFixedConstraint,
@@ -23,8 +21,18 @@ def _sketch() -> SketchGeometry:
     return SketchGeometry(
         "Agent 只读约束",
         SketchPlane.xy(),
-        (SketchPoint("P1", 0.0, 0.0), SketchPoint("P2", 1.0, 0.0)),
-        (SketchLine("L1", "P1", "P2"),),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 1.0, 0.0),
+            SketchPoint("P3", 1.0, 1.0),
+            SketchPoint("P4", 0.0, 1.0),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        ),
         (SketchFixedConstraint("G1", "P1", 0.0, 0.0),),
     )
 
@@ -37,18 +45,27 @@ def test_agent_catalog_recognizes_constraint_summary_and_old_edit_preserves_it()
     assert catalog["constraint_summary"]["count"] == 1
     assert catalog["constraint_summary"]["capability"] == {
         "read": True,
-        "create": False,
-        "edit": False,
+        "create": True,
+        "edit": True,
     }
     assert edited.constraints == sketch.constraints
 
 
-def test_agent_full_recipe_payload_exposes_only_summary_and_rejects_reauthoring() -> None:
+def test_agent_full_recipe_payload_round_trips_constraints() -> None:
     payload = geometry_recipe_to_payload(_sketch())
 
-    assert payload["constraint_summary"]["count"] == 1
-    with pytest.raises(ValueError, match="只读识别草图约束摘要"):
-        geometry_recipe_from_payload(payload)
+    assert payload["constraints"] == [
+        {
+            "kind": "fixed",
+            "id": "G1",
+            "source": "manual",
+            "enabled": True,
+            "point_id": "P1",
+            "u": 0.0,
+            "v": 0.0,
+        }
+    ]
+    assert geometry_recipe_from_payload(payload) == _sketch()
 
 
 def test_agent_summary_names_advanced_constraints_and_angle_dimension() -> None:

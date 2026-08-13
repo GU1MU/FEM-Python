@@ -99,7 +99,10 @@ from fem_agent.editing_authoring import (
 )
 from fem_agent.geometry_authoring import (
     apply_planar_edit_batch,
+    add_planar_arc,
     add_planar_circle,
+    add_planar_constraint,
+    add_planar_line,
     add_planar_polygon,
     add_planar_rectangle,
     _as_strict_planar_sketch,
@@ -110,6 +113,8 @@ from fem_agent.geometry_authoring import (
     create_profile_path_sweep_proposal,
     create_profile_revolution_proposal,
     cylinder_geometry,
+    delete_planar_constraints,
+    delete_planar_curves,
     delete_planar_circles,
     geometry_draft,
     feature_topology_catalog,
@@ -119,9 +124,12 @@ from fem_agent.geometry_authoring import (
     planar_sketch_geometry,
     profile_transform_context,
     rotate_geometry,
+    replace_planar_constraint,
     replace_planar_circle_pattern,
     translate_geometry,
     update_planar_circle,
+    update_planar_arc,
+    update_planar_line,
     update_planar_point,
     wire_geometry,
 )
@@ -4192,13 +4200,21 @@ def create_session_authoring_workflow_controller(
             }
         else:
             catalog["supported_edits"] = [
+                "add_line",
+                "add_arc",
                 "add_circle",
                 "add_rectangle",
                 "add_polygon",
                 "update_point",
+                "update_line",
+                "update_arc",
                 "update_circle",
+                "delete_curves",
                 "delete_circles",
                 "replace_circle_pattern",
+                "add_constraint",
+                "replace_constraint",
+                "delete_constraints",
                 "batch",
                 "translate",
                 "rotate",
@@ -5108,7 +5124,17 @@ def create_session_authoring_workflow_controller(
                 confirm_label="沿路径扫掠 Profile",
                 extra_data={"geometry_edit_mode": edit_mode},
             )
-        if operation == "add_circle":
+        if operation == "add_line":
+            if set(edit) != {"start", "end"}:
+                raise ValueError("add_line fields do not match")
+            draft = add_planar_line(part.geometry_recipe, **edit)
+            summary = f"在部件 {part.name} 的平面草图中增加直线"
+        elif operation == "add_arc":
+            if set(edit) != {"start", "center", "end", "orientation"}:
+                raise ValueError("add_arc fields do not match")
+            draft = add_planar_arc(part.geometry_recipe, **edit)
+            summary = f"在部件 {part.name} 的平面草图中增加圆弧"
+        elif operation == "add_circle":
             if set(edit) != {"center_x", "center_y", "radius"}:
                 raise ValueError("add_circle fields do not match")
             draft = add_planar_circle(part.geometry_recipe, **edit)
@@ -5164,6 +5190,23 @@ def create_session_authoring_workflow_controller(
                 raise ValueError("update_circle fields do not match")
             draft = update_planar_circle(part.geometry_recipe, **edit)
             summary = f"更新部件 {part.name} 中的圆 {edit['circle_id']}"
+        elif operation == "update_line":
+            allowed = {"line_id", "start", "end"}
+            if not {"line_id"} <= set(edit) <= allowed or len(edit) == 1:
+                raise ValueError("update_line fields do not match")
+            draft = update_planar_line(part.geometry_recipe, **edit)
+            summary = f"更新部件 {part.name} 中的直线 {edit['line_id']}"
+        elif operation == "update_arc":
+            allowed = {"arc_id", "start", "center", "end", "orientation"}
+            if not {"arc_id"} <= set(edit) <= allowed or len(edit) == 1:
+                raise ValueError("update_arc fields do not match")
+            draft = update_planar_arc(part.geometry_recipe, **edit)
+            summary = f"更新部件 {part.name} 中的圆弧 {edit['arc_id']}"
+        elif operation == "delete_curves":
+            if set(edit) != {"curve_ids"}:
+                raise ValueError("delete_curves fields do not match")
+            draft = delete_planar_curves(part.geometry_recipe, **edit)
+            summary = f"从部件 {part.name} 的平面草图中删除直线或圆弧"
         elif operation == "delete_circles":
             if set(edit) != {"circle_ids"}:
                 raise ValueError("delete_circles fields do not match")
@@ -5188,6 +5231,21 @@ def create_session_authoring_workflow_controller(
                 f"将部件 {part.name} 中的圆替换为 "
                 f"{edit['count']} 孔线性阵列"
             )
+        elif operation == "add_constraint":
+            if set(edit) != {"constraint"}:
+                raise ValueError("add_constraint fields do not match")
+            draft = add_planar_constraint(part.geometry_recipe, **edit)
+            summary = f"为部件 {part.name} 的平面草图增加约束"
+        elif operation == "replace_constraint":
+            if set(edit) != {"constraint_id", "constraint"}:
+                raise ValueError("replace_constraint fields do not match")
+            draft = replace_planar_constraint(part.geometry_recipe, **edit)
+            summary = f"替换部件 {part.name} 的草图约束 {edit['constraint_id']}"
+        elif operation == "delete_constraints":
+            if set(edit) != {"constraint_ids"}:
+                raise ValueError("delete_constraints fields do not match")
+            draft = delete_planar_constraints(part.geometry_recipe, **edit)
+            summary = f"从部件 {part.name} 的平面草图中删除约束"
         elif operation == "batch":
             if set(edit) != {"edits"}:
                 raise ValueError("batch fields do not match")

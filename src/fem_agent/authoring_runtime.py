@@ -1421,8 +1421,223 @@ _REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA = {
     ],
     "additionalProperties": False,
 }
+_SKETCH_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 128}
+_PLANAR_POINT_REF_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "object",
+            "properties": {"point_id": _SKETCH_ID_SCHEMA},
+            "required": ["point_id"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+            "required": ["x", "y"],
+            "additionalProperties": False,
+        },
+    ]
+}
+
+
+def _constraint_edit_schema(
+    kind: str,
+    properties: dict[str, object],
+    required: list[str],
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "kind": {"const": kind},
+            **properties,
+            "enabled": {"type": "boolean"},
+        },
+        "required": ["kind", *required],
+        "additionalProperties": False,
+    }
+
+
+_PLANAR_CONSTRAINT_SCHEMA = {
+    "oneOf": [
+        _constraint_edit_schema(
+            "coincident",
+            {"first_point_id": _SKETCH_ID_SCHEMA, "second_point_id": _SKETCH_ID_SCHEMA},
+            ["first_point_id", "second_point_id"],
+        ),
+        _constraint_edit_schema(
+            "point_on_curve",
+            {"point_id": _SKETCH_ID_SCHEMA, "curve_id": _SKETCH_ID_SCHEMA},
+            ["point_id", "curve_id"],
+        ),
+        _constraint_edit_schema("horizontal", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]),
+        _constraint_edit_schema("vertical", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]),
+        _constraint_edit_schema(
+            "parallel",
+            {"first_line_id": _SKETCH_ID_SCHEMA, "second_line_id": _SKETCH_ID_SCHEMA},
+            ["first_line_id", "second_line_id"],
+        ),
+        _constraint_edit_schema(
+            "perpendicular",
+            {"first_line_id": _SKETCH_ID_SCHEMA, "second_line_id": _SKETCH_ID_SCHEMA},
+            ["first_line_id", "second_line_id"],
+        ),
+        _constraint_edit_schema(
+            "equal_length",
+            {"first_line_id": _SKETCH_ID_SCHEMA, "second_line_id": _SKETCH_ID_SCHEMA},
+            ["first_line_id", "second_line_id"],
+        ),
+        _constraint_edit_schema(
+            "tangent",
+            {
+                "first_curve_id": _SKETCH_ID_SCHEMA,
+                "second_curve_id": _SKETCH_ID_SCHEMA,
+                "branch_hint": {"type": "integer", "enum": [-1, 0, 1]},
+            },
+            ["first_curve_id", "second_curve_id"],
+        ),
+        _constraint_edit_schema(
+            "equal_radius",
+            {"first_curve_id": _SKETCH_ID_SCHEMA, "second_curve_id": _SKETCH_ID_SCHEMA},
+            ["first_curve_id", "second_curve_id"],
+        ),
+        _constraint_edit_schema(
+            "concentric",
+            {"first_curve_id": _SKETCH_ID_SCHEMA, "second_curve_id": _SKETCH_ID_SCHEMA},
+            ["first_curve_id", "second_curve_id"],
+        ),
+        _constraint_edit_schema("fixed", {"point_id": _SKETCH_ID_SCHEMA}, ["point_id"]),
+        _constraint_edit_schema(
+            "distance",
+            {
+                "first_point_id": _SKETCH_ID_SCHEMA,
+                "second_point_id": _SKETCH_ID_SCHEMA,
+                "value": {"type": "number", "exclusiveMinimum": 0},
+                "driving": {"type": "boolean"},
+            },
+            ["first_point_id", "second_point_id", "value"],
+        ),
+        _constraint_edit_schema(
+            "radius",
+            {
+                "curve_id": _SKETCH_ID_SCHEMA,
+                "value": {"type": "number", "exclusiveMinimum": 0},
+                "driving": {"type": "boolean"},
+            },
+            ["curve_id", "value"],
+        ),
+        _constraint_edit_schema(
+            "angle",
+            {
+                "first_line_id": _SKETCH_ID_SCHEMA,
+                "second_line_id": _SKETCH_ID_SCHEMA,
+                "angle_degrees": {"type": "number"},
+                "driving": {"type": "boolean"},
+            },
+            ["first_line_id", "second_line_id", "angle_degrees"],
+        ),
+    ]
+}
+_ADD_LINE_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "add_line"},
+        "start": _PLANAR_POINT_REF_SCHEMA,
+        "end": _PLANAR_POINT_REF_SCHEMA,
+    },
+    "required": ["operation", "start", "end"],
+    "additionalProperties": False,
+}
+_ADD_ARC_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "add_arc"},
+        "start": _PLANAR_POINT_REF_SCHEMA,
+        "center": _PLANAR_POINT_REF_SCHEMA,
+        "end": _PLANAR_POINT_REF_SCHEMA,
+        "orientation": {"type": "string", "enum": ["cw", "ccw"]},
+    },
+    "required": ["operation", "start", "center", "end", "orientation"],
+    "additionalProperties": False,
+}
+_UPDATE_LINE_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "update_line"},
+        "line_id": _SKETCH_ID_SCHEMA,
+        "start": _PLANAR_POINT_REF_SCHEMA,
+        "end": _PLANAR_POINT_REF_SCHEMA,
+    },
+    "required": ["operation", "line_id"],
+    "minProperties": 3,
+    "additionalProperties": False,
+}
+_UPDATE_ARC_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "update_arc"},
+        "arc_id": _SKETCH_ID_SCHEMA,
+        "start": _PLANAR_POINT_REF_SCHEMA,
+        "center": _PLANAR_POINT_REF_SCHEMA,
+        "end": _PLANAR_POINT_REF_SCHEMA,
+        "orientation": {"type": "string", "enum": ["cw", "ccw"]},
+    },
+    "required": ["operation", "arc_id"],
+    "minProperties": 3,
+    "additionalProperties": False,
+}
+_DELETE_CURVES_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "delete_curves"},
+        "curve_ids": {
+            "type": "array", "minItems": 1, "maxItems": 32,
+            "uniqueItems": True, "items": _SKETCH_ID_SCHEMA,
+        },
+    },
+    "required": ["operation", "curve_ids"],
+    "additionalProperties": False,
+}
+_ADD_CONSTRAINT_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {"operation": {"const": "add_constraint"}, "constraint": _PLANAR_CONSTRAINT_SCHEMA},
+    "required": ["operation", "constraint"],
+    "additionalProperties": False,
+}
+_REPLACE_CONSTRAINT_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "replace_constraint"},
+        "constraint_id": _SKETCH_ID_SCHEMA,
+        "constraint": _PLANAR_CONSTRAINT_SCHEMA,
+    },
+    "required": ["operation", "constraint_id", "constraint"],
+    "additionalProperties": False,
+}
+_DELETE_CONSTRAINTS_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "delete_constraints"},
+        "constraint_ids": {
+            "type": "array", "minItems": 1, "maxItems": 32,
+            "uniqueItems": True, "items": _SKETCH_ID_SCHEMA,
+        },
+    },
+    "required": ["operation", "constraint_ids"],
+    "additionalProperties": False,
+}
 _legacy_edit["oneOf"].extend(
-    [_DELETE_CIRCLES_EDIT_SCHEMA, _REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA]
+    [
+        _DELETE_CIRCLES_EDIT_SCHEMA,
+        _REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA,
+        _ADD_LINE_EDIT_SCHEMA,
+        _ADD_ARC_EDIT_SCHEMA,
+        _UPDATE_LINE_EDIT_SCHEMA,
+        _UPDATE_ARC_EDIT_SCHEMA,
+        _DELETE_CURVES_EDIT_SCHEMA,
+        _ADD_CONSTRAINT_EDIT_SCHEMA,
+        _REPLACE_CONSTRAINT_EDIT_SCHEMA,
+        _DELETE_CONSTRAINTS_EDIT_SCHEMA,
+    ]
 )
 _BATCH_PLANAR_OPERATION_CONSTS = frozenset(
     {
@@ -1433,6 +1648,14 @@ _BATCH_PLANAR_OPERATION_CONSTS = frozenset(
         "update_circle",
         "delete_circles",
         "replace_circle_pattern",
+        "add_line",
+        "add_arc",
+        "update_line",
+        "update_arc",
+        "delete_curves",
+        "add_constraint",
+        "replace_constraint",
+        "delete_constraints",
     }
 )
 _batch_planar_branches = [
