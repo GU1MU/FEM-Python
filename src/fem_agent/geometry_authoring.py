@@ -113,6 +113,48 @@ class GeometryContractProof:
         }
 
 
+class PlanarEditValidationError(AuthoringContractError):
+    """An incremental planar edit failed exact Profile validation."""
+
+    def __init__(self, diagnostics: Sequence[Mapping[str, object]]) -> None:
+        records = tuple(dict(item) for item in diagnostics[:16])
+        if not records:
+            records = (
+                {
+                    "code": "sketch.topology-unproven",
+                    "message": "Planar Profile topology could not be proven",
+                    "affected_logical_ids": [],
+                    "severity": "error",
+                },
+            )
+        self.diagnostics = records
+        codes = tuple(
+            dict.fromkeys(
+                str(item.get("code", "sketch.topology-unproven"))
+                for item in records
+            )
+        )
+        affected = tuple(
+            dict.fromkeys(
+                str(entity_id)
+                for item in records
+                for entity_id in item.get("affected_logical_ids", [])
+            )
+        )
+        detail = ", ".join(codes)
+        if affected:
+            detail += f"; affected={','.join(affected[:16])}"
+        super().__init__(f"planar-edit.topology-invalid: {detail}")
+
+    def to_provider_dict(self) -> dict[str, object]:
+        return {
+            "kind": "planar_edit_validation",
+            "status": "rejected",
+            "exact": False,
+            "diagnostics": [dict(item) for item in self.diagnostics],
+        }
+
+
 def _finite(value: object, field_name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{field_name} must be a finite real number")
@@ -2239,10 +2281,38 @@ def _planar_edit_draft(sketch: SketchGeometry) -> GeometryDraft:
             "curve_count": float(len(sketch.curves)),
         },
     )
+    assert draft.proof is not None
     if not draft.proof.exact:
-        raise AuthoringContractError(
-            "planar edit did not produce an exact valid closed geometry"
-        )
+        analysis = analyze_sketch_profiles(sketch)
+        diagnostics = [
+            {
+                "code": item.code,
+                "message": item.message,
+                "affected_logical_ids": list(item.affected_ids),
+                "severity": item.severity,
+            }
+            for item in analysis.blocking_diagnostics[:16]
+        ]
+        if not diagnostics:
+            diagnostics = [
+                {
+                    "code": str(
+                        item.get("diagnostic_id", "sketch.topology-unproven")
+                    ),
+                    "message": str(
+                        item.get(
+                            "message",
+                            "Planar Profile topology could not be proven",
+                        )
+                    ),
+                    "affected_logical_ids": list(
+                        item.get("affected_logical_ids", [])
+                    ),
+                    "severity": "error",
+                }
+                for item in draft.proof.diagnostics[:16]
+            ]
+        raise PlanarEditValidationError(diagnostics)
     return draft
 
 
@@ -3901,6 +3971,7 @@ __all__ = [
     "GEOMETRY_FEATURE_CATALOG_TOOL_NAME",
     "GeometryContractProof",
     "GeometryDraft",
+    "PlanarEditValidationError",
     "StaticGeometryPreview",
     "box_geometry",
     "apply_planar_edit_batch",

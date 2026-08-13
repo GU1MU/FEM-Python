@@ -245,7 +245,7 @@ def test_circle_radius_edit_rejects_solver_restoration_by_driving_constraint() -
 
 def test_batch_may_open_temporarily_but_direct_delete_must_remain_exact() -> None:
     sketch = _square()
-    with pytest.raises(AuthoringContractError, match="exact valid closed"):
+    with pytest.raises(AuthoringContractError, match="sketch.open-loop"):
         delete_planar_curves(sketch, curve_ids=["L4"])
 
     draft = apply_planar_edit_batch(
@@ -326,6 +326,141 @@ def test_batch_builds_inner_d_hole_with_three_reused_coordinate_points() -> None
     assert [profile.role for profile in analyze_sketch_profiles(draft.recipe).profiles].count(
         "hole"
     ) == 1
+
+
+@pytest.mark.parametrize(
+    ("edit", "expected_code"),
+    (
+        (
+            {
+                "operation": "add_line",
+                "start": {"x": 0.2, "y": 0.2},
+                "end": {"x": 0.8, "y": 0.8},
+            },
+            "sketch.open-loop",
+        ),
+        (
+            {
+                "operation": "add_polygon",
+                "vertices": [
+                    {"x": 0.2, "y": 0.2},
+                    {"x": 0.8, "y": 0.8},
+                    {"x": 0.2, "y": 0.8},
+                    {"x": 0.8, "y": 0.2},
+                ],
+            },
+            "sketch.crossing",
+        ),
+    ),
+    ids=("open-contour", "self-intersecting-contour"),
+)
+def test_invalid_freeform_profile_returns_actionable_diagnostics_atomically(
+    edit: dict[str, object],
+    expected_code: str,
+) -> None:
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "invalid freeform", UnitContext("mm", "N", "MPa"), _square()
+    )
+    controller, bridge = _controller(session)
+    before = session.snapshot()
+
+    result = controller.dispatch(
+        "prepare_geometry_edit",
+        {"part_id": "P1", "edit": edit},
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            f"phase10-invalid-{expected_code.replace('.', '-')}",
+        ),
+    )
+
+    assert not result.ok
+    assert result.data is not None
+    assert result.data["kind"] == "planar_edit_validation"
+    assert result.data["status"] == "rejected"
+    assert result.data["retry_guidance"]["action"] == (
+        "revise_and_retry_same_geometry_edit"
+    )
+    codes = {item["code"] for item in result.data["diagnostics"]}
+    assert expected_code in codes
+    assert any(
+        item["affected_logical_ids"]
+        for item in result.data["diagnostics"]
+        if item["code"] == expected_code
+    )
+    assert bridge._records == {}
+    assert controller.stage.value == "mesh_ready"
+    assert session.snapshot() == before
+
+
+def test_freeform_profile_policy_guides_and_verifies_one_nonconvex_cutout() -> None:
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "freeform cutout", UnitContext("mm", "N", "MPa"), _square()
+    )
+    controller, bridge = _controller(session)
+
+    context = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "phase10-freeform-read-before",
+        ),
+    )
+    assert context.ok
+    assert context.data["profile_summary"]["hole_count"] == 0
+    policy = context.data["freeform_profile_policy"]
+    assert policy["two_dimensional_cut_representation"] == "closed_inner_profile"
+    assert policy["part_boolean_required"] is False
+    assert policy["preferred_operation"] == "add_polygon"
+
+    prepared = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "add_polygon",
+                "vertices": [
+                    {"x": 0.2, "y": 0.2},
+                    {"x": 0.8, "y": 0.2},
+                    {"x": 0.8, "y": 0.4},
+                    {"x": 0.4, "y": 0.4},
+                    {"x": 0.4, "y": 0.8},
+                    {"x": 0.2, "y": 0.8},
+                ],
+            },
+        },
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "phase10-freeform-prepare",
+        ),
+    )
+    assert prepared.ok, prepared.summary
+    receipt = bridge.accept_from_gui_control(str(prepared.data["proposal_id"]))
+    assert receipt.state is ProposalState.SUCCEEDED
+    controller.record_proposal_state("geometry", receipt.state, receipt.message)
+    verified = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "phase10-freeform-read-after",
+        ),
+    )
+
+    assert verified.ok
+    summary = verified.data["profile_summary"]
+    assert summary["topology_exact"] is True
+    assert summary["profile_count"] == 2
+    assert summary["hole_count"] == 1
+    hole = next(item for item in summary["profiles"] if item["role"] == "hole")
+    assert hole["curve_count"] == 6
+    assert hole["bounding_box"] == [0.2, 0.2, 0.8, 0.8]
 
 
 def test_multi_turn_catalog_ids_drive_line_then_arc_edits() -> None:

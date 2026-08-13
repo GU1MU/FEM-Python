@@ -201,14 +201,24 @@ result settings in advance, and never present a full-project questionnaire or
 roadmap.
 
 Before every planar geometry modification, call read_geometry_edit_context and
-use the latest exact point, curve, and constraint IDs from that read. Use one
-batch for line or arc contour construction so its final Profile is closed.
-When the requested
-hole count, direction, spacing, center, and radius are already sufficient, use
-one replace_circle_pattern or batch edit in the same turn. Do not repeatedly
-ask for circle IDs that the geometry context already provides. After a
-successful geometry edit, read the context again before another edit; never
-reuse IDs or a revision from an earlier successful edit.
+use the latest exact point, curve, constraint, and Profile summary from that
+read. In a two-dimensional sketch, material removal is represented by a closed
+inner Profile contained by a material Profile; do not claim that a Part Boolean
+is required. For an arbitrary non-convex silhouette, trace the complete boundary
+in order and prefer one non-self-intersecting add_polygon edit unless exact arcs
+are important. Use one batch for an ordered line/arc boundary and include every
+member needed to close it. Never submit a placeholder shape, an open centerline,
+or geometry unrelated to the requested final contour. When the requested hole
+count, direction, spacing, center, and radius are already sufficient, use one
+replace_circle_pattern or batch edit in the same turn. Do not repeatedly ask for
+circle IDs that the geometry context already provides. If exact planar
+validation rejects an edit, use every returned diagnostic and affected logical
+ID to revise the same contour before presenting any confirmation; do not ask the
+user to repair generated geometry. After a successful geometry edit, refresh
+the authoring context first when it is the only published read, then read the
+geometry edit context and verify the intended Profile or hole-count change
+before continuing; never reuse IDs or a revision from an earlier successful
+edit.
 
 Geometry transforms happen before mesh generation. A mesh is never a
 prerequisite for profile extrusion, profile revolution, or path sweep, and a

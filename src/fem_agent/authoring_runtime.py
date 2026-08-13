@@ -1020,7 +1020,9 @@ _READ_GEOMETRY_EDIT_CONTEXT = _tool(
     "read_geometry_edit_context",
     (
         "Read a bounded editable projection of one existing native Part. "
-        "Use this before changing an accepted geometry."
+        "Use this before changing an accepted geometry and again after success. "
+        "For planar sketches it returns exact Profile/hole counts and the generic "
+        "freeform closed-contour policy."
     ),
     {
         "type": "object",
@@ -1279,6 +1281,11 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "type": "array",
                                 "minItems": 3,
                                 "maxItems": 64,
+                                "description": (
+                                    "One ordered, non-self-intersecting boundary; "
+                                    "the last vertex closes back to the first. "
+                                    "Prefer this for arbitrary freeform silhouettes."
+                                ),
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -1689,7 +1696,11 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
     (
         "Prepare a revision-bound edit of an existing native Part. Profile "
         "transforms use the dedicated prepare_profile_* tools; this compatibility "
-        "tool retains sketch, rigid, and exact Boolean edits."
+        "tool retains sketch, rigid, and exact Boolean edits. A planar cutout is "
+        "one contained closed inner Profile, so it does not require Part Boolean. "
+        "Freeform silhouettes should use one ordered add_polygon when possible, "
+        "or one complete line/arc batch. Invalid Profiles return exact topology "
+        "diagnostics and must be revised before presenting a confirmation."
     ),
     _legacy_geometry_edit_parameters,
 )

@@ -146,6 +146,9 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "local defaults length=mm, force=N, and" in system_prompt
     assert "never create a separate unit-selection" in system_prompt
     assert "do not add a natural-language instruction asking" in system_prompt
+    assert "material removal is represented by a closed" in system_prompt
+    assert "prefer one non-self-intersecting add_polygon" in system_prompt
+    assert "use every returned diagnostic and affected logical" in system_prompt
 
 
 def _register_test_continuation(engine, *, revision=4):

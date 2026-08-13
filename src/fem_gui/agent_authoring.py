@@ -122,6 +122,7 @@ from fem_agent.geometry_authoring import (
     planar_geometry_catalog,
     planar_polygon_geometry,
     planar_sketch_geometry,
+    PlanarEditValidationError,
     profile_transform_context,
     rotate_geometry,
     replace_planar_constraint,
@@ -4228,6 +4229,54 @@ def create_session_authoring_workflow_controller(
                     "revolve_profile",
                     "path_sweep_profile",
                 ]
+            sketch = _as_strict_planar_sketch(part.geometry_recipe)
+            profile_analysis = geometry_runtime.analyze_sketch_profiles(sketch)
+            profiles = profile_analysis.profiles
+            catalog["profile_summary"] = {
+                "topology_exact": profile_analysis.valid,
+                "profile_count": len(profiles),
+                "material_profile_count": sum(
+                    item.role == "outer" for item in profiles
+                ),
+                "hole_count": sum(item.role == "hole" for item in profiles),
+                "profiles": [
+                    {
+                        "profile_id": item.id,
+                        "role": item.role,
+                        "curve_count": len(item.curve_ids),
+                        "area": abs(float(item.signed_area)),
+                        "bounding_box": list(item.bounding_box),
+                        "nesting_depth": item.nesting_depth,
+                    }
+                    for item in profiles[:16]
+                ],
+                "truncated": len(profiles) > 16,
+                "diagnostics": [
+                    {
+                        "code": item.code,
+                        "message": item.message,
+                        "affected_logical_ids": list(item.affected_ids),
+                        "severity": item.severity,
+                    }
+                    for item in profile_analysis.diagnostics[:16]
+                ],
+            }
+            catalog["freeform_profile_policy"] = {
+                "two_dimensional_cut_representation": "closed_inner_profile",
+                "part_boolean_required": False,
+                "preferred_operation": "add_polygon",
+                "alternate_operation": "one_batch_of_ordered_lines_and_arcs",
+                "required_invariants": [
+                    "closed",
+                    "non_self_intersecting",
+                    "contained_by_material_profile",
+                ],
+                "forbidden_intermediate_geometry": [
+                    "open_centerline",
+                    "placeholder_unrelated_to_final_contour",
+                ],
+                "postcondition_for_one_cutout": "hole_count increases by 1",
+            }
         if part.dimension == 3:
             if type(part.geometry_recipe) is MultiBodyGeometry:
                 catalog["supported_edits"][:0] = ["body_boolean"]
@@ -5297,6 +5346,38 @@ def create_session_authoring_workflow_controller(
             extra_data={"geometry_edit_mode": edit_mode},
         )
 
+    def prepare_geometry_edit_with_diagnostics(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        try:
+            return prepare_geometry_edit(arguments, controller)
+        except PlanarEditValidationError as error:
+            data = error.to_provider_dict()
+            data["retry_guidance"] = {
+                "action": "revise_and_retry_same_geometry_edit",
+                "present_confirmation": False,
+                "ask_user_for_geometry_repair": False,
+                "requirements": [
+                    "trace the complete boundary in order",
+                    "close every intended Profile",
+                    "remove crossings, overlaps, and T-junctions",
+                    "keep cutout Profiles inside a material Profile",
+                ],
+            }
+            first = error.diagnostics[0]
+            code = str(first["code"])
+            affected = ", ".join(
+                str(item) for item in first["affected_logical_ids"]
+            )
+            location = f" ({affected})" if affected else ""
+            return AuthoringToolOutcome(
+                "Exact planar Profile validation rejected the edit: "
+                f"{code}{location}. Revise the contour before presenting a proposal.",
+                data,
+                ok=False,
+            )
+
     def prepare_geometry_with_diagnostics(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
@@ -6035,7 +6116,7 @@ def create_session_authoring_workflow_controller(
             "prepare_profile_revolution": prepare_profile_revolution,
             "prepare_profile_path_sweep": prepare_profile_path_sweep,
             "read_geometry_edit_context": read_geometry_edit_context,
-            "prepare_geometry_edit": prepare_geometry_edit,
+            "prepare_geometry_edit": prepare_geometry_edit_with_diagnostics,
             "read_mesh_refinement_context": read_mesh_refinement_context,
             "read_model_topology_context": read_model_topology_context,
             "prepare_mesh_proposal": prepare_mesh,
