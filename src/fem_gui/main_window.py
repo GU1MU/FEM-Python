@@ -111,12 +111,14 @@ from fem.core.model import (
     AnalysisStep,
     BodyForce,
     EdgeLoad,
+    FEMModel,
     GravityLoad,
     LineLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
 )
+from fem.core.mesh import Mesh2D
 from fem.core._constraint_targets import displacement_target_kind
 from fem.geometry import (
     BooleanGeometry,
@@ -406,6 +408,18 @@ def _output_request_projections_by_step(
     }
 
 
+def _authoring_tree_model(snapshot: object) -> FEMModel:
+    """Build a lightweight tree projection when no mesh artifact is installed."""
+
+    materials = tuple(getattr(snapshot, "materials", ()))
+    return FEMModel(
+        mesh=Mesh2D([], [], dofs_per_node=2),
+        name=str(getattr(snapshot, "model_name", None) or "模型"),
+        materials={material.name: material for material in materials},
+        steps=list(getattr(snapshot, "steps", ())),
+    )
+
+
 def _executable_output_requests(
     projections: Sequence[OutputRequestProjection],
 ) -> tuple[OutputRequest, ...]:
@@ -622,6 +636,14 @@ class _ResultArchiveDisplayPayload:
     geometry: ModelGeometry
     model_view: ArchiveModelView
     timings: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedProjectDisplayPayload:
+    """Worker-decoded project and optional mesh display geometry."""
+
+    loaded: LoadedProject
+    geometry: ModelGeometry | None
 
 
 class FEMMainWindow(QMainWindow):
@@ -1755,19 +1777,27 @@ class FEMMainWindow(QMainWindow):
         completion = GuiCommandCompletion(command_id)
         accepted_context: WorkspaceDocument | None = None
 
-        def workload(context: TaskContext) -> LoadedProject:
+        def workload(context: TaskContext) -> _LoadedProjectDisplayPayload:
             context.report("正在读取并验证自主项目……")
             context.checkpoint()
             loaded = load_project(target)
             context.checkpoint()
-            return loaded
+            model = loaded.snapshot.model
+            display_geometry = (
+                None
+                if model is None
+                else build_model_geometry(model)
+            )
+            context.checkpoint()
+            return _LoadedProjectDisplayPayload(loaded, display_geometry)
 
         def apply_result(payload: object) -> TaskApplyOutcome:
             nonlocal accepted_context
-            if type(payload) is not LoadedProject:
+            if type(payload) is not _LoadedProjectDisplayPayload:
                 raise TypeError(
-                    "project loader worker must return LoadedProject"
+                    "project loader worker must return project display payload"
                 )
+            loaded = payload.loaded
             try:
                 # Decode remains detached from every existing Session.  Only
                 # after successful validation do we create a new context and
@@ -1776,32 +1806,47 @@ class FEMMainWindow(QMainWindow):
                 accepted_context = self.workspace.add_model(
                     session=session,
                     display_name=(
-                        str(payload.snapshot.model_name or "").strip()
+                        str(loaded.snapshot.model_name or "").strip()
                         or target.stem
                     ),
-                    source_path=payload.path or target,
+                    source_path=loaded.path or target,
                 )
-                delta = session.replace_from_snapshot(payload.snapshot)
+                delta = session.replace_from_snapshot(loaded.snapshot)
             except (RevisionConflictError, TypeError, ValueError) as error:
                 if accepted_context is not None:
                     self.workspace.remove(accepted_context)
                     accepted_context = None
                 return TaskApplyOutcome.rejected(str(error))
-            return TaskApplyOutcome.accepted((payload, accepted_context, delta))
+            return TaskApplyOutcome.accepted(
+                (loaded, accepted_context, delta, payload.geometry)
+            )
 
         def on_success(value: object) -> None:
             if (
                 type(value) is not tuple
-                or len(value) != 3
+                or len(value) != 4
                 or type(value[0]) is not LoadedProject
                 or not isinstance(value[1], WorkspaceDocument)
                 or type(value[2]) is not SessionDelta
+                or (
+                    value[3] is not None
+                    and type(value[3]) is not ModelGeometry
+                )
             ):
                 raise RuntimeError(
                     "accepted project load has no detached project or delta"
                 )
-            payload, context, delta = value
+            payload, context, delta, model_geometry = value
             self._apply_session_delta(delta, context=context)
+            artifact = context.projection.artifact
+            if artifact is not None and model_geometry is not None:
+                if model_geometry.artifact_id != artifact.artifact_id:
+                    model_geometry = replace(
+                        model_geometry,
+                        artifact_id=artifact.artifact_id,
+                    )
+                context.presentation_cache.artifact_id = artifact.artifact_id
+                context.presentation_cache.model_geometry = model_geometry
             if not self._activate_workspace_context(context):
                 raise RuntimeError("opened project context could not be activated")
             self._import_notices = deepcopy(tuple(payload.notices))
@@ -10630,12 +10675,36 @@ class FEMMainWindow(QMainWindow):
         if artifact is not None:
             self._show_model_in_tree(artifact.model, context=context)
             return
-        self.model_tree.set_geometry_preview(
-            str(context.display_name or snapshot.model_name or "模型"),
-            (),
-            parts=tuple(snapshot.parts)
-            if snapshot.source_kind == "native"
-            else None,
+        if not (
+            snapshot.materials
+            or snapshot.sections
+            or snapshot.assignments
+            or snapshot.steps
+        ):
+            self.model_tree.set_geometry_preview(
+                str(context.display_name or snapshot.model_name or "模型"),
+                (),
+                parts=(
+                    tuple(snapshot.parts)
+                    if snapshot.source_kind == "native"
+                    else None
+                ),
+                active_part_id=snapshot.active_part_id,
+                document_id=context.document_id,
+                source_path=snapshot.source_path or snapshot.project_path,
+            )
+            return
+        self.model_tree.set_model(
+            _authoring_tree_model(snapshot),
+            model_name=str(context.display_name or snapshot.model_name or "模型"),
+            section_definitions=tuple(snapshot.sections),
+            region_assignments=tuple(snapshot.assignments),
+            scope_names=frozenset(snapshot.named_regions),
+            native_parts=(
+                tuple(snapshot.parts)
+                if snapshot.source_kind == "native"
+                else ()
+            ),
             active_part_id=snapshot.active_part_id,
             document_id=context.document_id,
             source_path=snapshot.source_path or snapshot.project_path,

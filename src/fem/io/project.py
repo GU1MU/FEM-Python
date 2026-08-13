@@ -1,6 +1,6 @@
 """Version-neutral native project persistence API.
 
-Readers dispatch schema 1 compatibility migration or schema 2-13 codecs after
+Readers dispatch schema 1 compatibility migration or schema 2-14 codecs after
 one strict JSON parse.  Writers always emit the current schema.
 """
 
@@ -14,7 +14,7 @@ from typing import Any
 from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
 from fem.application.analysis_identity import with_compatibility_analysis_names
 
-from ._project_codec import loads_json_strict, unwrap_project_snapshot
+from ._project_codec import borrow_project_snapshot, loads_json_strict
 from ._project_errors import (
     ProjectDecodeError,
     ProjectEncodeError,
@@ -55,13 +55,16 @@ from .project_v11 import decode_project_v11
 from .project_v12 import decode_project_v12
 from .project_v13 import (
     decode_project_v13,
-    dumps_project_v13,
-    encode_project_v13,
-    save_project_v13,
+)
+from .project_v14 import (
+    decode_project_v14,
+    dumps_project_v14,
+    encode_project_v14,
+    save_project_v14,
 )
 
 
-CURRENT_PROJECT_SCHEMA = 13
+CURRENT_PROJECT_SCHEMA = 14
 
 # Public model filename contracts.  ``.femproj`` remains a read-compatible
 # legacy extension; writers and GUI save flows use ``.fempy`` exclusively.
@@ -98,7 +101,7 @@ class LoadedProject:
 
 
 def load_project(path: str | Path) -> LoadedProject:
-    """Read and decode a supported schema 1-13 project from *path*."""
+    """Read and decode a supported schema 1-14 project from *path*."""
 
     source = Path(path)
     return loads_project(source.read_bytes(), source_path=source)
@@ -109,7 +112,7 @@ def loads_project(
     *,
     source_path: str | Path | None = None,
 ) -> LoadedProject:
-    """Strictly parse and decode a supported schema 1-13 JSON document."""
+    """Strictly parse and decode a supported schema 1-14 JSON document."""
 
     payload = loads_json_strict(
         data,
@@ -213,28 +216,31 @@ def decode_project(
             source_path=resolved_path,
         )
         notices = ()
-    elif schema == CURRENT_PROJECT_SCHEMA:
+    elif schema == 13:
         snapshot = decode_project_v13(payload, source_path=resolved_path)
+        notices = ()
+    elif schema == CURRENT_PROJECT_SCHEMA:
+        snapshot = decode_project_v14(payload, source_path=resolved_path)
         notices = ()
     else:
         raise UnsupportedProjectSchemaError(
             f"$.schema={schema!r} 不受支持；"
             "当前版本可读取 schema 1、2、3、4、5、6、7、8、9、10 和 "
-            f"11、12 和 {CURRENT_PROJECT_SCHEMA}"
+            f"11、12、13 和 {CURRENT_PROJECT_SCHEMA}"
         )
     if schema < 7:
         try:
             snapshot, v5_notices = migrate_project_snapshot_to_v5(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 13：{error}"
+                f"schema {schema} 无法原子迁移到 schema {CURRENT_PROJECT_SCHEMA}：{error}"
             ) from error
         notices = (*notices, *v5_notices)
         try:
             snapshot, v7_notices = migrate_project_snapshot_to_v7(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema 13：{error}"
+                f"schema {schema} 无法原子迁移到 schema {CURRENT_PROJECT_SCHEMA}：{error}"
             ) from error
         notices = (*notices, *v7_notices)
     if schema < CURRENT_PROJECT_SCHEMA:
@@ -257,7 +263,7 @@ def encode_project(
 ) -> dict[str, Any]:
     """Encode a detached snapshot using the current project schema."""
 
-    return encode_project_v13(_canonical_writer_snapshot(snapshot))
+    return encode_project_v14(_canonical_writer_snapshot(snapshot))
 
 
 def dumps_project(
@@ -265,7 +271,7 @@ def dumps_project(
 ) -> str:
     """Serialize a detached snapshot using canonical current-schema JSON."""
 
-    return dumps_project_v13(_canonical_writer_snapshot(snapshot))
+    return dumps_project_v14(_canonical_writer_snapshot(snapshot))
 
 
 def save_project(
@@ -276,7 +282,7 @@ def save_project(
 ) -> Path:
     """Atomically save a detached snapshot using the current schema."""
 
-    return save_project_v13(
+    return save_project_v14(
         path,
         _canonical_writer_snapshot(snapshot),
         checkpoint=checkpoint,
@@ -288,18 +294,18 @@ def _canonical_writer_snapshot(
 ) -> ProjectSnapshot | ProjectSaveSnapshot:
     """Upgrade compatibility snapshots before the strict v10 writer."""
 
-    project = unwrap_project_snapshot(snapshot)
-    if not (
+    project = borrow_project_snapshot(snapshot)
+    if project.geometry_recipe is not None and not (
         project.parts
         and all(part.geometry_recipe is not None for part in project.parts)
     ):
         project, _notices = migrate_project_snapshot_to_v7(project)
-    return replace(
-        project,
-        analysis_definitions=with_compatibility_analysis_names(
-            project.analysis_definitions
-        ),
+    analysis_definitions = with_compatibility_analysis_names(
+        project.analysis_definitions
     )
+    if analysis_definitions == project.analysis_definitions:
+        return project
+    return replace(project, analysis_definitions=analysis_definitions)
 
 
 __all__ = [

@@ -74,7 +74,7 @@ def test_a5_schema_v10_round_trip_preserves_named_analysis_identity() -> None:
     payload = encode_project_v10(_snapshot(named=True))
     step = decode_project_v10(payload).analysis_definitions[0]
 
-    assert CURRENT_PROJECT_SCHEMA == 13
+    assert CURRENT_PROJECT_SCHEMA == 14
     assert payload["schema"] == 10
     encoded = payload["project"]["authoring"]["definitions"]["steps"][0]
     assert encoded["boundaries"][0]["name"] == "位移-固定端"

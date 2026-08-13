@@ -196,6 +196,41 @@ class FieldLocation:
 
         _validate_location_identity(self)
 
+    @classmethod
+    def _from_validated_components(
+        cls,
+        association: FieldAssociation,
+        coordinates: tuple[float, float, float],
+        displacement: tuple[float, float, float] | None,
+        *,
+        node_id: int | None = None,
+        element_id: int | None = None,
+        integration_point: int | None = None,
+        local_node: int | None = None,
+        region_key: ResultRegionKey | None = None,
+        averaged: bool | None = None,
+        section_point: BeamSectionPoint | None = None,
+    ) -> "FieldLocation":
+        """Build a decoder-owned location after columnar array validation.
+
+        Archive decoding validates the complete coordinate and displacement
+        matrices and all identity columns before constructing row objects.
+        Repeating those scalar checks for every component is a substantial
+        import cost, so this private path transfers normalized values directly.
+        """
+
+        location = object.__new__(cls)
+        object.__setattr__(location, "association", association)
+        object.__setattr__(location, "coordinates", coordinates)
+        object.__setattr__(location, "displacement", displacement)
+        object.__setattr__(location, "node_id", node_id)
+        object.__setattr__(location, "element_id", element_id)
+        object.__setattr__(location, "integration_point", integration_point)
+        object.__setattr__(location, "local_node", local_node)
+        object.__setattr__(location, "region_key", region_key)
+        object.__setattr__(location, "averaged", averaged)
+        object.__setattr__(location, "section_point", section_point)
+        return location
 
 @dataclass(frozen=True, slots=True)
 class ResultDiagnostic:
@@ -923,25 +958,46 @@ def _finite_triplet(
     return converted[0], converted[1], converted[2]
 
 
+_LOCATION_IDENTITY_NAMES = (
+    "node_id",
+    "element_id",
+    "integration_point",
+    "local_node",
+    "region_key",
+    "averaged",
+)
+_LOCATION_IDENTITY_REQUIREMENTS = {
+    FieldAssociation.NODE: frozenset({"node_id"}),
+    FieldAssociation.ELEMENT: frozenset({"element_id"}),
+    FieldAssociation.INTEGRATION_POINT: frozenset(
+        {"element_id", "integration_point"}
+    ),
+    FieldAssociation.ELEMENT_NODE: frozenset(
+        {"element_id", "local_node", "node_id"}
+    ),
+    FieldAssociation.NODE_REGION: frozenset({"node_id", "region_key"}),
+    FieldAssociation.RESOLVED_NODAL: frozenset(
+        {"node_id", "region_key", "averaged"}
+    ),
+}
+
+
+def _location_identity_requirements(
+    association: FieldAssociation,
+    averaged: bool | None,
+) -> frozenset[str]:
+    try:
+        required = _LOCATION_IDENTITY_REQUIREMENTS[association]
+    except KeyError as error:
+        raise AssertionError(f"unhandled association {association!r}") from error
+    if association is FieldAssociation.RESOLVED_NODAL and averaged is False:
+        return required | {"element_id", "local_node"}
+    return required
+
+
 def _validate_location_identity(location: FieldLocation) -> None:
     association = location.association
-    required: set[str]
-    if association is FieldAssociation.NODE:
-        required = {"node_id"}
-    elif association is FieldAssociation.ELEMENT:
-        required = {"element_id"}
-    elif association is FieldAssociation.INTEGRATION_POINT:
-        required = {"element_id", "integration_point"}
-    elif association is FieldAssociation.ELEMENT_NODE:
-        required = {"element_id", "local_node", "node_id"}
-    elif association is FieldAssociation.NODE_REGION:
-        required = {"node_id", "region_key"}
-    elif association is FieldAssociation.RESOLVED_NODAL:
-        required = {"node_id", "region_key", "averaged"}
-        if location.averaged is False:
-            required.update({"element_id", "local_node"})
-    else:
-        raise AssertionError(f"unhandled association {association!r}")
+    required = _location_identity_requirements(association, location.averaged)
 
     identity_values = {
         "node_id": location.node_id,

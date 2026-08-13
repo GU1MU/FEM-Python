@@ -199,6 +199,7 @@ def dumps_json(
     indent: int | None = 2,
     sort_keys: bool = False,
     final_newline: bool = False,
+    separators: tuple[str, str] | None = None,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
     error_message: str = "项目包含无法编码的值",
 ) -> str:
@@ -211,6 +212,7 @@ def dumps_json(
             allow_nan=False,
             indent=indent,
             sort_keys=sort_keys,
+            separators=separators,
         )
     except (TypeError, ValueError, RecursionError) as exc:
         raise error_type(f"{error_message}：{exc}") from exc
@@ -232,6 +234,25 @@ def dumps_canonical_json(
         indent=2,
         sort_keys=True,
         final_newline=True,
+        error_type=error_type,
+        error_message=error_message,
+    )
+
+
+def dumps_compact_canonical_json(
+    value: Any,
+    *,
+    error_type: type[ProjectEncodeError] = ProjectEncodeError,
+    error_message: str = "项目包含无法编码的值",
+) -> str:
+    """Return deterministic compact JSON with one final LF."""
+
+    return dumps_json(
+        value,
+        indent=None,
+        sort_keys=True,
+        final_newline=True,
+        separators=(",", ":"),
         error_type=error_type,
         error_message=error_message,
     )
@@ -265,6 +286,36 @@ def unwrap_project_snapshot(
     if type(project) is not ProjectSnapshot:
         raise error_type("保存 snapshot 未包含有效的 ProjectSnapshot")
     return deepcopy(project)
+
+
+def borrow_project_snapshot(
+    snapshot: Any,
+    *,
+    error_type: type[ProjectEncodeError] = ProjectEncodeError,
+) -> Any:
+    """Borrow one already-detached snapshot for synchronous read-only encoding."""
+
+    try:
+        from fem.application.session import (
+            ProjectSaveSnapshot,
+            ProjectSnapshot,
+        )
+    except ImportError as exc:
+        raise error_type(
+            "fem.application.session 尚未提供项目 snapshot"
+        ) from exc
+
+    if type(snapshot) is ProjectSaveSnapshot:
+        project = snapshot._snapshot_for_persistence()
+    elif type(snapshot) is ProjectSnapshot:
+        project = snapshot
+    else:
+        raise error_type(
+            "save/encode 需要 ProjectSnapshot 或 ProjectSaveSnapshot"
+        )
+    if type(project) is not ProjectSnapshot:
+        raise error_type("保存 snapshot 未包含有效的 ProjectSnapshot")
+    return project
 
 
 def atomic_write_project(

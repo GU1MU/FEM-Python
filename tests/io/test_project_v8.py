@@ -49,8 +49,8 @@ def test_a2_project_save_and_reopen_preserves_units_and_accepted_geometry(
     reopened.replace_from_snapshot(loaded.snapshot)
     snapshot = reopened.snapshot()
 
-    assert CURRENT_PROJECT_SCHEMA == 13
-    assert loaded.source_schema == 13
+    assert CURRENT_PROJECT_SCHEMA == 14
+    assert loaded.source_schema == 14
     assert snapshot.unit_context == _units()
     assert snapshot.parts[0].geometry_recipe == recipe
     assert snapshot.parts[0].name == "部件-偏心孔板"

@@ -417,19 +417,19 @@ def _project_snapshot(source_path: Path | None = None):
     )
 
 
-def test_phase0_schema13_canonical_project_payload_excludes_results() -> None:
+def test_phase0_schema14_canonical_project_payload_excludes_results() -> None:
     snapshot = _project_snapshot()
     payload = encode_project(snapshot)
-    assert CURRENT_PROJECT_SCHEMA == 13
+    assert CURRENT_PROJECT_SCHEMA == 14
     assert payload["format"] == "fem-python-project"
-    assert payload["schema"] == 13
+    assert payload["schema"] == 14
     assert set(payload) == {"format", "schema", "project"}
     assert "results" not in payload["project"]
     reopened = decode_project(payload).snapshot
     assert dumps_project(snapshot) == dumps_project(reopened)
 
 
-@pytest.mark.parametrize("schema", tuple(range(1, 14)))
+@pytest.mark.parametrize("schema", tuple(range(1, 15)))
 def test_phase0_project_router_dispatches_every_supported_schema(
     monkeypatch: pytest.MonkeyPatch,
     schema: int,

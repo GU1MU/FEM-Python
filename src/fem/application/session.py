@@ -746,6 +746,26 @@ class ProjectSaveSnapshot:
 
         return deepcopy(self._snapshot)
 
+    @classmethod
+    def _from_owned_snapshot(
+        cls,
+        token: TaskToken,
+        project_revision: int,
+        snapshot: ProjectSnapshot,
+    ) -> ProjectSaveSnapshot:
+        """Wrap a Session-owned detached snapshot without copying it again."""
+
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "token", token)
+        object.__setattr__(instance, "project_revision", int(project_revision))
+        object.__setattr__(instance, "_snapshot", snapshot)
+        return instance
+
+    def _snapshot_for_persistence(self) -> ProjectSnapshot:
+        """Return the private immutable save snapshot to synchronous codecs."""
+
+        return self._snapshot
+
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
@@ -1528,9 +1548,9 @@ class ModelSession:
                 ),
             )
         )
-        # ProjectSnapshot already owns a detached copy; copy once more so the
-        # caller may retain and mutate its own nested values after installation.
-        detached = deepcopy(detached)
+        # Every installed collection is detached below.  Avoid copying the
+        # complete snapshot here because large persisted meshes are detached
+        # once by definition compilation before entering Session ownership.
         source_kind = _canonical_source_kind(detached.source_kind)
         raw_parts = deepcopy(detached.parts)
         canonical_part_mode = (
@@ -1635,7 +1655,7 @@ class ModelSession:
                 steps,
                 authenticate_geometry=True,
             )
-        model = deepcopy(detached.model)
+        model = detached.model
         if model is not None:
             model = compile_model_definitions(
                 model,
@@ -4988,6 +5008,7 @@ class ModelSession:
         self._named_regions = _bind_mesh_region_revisions(
             self._named_regions,
             self._mesh_input_revision,
+            allow_rebind=True,
         )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
@@ -5060,6 +5081,7 @@ class ModelSession:
         self._named_regions = _bind_mesh_region_revisions(
             self._named_regions,
             self._mesh_input_revision,
+            allow_rebind=True,
         )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
@@ -6158,18 +6180,28 @@ class ModelSession:
         project = self._project_snapshot(
             source_path=self._project_path,
             model_name=str(self._model_name or "Model-1"),
+            model=(
+                None
+                if self._artifact is None
+                else self._artifact.model
+            ),
         )
         token = self._issue_token(
             "project_save",
             (("project_revision", self._project_revision),),
         )
-        return ProjectSaveSnapshot(token, self._project_revision, project)
+        return ProjectSaveSnapshot._from_owned_snapshot(
+            token,
+            self._project_revision,
+            project,
+        )
 
     def _project_snapshot(
         self,
         *,
         source_path: Path | None,
         model_name: str,
+        model: Any | None = None,
     ) -> ProjectSnapshot:
         """Build the canonical detached native-input snapshot."""
 
@@ -6196,6 +6228,7 @@ class ModelSession:
             section_definitions=self._sections,
             region_assignments=self._assignments,
             analysis_definitions=self._steps,
+            model=model,
             boolean_reference_undo_records=tuple(
                 self._boolean_reference_undo_records[feature_id]
                 for feature_id in sorted(
@@ -8590,14 +8623,32 @@ def _regions_use_mesh_entities(regions: Iterable[Any]) -> bool:
 def _bind_mesh_region_revisions(
     regions: Mapping[str, NamedRegion],
     mesh_revision: int,
+    *,
+    allow_rebind: bool = False,
 ) -> dict[str, NamedRegion]:
     """Bind mesh scopes without materializing their compact references."""
 
-    return {
-        name: (
-            region.bind_mesh_revision(mesh_revision)
-            if isinstance(region.references, CompressedMeshEntityRefs)
-            else region
-        )
-        for name, region in regions.items()
-    }
+    rebound: dict[str, NamedRegion] = {}
+    for name, region in regions.items():
+        references = region.references
+        if not isinstance(references, CompressedMeshEntityRefs):
+            rebound[name] = region
+            continue
+        if allow_rebind and references.mesh_revision != mesh_revision:
+            topology = references.topology
+            rebound[name] = NamedRegion(
+                region.name,
+                CompressedMeshEntityRefs.from_compact(
+                    references.kind,
+                    references.compact_groups(),
+                    mesh_revision=mesh_revision,
+                    topology=(
+                        None
+                        if topology is None
+                        else topology.rebound(mesh_revision)
+                    ),
+                ),
+            )
+            continue
+        rebound[name] = region.bind_mesh_revision(mesh_revision)
+    return rebound

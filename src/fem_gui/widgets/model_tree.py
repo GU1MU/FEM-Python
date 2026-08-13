@@ -713,13 +713,15 @@ class ModelTree(QTreeWidget):
         materials = self._category(root, "材料", len(model.materials))
         for name in model.materials:
             materials.addChild(self._item(name, "material", name))
-        sections = self._category(root, "截面", len(model.sections))
+        compiled_sections = tuple(model.sections)
+        visible_sections = compiled_sections or tuple(section_definitions)
+        sections = self._category(root, "截面", len(visible_sections))
         elements_by_id = {
             int(element.id): element
             for element in model.mesh.elements
             if getattr(element, "id", None) is not None
         }
-        for index, section in enumerate(model.sections):
+        for index, section in enumerate(visible_sections):
             element_set = model.element_sets.get(
                 getattr(section, "element_set", "")
             )
@@ -728,9 +730,14 @@ class ModelTree(QTreeWidget):
                 if element_set is not None and element_set.element_ids
                 else None
             )
+            section_name = (
+                f"截面 {index + 1}"
+                if compiled_sections
+                else str(getattr(section, "name", f"截面 {index + 1}"))
+            )
             sections.addChild(
                 self._item(
-                    f"截面 {index + 1}（"
+                    f"{section_name}（"
                     f"{_section_label(section, representative)}）",
                     "section",
                     index,

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import threading
 from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -30,7 +31,9 @@ from fem.core.model import (
     GravityLoad,
     MaterialDefinition,
     NodalLoad,
+    FEMModel,
 )
+from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
@@ -71,6 +74,17 @@ def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
         QThread.msleep(1)
     application.processEvents()
     assert not busy()
+
+
+def _tree_texts(item) -> tuple[str, ...]:
+    return (
+        item.text(0),
+        *(
+            text
+            for index in range(item.childCount())
+            for text in _tree_texts(item.child(index))
+        ),
+    )
 
 
 def _native_project_snapshot() -> ProjectSnapshot:
@@ -153,7 +167,7 @@ def test_native_project_round_trip_returns_a_detached_snapshot(tmp_path) -> None
     reopened = loaded.snapshot
 
     assert isinstance(reopened, ProjectSnapshot)
-    assert loaded.source_schema == 13
+    assert loaded.source_schema == 14
     assert loaded.notices == ()
     assert reopened.source_kind == "native"
     assert reopened.source_path == target
@@ -221,6 +235,12 @@ def test_main_window_opens_current_fempy_project(tmp_path, monkeypatch) -> None:
     assert open_dialog and "*.fempy" in str(open_dialog[0][3])
     assert "*.femproj" in str(open_dialog[0][3])
     assert window.document.geometry_recipe.name == "Plate"
+    root = window.model_tree.roots[window.workspace.active_document_id]
+    tree_texts = _tree_texts(root)
+    assert "Steel" in tree_texts
+    assert any(text.startswith("Section-1（") for text in tree_texts)
+    assert "Load" in tree_texts
+    assert any(text.startswith("位移-") for text in tree_texts)
     assert not window.document.dirty
     assert "compatibility migration" not in (
         window.status_panel.state_label.text()
@@ -322,12 +342,56 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
     assert save_dialog and save_dialog[0][2] == "legacy.fempy"
     assert source.read_bytes() == original
     assert target.is_file()
-    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 13
-    assert load_project(target).source_schema == 13
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 14
+    assert load_project(target).source_schema == 14
     assert window.document.project_path == target
     assert not window.legacy_project_extension
     assert not window.document.dirty
     assert save_successes == [("模型", target)]
+    window.close()
+
+
+def test_meshed_project_builds_display_geometry_off_gui_thread(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _application()
+    model = FEMModel(
+        Mesh2D(
+            [
+                Node2D(1, 0.0, 0.0),
+                Node2D(2, 1.0, 0.0),
+                Node2D(3, 0.0, 1.0),
+            ],
+            [Element2D(1, [1, 2, 3], "Tri3")],
+        ),
+        name="Meshed",
+    )
+    source = save_project(
+        tmp_path / "meshed.fempy",
+        ProjectSnapshot(model=model, model_name="Meshed"),
+    )
+    gui_thread = threading.get_ident()
+    geometry_threads: list[int] = []
+    original_builder = main_window_module.build_model_geometry
+
+    def build_geometry(candidate):
+        geometry_threads.append(threading.get_ident())
+        return original_builder(candidate)
+
+    monkeypatch.setattr(
+        main_window_module,
+        "build_model_geometry",
+        build_geometry,
+    )
+    window = FEMMainWindow()
+
+    await_succeeded(window.open_project_path(source), timeout=2.0)
+
+    assert len(geometry_threads) == 1
+    assert geometry_threads[0] != gui_thread
+    assert window.document.model is not None
+    assert window.geometry is not None
     window.close()
 
 

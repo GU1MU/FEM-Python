@@ -322,10 +322,12 @@ def editable_object_catalog(
                 ],
             }
             canonical_variables = tuple(output.variables)
-            if set(canonical_variables).issubset(
-                {"U", "UR", "RF", "RM", "SF", "SM", "LE", "S"}
+            if (
+                type(units) is UnitContext
+                and set(canonical_variables).issubset(
+                    {"U", "UR", "RF", "RM", "SF", "SM", "LE", "S"}
+                )
             ):
-                units = _require_units(snapshot)
                 details["units"] = list(
                     expected_result_units(units, canonical_variables)
                 )

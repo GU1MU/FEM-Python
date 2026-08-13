@@ -94,7 +94,7 @@ def test_schema_v11_project_is_read_edited_and_first_save_migrates_to_current() 
     reopened = loads_project(dumps_project(edited))
 
     assert loaded.source_schema == 11
-    assert migrated["schema"] == 13
+    assert migrated["schema"] == 14
     assert "compact_references" in migrated["project"]["authoring"]["named_regions"][0]
     assert reopened.snapshot.named_regions == edited.named_regions
 

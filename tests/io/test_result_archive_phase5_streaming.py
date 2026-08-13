@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from io import BytesIO
 import hashlib
 from pathlib import Path
@@ -186,6 +187,32 @@ def test_path_arrays_are_owned_readonly_and_no_unconditional_array_copy(
     assert set(copies) == {False}
 
 
+def test_path_locations_reuse_matrix_finite_validation(
+    archive_snapshot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fem.application.results.data as result_data
+
+    source = tmp_path / "validated-location-matrices.femres"
+    source.write_bytes(encode_result_archive(archive_snapshot))
+    original = result_data._finite_triplet
+    calls: list[str] = []
+
+    def track_triplet(value, *, label: str):
+        calls.append(label)
+        return original(value, label=label)
+
+    monkeypatch.setattr(result_data, "_finite_triplet", track_triplet)
+    replace(archive_snapshot.fields[0].locations[0])
+    assert calls
+    calls.clear()
+
+    loaded = load_result_archive(source).snapshot
+    assert loaded.fields
+    assert calls == []
+
+
 def test_path_reader_rejects_unknown_named_region_ids(
     archive_snapshot,
     tmp_path: Path,
@@ -255,6 +282,51 @@ def test_path_reader_preserves_section_point_contract(
         _rewrite(_replace_manifest(manifest, list(payloads.items())))
     )
     with pytest.raises(ResultArchiveDecodeError, match="section point"):
+        load_result_archive(source)
+
+
+@pytest.mark.parametrize(
+    ("association", "array_key", "replacement", "message"),
+    (
+        ("node", "node_id", -1, "required"),
+        ("node", "node_id", 0, "positive"),
+        ("node", "element_id", 1, "not allowed"),
+        ("node_region", "region_index", 999, "region index"),
+        ("resolved_nodal", "averaged_mask", 0, "averaged is required"),
+    ),
+)
+def test_path_reader_preserves_vectorized_location_identity_validation(
+    archive_snapshot,
+    tmp_path: Path,
+    association: str,
+    array_key: str,
+    replacement: int,
+    message: str,
+) -> None:
+    manifest, entries = _manifest_and_entries(
+        encode_result_archive(archive_snapshot)
+    )
+    field = next(
+        item
+        for item in manifest["fields"]
+        if item["descriptor"]["association"] == association
+    )
+    array_name = field["arrays"][array_key]
+    payloads = dict(entries)
+    values = np.load(BytesIO(payloads[array_name]), allow_pickle=False).copy()
+    values[0] = replacement
+    changed = BytesIO()
+    np.save(changed, values, allow_pickle=False)
+    payloads[array_name] = changed.getvalue()
+    manifest["arrays"][array_name]["sha256"] = hashlib.sha256(
+        payloads[array_name]
+    ).hexdigest()
+    source = tmp_path / f"invalid-{association}-{array_key}.femres"
+    source.write_bytes(
+        _rewrite(_replace_manifest(manifest, list(payloads.items())))
+    )
+
+    with pytest.raises(ResultArchiveDecodeError, match=message):
         load_result_archive(source)
 
 

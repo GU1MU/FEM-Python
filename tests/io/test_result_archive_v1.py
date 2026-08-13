@@ -556,7 +556,7 @@ def test_schema_v1_rejects_object_dtype_payload(tmp_path: Path):
         load_result_archive(target)
 
 
-def test_schema_v1_readback_semantic_mismatch_preserves_old_target_and_cleans_temp(
+def test_schema_v1_readback_byte_mismatch_preserves_old_target_and_cleans_temp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -565,20 +565,40 @@ def test_schema_v1_readback_semantic_mismatch_preserves_old_target_and_cleans_te
     snapshot = _snapshot(make_truss_field_characterization_result, "semantic")
     target = tmp_path / "semantic.femres"
     target.write_bytes(b"old-target")
-    original = codec.encode_result_archive_v1
-    calls = 0
-
-    def altered(value):
-        nonlocal calls
-        calls += 1
-        encoded = original(value)
-        return encoded if calls == 1 else encoded + b"changed"
-
-    monkeypatch.setattr(codec, "encode_result_archive_v1", altered)
-    with pytest.raises(codec.ResultArchiveEncodeError, match="semantic"):
+    monkeypatch.setattr(codec, "_sha256_path", lambda *_args: "0" * 64)
+    with pytest.raises(codec.ResultArchiveEncodeError, match="byte"):
         codec.save_result_archive_v1(target, snapshot)
     assert target.read_bytes() == b"old-target"
     assert tuple(tmp_path.glob(".*.tmp")) == ()
+
+
+def test_schema_v1_save_verifies_bytes_without_decoding_or_reencoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fem.io.result_archive_v1 as codec
+
+    snapshot = _snapshot(make_truss_field_characterization_result, "single-encode")
+    target = tmp_path / "single-encode.femres"
+    original = codec.encode_result_archive_v1
+    calls = 0
+
+    def tracked(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(codec, "encode_result_archive_v1", tracked)
+    monkeypatch.setattr(
+        codec,
+        "decode_result_archive_v1",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("save readback must not materialize the archive")
+        ),
+    )
+    codec.save_result_archive_v1(target, snapshot)
+    assert calls == 1
+    assert codec.load_result_archive_v1(target).snapshot.source == snapshot.source
 
 
 def test_schema_v1_rejects_unsupported_schema_and_preserves_target_on_failure(tmp_path: Path):

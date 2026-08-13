@@ -34,7 +34,7 @@ from fem.io.project_v5 import dumps_project_v5
 from fem.io.project_v10 import (
     ProjectV10DecodeError,
 )
-from fem.io.project_v13 import load_project_v13
+from fem.io.project_v14 import load_project_v14
 from fem.mesh.settings import MeshSettings
 
 
@@ -78,11 +78,11 @@ def test_generic_writer_always_emits_current_schema(tmp_path: Path) -> None:
     dumped = dumps_project(snapshot)
     target = save_project(tmp_path / "current.femproj", snapshot)
 
-    assert CURRENT_PROJECT_SCHEMA == 13
+    assert CURRENT_PROJECT_SCHEMA == 14
     assert payload["schema"] == CURRENT_PROJECT_SCHEMA
     assert json.loads(dumped)["schema"] == CURRENT_PROJECT_SCHEMA
-    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 13
-    assert load_project_v13(target).source_path == target
+    assert json.loads(target.read_text(encoding="utf-8"))["schema"] == 14
+    assert load_project_v14(target).source_path == target
 
 
 def test_generic_current_reader_returns_loaded_project_with_path_invariant(
@@ -96,7 +96,7 @@ def test_generic_current_reader_returns_loaded_project_with_path_invariant(
     assert type(loaded) is LoadedProject
     assert loaded.path == target
     assert loaded.snapshot.source_path == target
-    assert loaded.source_schema == 13
+    assert loaded.source_schema == 14
     assert loaded.notices == ()
 
 
@@ -159,7 +159,7 @@ def test_router_requires_schema_and_rejects_future_schema() -> None:
         decode_project({})
     with pytest.raises(
         UnsupportedProjectSchemaError,
-        match=r"\$\.schema=99.*schema 1、2、3、4、5、6、7、8、9、10 和 11、12 和 13",
+        match=r"\$\.schema=99.*schema 1、2、3、4、5、6、7、8、9、10 和 11、12、13 和 14",
     ):
         decode_project({"schema": 99})
 
@@ -238,6 +238,18 @@ def test_fem_io_exports_generic_and_explicit_versioned_project_apis() -> None:
         "encode_project_v11",
         "load_project_v11",
         "save_project_v11",
+        "decode_project_v12",
+        "encode_project_v12",
+        "load_project_v12",
+        "save_project_v12",
+        "decode_project_v13",
+        "encode_project_v13",
+        "load_project_v13",
+        "save_project_v13",
+        "decode_project_v14",
+        "encode_project_v14",
+        "load_project_v14",
+        "save_project_v14",
         "ProjectMigrationNotice",
     }
 

@@ -36,7 +36,9 @@ from fem.application.results.data import (
     ResultDiagnostic,
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
+    _LOCATION_IDENTITY_NAMES,
     _field_location_identity_key,
+    _location_identity_requirements,
 )
 from fem.application.results.execution import (
     OutputExecutionStatus,
@@ -96,6 +98,7 @@ _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ARRAY_BYTES = 512 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 10_000
 _NPY_READ_CHUNK_BYTES = 64 * 1024
+_ARCHIVE_IO_CHUNK_BYTES = 1024 * 1024
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -819,7 +822,7 @@ def _unit_from_json(value: object, *, label: str) -> UnitContext | None:
         raise ResultArchiveDecodeError(f"invalid {label}: {error}") from error
 
 
-def _array_bytes(array: np.ndarray) -> bytes:
+def _npy_header_bytes(array: np.ndarray) -> bytes:
     if type(array) is not np.ndarray:
         raise ResultArchiveEncodeError("archive arrays must be numpy arrays")
     if array.dtype.hasobject:
@@ -828,18 +831,25 @@ def _array_bytes(array: np.ndarray) -> bytes:
         raise ResultArchiveEncodeError("complex arrays are forbidden")
     stream = BytesIO()
     try:
-        np.save(stream, np.ascontiguousarray(array), allow_pickle=False)
+        np.lib.format.write_array_header_1_0(
+            stream,
+            np.lib.format.header_data_from_array_1_0(array),
+        )
     except (TypeError, ValueError) as error:
-        raise ResultArchiveEncodeError(f"NumPy array encoding failed: {error}") from error
+        raise ResultArchiveEncodeError(
+            f"NumPy array header encoding failed: {error}"
+        ) from error
     return stream.getvalue()
 
 
-def _array_meta(data: bytes, array: np.ndarray) -> dict[str, object]:
+def _array_meta(header: bytes, array: np.ndarray) -> dict[str, object]:
+    digest = hashlib.sha256(header)
+    digest.update(memoryview(array).cast("B"))
     return {
         "dtype": array.dtype.str,
         "shape": list(array.shape),
         "nbytes": array.nbytes,
-        "sha256": hashlib.sha256(data).hexdigest(),
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -944,7 +954,10 @@ def _checked_array(
 
 class _ArchiveBuilder:
     def __init__(self) -> None:
-        self.arrays: OrderedDict[str, tuple[dict[str, object], bytes]] = OrderedDict()
+        self.arrays: OrderedDict[
+            str,
+            tuple[dict[str, object], np.ndarray, bytes],
+        ] = OrderedDict()
         self.expanded_bytes = 0
 
     def add(self, name: str, array: np.ndarray) -> str:
@@ -957,8 +970,9 @@ class _ArchiveBuilder:
             raise ResultArchiveEncodeError(
                 f"archive array {name!r} exceeds the array size safety limit"
             )
-        raw = _array_bytes(owned)
-        if len(raw) > _MAX_ZIP_ENTRY_BYTES:
+        header = _npy_header_bytes(owned)
+        entry_size = len(header) + owned.nbytes
+        if entry_size > _MAX_ZIP_ENTRY_BYTES:
             raise ResultArchiveEncodeError(
                 f"archive entry {name!r} exceeds the size safety limit"
             )
@@ -966,12 +980,12 @@ class _ArchiveBuilder:
             len(self.arrays) + 2,
             error_type=ResultArchiveEncodeError,
         )
-        if self.expanded_bytes + len(raw) > _MAX_ZIP_TOTAL_BYTES:
+        if self.expanded_bytes + entry_size > _MAX_ZIP_TOTAL_BYTES:
             raise ResultArchiveEncodeError(
                 "result archive exceeds the total size safety limit"
             )
-        self.arrays[name] = (_array_meta(raw, owned), raw)
-        self.expanded_bytes += len(raw)
+        self.arrays[name] = (_array_meta(header, owned), owned, header)
+        self.expanded_bytes += entry_size
         return name
 
 
@@ -1195,7 +1209,10 @@ def _manifest_for_snapshot(snapshot: ResultArchiveSnapshot, builder: _ArchiveBui
         "inspection_summaries": _json_plain(model_projection.summaries),
         "topology": topology_meta,
         "fields": fields,
-        "arrays": {name: meta for name, (meta, _raw) in builder.arrays.items()},
+        "arrays": {
+            name: meta
+            for name, (meta, _array, _header) in builder.arrays.items()
+        },
     }
 
 
@@ -1224,8 +1241,8 @@ def encode_result_archive_v1(snapshot: ResultArchiveSnapshot) -> bytes:
         output = BytesIO()
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=True) as archive:
             _writestr_deterministic(archive, MANIFEST_NAME, manifest_bytes)
-            for name, (_meta, raw) in builder.arrays.items():
-                _writestr_deterministic(archive, name, raw)
+            for name, (_meta, array, header) in builder.arrays.items():
+                _write_array_deterministic(archive, name, array, header)
             _validate_zip_infos(
                 archive.infolist(),
                 error_type=ResultArchiveEncodeError,
@@ -1248,6 +1265,26 @@ def _writestr_deterministic(archive: zipfile.ZipFile, name: str, data: bytes) ->
     info.create_system = 0
     info.external_attr = 0
     archive.writestr(info, data)
+
+
+def _write_array_deterministic(
+    archive: zipfile.ZipFile,
+    name: str,
+    array: np.ndarray,
+    header: bytes,
+) -> None:
+    """Write one canonical NPY entry without materializing its payload bytes."""
+
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 0
+    info.external_attr = 0
+    info.file_size = len(header) + array.nbytes
+    payload = memoryview(array).cast("B")
+    with archive.open(info, "w") as stream:
+        stream.write(header)
+        for offset in range(0, len(payload), _ARCHIVE_IO_CHUNK_BYTES):
+            stream.write(payload[offset : offset + _ARCHIVE_IO_CHUNK_BYTES])
 
 
 def _expected_array_order(manifest: Mapping[str, object]) -> list[str]:
@@ -1342,7 +1379,7 @@ class _ArchiveArrayReader(Mapping[str, bytes]):
         )
 
     def __getitem__(self, name: str) -> bytes:
-        meta = self._claim(name)
+        self._claim(name)
         raw = _read_zip_entry_bounded(
             self._archive,
             name,
@@ -1903,6 +1940,85 @@ def _decode_topology(
         raise ResultArchiveDecodeError(f"invalid topology: {error}") from error
 
 
+def _validate_field_location_columns(
+    *,
+    field_id: str,
+    descriptor: FieldDescriptor,
+    id_arrays: Mapping[str, np.ndarray],
+    averaged: np.ndarray,
+    averaged_mask: np.ndarray,
+    point_numbers: np.ndarray | None,
+    region_count: int,
+) -> None:
+    """Validate identity rules once per numeric column before row creation."""
+
+    for name, values in id_arrays.items():
+        if name == "region_index":
+            if np.any(values < -1) or np.any(values >= region_count):
+                raise ResultArchiveDecodeError(
+                    f"field[{field_id}] region index is out of range"
+                )
+        elif np.any(values < -1) or np.any(values == 0):
+            raise ResultArchiveDecodeError(
+                f"invalid field[{field_id}] location identity: "
+                f"{name} must be positive or absent"
+            )
+
+    association = descriptor.association
+    required = _location_identity_requirements(association, None)
+    for name in _LOCATION_IDENTITY_NAMES:
+        if association is FieldAssociation.RESOLVED_NODAL and name in (
+            "element_id",
+            "local_node",
+        ):
+            continue
+        if name == "averaged":
+            present = averaged_mask != 0
+        else:
+            column_name = "region_index" if name == "region_key" else name
+            present = id_arrays[column_name] != -1
+        if name in required:
+            invalid = not bool(np.all(present))
+            requirement = "required"
+        else:
+            invalid = bool(np.any(present))
+            requirement = "not allowed"
+        if invalid:
+            raise ResultArchiveDecodeError(
+                f"invalid field[{field_id}] location identity: "
+                f"{name} is {requirement}"
+            )
+
+    if association is FieldAssociation.RESOLVED_NODAL:
+        unaveraged_rows = averaged == 0
+        for name in ("element_id", "local_node"):
+            if np.any((id_arrays[name] != -1) != unaveraged_rows):
+                raise ResultArchiveDecodeError(
+                    f"invalid field[{field_id}] location identity: {name} "
+                    "must be present exactly for unaveraged rows"
+                )
+
+    descriptor_point = descriptor.field_id.section_point_number
+    if len(averaged) and descriptor_point is None:
+        if point_numbers is not None:
+            raise ResultArchiveDecodeError(
+                f"invalid field[{field_id}]: non-section-point field contains section points"
+            )
+    elif len(averaged) and (
+        point_numbers is None or np.any(point_numbers != descriptor_point)
+    ):
+        raise ResultArchiveDecodeError(
+            f"invalid field[{field_id}]: section point does not match the field descriptor"
+        )
+    if len(averaged) and point_numbers is not None and association not in {
+        FieldAssociation.ELEMENT_NODE,
+        FieldAssociation.INTEGRATION_POINT,
+    }:
+        raise ResultArchiveDecodeError(
+            f"invalid field[{field_id}]: section point is not valid for the association"
+        )
+
+
 def _decode_field(
     value: object,
     manifest: Mapping[str, object],
@@ -1971,6 +2087,15 @@ def _decode_field(
     for name, mask in (("displacement_mask", displacement_mask), ("averaged_mask", averaged_mask), ("averaged", averaged)):
         if np.any(mask > 1):
             raise ResultArchiveDecodeError(f"field[{field_id}].{name} contains invalid mask value")
+    _validate_field_location_columns(
+        field_id=field_id,
+        descriptor=descriptor,
+        id_arrays=id_arrays,
+        averaged=averaged,
+        averaged_mask=averaged_mask,
+        point_numbers=point_numbers,
+        region_count=len(regions),
+    )
     identities: set[object] | None
     if descriptor.association is FieldAssociation.NODE:
         if len(np.unique(id_arrays["node_id"])) != rows:
@@ -1984,16 +2109,20 @@ def _decode_field(
     def iter_locations():
         for row in range(rows):
             region_index = int(id_arrays["region_index"][row])
-            if region_index < -1 or region_index >= len(regions):
-                raise ResultArchiveDecodeError(
-                    f"field[{field_id}] region index is out of range"
-                )
             try:
-                location = FieldLocation(
+                location = FieldLocation._from_validated_components(
                     association=descriptor.association,
-                    coordinates=tuple(float(item) for item in coordinates[row]),
+                    coordinates=(
+                        float(coordinates[row, 0]),
+                        float(coordinates[row, 1]),
+                        float(coordinates[row, 2]),
+                    ),
                     displacement=(
-                        tuple(float(item) for item in displacement[row])
+                        (
+                            float(displacement[row, 0]),
+                            float(displacement[row, 1]),
+                            float(displacement[row, 2]),
+                        )
                         if displacement_mask[row]
                         else None
                     ),
@@ -2021,21 +2150,6 @@ def _decode_field(
                 raise ResultArchiveDecodeError(
                     f"invalid field[{field_id}] location {row}: {error}"
                 ) from error
-            point_number = descriptor.field_id.section_point_number
-            if point_number is None:
-                if location.section_point is not None:
-                    raise ResultArchiveDecodeError(
-                        f"invalid field[{field_id}] location {row}: "
-                        "non-section-point fields cannot contain section points"
-                    )
-            elif (
-                location.section_point is None
-                or location.section_point.number != point_number
-            ):
-                raise ResultArchiveDecodeError(
-                    f"invalid field[{field_id}] location {row}: "
-                    "section point does not match the field descriptor"
-                )
             # Nodal identity is just the positive node ID; avoid allocating a
             # two-item tuple for every row while retaining exact duplicate
             # detection for all other associations.
@@ -2399,21 +2513,21 @@ def save_result_archive_v1(
         checkpoint()
     expected = hashlib.sha256(serialized).hexdigest()
 
-    def verifier(temporary: Path) -> ResultArchiveSnapshot:
-        return decode_result_archive_v1(
-            _read_path_bounded(temporary, _MAX_ZIP_CONTAINER_BYTES)
-        )
-
-    def semantic(snapshot_value: ResultArchiveSnapshot) -> str:
-        return hashlib.sha256(encode_result_archive_v1(snapshot_value)).hexdigest()
+    def verifier(temporary: Path) -> str:
+        # The encoder has already validated the deterministic ZIP it produced.
+        # An exact streamed readback digest proves that fsync persisted those
+        # same bytes, without constructing every FieldLocation and compressing
+        # the entire snapshot a second time.
+        return _sha256_path(temporary, _MAX_ZIP_CONTAINER_BYTES)
 
     try:
         return atomic_write_verified_binary(
             path,
             serialized,
             verifier=verifier,
-            semantic_encoder=semantic,
+            semantic_encoder=lambda digest: digest,
             expected_semantic=expected,
+            mismatch_message="temporary result archive byte verification failed",
             error_type=ResultArchiveEncodeError,
             checkpoint=checkpoint,
             before_replace=before_replace,
@@ -2470,6 +2584,27 @@ def _read_path_bounded(path: Path, limit: int) -> bytes:
             "result archive container size changed during read"
         )
     return data
+
+
+def _sha256_path(path: Path, limit: int) -> str:
+    """Hash one bounded file incrementally and detect concurrent size changes."""
+
+    declared_size = path.stat().st_size
+    if declared_size > limit:
+        raise ResultArchiveDecodeError(
+            "result archive container exceeds the size safety limit"
+        )
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as stream:
+        while chunk := stream.read(_ARCHIVE_IO_CHUNK_BYTES):
+            digest.update(chunk)
+            total += len(chunk)
+    if total != declared_size or path.stat().st_size != declared_size:
+        raise ResultArchiveDecodeError(
+            "result archive container size changed during read"
+        )
+    return digest.hexdigest()
 
 
 read_result_archive_v1 = load_result_archive_v1

@@ -213,7 +213,7 @@ def _mesh_check_and_solve(
     return run.run_id
 
 
-def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
+def test_native_public_workflow_saves_reopens_mesh_and_resolves(
     tmp_path,
 ) -> None:
     _application()
@@ -229,6 +229,16 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
     assert window.document.dirty
     assert window.actions["mesh_generate"].isEnabled()
     first_run_id = _mesh_check_and_solve(window, run_name="Job-1")
+    saved_model = window.document.model
+    assert saved_model is not None
+    saved_nodes = tuple(
+        (node.id, float(node.x), float(node.y))
+        for node in saved_model.mesh.nodes
+    )
+    saved_elements = tuple(
+        (element.id, tuple(element.node_ids), element.type)
+        for element in saved_model.mesh.elements
+    )
 
     project_path = tmp_path / "plate-public.fempy"
     await_succeeded(window.save_project_path(project_path))
@@ -253,6 +263,18 @@ def test_native_public_workflow_saves_reopens_remeshes_and_resolves(
     assert window.document.mesh_settings == MeshSettings(0.5)
     assert window.document.runs == ()
     assert window.session.current_result() is None
+    reopened_model = window.document.model
+    assert reopened_model is not None
+    assert tuple(
+        (node.id, float(node.x), float(node.y))
+        for node in reopened_model.mesh.nodes
+    ) == saved_nodes
+    assert tuple(
+        (element.id, tuple(element.node_ids), element.type)
+        for element in reopened_model.mesh.elements
+    ) == saved_elements
+    assert tuple(reopened_model.materials) == ("Steel",)
+    assert tuple(step.name for step in reopened_model.steps) == ("Load",)
 
     reopened_run_id = _mesh_check_and_solve(
         window,

@@ -280,6 +280,16 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
             )
         )
 
+    saved_model = window.document.model
+    assert saved_model is not None
+    saved_nodes = tuple(
+        (node.id, float(node.x), float(node.y), float(node.z))
+        for node in saved_model.mesh.nodes
+    )
+    saved_elements = tuple(
+        (element.id, tuple(element.node_ids), element.type)
+        for element in saved_model.mesh.elements
+    )
     project_path = tmp_path / f"{formulation.casefold()}-native.fempy"
     await_succeeded(window.save_project_path(project_path))
     require_accepted(
@@ -288,7 +298,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
         )
     )
     await_succeeded(window.open_project_path(project_path))
-    assert window.document.model is None
+    assert window.document.model is not None
     assert window.document.assignments == (assignment,)
     if local_load is not None:
         reopened_load = window.document.steps[0].line_loads[0]
@@ -297,9 +307,16 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
         assert reopened_load.coordinate_system == local_load.coordinate_system
         assert reopened_load.name == "载荷-兼容-Load-线-1"
 
-    await_succeeded(window.generate_mesh())
     model = window.document.model
     assert model is not None
+    assert tuple(
+        (node.id, float(node.x), float(node.y), float(node.z))
+        for node in model.mesh.nodes
+    ) == saved_nodes
+    assert tuple(
+        (element.id, tuple(element.node_ids), element.type)
+        for element in model.mesh.elements
+    ) == saved_elements
     assert {element.type for element in model.mesh.elements} == {formulation}
     assert model.mesh.dofs_per_node == (3 if formulation == "Truss2" else 6)
     assert window.actions["nodes"].isChecked()
