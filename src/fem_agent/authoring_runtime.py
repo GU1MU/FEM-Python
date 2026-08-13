@@ -1777,6 +1777,71 @@ _LOAD_PARAMETER_SCHEMAS = [
         direction="outward_normal",
         distribution="uniform",
     ),
+    _exact_schema(
+        {
+            "name": _controlled_name_schema("载荷"),
+            "step_name": _STEP_NAME_SCHEMA,
+            "target_scope": _controlled_name_schema("域"),
+            "entity_type": {"type": "string", "const": "element"},
+            "load_type": {"type": "string", "const": "line"},
+            "vector": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 3,
+                "maxItems": 3,
+            },
+            "coordinate_system": {
+                "type": "string",
+                "enum": ["global", "local"],
+            },
+            "unit": _UNIT_SCHEMA,
+            "distribution": {"type": "string", "const": "uniform"},
+            "confirmed": _CONFIRMED_SCHEMA,
+        }
+    ),
+    _exact_schema(
+        {
+            "name": _controlled_name_schema("载荷"),
+            "step_name": _STEP_NAME_SCHEMA,
+            "target_scope": _controlled_name_schema("域"),
+            "entity_type": {"type": "string", "const": "element"},
+            "load_type": {"type": "string", "const": "body"},
+            "vector": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 3,
+            },
+            "direction": {"type": "string", "const": "global"},
+            "unit": _UNIT_SCHEMA,
+            "distribution": {"type": "string", "const": "uniform"},
+            "confirmed": _CONFIRMED_SCHEMA,
+        }
+    ),
+    _exact_schema(
+        {
+            "name": _controlled_name_schema("载荷"),
+            "step_name": _STEP_NAME_SCHEMA,
+            "target_scope": {
+                "oneOf": [
+                    {"type": "null"},
+                    _controlled_name_schema("域"),
+                ]
+            },
+            "entity_type": {"type": "string", "const": "element"},
+            "load_type": {"type": "string", "const": "gravity"},
+            "acceleration": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 3,
+            },
+            "direction": {"type": "string", "const": "global"},
+            "unit": _UNIT_SCHEMA,
+            "distribution": {"type": "string", "const": "uniform"},
+            "confirmed": _CONFIRMED_SCHEMA,
+        }
+    ),
 ]
 
 
@@ -1784,7 +1849,8 @@ _APPLY_DEFINITION = _tool(
     "apply_model_definition",
     (
         "Immediately apply one supported scope, material, section, assignment, "
-        "analysis-step, boundary-condition, load, or result-request action and "
+        "analysis-step, boundary-condition, nodal/edge/surface/line/body/gravity "
+        "load, or result-request action and "
         "synchronize the GUI. Only an edit that invalidates accepted results "
         "creates a confirmation card."
     ),
@@ -2349,14 +2415,14 @@ _EDIT_MODEL_OBJECT = _tool(
                             "global_z",
                             "global_xy",
                             "global_xyz",
+                            "global",
                             "inward_normal",
                             "outward_normal",
                         ],
                     },
                     "coordinate_system": {
                         "type": "string",
-                        "minLength": 1,
-                        "maxLength": 64,
+                        "enum": ["global", "local"],
                     },
                     "acceleration": {
                         "type": "array",

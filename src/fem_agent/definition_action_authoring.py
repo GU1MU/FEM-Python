@@ -23,6 +23,7 @@ from fem.application import (
     UnitContext,
     describe_model_capabilities,
     describe_region_capabilities,
+    evaluate_native_line_load_candidate,
     evaluate_native_assignment_candidate,
     validate_logical_reference,
 )
@@ -30,8 +31,11 @@ from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
 from fem.core.model import (
+    BodyForce,
     DisplacementConstraint,
     EdgeLoad,
+    GravityLoad,
+    LineLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
@@ -199,7 +203,14 @@ def require_strict_definition_batch(
     after = batch.steps[0]
     expected_fields = {
         "create_boundary_condition": {"boundaries"},
-        "create_load": {"cloads", "edge_loads", "surface_loads"},
+        "create_load": {
+            "cloads",
+            "edge_loads",
+            "surface_loads",
+            "line_loads",
+            "body_loads",
+            "gravity_loads",
+        },
         "create_result_request": {"outputs"},
     }[normalized_action]
     changed_fields: set[str] = set()
@@ -410,21 +421,6 @@ def _create_analysis_child_patch(
         details = confirmed.summary()
         created_name = confirmed.name
     elif action == "create_load":
-        required = {
-            "name",
-            "step_name",
-            "target_scope",
-            "entity_type",
-            "load_type",
-            "component",
-            "vector",
-            "magnitude",
-            "direction",
-            "unit",
-            "distribution",
-            "confirmed",
-        }
-        _exact_fields(values, required)
         load_type = _enum(
             values["load_type"],
             "load_type",
@@ -434,38 +430,65 @@ def _create_analysis_child_patch(
                 "edge_pressure",
                 "surface_traction",
                 "surface_pressure",
+                "line",
+                "body",
+                "gravity",
             },
         )
-        entity_type = _enum(
-            values["entity_type"],
-            "entity_type",
-            {"node", "edge", "surface"},
-        )
-        target_kind = "node" if entity_type == "node" else entity_type
-        confirmed = ConfirmedLoad(
-            _controlled_name(values["name"], "load name", "载荷"),
-            step_name,
-            _require_scope(
-                snapshot.named_regions.values(),
-                values["target_scope"],
-                target_kind,
-            ),
-            entity_type,
-            load_type,
-            _optional_component(values["component"]),
-            _optional_vector(values["vector"]),
-            _optional_finite(values["magnitude"], "load magnitude"),
-            _nonblank(values["direction"], "load direction"),
-            _nonblank(values["unit"], "load unit"),
-            _nonblank(values["distribution"], "load distribution"),
-            _confirmed(values["confirmed"]),
-        )
-        _validate_load_dimension_and_unit(
-            confirmed,
-            dimension,
-            dofs_per_node,
-            units,
-        )
+        if load_type in {"line", "body", "gravity"}:
+            confirmed = _confirmed_element_load(
+                snapshot,
+                values,
+                step_name=step_name,
+                load_type=load_type,
+                units=units,
+            )
+        else:
+            required = {
+                "name",
+                "step_name",
+                "target_scope",
+                "entity_type",
+                "load_type",
+                "component",
+                "vector",
+                "magnitude",
+                "direction",
+                "unit",
+                "distribution",
+                "confirmed",
+            }
+            _exact_fields(values, required)
+            entity_type = _enum(
+                values["entity_type"],
+                "entity_type",
+                {"node", "edge", "surface"},
+            )
+            target_kind = "node" if entity_type == "node" else entity_type
+            confirmed = ConfirmedLoad(
+                _controlled_name(values["name"], "load name", "载荷"),
+                step_name,
+                _require_scope(
+                    snapshot.named_regions.values(),
+                    values["target_scope"],
+                    target_kind,
+                ),
+                entity_type,
+                load_type,
+                _optional_component(values["component"]),
+                _optional_vector(values["vector"]),
+                _optional_finite(values["magnitude"], "load magnitude"),
+                _nonblank(values["direction"], "load direction"),
+                _nonblank(values["unit"], "load unit"),
+                _nonblank(values["distribution"], "load distribution"),
+                _confirmed(values["confirmed"]),
+            )
+            _validate_load_dimension_and_unit(
+                confirmed,
+                dimension,
+                dofs_per_node,
+                units,
+            )
         field, child = _load_child(confirmed)
         steps = _append_step_child(steps, field, child, confirmed.name)
         details = confirmed.summary()
@@ -729,6 +752,26 @@ def _append_step_child(
 
 
 def _load_child(load: ConfirmedLoad) -> tuple[str, object]:
+    if load.load_type == "line":
+        return (
+            "line_loads",
+            LineLoad(
+                str(load.target_scope),
+                load.vector,
+                str(load.coordinate_system),
+                load.name,
+            ),
+        )
+    if load.load_type == "body":
+        return (
+            "body_loads",
+            BodyForce(str(load.target_scope), load.vector, load.name),
+        )
+    if load.load_type == "gravity":
+        return (
+            "gravity_loads",
+            GravityLoad(load.acceleration, load.target_scope, load.name),
+        )
     if load.load_type == "nodal":
         return (
             "cloads",
@@ -760,6 +803,176 @@ def _load_child(load: ConfirmedLoad) -> tuple[str, object]:
             load.name,
         ),
     )
+
+
+def _confirmed_element_load(
+    snapshot: _Snapshot,
+    values: Mapping[str, object],
+    *,
+    step_name: str,
+    load_type: str,
+    units: UnitContext,
+) -> ConfirmedLoad:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise AnalysisAuthoringError(
+            "distributed element load requires a current realized model"
+        )
+    report = describe_model_capabilities(model)
+    if (
+        not report.compatible
+        or report.spatial_dimension not in {2, 3}
+    ):
+        raise AnalysisAuthoringError(
+            "distributed element load requires a compatible 2D or 3D model"
+        )
+    dimension = int(report.spatial_dimension)
+    name = _controlled_name(values["name"], "load name", "载荷")
+    entity_type = _enum(
+        values["entity_type"], "entity_type", {"element"}
+    )
+    unit = _nonblank(values["unit"], "load unit")
+    distribution = _enum(
+        values["distribution"], "distribution", {"uniform"}
+    )
+    confirmed_value = _confirmed(values["confirmed"])
+
+    if load_type == "line":
+        required = {
+            "name", "step_name", "target_scope", "entity_type", "load_type",
+            "vector", "coordinate_system", "unit", "distribution", "confirmed",
+        }
+        _exact_fields(values, required)
+        scope = _require_scope(
+            snapshot.named_regions.values(), values["target_scope"], "element"
+        )
+        vector = _strict_vector3(values["vector"], "line load vector")
+        coordinate_system = _enum(
+            values["coordinate_system"],
+            "coordinate_system",
+            {"global", "local"},
+        )
+        direction = coordinate_system
+        capability = describe_region_capabilities(
+            model, RegionRef("element_set", scope)
+        )
+        if (
+            not capability.compatible
+            or not capability.homogeneous
+            or capability.canonical_element_types != ("Beam2",)
+        ):
+            raise AnalysisAuthoringError(
+                "line load target must be a non-empty pure Beam2 element region"
+            )
+        expected_unit = f"{units.force}/{units.length}"
+        load = ConfirmedLoad(
+            name, step_name, scope, entity_type, load_type, None, vector, None,
+            direction, unit, distribution, confirmed_value,
+            coordinate_system=coordinate_system,
+        )
+        if coordinate_system == "local":
+            decision = evaluate_native_line_load_candidate(
+                snapshot,
+                LineLoad(scope, vector, coordinate_system, name),
+                step_name,
+            )
+            if not decision.can_submit:
+                message = "; ".join(
+                    item.message for item in decision.diagnostics
+                )
+                raise AnalysisAuthoringError(
+                    message or "local line load requires resolved Beam orientation"
+                )
+    elif load_type == "body":
+        required = {
+            "name", "step_name", "target_scope", "entity_type", "load_type",
+            "vector", "direction", "unit", "distribution", "confirmed",
+        }
+        _exact_fields(values, required)
+        scope = _require_scope(
+            snapshot.named_regions.values(), values["target_scope"], "element"
+        )
+        _require_region_load_kind(model, scope, "body")
+        direction = _enum(values["direction"], "direction", {"global"})
+        if direction != "global":
+            raise AnalysisAuthoringError("body force direction must be global")
+        vector = _fixed_vector(values["vector"], dimension, "body force vector")
+        expected_unit = f"{units.force}/{units.length}^3"
+        load = ConfirmedLoad(
+            name, step_name, scope, entity_type, load_type, None, vector, None,
+            direction, unit, distribution, confirmed_value,
+            coordinate_system="global",
+        )
+    else:
+        required = {
+            "name", "step_name", "target_scope", "entity_type", "load_type",
+            "acceleration", "direction", "unit", "distribution", "confirmed",
+        }
+        _exact_fields(values, required)
+        raw_scope = values["target_scope"]
+        scope = (
+            None
+            if raw_scope is None
+            else _require_scope(
+                snapshot.named_regions.values(), raw_scope, "element"
+            )
+        )
+        if scope is None:
+            if "gravity" not in report.load_kinds:
+                raise AnalysisAuthoringError(
+                    "current model capability does not support global gravity"
+                )
+        else:
+            _require_region_load_kind(model, scope, "gravity")
+        direction = _enum(values["direction"], "direction", {"global"})
+        if direction != "global":
+            raise AnalysisAuthoringError("gravity direction must be global")
+        acceleration = _fixed_vector(
+            values["acceleration"], dimension, "gravity acceleration"
+        )
+        if units.acceleration is None:
+            raise AnalysisAuthoringError(
+                "gravity requires an explicit project acceleration unit"
+            )
+        expected_unit = units.acceleration
+        load = ConfirmedLoad(
+            name, step_name, scope, entity_type, load_type, None, (), None,
+            direction, unit, distribution, confirmed_value,
+            coordinate_system="global",
+            acceleration=acceleration,
+        )
+    if unit != expected_unit:
+        raise AnalysisAuthoringError(
+            "load unit does not exactly match the project unit context"
+        )
+    return load
+
+
+def _require_region_load_kind(
+    model: object,
+    scope: str,
+    load_kind: str,
+) -> None:
+    capability = describe_region_capabilities(
+        model, RegionRef("element_set", scope)
+    )
+    if not capability.compatible or load_kind not in capability.load_kinds:
+        raise AnalysisAuthoringError(
+            f"target element region does not support {load_kind} load"
+        )
+
+
+def _fixed_vector(
+    value: object,
+    length: int,
+    label: str,
+) -> tuple[float, ...]:
+    vector = _optional_vector(value)
+    if len(vector) != length:
+        raise AnalysisAuthoringError(
+            f"{label} must contain exactly {length} components"
+        )
+    return vector
 
 
 def _validate_load_dimension_and_unit(

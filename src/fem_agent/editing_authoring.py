@@ -20,6 +20,10 @@ from fem.application import (
     ScopedDefinitionBatch,
     SectionDefinition,
     UnitContext,
+    RegionRef,
+    describe_model_capabilities,
+    describe_region_capabilities,
+    evaluate_native_line_load_candidate,
     validate_logical_reference,
 )
 from fem.application.changes import SessionDelta
@@ -1176,9 +1180,18 @@ def _validated_load_edit(
             "target_scope",
             "vector",
             "coordinate_system",
+            "unit",
+            "distribution",
+            "confirmed",
         },
-        "body": {"new_name", "target_scope", "vector"},
-        "gravity": {"new_name", "target_scope", "acceleration"},
+        "body": {
+            "new_name", "target_scope", "vector", "direction", "unit",
+            "distribution", "confirmed",
+        },
+        "gravity": {
+            "new_name", "target_scope", "acceleration", "direction", "unit",
+            "distribution", "confirmed",
+        },
     }
     _require_change_keys(changes, allowed_by_kind[load_kind])
     strict_kind = load_kind in {"nodal", "edge", "surface"}
@@ -1186,6 +1199,18 @@ def _validated_load_edit(
         raise ValueError(
             "load edit requires explicit entity_type, load_type, direction, "
             "unit, distribution, and confirmed"
+        )
+    extended_required = {
+        "line": {"coordinate_system", "unit", "distribution", "confirmed"},
+        "body": {"direction", "unit", "distribution", "confirmed"},
+        "gravity": {"direction", "unit", "distribution", "confirmed"},
+    }
+    if (
+        load_kind in extended_required
+        and not extended_required[load_kind] <= set(changes)
+    ):
+        raise ValueError(
+            f"{load_kind} load edit requires explicit engineering fields"
         )
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
@@ -1290,7 +1315,130 @@ def _validated_load_edit(
                 "confirmed": True,
             }
         )
+    else:
+        normalized.update(
+            _validated_extended_load_edit(
+                snapshot, target, replacement, load_kind, changes
+            )
+        )
     return normalized, replacement
+
+
+def _validated_extended_load_edit(
+    snapshot: _Snapshot,
+    target: EditableObject,
+    replacement: object,
+    load_kind: str,
+    changes: Mapping[object, object],
+) -> dict[str, object]:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise ValueError("load edit requires a current realized model")
+    capability = describe_model_capabilities(model)
+    if not capability.compatible or capability.spatial_dimension not in {2, 3}:
+        raise ValueError("load edit requires a compatible 2D or 3D model")
+    dimension = int(capability.spatial_dimension)
+    units = _require_units(snapshot)
+    distribution = _required_text(changes["distribution"], "distribution")
+    if distribution != "uniform":
+        raise ValueError("distributed element load must be uniform")
+    _confirmed(changes["confirmed"])
+
+    raw_scope = getattr(replacement, "target")
+    if raw_scope is None:
+        if load_kind != "gravity":
+            raise ValueError("only gravity may target the whole model")
+        if "gravity" not in capability.load_kinds:
+            raise ValueError(
+                "current model capability does not support global gravity"
+            )
+        scope_name = None
+    else:
+        scope_name = _required_text(raw_scope, "target_scope")
+        region = _require_region(snapshot, scope_name)
+        if region.entity_kind != "element":
+            raise ValueError("load target must be an element named region")
+        if load_kind in {"body", "gravity"}:
+            region_capability = describe_region_capabilities(
+                model, RegionRef("element_set", scope_name)
+            )
+            if (
+                not region_capability.compatible
+                or load_kind not in region_capability.load_kinds
+            ):
+                raise ValueError(
+                    f"target element region does not support {load_kind} load"
+                )
+
+    if load_kind == "line":
+        if len(tuple(getattr(replacement, "vector"))) != 3:
+            raise ValueError("line load vector must contain exactly 3 components")
+        coordinate_system = _required_text(
+            changes["coordinate_system"], "coordinate_system"
+        )
+        if coordinate_system not in {"global", "local"}:
+            raise ValueError("coordinate_system must be global or local")
+        region_capability = describe_region_capabilities(
+            model, RegionRef("element_set", str(scope_name))
+        )
+        if (
+            not region_capability.compatible
+            or not region_capability.homogeneous
+            or region_capability.canonical_element_types != ("Beam2",)
+        ):
+            raise ValueError(
+                "line load target must be a non-empty pure Beam2 element region"
+            )
+        unit = _required_text(changes["unit"], "unit")
+        if unit != f"{units.force}/{units.length}":
+            raise ValueError("line load unit does not match the project unit context")
+        if coordinate_system == "local":
+            step = _require_step(snapshot, target.step_name)
+            index = next(
+                index
+                for index, item in enumerate(tuple(step.line_loads))
+                if _optional_name(item) == target.target_id
+            )
+            decision = evaluate_native_line_load_candidate(
+                snapshot,
+                replacement,
+                str(target.step_name),
+                candidate_index=index,
+            )
+            if not decision.can_submit:
+                message = "; ".join(item.message for item in decision.diagnostics)
+                raise ValueError(
+                    message or "local line load requires resolved Beam orientation"
+                )
+        return {
+            "coordinate_system": coordinate_system,
+            "unit": unit,
+            "distribution": distribution,
+            "confirmed": True,
+        }
+
+    direction = _required_text(changes["direction"], "direction")
+    if direction != "global":
+        raise ValueError(f"{load_kind} load direction must be global")
+    if load_kind == "body":
+        if len(tuple(getattr(replacement, "vector"))) != dimension:
+            raise ValueError("body force vector dimension does not match the model")
+        expected_unit = f"{units.force}/{units.length}^3"
+    else:
+        if len(tuple(getattr(replacement, "acceleration"))) != dimension:
+            raise ValueError("gravity acceleration dimension does not match the model")
+        if units.acceleration is None:
+            raise ValueError("gravity requires an explicit project acceleration unit")
+        expected_unit = units.acceleration
+    unit = _required_text(changes["unit"], "unit")
+    if unit != expected_unit:
+        raise ValueError("load unit does not match the project unit context")
+    return {
+        "direction": direction,
+        "unit": unit,
+        "distribution": distribution,
+        "confirmed": True,
+    }
 
 
 def _confirmed_load_after_edit(
@@ -1413,8 +1561,12 @@ def _load_details(
                 "vector",
                 "coordinate_system",
             ],
-            "body": ["new_name", "target_scope", "vector"],
-            "gravity": ["new_name", "target_scope", "acceleration"],
+            "body": [
+                "new_name", "target_scope", "vector", "direction",
+            ],
+            "gravity": [
+                "new_name", "target_scope", "acceleration", "direction",
+            ],
         }[load_kind],
     }
     if load_kind in {"nodal", "edge", "surface"}:
@@ -1488,6 +1640,26 @@ def _load_details(
         details["distribution"] = (
             "concentrated" if load_kind == "nodal" else "uniform"
         )
+        details["confirmed"] = True
+    else:
+        details["editable_fields"] = [
+            *details["editable_fields"],  # type: ignore[list-item]
+            "unit",
+            "distribution",
+            "confirmed",
+        ]
+        units = _require_units(snapshot)
+        details["direction"] = (
+            str(getattr(load, "coordinate_system"))
+            if load_kind == "line"
+            else "global"
+        )
+        details["unit"] = {
+            "line": f"{units.force}/{units.length}",
+            "body": f"{units.force}/{units.length}^3",
+            "gravity": units.acceleration,
+        }[load_kind]
+        details["distribution"] = "uniform"
         details["confirmed"] = True
     return details
 

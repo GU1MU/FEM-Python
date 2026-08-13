@@ -64,11 +64,11 @@ def _edit_patch(
     )[0]
 
 
-def _surface_session() -> ModelSession:
+def _surface_session(unit_context: UnitContext | None = None) -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-三维块",
-        UnitContext("mm", "N", "MPa"),
+        unit_context or UnitContext("mm", "N", "MPa"),
         BoxGeometry("实体-三维块", 2.0, 3.0, 4.0),
         part_name="部件-三维块",
     )

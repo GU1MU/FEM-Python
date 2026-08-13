@@ -126,7 +126,7 @@ class ConfirmedDisplacement:
 class ConfirmedLoad:
     name: str
     step_name: str
-    target_scope: str
+    target_scope: str | None
     entity_type: str
     load_type: str
     component: int | None
@@ -136,19 +136,25 @@ class ConfirmedLoad:
     unit: str
     distribution: str
     confirmed: bool
+    coordinate_system: str | None = None
+    acceleration: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         NamePolicy().validate(self.name)
         if not self.name.startswith("载荷-"):
             raise AnalysisAuthoringError("load name must use type 载荷")
         _nonblank(self.step_name, "load step")
-        _nonblank(self.target_scope, "load target scope")
+        if self.target_scope is not None:
+            _nonblank(self.target_scope, "load target scope")
         if self.load_type not in {
             "nodal",
             "edge_traction",
             "edge_pressure",
             "surface_traction",
             "surface_pressure",
+            "line",
+            "body",
+            "gravity",
         }:
             raise AnalysisAuthoringError("load_type is unsupported by A5")
         expected_entity = {
@@ -157,6 +163,9 @@ class ConfirmedLoad:
             "edge_pressure": "edge",
             "surface_traction": "surface",
             "surface_pressure": "surface",
+            "line": "element",
+            "body": "element",
+            "gravity": "element",
         }[self.load_type]
         if self.entity_type != expected_entity:
             raise AnalysisAuthoringError(
@@ -168,6 +177,20 @@ class ConfirmedLoad:
         object.__setattr__(self, "vector", tuple(float(value) for value in values))
         if self.magnitude is not None:
             _finite(self.magnitude, "load magnitude")
+        acceleration = tuple(self.acceleration)
+        if any(not _is_finite(value) for value in acceleration):
+            raise AnalysisAuthoringError(
+                "gravity acceleration must contain finite numbers"
+            )
+        object.__setattr__(
+            self,
+            "acceleration",
+            tuple(float(value) for value in acceleration),
+        )
+        if self.load_type != "gravity" and self.target_scope is None:
+            raise AnalysisAuthoringError(
+                "only gravity may target the whole model"
+            )
         if self.load_type == "nodal":
             if type(self.component) is not int or self.component < 1:
                 raise AnalysisAuthoringError(
@@ -180,6 +203,54 @@ class ConfirmedLoad:
             if self.distribution != "concentrated":
                 raise AnalysisAuthoringError(
                     "nodal load distribution must be concentrated"
+                )
+        elif self.load_type in {"line", "body"}:
+            if self.component is not None or not values or self.magnitude is not None:
+                raise AnalysisAuthoringError(
+                    f"{self.load_type} load requires an explicit signed vector only"
+                )
+            if acceleration:
+                raise AnalysisAuthoringError(
+                    f"{self.load_type} load cannot contain acceleration"
+                )
+            if self.distribution != "uniform":
+                raise AnalysisAuthoringError(
+                    f"{self.load_type} load must be explicitly uniform"
+                )
+            if self.load_type == "line":
+                if self.coordinate_system not in {"global", "local"}:
+                    raise AnalysisAuthoringError(
+                        "line load coordinate_system must be global or local"
+                    )
+                if self.direction != self.coordinate_system:
+                    raise AnalysisAuthoringError(
+                        "line load direction must match coordinate_system"
+                    )
+            else:
+                if self.coordinate_system not in {None, "global"}:
+                    raise AnalysisAuthoringError(
+                        "body force coordinate_system must be global"
+                    )
+                if self.direction != "global":
+                    raise AnalysisAuthoringError(
+                        "body force direction must be global"
+                    )
+        elif self.load_type == "gravity":
+            if self.component is not None or values or self.magnitude is not None:
+                raise AnalysisAuthoringError(
+                    "gravity requires acceleration instead of vector or magnitude"
+                )
+            if not acceleration:
+                raise AnalysisAuthoringError(
+                    "gravity requires explicit acceleration"
+                )
+            if self.coordinate_system not in {None, "global"}:
+                raise AnalysisAuthoringError(
+                    "gravity coordinate_system must be global"
+                )
+            if self.direction != "global" or self.distribution != "uniform":
+                raise AnalysisAuthoringError(
+                    "gravity must be global and uniform"
                 )
         elif self.load_type.endswith("traction"):
             if self.component is not None or not values or self.magnitude is not None:
@@ -237,6 +308,8 @@ class ConfirmedLoad:
             "direction": self.direction,
             "signed_components": list(self.vector),
             "signed_magnitude": self.magnitude,
+            "coordinate_system": self.coordinate_system,
+            "acceleration": list(self.acceleration),
             "unit": self.unit,
             "distribution": self.distribution,
         }
@@ -342,6 +415,10 @@ class LinearStaticAnalysis:
                 "displacement DOF exceeds the confirmed model dimension"
             )
         for item in loads:
+            if item.load_type in {"line", "body", "gravity"}:
+                raise AnalysisAuthoringError(
+                    "legacy LinearStaticAnalysis does not accept line, body, or gravity loads"
+                )
             if item.load_type == "nodal" and int(item.component or 0) > self.dimension:
                 raise AnalysisAuthoringError(
                     "nodal load component exceeds model dimension"

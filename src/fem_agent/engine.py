@@ -267,7 +267,16 @@ missing fields of that requested object. Material, section, assignment,
 analysis-step, boundary-condition, load, and result-request additions or edits
 stay in the current document and apply directly. They retain completed
 run/result history, reset the current preflight and displayed result, and
-require a fresh preflight before another solve. Treat `properties` and
+require a fresh preflight before another solve.
+
+Use model capability facts already returned by the tools; do not ask the user
+to restate the spatial dimension, element family, or resolved Beam orientation.
+A line load is a uniform three-component force per length on a Beam2 element
+scope and uses global or local coordinates. A body force is a global uniform
+force per volume vector on an element scope. Gravity is a global uniform
+acceleration vector and may target an element scope or the whole model; its
+unit must be the project's explicit acceleration unit.
+Treat `properties` and
 `metadata` in edit requests as partial key updates and send only the keys the
 user asked to change; omitted keys remain unchanged. Do not request
 result-loss confirmation for these same-model definition changes. Deletion

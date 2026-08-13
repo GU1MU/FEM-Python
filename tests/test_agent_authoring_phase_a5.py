@@ -46,11 +46,11 @@ from fem_gui.agent_authoring import (
 )
 
 
-def _session() -> ModelSession:
+def _session(unit_context: UnitContext | None = None) -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-板",
-        UnitContext("mm", "N", "MPa"),
+        unit_context or UnitContext("mm", "N", "MPa"),
         RectangleGeometry("实体-板", 10.0, 4.0),
         part_name="部件-板",
     )
