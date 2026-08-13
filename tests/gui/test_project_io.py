@@ -296,6 +296,14 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
         "_confirm_discard_changes",
         lambda: True,
     )
+    save_successes: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_save_success",
+        lambda content_name, path: save_successes.append(
+            (content_name, Path(path))
+        ),
+    )
 
     window.open_native_project()
     _wait_for_task(window)
@@ -319,6 +327,7 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
     assert window.document.project_path == target
     assert not window.legacy_project_extension
     assert not window.document.dirty
+    assert save_successes == [("模型", target)]
     window.close()
 
 

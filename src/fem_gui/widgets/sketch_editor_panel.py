@@ -1354,11 +1354,19 @@ class SketchEditorPanel(QWidget):
             elif self.mode == "arc":
                 self._pending_points.append((u, v))
                 self._pending_references.append(reference_point)
-                if len(self._pending_points) == 3:
+                if len(self._pending_points) == 1:
+                    self._set_status("三点圆弧：已选起点，请选择圆弧经过点")
+                elif len(self._pending_points) == 2:
+                    self._set_status("三点圆弧：已选经过点，请选择终点")
+                elif len(self._pending_points) == 3:
+                    start, through, end = self._pending_points
+                    start_id = self._point_id_at(*start)
+                    end_id = self._point_id_at(*end)
                     controller.add_arc(
-                        *self._pending_points,
+                        start_id or start,
+                        through,
+                        end_id or end,
                         start_external_reference=self._pending_references[0],
-                        center_external_reference=self._pending_references[1],
                         end_external_reference=self._pending_references[2],
                     )
                     self._clear_pending()

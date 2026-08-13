@@ -4761,6 +4761,11 @@ class FEMMainWindow(QMainWindow):
         # Qt shows a rubber-band preview and commits the new layout on release.
         splitter.setOpaqueResize(False)
         splitter.splitterMoved.connect(self._main_splitter_moved)
+        self._main_splitter_repaint_timer = QTimer(self)
+        self._main_splitter_repaint_timer.setSingleShot(True)
+        self._main_splitter_repaint_timer.timeout.connect(
+            self._finish_main_splitter_resize
+        )
         splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -4880,7 +4885,12 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _main_splitter_moved(self, _position: int, _index: int) -> None:
-        """Clear the non-opaque drag marker before repainting the VTK surface."""
+        """Repaint after Qt has finished releasing its non-opaque marker."""
+
+        self._main_splitter_repaint_timer.start(0)
+
+    def _finish_main_splitter_resize(self) -> None:
+        """Remove the drag marker before invalidating the native VTK surface."""
 
         self._clear_main_splitter_drag_marker()
         self.viewport.schedule_resize_repaint()
@@ -10102,6 +10112,9 @@ class FEMMainWindow(QMainWindow):
             if not filename:
                 return False
             path = Path(filename)
+        path = Path(path)
+        if path.suffix.casefold() != RESULT_FILE_SUFFIX:
+            path = path.with_suffix(RESULT_FILE_SUFFIX)
         receipt = self.save_result_path(path)
         if receipt.diagnostic is not None:
             self._show_command_rejection("保存分析结果失败", receipt)
@@ -10109,6 +10122,12 @@ class FEMMainWindow(QMainWindow):
         completion = receipt.completion
         if completion is None:
             return False
+
+        def result_saved(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                self._show_save_success("分析结果", path)
+
+        completion.observe(result_saved)
         if not wait:
             return True
         try:
@@ -10304,6 +10323,8 @@ class FEMMainWindow(QMainWindow):
                     f"自主项目已保存：{path.name}",
                     5000,
                 )
+            if agent_terminal is None:
+                self._show_save_success("模型", path)
 
         completion.observe(project_saved)
         if agent_terminal is not None:

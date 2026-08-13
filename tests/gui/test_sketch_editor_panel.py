@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from fem.geometry import (
     LogicalEntityRef,
     RectangleGeometry,
+    SketchArc,
     SketchCircle,
     SketchExternalReference,
     SketchExternalReferenceType,
@@ -361,6 +362,23 @@ def test_rectangle_and_circle_second_click_previews_follow_cursor() -> None:
         for point in circle
     )
 
+    arc_guide = _sketch_shape_preview_points(
+        "arc",
+        ((-1.0, 0.0, 0.0),),
+        (0.0, 1.0, 0.0),
+    )
+    assert arc_guide == ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+
+    arc = _sketch_shape_preview_points(
+        "arc",
+        ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        (1.0, 0.0, 0.0),
+    )
+    assert len(arc) > 8
+    assert arc[0] == pytest.approx((-1.0, 0.0, 0.0))
+    assert arc[-1] == pytest.approx((1.0, 0.0, 0.0))
+    assert max(point[1] for point in arc) == pytest.approx(1.0, abs=0.01)
+
 
 def test_sketch_preview_cancel_clears_pending_shape_and_redraws() -> None:
     _application()
@@ -541,6 +559,36 @@ def test_panel_polyline_closes_a_profile_and_emits_finish() -> None:
     panel.finishRequested.connect(lambda: finished.append(True))
     panel.try_finish()
     assert finished == [True]
+
+
+def test_panel_three_point_arcs_reuse_endpoints_and_close_profile() -> None:
+    _application()
+    controller = SketchDraftController("two-arc-profile")
+    panel = SketchEditorPanel(controller)
+    panel.set_mode("arc")
+
+    for point in (
+        (-2.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (-2.0 + 0.5e-6, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (2.0 - 0.5e-6, 0.0, 0.0),
+    ):
+        panel._point_from_viewport(point)
+
+    arcs = tuple(
+        curve
+        for curve in controller.snapshot().curves
+        if isinstance(curve, SketchArc)
+    )
+    assert len(arcs) == 2
+    assert arcs[0].start_point_id == arcs[1].start_point_id
+    assert arcs[0].end_point_id == arcs[1].end_point_id
+    assert len(controller.snapshot().points) == 4
+    assert len(controller.profiles) == 1
+    assert controller.can_finish
+    assert panel.finish_button.isEnabled()
 
 
 def test_panel_keeps_invalid_open_draft_detached() -> None:

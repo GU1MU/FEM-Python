@@ -337,6 +337,22 @@ def test_sketch_second_point_preview_actor_is_cleared_on_cancel(
     assert viewport.cancel_pending_sketch_interaction()
     assert "sketch_authoring_shape_preview" not in viewport._actors
 
+    viewport._sketch_authoring_mode = "arc"
+    viewport.set_sketch_pending_points(
+        ((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+    )
+    viewport._set_sketch_authoring_preview_point((1.0, 0.0, 0.0))
+    assert "sketch_authoring_shape_preview" in viewport._actors
+    assert "sketch_authoring_pending_outline" in viewport._actors
+    assert "sketch_authoring_pending_points" in viewport._actors
+    assert "sketch_authoring_pending_labels" in viewport._actors
+
+    assert viewport.cancel_pending_sketch_interaction()
+    assert "sketch_authoring_shape_preview" not in viewport._actors
+    assert "sketch_authoring_pending_outline" not in viewport._actors
+    assert "sketch_authoring_pending_points" not in viewport._actors
+    assert "sketch_authoring_pending_labels" not in viewport._actors
+
     viewport._sketch_authoring_mode = "circle"
     viewport.set_sketch_pending_points(((0.0, 0.0, 0.0),))
     viewport._set_sketch_authoring_preview_point((0.0, 1.0, 0.0))

@@ -3676,11 +3676,11 @@ class ModelViewportOverlayHost(QWidget):
             True,
         )
         self.chat_launcher.clicked.connect(
-            lambda: self.set_drawer_open(True)
+            lambda: self.set_drawer_open(True, animated=False)
         )
         self.chat_launcher.dragDelta.connect(self._move_launcher_by)
         self.agent_chat_drawer.closeRequested.connect(
-            lambda: self.set_drawer_open(False)
+            lambda: self.set_drawer_open(False, animated=False)
         )
         self.agent_chat_drawer.resize_handle.dragStarted.connect(
             self._begin_drawer_resize
@@ -3697,6 +3697,7 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_open = False
         self._drawer_resize_initial_width: int | None = None
         self._drawer_resize_delta = 0
+        self._pending_drawer_width: int | None = None
         self._shutting_down = False
         self._anchor_window: QWidget | None = None
         self._animation = QPropertyAnimation(
@@ -3710,6 +3711,11 @@ class ModelViewportOverlayHost(QWidget):
         self._overlay_sync_timer = QTimer(self)
         self._overlay_sync_timer.setSingleShot(True)
         self._overlay_sync_timer.timeout.connect(self._sync_overlay_windows)
+        self._drawer_resize_commit_timer = QTimer(self)
+        self._drawer_resize_commit_timer.setSingleShot(True)
+        self._drawer_resize_commit_timer.timeout.connect(
+            self._commit_drawer_resize
+        )
         native_surface_updated = getattr(
             self.viewport,
             "nativeSurfaceUpdated",
@@ -3776,7 +3782,7 @@ class ModelViewportOverlayHost(QWidget):
         self,
         opened: bool,
         *,
-        animated: bool = True,
+        animated: bool = False,
     ) -> None:
         """拉出或收起聊天框，并同步模型视口的可用宽度。"""
         opened = bool(opened)
@@ -3791,24 +3797,33 @@ class ModelViewportOverlayHost(QWidget):
 
         self._animation.stop()
         self._drawer_open = opened
-        if opened:
-            self._sync_viewport_reservation()
-            self.chat_launcher.hide()
-            self._sync_overlay_window_visibility()
-
         self.drawerOpenChanged.emit(opened)
         if (
             not animated
             or not self.isVisible()
             or self._drawer_reveal == target
         ):
-            self._set_drawer_reveal(target)
-            self._animation_finished()
+            self._commit_drawer_open_state(target)
             return
 
+        if opened:
+            self._sync_viewport_reservation()
+            self.chat_launcher.hide()
+            self._sync_overlay_window_visibility()
         self._animation.setStartValue(self._drawer_reveal)
         self._animation.setEndValue(target)
         self._animation.start()
+
+    def _commit_drawer_open_state(self, reveal: int) -> None:
+        """Apply one fast visibility transaction without native-window frames."""
+
+        if not self._drawer_open:
+            # Remove the native drawer before the VTK surface grows underneath it.
+            self.agent_chat_drawer.hide()
+        self._drawer_reveal = int(reveal)
+        self._sync_viewport_reservation()
+        self._position_overlays(sync_visibility=False)
+        self._sync_overlay_window_visibility()
 
     def set_drawer_width(self, width: int) -> None:
         """设置用户偏好宽度；打开时同步提交模型视口宽度。"""
@@ -3859,6 +3874,8 @@ class ModelViewportOverlayHost(QWidget):
         self._position_overlays()
 
     def _begin_drawer_resize(self) -> None:
+        self._drawer_resize_commit_timer.stop()
+        self._pending_drawer_width = None
         self._drawer_resize_initial_width = self._drawer_width
         self._drawer_resize_delta = 0
         self._position_drawer_resize_preview()
@@ -3878,9 +3895,20 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_resize_initial_width = None
         self._drawer_resize_delta = 0
         self._drawer_resize_preview.hide()
-        self.set_drawer_width(initial_width + int(delta))
+        self._pending_drawer_width = initial_width + int(delta)
+        self._drawer_resize_commit_timer.start(0)
+
+    def _commit_drawer_resize(self) -> None:
+        """Commit only after the preview window's hide event has settled."""
+
+        width = self._pending_drawer_width
+        self._pending_drawer_width = None
+        if width is not None and not self._shutting_down:
+            self.set_drawer_width(width)
 
     def _cancel_drawer_resize(self) -> None:
+        self._drawer_resize_commit_timer.stop()
+        self._pending_drawer_width = None
         self._drawer_resize_initial_width = None
         self._drawer_resize_delta = 0
         self._drawer_resize_preview.hide()

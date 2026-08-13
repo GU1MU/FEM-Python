@@ -16,6 +16,8 @@ from fem_gui.visualization.symbols import (
     load_symbol_length,
     region_sample_indices,
     rotation_lock_points,
+    sample_distributed_faces,
+    sample_distributed_polyline,
     sample_face,
     sample_polyline,
     symbol_length,
@@ -27,8 +29,105 @@ def test_polyline_sampling_follows_actual_high_order_edge_path():
 
     samples = sample_polyline(points, "medium")
 
-    assert samples.shape == (3, 3)
-    assert samples[1] == pytest.approx([0.5, 0.5, 0.0])
+    assert samples.shape == (12, 3)
+    assert np.max(samples[:, 1]) == pytest.approx(11.0 / 24.0)
+
+
+def test_distributed_edge_sampling_is_even_and_member_order_independent():
+    members = [
+        np.array(((0.0, 0.5, 0.0), (0.0, 1.0, 0.0))),
+        np.array(((0.0, 0.0, 0.0), (0.0, 0.5, 0.0))),
+    ]
+    vectors = [np.array((1.0, 0.0, 0.0)) for _member in members]
+
+    samples, sampled_vectors = sample_distributed_polyline(
+        members,
+        vectors,
+        "low",
+    )
+    reversed_samples, _reversed_vectors = sample_distributed_polyline(
+        [member[::-1] for member in reversed(members)],
+        list(reversed(vectors)),
+        "low",
+    )
+
+    expected = np.linspace(1.0 / 12.0, 11.0 / 12.0, 6)
+    assert samples[:, 1] == pytest.approx(expected)
+    assert reversed_samples[:, 1] == pytest.approx(expected)
+    assert sampled_vectors == pytest.approx(np.tile((1.0, 0.0, 0.0), (6, 1)))
+
+
+def test_surface_sampling_uses_six_spatially_spread_low_density_symbols():
+    face = np.array(
+        ((0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 1.0, 0.0), (0.0, 1.0, 0.0))
+    )
+
+    samples, vectors = sample_distributed_faces(
+        [face],
+        [np.array((0.0, 0.0, -1.0))],
+        "low",
+    )
+
+    assert samples.shape == (6, 3)
+    assert np.ptp(samples[:, 0]) > 1.3
+    assert np.ptp(samples[:, 1]) > 0.55
+    assert vectors == pytest.approx(np.tile((0.0, 0.0, -1.0), (6, 1)))
+
+
+def test_surface_sampling_is_independent_of_face_member_order():
+    left = np.array(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0))
+    )
+    right = left + np.array((1.0, 0.0, 0.0))
+    vector = np.array((0.0, 0.0, 1.0))
+
+    samples, _vectors = sample_distributed_faces(
+        [left, right],
+        [vector, vector],
+        "medium",
+    )
+    shuffled, _shuffled_vectors = sample_distributed_faces(
+        [right, left],
+        [vector, vector],
+        "medium",
+    )
+
+    order = np.lexsort(samples.T[::-1])
+    shuffled_order = np.lexsort(shuffled.T[::-1])
+    assert samples[order] == pytest.approx(shuffled[shuffled_order])
+
+
+def test_surface_symbol_count_does_not_grow_with_mesh_refinement():
+    coarse = [
+        np.array(
+            ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (10.0, 1.0, 0.0), (0.0, 1.0, 0.0))
+        )
+    ]
+    fine = [
+        np.array(
+            (
+                (float(index), 0.0, 0.0),
+                (float(index + 1), 0.0, 0.0),
+                (float(index + 1), 1.0, 0.0),
+                (float(index), 1.0, 0.0),
+            )
+        )
+        for index in range(10)
+    ]
+
+    coarse_samples, _coarse_vectors = sample_distributed_faces(
+        coarse,
+        [np.ones(3)],
+        "low",
+    )
+    fine_samples, _fine_vectors = sample_distributed_faces(
+        fine,
+        [np.ones(3) for _face in fine],
+        "low",
+    )
+
+    assert len(coarse_samples) == 6
+    assert len(fine_samples) == 6
 
 
 def test_face_sampling_density_changes_real_symbol_count():
@@ -50,6 +149,7 @@ def test_distributed_region_sampling_is_capped_and_not_linear_with_refinement():
 
     assert coarse_count == 12
     assert fine_count == 12
+    assert len(region_sample_indices(fine, "low")) == 6
     assert len(region_sample_indices(fine, "high")) == 24
 
 
@@ -67,23 +167,21 @@ def test_continuous_supports_are_sampled_along_their_boundary():
 
     selected = points[constraint_sample_indices(points, "medium")]
 
-    assert len(selected) == 4
+    assert len(selected) == 12
     assert np.all(np.isclose(np.abs(selected[:, 0]), 1.0) | np.isclose(np.abs(selected[:, 1]), 1.0))
 
 
-def test_rectangular_support_keeps_all_four_corners_at_low_density():
+def test_rectangular_support_spreads_six_low_density_symbols_around_perimeter():
     x, y = np.meshgrid(np.linspace(-1.0, 1.0, 9), np.linspace(-1.0, 1.0, 9))
     points = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
 
     selected = points[constraint_sample_indices(points, "low")]
 
-    assert len(selected) == 4
-    assert {
-        tuple(point) for point in selected
-    } == {
-        (-1.0, -1.0, 0.0), (-1.0, 1.0, 0.0),
-        (1.0, -1.0, 0.0), (1.0, 1.0, 0.0),
-    }
+    assert len(selected) == 6
+    assert np.all(
+        np.isclose(np.abs(selected[:, 0]), 1.0)
+        | np.isclose(np.abs(selected[:, 1]), 1.0)
+    )
 
 
 def test_curved_planar_support_boundary_obeys_density_limit():
@@ -92,9 +190,9 @@ def test_curved_planar_support_boundary_obeys_density_limit():
         (np.cos(angles), np.sin(angles), np.zeros(len(angles)))
     )
 
-    assert len(constraint_sample_indices(points, "low")) == 4
-    assert len(constraint_sample_indices(points, "medium")) == 6
-    assert len(constraint_sample_indices(points, "high")) == 12
+    assert len(constraint_sample_indices(points, "low")) == 6
+    assert len(constraint_sample_indices(points, "medium")) == 12
+    assert len(constraint_sample_indices(points, "high")) == 24
 
 
 def test_constraint_depth_offset_follows_the_camera_ray():
@@ -105,7 +203,7 @@ def test_constraint_depth_offset_follows_the_camera_ray():
     assert camera_facing_offset(point, None, 0.5) == pytest.approx((0.0, 0.0, 0.0))
 
 
-def test_distant_end_supports_receive_independent_four_corner_regions():
+def test_distant_end_supports_receive_independent_perimeter_regions():
     face = np.array((
         (0.0, -1.0, -1.0), (0.0, 1.0, -1.0),
         (0.0, 1.0, 1.0), (0.0, -1.0, 1.0),
@@ -121,7 +219,7 @@ def test_distant_end_supports_receive_independent_four_corner_regions():
     ]
 
     assert tuple(len(region) for region in regions) == (6, 6)
-    assert tuple(len(indices) for indices in selected) == (4, 4)
+    assert tuple(len(indices) for indices in selected) == (6, 6)
 
 
 def test_line_support_sampling_covers_both_ends_and_intermediate_positions():
@@ -132,6 +230,15 @@ def test_line_support_sampling_covers_both_ends_and_intermediate_positions():
     assert selected[0, 0] == pytest.approx(0.0)
     assert selected[-1, 0] == pytest.approx(10.0)
     assert np.all(np.diff(selected[:, 0]) > 0.0)
+
+
+def test_line_support_sampling_follows_distance_on_a_graded_mesh():
+    coordinates = np.linspace(0.0, 1.0, 401) ** 2
+    points = np.column_stack((coordinates, np.zeros(401), np.zeros(401)))
+
+    selected = points[constraint_sample_indices(points, "medium")]
+
+    assert selected[:, 0] == pytest.approx(np.linspace(0.0, 1.0, 6), abs=0.004)
 
 
 def test_symbol_length_uses_effective_sides_for_thin_models():

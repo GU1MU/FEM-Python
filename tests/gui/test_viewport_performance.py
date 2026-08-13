@@ -10,14 +10,17 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from fem.core import Element3D, Mesh3D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
     EdgeLoad,
     ElementEdge,
+    ElementSet,
     FEMModel,
     GravityLoad,
+    LineLoad,
 )
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
@@ -383,6 +386,68 @@ def test_2d_inward_edge_traction_is_lifted_above_mesh_for_visibility(monkeypatch
     assert calls_by_name["load_region_edges"].n_lines == 1
     assert calls_by_name["loads"].n_points > 0
     assert calls_by_name["loads"].bounds[4] > 0.0
+
+
+def test_connected_beam_line_load_is_sampled_once_as_one_region(monkeypatch):
+    _application()
+    mesh = Mesh3D(
+        nodes=(
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 3.0, 0.0, 0.0),
+        ),
+        elements=(
+            Element3D(1, (1, 2), "Beam2"),
+            Element3D(2, (2, 3), "Beam2"),
+        ),
+        dofs_per_node=6,
+    )
+    model = FEMModel(
+        mesh,
+        element_sets={"BEAMS": ElementSet("BEAMS", (1, 2))},
+        steps=(
+            AnalysisStep(
+                "bend",
+                line_loads=(LineLoad("BEAMS", (0.0, -5.0, 0.0)),),
+            ),
+        ),
+    )
+    viewport = FEMViewport()
+    viewport.set_model(
+        model,
+        build_model_geometry(model),
+        refresh_symbols=False,
+        render=False,
+    )
+    viewport._plotter = _Plotter(_Camera(scale=1.0))
+    monkeypatch.setattr(
+        viewport_module,
+        "_pyvista",
+        pytest.importorskip("pyvista"),
+    )
+    calls: list[tuple[int, int, str]] = []
+    original = viewport_module.sample_distributed_polyline
+
+    def counted(member_points, member_vectors, density):
+        calls.append((len(member_points), len(member_vectors), density))
+        return original(member_points, member_vectors, density)
+
+    monkeypatch.setattr(viewport_module, "sample_distributed_polyline", counted)
+    viewport.set_symbol_settings(
+        SymbolSettings(
+            step_name="bend",
+            show_constraints=False,
+            show_nodal_loads=False,
+            show_edge_loads=False,
+            show_surface_loads=False,
+            show_line_loads=True,
+        ),
+        refresh=False,
+    )
+
+    viewport.show_boundary_and_loads("bend", render=False)
+
+    assert calls == [(2, 2, "low")]
 
 
 def test_symbol_sampling_density_override_is_explicit_and_reversible():

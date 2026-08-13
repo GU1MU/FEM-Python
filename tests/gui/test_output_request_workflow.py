@@ -41,11 +41,15 @@ def _application() -> QApplication:
 def _wait_for_task(window: FEMMainWindow, timeout: float = 2.0) -> None:
     application = _application()
     deadline = monotonic() + timeout
-    while window.busy and monotonic() < deadline:
+    def busy() -> bool:
+        controller = window.workspace.open_controller
+        return window.busy or (controller is not None and controller.busy)
+
+    while busy() and monotonic() < deadline:
         application.processEvents()
         QThread.msleep(1)
     application.processEvents()
-    assert not window.busy
+    assert not busy()
 
 
 def _install_imported(window: FEMMainWindow, path: Path) -> None:
@@ -408,6 +412,7 @@ def test_native_create_survives_project_save_and_reopen(
         "getSaveFileName",
         lambda *_args, **_kwargs: (str(requested), ""),
     )
+    monkeypatch.setattr(window, "_show_save_success", lambda *_args: None)
     assert window.save_native_project()
     _wait_for_task(window)
     expected_step = with_compatibility_analysis_names(

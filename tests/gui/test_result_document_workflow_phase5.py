@@ -456,6 +456,14 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
         "getSaveFileName",
         choose_save_target,
     )
+    save_successes: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_save_success",
+        lambda content_name, path: save_successes.append(
+            (content_name, Path(path))
+        ),
+    )
     assert window.save_current_result(wait=True)
     assert save_calls == []
     assert window.save_current_result_as(wait=True)
@@ -464,6 +472,11 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
     assert len(save_calls) == 1
     assert save_calls[0][2] == "dialog-source.femres"
     assert all(call[3] == "FEM-Python 结果 (*.femres)" for call in save_calls)
+    assert save_successes == [
+        ("分析结果", source),
+        ("分析结果", target.with_suffix(".femres")),
+        ("分析结果", target.with_suffix(".femres")),
+    ]
     _wait_idle(window)
     window.close()
 

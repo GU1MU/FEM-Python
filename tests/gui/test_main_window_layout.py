@@ -6,7 +6,7 @@ import weakref
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import QAbstractAnimation, QPoint, QSize, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -143,7 +143,7 @@ def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
     )
 
     assert splitter.sizes() != original_sizes
-    assert repaint_calls == [True]
+    assert repaint_calls == []
     application.processEvents()
     assert repaint_calls == [True]
     assert not any(
@@ -197,11 +197,56 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
         start - QPoint(30, 0),
     )
 
+    assert host._drawer_resize_preview.isHidden()
+    assert host.drawer_width == drawer_width
+    assert window.viewport.width() == viewport_width
+    assert repaint_calls == []
+    application.processEvents()
+
     assert host.drawer_width == drawer_width + 30
     assert window.viewport.width() == viewport_width - 30
     assert repaint_calls == [True]
+    window.close()
+
+
+def test_agent_drawer_controls_skip_native_window_animation_frames():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1000, 700)
     application.processEvents()
-    assert repaint_calls == [True]
+    host = window.viewport_panel.overlay_host
+    baseline_width = window.viewport.width()
+    animation_frames = []
+    geometry_commits = []
+    host._animation.valueChanged.connect(animation_frames.append)
+    host.viewportGeometryCommitted.connect(lambda: geometry_commits.append(True))
+
+    QTest.mouseClick(
+        host.chat_launcher,
+        Qt.MouseButton.LeftButton,
+    )
+
+    assert host.drawer_is_open
+    assert host.agent_chat_drawer.isVisible()
+    assert host.chat_launcher.isHidden()
+    assert window.viewport.width() == baseline_width - host.drawer_width
+    assert host._animation.state() == QAbstractAnimation.State.Stopped
+    assert animation_frames == []
+    assert geometry_commits == [True]
+
+    QTest.mouseClick(
+        host.agent_chat_drawer.close_button,
+        Qt.MouseButton.LeftButton,
+    )
+
+    assert not host.drawer_is_open
+    assert host.agent_chat_drawer.isHidden()
+    assert host.chat_launcher.isVisible()
+    assert window.viewport.width() == baseline_width
+    assert host._animation.state() == QAbstractAnimation.State.Stopped
+    assert animation_frames == []
+    assert geometry_commits == [True, True]
     window.close()
 
 

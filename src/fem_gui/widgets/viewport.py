@@ -91,9 +91,9 @@ from ..visualization.symbols import (
     constraint_symbol_dimensions,
     load_arrow_origins,
     load_symbol_length,
-    region_sample_indices,
     rotation_lock_points,
-    sample_polyline,
+    sample_distributed_faces,
+    sample_distributed_polyline,
     symbol_length,
 )
 
@@ -1094,22 +1094,31 @@ def _sketch_shape_preview_points(
     cursor_point: tuple[float, float, float] | None,
     plane: SketchPlane | None = None,
 ) -> tuple[tuple[float, float, float], ...]:
-    """Build the transient rectangle or circle polyline for a second click."""
+    """Build the transient shape polyline while a multi-click tool is active."""
 
     pending = tuple(
         tuple(float(value) for value in point)
         for point in pending_points
     )
     normalized_mode = str(mode).strip().casefold()
-    if (
-        normalized_mode not in {"rectangle", "circle"}
-        or len(pending) != 1
-        or cursor_point is None
-    ):
+    if cursor_point is None:
         return ()
     frame = SketchPlane.xy() if plane is None else plane
     if type(frame) is not SketchPlane:
         raise TypeError("plane must be a SketchPlane")
+    if normalized_mode == "arc":
+        if len(pending) == 1:
+            return pending[0], tuple(float(value) for value in cursor_point)
+        if len(pending) == 2:
+            return _sketch_three_point_arc_preview(
+                pending[0],
+                pending[1],
+                tuple(float(value) for value in cursor_point),
+                frame,
+            )
+        return ()
+    if normalized_mode not in {"rectangle", "circle"} or len(pending) != 1:
+        return ()
     start = np.asarray(frame.to_local(pending[0]), dtype=float)
     cursor = np.asarray(frame.to_local(cursor_point), dtype=float)
     if (
@@ -1139,6 +1148,66 @@ def _sketch_shape_preview_points(
             float(start[1] + radius * math.sin(angle)),
         )
         for angle in angles
+    )
+
+
+def _sketch_three_point_arc_preview(
+    first: tuple[float, float, float],
+    through: tuple[float, float, float],
+    last: tuple[float, float, float],
+    plane: SketchPlane,
+) -> tuple[tuple[float, float, float], ...]:
+    local_first = plane.to_local(first)
+    local_through = plane.to_local(through)
+    local_last = plane.to_local(last)
+    denominator = 2.0 * (
+        local_first[0] * (local_through[1] - local_last[1])
+        + local_through[0] * (local_last[1] - local_first[1])
+        + local_last[0] * (local_first[1] - local_through[1])
+    )
+    if abs(denominator) <= 1.0e-12:
+        return first, through, last
+    first_square = local_first[0] ** 2 + local_first[1] ** 2
+    through_square = local_through[0] ** 2 + local_through[1] ** 2
+    last_square = local_last[0] ** 2 + local_last[1] ** 2
+    center_u = (
+        first_square * (local_through[1] - local_last[1])
+        + through_square * (local_last[1] - local_first[1])
+        + last_square * (local_first[1] - local_through[1])
+    ) / denominator
+    center_v = (
+        first_square * (local_last[0] - local_through[0])
+        + through_square * (local_first[0] - local_last[0])
+        + last_square * (local_through[0] - local_first[0])
+    ) / denominator
+    start_angle = math.atan2(
+        local_first[1] - center_v,
+        local_first[0] - center_u,
+    )
+    end_angle = math.atan2(
+        local_last[1] - center_v,
+        local_last[0] - center_u,
+    )
+    cross = (
+        (local_through[0] - center_u) * (local_last[1] - center_v)
+        - (local_through[1] - center_v) * (local_last[0] - center_u)
+    )
+    sweep = (
+        (end_angle - start_angle) % math.tau
+        if cross >= 0.0
+        else -((start_angle - end_angle) % math.tau)
+    )
+    radius = math.hypot(
+        local_first[0] - center_u,
+        local_first[1] - center_v,
+    )
+    count = max(8, int(math.ceil(48 * abs(sweep) / math.tau)))
+    return tuple(
+        plane.to_global(
+            center_u + radius * math.cos(start_angle + sweep * index / count),
+            center_v + radius * math.sin(start_angle + sweep * index / count),
+        )
+        for index in range(count + 1)
     )
 
 
@@ -2900,6 +2969,9 @@ class FEMViewport(QWidget):
             "sketch_reference_labels",
             "sketch_authoring_selection",
             "sketch_authoring_shape_preview",
+            "sketch_authoring_pending_outline",
+            "sketch_authoring_pending_points",
+            "sketch_authoring_pending_labels",
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
@@ -3994,6 +4066,9 @@ class FEMViewport(QWidget):
     def _show_sketch_authoring_hover(self, *, render: bool) -> None:
         for actor_name in (
             "sketch_authoring_shape_preview",
+            "sketch_authoring_pending_outline",
+            "sketch_authoring_pending_points",
+            "sketch_authoring_pending_labels",
             "sketch_authoring_hover_outline",
             "sketch_authoring_hover",
             "sketch_authoring_hover_label",
@@ -4001,11 +4076,54 @@ class FEMViewport(QWidget):
             self._remove_actor(actor_name)
         point = self._sketch_authoring_preview_point
         if (
-            point is None
-            or self._plotter is None
+            self._plotter is None
             or _pyvista is None
         ):
             if render and self._plotter is not None:
+                self._render()
+            return
+        if self._sketch_authoring_mode == "arc" and self._sketch_pending_points:
+            pending = np.asarray(self._sketch_pending_points, dtype=float)
+            labels = tuple(
+                ("1  起点", "2  经过点")[index]
+                for index in range(min(len(pending), 2))
+            )
+            self._actors["sketch_authoring_pending_outline"] = (
+                self._plotter.add_mesh(
+                    _pyvista.PolyData(pending),
+                    color="#006d8f",
+                    point_size=18,
+                    render_points_as_spheres=True,
+                    name="sketch_authoring_pending_outline",
+                    reset_camera=False,
+                    pickable=False,
+                )
+            )
+            self._actors["sketch_authoring_pending_points"] = (
+                self._plotter.add_mesh(
+                    _pyvista.PolyData(pending),
+                    color="#40c4ff",
+                    point_size=11,
+                    render_points_as_spheres=True,
+                    name="sketch_authoring_pending_points",
+                    reset_camera=False,
+                    pickable=False,
+                )
+            )
+            self._actors["sketch_authoring_pending_labels"] = (
+                self._plotter.add_point_labels(
+                    pending[: len(labels)],
+                    labels,
+                    point_size=0,
+                    font_size=12,
+                    shape=None,
+                    text_color="#006d8f",
+                    name="sketch_authoring_pending_labels",
+                    reset_camera=False,
+                )
+            )
+        if point is None:
+            if render:
                 self._render()
             return
         shape_points = _sketch_shape_preview_points(
@@ -4080,6 +4198,13 @@ class FEMViewport(QWidget):
             )
         )
         hover_text = f"{snap_label} {coordinate_label}" if snap_label else coordinate_label
+        if self._sketch_authoring_mode == "arc":
+            prompts = (
+                "单击确定起点",
+                "单击确定圆弧经过点",
+                "单击确定终点",
+            )
+            hover_text = f"{prompts[min(len(self._sketch_pending_points), 2)]}  {hover_text}"
         if inference:
             hover_text += f"  推断：{inference}"
         self._actors["sketch_authoring_hover_label"] = (
@@ -7427,37 +7552,57 @@ class FEMViewport(QWidget):
             ]
 
         def add_distributed_group(definition, members, tractions, kind: str) -> None:
-            candidates: list[np.ndarray] = []
-            candidate_vectors: list[np.ndarray] = []
+            member_points: list[np.ndarray] = []
+            member_vectors: list[np.ndarray] = []
             for member, traction in zip(members, tractions):
                 ids = member.node_ids
                 points = np.asarray([node_point(node_id) for node_id in ids])
-                candidates.append(np.mean(points, axis=0))
                 vector = np.pad(
                     np.asarray(traction.vector, dtype=float),
                     (0, max(0, 3 - len(traction.vector))),
                 )[:3]
-                candidate_vectors.append(vector)
+                if kind == "face":
+                    display_ids = _face_display_node_ids(tuple(ids))
+                    points = np.asarray([
+                        node_point(node_id) for node_id in display_ids
+                    ])
+                member_points.append(points)
+                member_vectors.append(vector)
                 indices = [self._geometry.node_id_to_point_index[int(node_id)] for node_id in ids]
                 target = face_cells if kind == "face" else edge_lines
                 target.extend((len(indices), *indices))
-            if not candidates:
+            if not member_points:
                 return
-            candidate_array = np.asarray(candidates)
-            selected = region_sample_indices(candidate_array, sampling_density)
-            label_index = int(selected[np.argmin(np.linalg.norm(
-                candidate_array[selected] - np.mean(candidate_array, axis=0), axis=1
-            ))])
-            for index in selected:
-                vector = candidate_vectors[int(index)]
+            if kind == "face":
+                sampled_points, sampled_vectors = sample_distributed_faces(
+                    member_points,
+                    member_vectors,
+                    sampling_density,
+                )
+            else:
+                sampled_points, sampled_vectors = sample_distributed_polyline(
+                    member_points,
+                    member_vectors,
+                    sampling_density,
+                )
+            if len(sampled_points) == 0:
+                return
+            label_index = int(np.argmin(np.linalg.norm(
+                sampled_points - np.mean(sampled_points, axis=0), axis=1
+            )))
+            for index, (sample, vector) in enumerate(
+                zip(sampled_points, sampled_vectors)
+            ):
                 magnitude = float(np.linalg.norm(vector))
                 if magnitude <= 0.0:
                     continue
-                origins.append(candidate_array[int(index)])
+                origins.append(sample)
                 vectors.append(vector)
                 load_starts_at_anchor.append(kind == "edge")
                 prefix = "P" if definition.load_type == "pressure" else "T"
-                load_labels.append(f"{prefix}={magnitude:.6g}" if int(index) == label_index else "")
+                load_labels.append(
+                    f"{prefix}={magnitude:.6g}" if index == label_index else ""
+                )
 
         if selected_definition is not None:
             surface_offset = 0
@@ -7505,38 +7650,72 @@ class FEMViewport(QWidget):
                         frame_by_element[int(entry.element_id)] = (
                             entry.frame
                         )
-                for load in boundary.line_loads:
-                    element = element_lookup.get(int(load.elem_id))
-                    if element is None:
-                        continue
-                    points = np.asarray([
-                        node_point(node_id)
-                        for node_id in element.node_ids
-                    ])
-                    samples = sample_polyline(points, sampling_density)
-                    vector = _effective_line_load_vector(
-                        load.vector,
-                        load.coordinate_system,
-                        frame_by_element.get(int(load.elem_id)),
+                element_sets = dict(
+                    getattr(self._model, "metadata", {}).get(
+                        "_abaqus_internal_element_sets",
+                        {},
                     )
-                    if vector is None:
+                )
+                element_sets.update(getattr(self._model, "element_sets", {}))
+                line_offset = 0
+                for definition in selected_definition.line_loads:
+                    target_ids = (
+                        tuple(element_sets[str(definition.target)].element_ids)
+                        if isinstance(definition.target, str)
+                        else (int(definition.target),)
+                    )
+                    count = len(target_ids)
+                    group_loads = boundary.line_loads[
+                        line_offset:line_offset + count
+                    ]
+                    line_offset += count
+                    member_points: list[np.ndarray] = []
+                    member_vectors: list[np.ndarray] = []
+                    label_vector: tuple[float, ...] | None = None
+                    for load in group_loads:
+                        element = element_lookup.get(int(load.elem_id))
+                        if element is None:
+                            continue
+                        points = np.asarray([
+                            node_point(node_id)
+                            for node_id in element.node_ids
+                        ])
+                        vector = _effective_line_load_vector(
+                            load.vector,
+                            load.coordinate_system,
+                            frame_by_element.get(int(load.elem_id)),
+                        )
+                        if vector is None or float(np.linalg.norm(vector)) <= 0.0:
+                            continue
+                        member_points.append(points)
+                        member_vectors.append(vector)
+                        label_vector = tuple(float(value) for value in load.vector)
+                        indices = [
+                            self._geometry.node_id_to_point_index[int(node_id)]
+                            for node_id in element.node_ids
+                        ]
+                        edge_lines.extend((len(indices), *indices))
+                    samples, sample_vectors = sample_distributed_polyline(
+                        member_points,
+                        member_vectors,
+                        sampling_density,
+                    )
+                    if len(samples) == 0:
                         continue
-                    if float(np.linalg.norm(vector)) <= 0.0:
-                        continue
-                    for sample_index, sample in enumerate(samples):
+                    label_index = int(np.argmin(np.linalg.norm(
+                        samples - np.mean(samples, axis=0), axis=1
+                    )))
+                    for sample_index, (sample, vector) in enumerate(
+                        zip(samples, sample_vectors)
+                    ):
                         origins.append(sample)
                         vectors.append(vector)
                         load_starts_at_anchor.append(False)
                         load_labels.append(
-                            f"q={tuple(float(value) for value in load.vector)}"
-                            if sample_index == len(samples) // 2
+                            f"q={label_vector}"
+                            if sample_index == label_index
                             else ""
                         )
-                    indices = [
-                        self._geometry.node_id_to_point_index[int(node_id)]
-                        for node_id in element.node_ids
-                    ]
-                    edge_lines.extend((len(indices), *indices))
         if face_cells:
             region = _pyvista.PolyData(
                 self._current_points(), faces=np.asarray(face_cells, dtype=np.int64)
