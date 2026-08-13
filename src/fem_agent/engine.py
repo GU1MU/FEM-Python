@@ -190,7 +190,11 @@ ready stage: read its bounded geometry context, prepare one revision-bound
 geometry edit proposal, and preserve the Part instead of asking to delete and
 recreate it. The local edit policy reports whether the proposal updates the
 current model in place or creates a geometry-iteration child model; do not ask
-the user to choose that mode.
+the user to choose that mode. This same policy applies to profile extrusion,
+profile revolution, profile path sweep, Part Boolean, Body Boolean, and direct
+Part geometry replacement. A child model automatically migrates compatible
+definitions and mesh settings while retaining runs and results only on the
+source, so do not ask the user which downstream items to migrate.
 After that edit succeeds, return attention to mesh because the previous mesh is
 stale. Do not collect material, section, boundary-condition, load, analysis, or
 result settings in advance, and never present a full-project questionnaire or

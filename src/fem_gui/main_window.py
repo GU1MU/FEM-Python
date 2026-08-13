@@ -182,6 +182,7 @@ from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
 from .agent_authoring import (
     AgentAuthoringBridge,
+    AgentGeometryMutation,
     AgentMeshTaskRequest,
     AgentPreflightState,
     AgentPreflightTaskRequest,
@@ -13618,22 +13619,17 @@ class FEMMainWindow(QMainWindow):
 
     def _commit_agent_geometry_edit(
         self,
-        part_id: str,
-        recipe: object,
+        mutation: AgentGeometryMutation,
         expected_session_revision: int,
     ) -> dict[str, object]:
-        """Commit only REPLACE_PART_GEOMETRY through workspace iteration policy."""
+        """Commit one validated geometry mutation through workspace policy."""
 
         source = self._active_workspace_context()
         if source is None or source.session is not self.session:
             raise RuntimeError("Agent 几何修改源模型已改变")
         mode = geometry_edit_policy(source)
         if mode.value == "in_place":
-            source.session.replace_part_geometry(
-                part_id,
-                recipe,
-                expected_session_revision=expected_session_revision,
-            )
+            mutation.apply(source.session, expected_session_revision)
             return {
                 "mode": "in_place",
                 "source": {
@@ -13644,16 +13640,17 @@ class FEMMainWindow(QMainWindow):
                     "document_id": source.document_id,
                     "session_id": source.session.session_id,
                 },
-                "part_id": part_id,
+                "part_id": mutation.affected_part_ids[0],
+                "affected_part_ids": list(mutation.affected_part_ids),
                 "requires_remesh": True,
                 "validations": "reset",
                 "runs": "not_migrated",
                 "results": "not_migrated",
             }
-        result = ModelIterationService(self.workspace).branch_geometry_edit(
+        result = ModelIterationService(self.workspace).branch_geometry_mutation(
             source.document_id,
-            part_id,
-            recipe,
+            mutation.affected_part_ids,
+            mutation.apply,
             source_run_id=self._agent_geometry_edit_source_run_id(source),
             expected_source_session_revision=expected_session_revision,
             activate_child=self._activate_workspace_context,

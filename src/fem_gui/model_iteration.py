@@ -159,6 +159,7 @@ class MigrationReport:
     sections: MigrationItems
     assignments: MigrationItems
     analysis_steps: MigrationItems
+    affected_part_ids: tuple[str, ...] = ()
     requires_remesh: bool = True
     validations_reset: bool = True
     runs_migrated: bool = False
@@ -208,6 +209,13 @@ class MigrationReport:
         ):
             if type(getattr(self, field_name)) is not MigrationItems:
                 raise TypeError(f"{field_name} must be MigrationItems")
+        affected = _items(
+            self.affected_part_ids or (self.part_id,),
+            "affected_part_ids",
+        )
+        if self.part_id not in affected:
+            affected = _items((*affected, self.part_id), "affected_part_ids")
+        object.__setattr__(self, "affected_part_ids", affected)
         for field_name in (
             "requires_remesh",
             "validations_reset",
@@ -249,6 +257,7 @@ class MigrationReport:
                 "model_name": self.target_model_name,
             },
             "part_id": self.part_id,
+            "affected_part_ids": list(self.affected_part_ids),
             "reason": self.reason,
             "named_regions": self.named_regions.to_dict(),
             "mesh_settings": self.mesh_settings.to_dict(),
@@ -299,8 +308,43 @@ class ModelIterationService:
         expected_source_session_revision: int | None = None,
         activate_child: Callable[[WorkspaceDocument], bool] | None = None,
     ) -> ModelIterationResult:
+        return self.branch_geometry_mutation(
+            source_document_id,
+            (part_id,),
+            lambda session, revision: session.replace_part_geometry(
+                part_id,
+                geometry_recipe,
+                expected_session_revision=revision,
+            ),
+            target_model_name=target_model_name,
+            source_run_id=source_run_id,
+            expected_source_session_revision=expected_source_session_revision,
+            activate_child=activate_child,
+        )
+
+    def branch_geometry_mutation(
+        self,
+        source_document_id: int,
+        affected_part_ids: Iterable[str],
+        mutate: Callable[[ModelSession, int], None],
+        *,
+        target_model_name: str | None = None,
+        source_run_id: str | None = None,
+        expected_source_session_revision: int | None = None,
+        activate_child: Callable[[WorkspaceDocument], bool] | None = None,
+    ) -> ModelIterationResult:
+        """Apply one synchronous geometry mutation to a detached child Session."""
+
+        if not callable(mutate):
+            raise TypeError("mutate must be callable")
+        normalized_part_ids = _items(affected_part_ids, "affected_part_ids")
+        if not normalized_part_ids:
+            raise ValueError("affected_part_ids must not be empty")
         source = self._workspace.document(source_document_id)
-        geometry_edit_policy(source)
+        if geometry_edit_policy(source) is not GeometryEditPolicy.BRANCH:
+            raise GeometryEditUnavailableError(
+                "geometry branch requires downstream model state"
+            )
         source_snapshot = source.session.projection_snapshot()
         source_revision = source_snapshot.session_revision
         if (
@@ -328,7 +372,7 @@ class ModelIterationService:
         child_session = ModelSession()
         child_session.replace_from_snapshot(branch_snapshot)
         before_edit = child_session.projection_snapshot()
-        child_session.replace_part_geometry(part_id, geometry_recipe)
+        mutate(child_session, before_edit.session_revision)
         after_edit = child_session.projection_snapshot()
         if source.session.session_revision != source_revision:
             raise RevisionConflictError(
@@ -361,8 +405,13 @@ class ModelIterationService:
                 child,
                 before_edit,
                 after_edit,
-                part_id,
+                normalized_part_ids[0],
                 normalized_run_id,
+                affected_part_ids=_affected_part_ids(
+                    before_edit,
+                    after_edit,
+                    normalized_part_ids,
+                ),
             )
             if activate_child is not None and not activate_child(child):
                 raise RuntimeError("geometry iteration GUI activation failed")
@@ -427,6 +476,8 @@ def _migration_report(
     after: SessionSnapshot,
     part_id: str,
     source_run_id: str | None,
+    *,
+    affected_part_ids: tuple[str, ...] = (),
 ) -> MigrationReport:
     return MigrationReport(
         source_document_id=source.document_id,
@@ -453,7 +504,23 @@ def _migration_report(
             secondary="section_name",
         ),
         analysis_steps=_named_values(before.steps, after.steps, "name"),
+        affected_part_ids=affected_part_ids,
     )
+
+
+def _affected_part_ids(
+    before: SessionSnapshot,
+    after: SessionSnapshot,
+    requested: tuple[str, ...],
+) -> tuple[str, ...]:
+    old = {str(part.id): part for part in before.parts}
+    new = {str(part.id): part for part in after.parts}
+    changed = {
+        part_id
+        for part_id in set(old) | set(new)
+        if old.get(part_id) != new.get(part_id)
+    }
+    return _items((*requested, *changed), "affected_part_ids")
 
 
 def _named_regions(before: SessionSnapshot, after: SessionSnapshot) -> MigrationItems:

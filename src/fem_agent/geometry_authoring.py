@@ -767,11 +767,14 @@ def create_profile_extrusion_proposal(
     source_face_ids: Sequence[str],
     height: Real,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
     """Create one atomic proposal for explicitly selected material Profiles."""
 
     if type(context) is not AuthoringContext:
         raise TypeError("context must be AuthoringContext")
+    if edit_mode not in {"in_place", "branch"}:
+        raise ValueError("edit_mode must be in_place or branch")
     target = next(
         (
             part
@@ -840,23 +843,28 @@ def create_profile_extrusion_proposal(
             "source_kind": "native",
             "part_id": target.part_id,
             "source_face_ids": list(canonical_ids),
+            "geometry_edit_mode": edit_mode,
         },
         expected_changes={
             "part_count_delta": len(canonical_ids) - 1,
             "edited_part_id": target.part_id,
             "result_part_count": len(canonical_ids),
             "projection_refresh_count": 1,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
         },
-        invalidation_impact={
-            "mesh": True,
-            "definitions": True,
-            "results": True,
-        },
+        invalidation_impact=(
+            {"mesh": False, "definitions": False, "results": False}
+            if edit_mode == "branch"
+            else {"mesh": True, "definitions": True, "results": True}
+        ),
         display_summary={
             "title": f"拉伸部件 {target.name} 的选定 Profiles",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": OperationKind.EXTRUDE_PART_PROFILES.value,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
             "feature_operation": "extrude",
             "part_id": target.part_id,
             "part_name": target.name,
@@ -868,12 +876,20 @@ def create_profile_extrusion_proposal(
             "expected_new_objects": [
                 f"{len(canonical_ids)} independent solid Part(s)"
             ],
-            "invalidated_objects": ["mesh", "definitions", "results"],
-            "invalidation_impact": {
-                "mesh": True,
-                "definitions": True,
-                "results": True,
-            },
+            "invalidated_objects": (
+                [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
+            ),
+            "invalidation_impact": (
+                {"mesh": False, "definitions": False, "results": False}
+                if edit_mode == "branch"
+                else {"mesh": True, "definitions": True, "results": True}
+            ),
+            "migration_summary": (
+                "创建迭代模型；迁移可保留的网格设置与模型定义；"
+                "不迁移实际网格、验证、运行或结果"
+                if edit_mode == "branch"
+                else "在当前模型中转换 Profile 几何"
+            ),
             "base_session_revision": context.binding.session_revision,
             "proofs": [draft.proof.to_dict() for draft in drafts],
         },
@@ -894,6 +910,7 @@ def create_profile_revolution_proposal(
     axis: str,
     angle_degrees: Real,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
     """Create a revision-bound proposal for one canonical Profile revolution."""
 
@@ -919,6 +936,7 @@ def create_profile_revolution_proposal(
             "angle_degrees": recipe.angle_degrees,
         },
         summary=summary,
+        edit_mode=edit_mode,
     )
 
 
@@ -936,6 +954,7 @@ def create_profile_path_sweep_proposal(
     path: WireGeometry,
     frame_strategy: str,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
     """Create a revision-bound proposal for one explicit open-path sweep."""
 
@@ -961,6 +980,7 @@ def create_profile_path_sweep_proposal(
             "frame_strategy": recipe.frame_strategy,
         },
         summary=summary,
+        edit_mode=edit_mode,
     )
 
 
@@ -978,9 +998,12 @@ def _create_single_profile_derived_proposal(
     operation_kind: OperationKind,
     parameters: Mapping[str, object],
     summary: str,
+    edit_mode: str,
 ) -> AgentProposal:
     if type(context) is not AuthoringContext:
         raise TypeError("context must be AuthoringContext")
+    if edit_mode not in {"in_place", "branch"}:
+        raise ValueError("edit_mode must be in_place or branch")
     target = next(
         (
             part
@@ -1035,19 +1058,28 @@ def _create_single_profile_derived_proposal(
             "source_kind": "native",
             "part_id": target.part_id,
             "source_face_id": source_face_id,
+            "geometry_edit_mode": edit_mode,
         },
         expected_changes={
             "part_count_delta": 0,
             "edited_part_id": target.part_id,
             "result_part_count": 1,
             "projection_refresh_count": 1,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
         },
-        invalidation_impact={"mesh": True, "definitions": True, "results": True},
+        invalidation_impact=(
+            {"mesh": False, "definitions": False, "results": False}
+            if edit_mode == "branch"
+            else {"mesh": True, "definitions": True, "results": True}
+        ),
         display_summary={
             "title": f"从部件 {target.name} 创建三维派生特征",
             "summary": normalized_summary,
             "target_model": context.model_name,
             "operation": operation_kind.value,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
             "feature_operation": _proposal_operation(recipe),
             "part_id": target.part_id,
             "part_name": target.name,
@@ -1061,12 +1093,20 @@ def _create_single_profile_derived_proposal(
             "expected_entity_count": 1,
             "expected_part_count": 1,
             "expected_new_objects": ["1 solid Part"],
-            "invalidated_objects": ["mesh", "definitions", "results"],
-            "invalidation_impact": {
-                "mesh": True,
-                "definitions": True,
-                "results": True,
-            },
+            "invalidated_objects": (
+                [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
+            ),
+            "migration_summary": (
+                "创建迭代模型；迁移可保留的网格设置与模型定义；"
+                "不迁移实际网格、验证、运行或结果"
+                if edit_mode == "branch"
+                else "在当前模型中转换 Profile 几何"
+            ),
+            "invalidation_impact": (
+                {"mesh": False, "definitions": False, "results": False}
+                if edit_mode == "branch"
+                else {"mesh": True, "definitions": True, "results": True}
+            ),
             "base_session_revision": context.binding.session_revision,
             "preview": draft.preview.to_dict(),
             "proof": draft.proof.to_dict(),

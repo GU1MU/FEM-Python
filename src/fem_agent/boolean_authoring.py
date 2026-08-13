@@ -38,11 +38,14 @@ def create_part_boolean_proposal(
     tool_handling: str,
     prepared: StrictPartBooleanResult,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
     """Bind one detached OCC proof to the current native Session revision."""
 
     if type(context) is not AuthoringContext:
         raise TypeError("context must be AuthoringContext")
+    if edit_mode not in {"in_place", "branch"}:
+        raise ValueError("edit_mode must be in_place or branch")
     if type(prepared) is not StrictPartBooleanResult:
         raise TypeError("prepared must be StrictPartBooleanResult")
     if operation not in {"fuse", "cut"}:
@@ -127,6 +130,7 @@ def create_part_boolean_proposal(
         ),
         preconditions={
             "source_kind": "native",
+            "geometry_edit_mode": edit_mode,
             "target_part_id": target.part_id,
             "tool_part_id": tool.part_id,
             "result_part_id": part_context.result_part_id,
@@ -139,17 +143,21 @@ def create_part_boolean_proposal(
             "suppressed_source_part_ids": [target.part_id, tool.part_id],
             "result_part_id": part_context.result_part_id,
             "projection_refresh_count": 1,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
         },
-        invalidation_impact={
-            "mesh": True,
-            "definitions": True,
-            "results": True,
-        },
+        invalidation_impact=(
+            {"mesh": False, "definitions": False, "results": False}
+            if edit_mode == "branch"
+            else {"mesh": True, "definitions": True, "results": True}
+        ),
         display_summary={
             "title": f"精确{('合并' if operation == 'fuse' else '切除')}部件",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": operation,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
             "target_part_id": target.part_id,
             "target_part_name": target.name,
             "tool_part_id": tool.part_id,
@@ -168,7 +176,15 @@ def create_part_boolean_proposal(
                 "face_count": len(preview.faces),
                 "edge_count": len(preview.edges),
             },
-            "invalidated_objects": ["mesh", "definitions", "results"],
+            "invalidated_objects": (
+                [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
+            ),
+            "migration_summary": (
+                "创建迭代模型；迁移可保留的网格设置与模型定义；"
+                "不迁移实际网格、验证、运行或结果"
+                if edit_mode == "branch"
+                else "在当前模型中提交精确 Part Boolean"
+            ),
             "base_session_revision": context.binding.session_revision,
         },
     )
@@ -190,11 +206,14 @@ def create_body_boolean_proposal(
     tool_handling: str,
     prepared: StrictBodyBooleanResult,
     summary: str,
+    edit_mode: str = "in_place",
 ) -> AgentProposal:
     """Bind one exact same-Part MultiBody proof to the current revision."""
 
     if type(context) is not AuthoringContext:
         raise TypeError("context must be AuthoringContext")
+    if edit_mode not in {"in_place", "branch"}:
+        raise ValueError("edit_mode must be in_place or branch")
     if type(prepared) is not StrictBodyBooleanResult:
         raise TypeError("prepared must be StrictBodyBooleanResult")
     if operation not in {"fuse", "cut"}:
@@ -278,6 +297,7 @@ def create_body_boolean_proposal(
         ),
         preconditions={
             "source_kind": "native",
+            "geometry_edit_mode": edit_mode,
             "part_id": target_part.part_id,
             "target_body_id": str(target_body_id),
             "tool_body_id": str(tool_body_id),
@@ -289,17 +309,21 @@ def create_body_boolean_proposal(
             "preserved_target_body_id": str(target_body_id),
             "consumed_tool_body_id": str(tool_body_id),
             "projection_refresh_count": 1,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
         },
-        invalidation_impact={
-            "mesh": True,
-            "definitions": True,
-            "results": True,
-        },
+        invalidation_impact=(
+            {"mesh": False, "definitions": False, "results": False}
+            if edit_mode == "branch"
+            else {"mesh": True, "definitions": True, "results": True}
+        ),
         display_summary={
             "title": f"精确{('合并' if operation == 'fuse' else '切除')}实体",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": operation,
+            "geometry_edit_mode": edit_mode,
+            "creates_iteration_model": edit_mode == "branch",
             "part_id": target_part.part_id,
             "part_name": target_part.name,
             "target_body_id": str(target_body_id),
@@ -316,7 +340,15 @@ def create_body_boolean_proposal(
                 "face_count": len(preview.faces),
                 "edge_count": len(preview.edges),
             },
-            "invalidated_objects": ["mesh", "definitions", "results"],
+            "invalidated_objects": (
+                [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
+            ),
+            "migration_summary": (
+                "创建迭代模型；迁移可保留的网格设置与模型定义；"
+                "不迁移实际网格、验证、运行或结果"
+                if edit_mode == "branch"
+                else "在当前模型中提交精确 Body Boolean"
+            ),
             "base_session_revision": context.binding.session_revision,
         },
     )

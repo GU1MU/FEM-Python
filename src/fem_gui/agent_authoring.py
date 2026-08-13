@@ -1094,6 +1094,28 @@ class AgentSolveTaskRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentGeometryMutation:
+    """One validated synchronous geometry mutation for in-place or child commit."""
+
+    operation_kind: OperationKind
+    affected_part_ids: tuple[str, ...]
+    apply: Callable[[ModelSession, int], None]
+
+    def __post_init__(self) -> None:
+        if type(self.operation_kind) is not OperationKind:
+            raise TypeError("operation_kind must be OperationKind")
+        if not self.affected_part_ids or any(
+            type(item) is not str or not item.strip()
+            for item in self.affected_part_ids
+        ):
+            raise ValueError("affected_part_ids must contain nonblank strings")
+        if len(set(self.affected_part_ids)) != len(self.affected_part_ids):
+            raise ValueError("affected_part_ids must be unique")
+        if not callable(self.apply):
+            raise TypeError("apply must be callable")
+
+
+@dataclass(frozen=True, slots=True)
 class AgentPreflightTaskRequest:
     """Exact metadata used to run an automatic local preflight."""
 
@@ -1929,7 +1951,7 @@ class SessionGeometryAuthoringPort:
         ) = None,
         geometry_edit_mode: Callable[[], str] | None = None,
         commit_geometry_edit: (
-            Callable[[str, object, int], Mapping[str, object]] | None
+            Callable[[AgentGeometryMutation, int], Mapping[str, object]] | None
         ) = None,
     ) -> None:
         if type(session) is not ModelSession:
@@ -2213,24 +2235,31 @@ class SessionGeometryAuthoringPort:
                     "Part Boolean proposal recipe is not BooleanGeometry"
                 )
 
-            def commit_part_boolean() -> None:
-                self._session.apply_part_boolean(
+            def commit_part_boolean(
+                session: ModelSession,
+                expected_revision: int,
+            ) -> None:
+                session.apply_part_boolean(
                     str(parameters["target_part_id"]),
                     str(parameters["tool_part_id"]),
                     str(parameters["operation"]),
                     str(parameters["result_name"]),
                     result_recipe=recipe,
-                    expected_session_revision=proposal.base_session_revision,
+                    expected_session_revision=expected_revision,
                 )
 
-            with ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="agent-part-boolean-commit",
-            ) as executor:
-                executor.submit(commit_part_boolean).result()
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
+            return self._accept_geometry_mutation(
+                record,
+                AgentGeometryMutation(
+                    operation.kind,
+                    (
+                        str(parameters["target_part_id"]),
+                        str(parameters["tool_part_id"]),
+                        str(parameters["result_part_id"]),
+                    ),
+                    commit_part_boolean,
+                ),
+            )
         if operation.kind is OperationKind.APPLY_BODY_BOOLEAN:
             if parameters["tool_handling"] != BODY_BOOLEAN_TOOL_HANDLING:
                 raise AuthoringContractError(
@@ -2244,25 +2273,28 @@ class SessionGeometryAuthoringPort:
                     "Body Boolean proposal recipe is not MultiBodyGeometry"
                 )
 
-            def commit_body_boolean() -> None:
-                self._session.apply_body_boolean(
+            def commit_body_boolean(
+                session: ModelSession,
+                expected_revision: int,
+            ) -> None:
+                session.apply_body_boolean(
                     str(parameters["part_id"]),
                     str(parameters["target_body_id"]),
                     str(parameters["tool_body_id"]),
                     str(parameters["operation"]),
                     str(parameters["result_name"]),
                     result=geometry,
-                    expected_session_revision=proposal.base_session_revision,
+                    expected_session_revision=expected_revision,
                 )
 
-            with ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="agent-body-boolean-commit",
-            ) as executor:
-                executor.submit(commit_body_boolean).result()
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
+            return self._accept_geometry_mutation(
+                record,
+                AgentGeometryMutation(
+                    operation.kind,
+                    (str(parameters["part_id"]),),
+                    commit_body_boolean,
+                ),
+            )
         if operation.kind is OperationKind.EXTRUDE_PART_PROFILES:
             base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
             raw_source_ids = parameters["source_face_ids"]
@@ -2308,14 +2340,24 @@ class SessionGeometryAuthoringPort:
                 )
                 for face_id in source_face_ids
             )
-            self._session.replace_part_with_extruded_siblings(
-                part_id,
-                recipes,
-                expected_session_revision=proposal.base_session_revision,
+            def commit_profile_extrusion(
+                session: ModelSession,
+                expected_revision: int,
+            ) -> None:
+                session.replace_part_with_extruded_siblings(
+                    part_id,
+                    recipes,
+                    expected_session_revision=expected_revision,
+                )
+
+            return self._accept_geometry_mutation(
+                record,
+                AgentGeometryMutation(
+                    operation.kind,
+                    (part_id,),
+                    commit_profile_extrusion,
+                ),
             )
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
         if operation.kind in {
             OperationKind.REVOLVE_PART_PROFILE,
             OperationKind.SWEEP_PART_PROFILE,
@@ -2370,81 +2412,47 @@ class SessionGeometryAuthoringPort:
                     (source_face_id,),
                     str(parameters["frame_strategy"]),
                 )
-            def commit_derived_feature() -> None:
-                self._session.replace_part_geometry(
+            def commit_derived_feature(
+                session: ModelSession,
+                expected_revision: int,
+            ) -> None:
+                session.replace_part_geometry(
                     part_id,
                     recipe,
-                    expected_session_revision=proposal.base_session_revision,
+                    expected_session_revision=expected_revision,
                 )
 
-            with ThreadPoolExecutor(
-                max_workers=1,
-                thread_name_prefix="agent-derived-commit",
-            ) as executor:
-                executor.submit(commit_derived_feature).result()
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
+            return self._accept_geometry_mutation(
+                record,
+                AgentGeometryMutation(
+                    operation.kind,
+                    (part_id,),
+                    commit_derived_feature,
+                ),
+            )
         recipe = geometry_recipe_from_payload(parameters["recipe"])
         snapshot = self._session.snapshot()
         if operation.kind is OperationKind.REPLACE_PART_GEOMETRY:
-            planned_mode = str(
-                proposal.preconditions.get("geometry_edit_mode", "in_place")
-            )
-            if planned_mode != self.geometry_edit_mode():
-                raise AuthoringContractError(
-                    "geometry edit policy changed after proposal creation"
-                )
-            commit = self._commit_geometry_edit_callback
-            if commit is None:
-                if planned_mode != "in_place":
-                    raise AuthoringContractError(
-                        "branch geometry edit requires a workspace-aware commit seam"
-                    )
-                self._session.replace_part_geometry(
-                    str(parameters["part_id"]),
+            part_id = str(parameters["part_id"])
+
+            def commit_replacement(
+                session: ModelSession,
+                expected_revision: int,
+            ) -> None:
+                session.replace_part_geometry(
+                    part_id,
                     recipe,
-                    expected_session_revision=proposal.base_session_revision,
+                    expected_session_revision=expected_revision,
                 )
-                report = {
-                    "mode": "in_place",
-                    "target": {
-                        "document_id": current_document_id,
-                        "session_id": self._session.session_id,
-                    },
-                    "part_id": str(parameters["part_id"]),
-                    "requires_remesh": True,
-                    "validations": "reset",
-                    "runs": "not_migrated",
-                    "results": "not_migrated",
-                }
-            else:
-                report = dict(
-                    commit(
-                        str(parameters["part_id"]),
-                        recipe,
-                        proposal.base_session_revision,
-                    )
-                )
-            report.setdefault("mode", planned_mode)
-            if report.get("mode") != planned_mode:
-                raise AuthoringContractError(
-                    "geometry edit commit mode does not match its proposal"
-                )
-            provider_safe_authoring_payload(report)
-            self._latest_geometry_iteration_report = deepcopy(report)
-            context = self._context
-            self._geometry_iteration_report_binding = (
-                None
-                if context is None
-                else (
-                    context.binding.document_id,
-                    context.binding.session_id,
-                )
+
+            return self._accept_geometry_mutation(
+                record,
+                AgentGeometryMutation(
+                    operation.kind,
+                    (part_id,),
+                    commit_replacement,
+                ),
             )
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
         part_name = NameAllocator(
             {"parts": (part.name for part in snapshot.parts)}
         ).require_next(
@@ -2488,6 +2496,75 @@ class SessionGeometryAuthoringPort:
             )
         succeeded = replace(record, state=ProposalState.SUCCEEDED)
         self._records[proposal_id] = succeeded
+        return succeeded
+
+    def _accept_geometry_mutation(
+        self,
+        record: ProposalPortRecord,
+        mutation: AgentGeometryMutation,
+    ) -> ProposalPortRecord:
+        proposal = record.proposal
+        planned_mode = str(
+            proposal.preconditions.get("geometry_edit_mode", "in_place")
+        )
+        if planned_mode not in {"in_place", "branch"}:
+            raise AuthoringContractError(
+                "geometry proposal omitted a valid frozen edit mode"
+            )
+        if planned_mode != self.geometry_edit_mode():
+            raise AuthoringContractError(
+                "geometry edit policy changed after proposal creation"
+            )
+        commit = self._commit_geometry_edit_callback
+        if commit is None:
+            if planned_mode != "in_place":
+                raise AuthoringContractError(
+                    "branch geometry edit requires a workspace-aware commit seam"
+                )
+            mutation.apply(self._session, proposal.base_session_revision)
+            context = self._context
+            document_id = (
+                f"document:{self._session.session_id}"
+                if context is None
+                else context.binding.document_id
+            )
+            report = {
+                "mode": "in_place",
+                "source": {
+                    "document_id": document_id,
+                    "session_id": self._session.session_id,
+                },
+                "target": {
+                    "document_id": document_id,
+                    "session_id": self._session.session_id,
+                },
+                "part_id": mutation.affected_part_ids[0],
+                "affected_part_ids": list(mutation.affected_part_ids),
+                "requires_remesh": True,
+                "validations": "reset",
+                "runs": "not_migrated",
+                "results": "not_migrated",
+            }
+        else:
+            report = dict(commit(mutation, proposal.base_session_revision))
+        report.setdefault("mode", planned_mode)
+        if report.get("mode") != planned_mode:
+            raise AuthoringContractError(
+                "geometry edit commit mode does not match its proposal"
+            )
+        provider_safe_authoring_payload(report)
+        self._latest_geometry_iteration_report = deepcopy(report)
+        context = self._context
+        self._geometry_iteration_report_binding = (
+            None
+            if context is None
+            else (
+                context.binding.document_id,
+                context.binding.session_id,
+            )
+        )
+        succeeded = replace(record, state=ProposalState.SUCCEEDED)
+        self._records[proposal.proposal_id] = succeeded
         return succeeded
 
     def can_accept(self, proposal_id: str) -> bool:
@@ -3618,6 +3695,18 @@ def create_session_authoring_workflow_controller(
             raise AuthoringContractError("there is no current model Session")
         return session_reader
 
+    def planned_geometry_edit_mode() -> str:
+        reader = getattr(authoring_bridge.port, "geometry_edit_mode", None)
+        return "in_place" if not callable(reader) else str(reader())
+
+    def geometry_edit_impact(edit_mode: str, in_place: str) -> str:
+        return (
+            "确认后创建迭代模型，迁移可保留的网格设置与模型定义；"
+            "实际网格、验证、运行和结果不迁移"
+            if edit_mode == "branch"
+            else in_place
+        )
+
     def resolved_step_name(
         arguments: Mapping[str, object],
         *,
@@ -4672,6 +4761,7 @@ def create_session_authoring_workflow_controller(
             )
             metadata = envelope(controller, "geometry-part-boolean")
             suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
             proposal = create_part_boolean_proposal(
                 proposal_id=f"proposal-{suffix}",
                 context=current_context(),
@@ -4682,20 +4772,23 @@ def create_session_authoring_workflow_controller(
                 tool_handling=tool_handling,
                 prepared=prepared,
                 summary=summary,
+                edit_mode=edit_mode,
                 **metadata,
             )
             return proposal_outcome(
                 proposal,
                 summary=summary,
-                impact=(
+                impact=geometry_edit_impact(
+                    edit_mode,
                     "确认后创建一个 proven 结果 Part，抑制 target/tool 源 Part，"
-                    "并使旧网格、定义与结果失效"
+                    "并使旧网格、定义与结果失效",
                 ),
                 confirm_label="执行精确 Part 布尔",
                 extra_data={
                     "result_part_id": prepared.context.result_part_id,
                     "feature_id": prepared.context.feature_id,
                     "lineage_proven": True,
+                    "geometry_edit_mode": edit_mode,
                 },
             )
         if operation == "body_boolean":
@@ -4748,6 +4841,7 @@ def create_session_authoring_workflow_controller(
             )
             metadata = envelope(controller, "geometry-body-boolean")
             suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
             proposal = create_body_boolean_proposal(
                 proposal_id=f"proposal-{suffix}",
                 context=current_context(),
@@ -4759,20 +4853,23 @@ def create_session_authoring_workflow_controller(
                 tool_handling=tool_handling,
                 prepared=prepared,
                 summary=summary,
+                edit_mode=edit_mode,
                 **metadata,
             )
             return proposal_outcome(
                 proposal,
                 summary=summary,
-                impact=(
+                impact=geometry_edit_impact(
+                    edit_mode,
                     "确认后在同一 Part 内保留 target Body ID、消费 tool Body，"
-                    "并使旧网格、定义与结果失效"
+                    "并使旧网格、定义与结果失效",
                 ),
                 confirm_label="执行精确 Body 布尔",
                 extra_data={
                     "target_body_id": target_body_id,
                     "consumed_tool_body_id": tool_body_id,
                     "lineage_proven": True,
+                    "geometry_edit_mode": edit_mode,
                 },
             )
         if operation == "extrude_profiles":
@@ -4816,6 +4913,7 @@ def create_session_authoring_workflow_controller(
             )
             metadata = envelope(controller, "geometry-edit")
             suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
             proposal = create_profile_extrusion_proposal(
                 proposal_id=f"proposal-{suffix}",
                 context=current_context(),
@@ -4824,16 +4922,19 @@ def create_session_authoring_workflow_controller(
                 source_face_ids=selection.face_ids,
                 height=height,
                 summary=summary,
+                edit_mode=edit_mode,
                 **metadata,
             )
             return proposal_outcome(
                 proposal,
                 summary=summary,
-                impact=(
+                impact=geometry_edit_impact(
+                    edit_mode,
                     "确认后将选定 Profiles 原子转换为独立实体 Part，"
-                    "并使旧网格、定义与结果失效"
+                    "并使旧网格、定义与结果失效",
                 ),
                 confirm_label="拉伸选定 Profiles",
+                extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "revolve_profile":
             if set(edit) != {"source_face_id", "axis", "angle_degrees"}:
@@ -4873,6 +4974,7 @@ def create_session_authoring_workflow_controller(
             )
             metadata = envelope(controller, "geometry-revolve")
             suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
             proposal = create_profile_revolution_proposal(
                 proposal_id=f"proposal-{suffix}",
                 context=current_context(),
@@ -4882,16 +4984,19 @@ def create_session_authoring_workflow_controller(
                 axis=recipe.axis,
                 angle_degrees=recipe.angle_degrees,
                 summary=summary,
+                edit_mode=edit_mode,
                 **metadata,
             )
             return proposal_outcome(
                 proposal,
                 summary=summary,
-                impact=(
+                impact=geometry_edit_impact(
+                    edit_mode,
                     "确认后将 Profile 原子替换为旋转实体，"
-                    "并使旧网格、定义与结果失效"
+                    "并使旧网格、定义与结果失效",
                 ),
                 confirm_label="旋转扫掠 Profile",
+                extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "path_sweep_profile":
             if set(edit) != {"source_face_id", "path", "frame_strategy"}:
@@ -4961,6 +5066,7 @@ def create_session_authoring_workflow_controller(
             )
             metadata = envelope(controller, "geometry-path-sweep")
             suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
             proposal = create_profile_path_sweep_proposal(
                 proposal_id=f"proposal-{suffix}",
                 context=current_context(),
@@ -4970,16 +5076,19 @@ def create_session_authoring_workflow_controller(
                 path=path,
                 frame_strategy=recipe.frame_strategy,
                 summary=summary,
+                edit_mode=edit_mode,
                 **metadata,
             )
             return proposal_outcome(
                 proposal,
                 summary=summary,
-                impact=(
+                impact=geometry_edit_impact(
+                    edit_mode,
                     "确认后将 Profile 原子替换为路径扫掠实体，"
-                    "并使旧网格、定义与结果失效"
+                    "并使旧网格、定义与结果失效",
                 ),
                 confirm_label="沿路径扫掠 Profile",
+                extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "add_circle":
             if set(edit) != {"center_x", "center_y", "radius"}:
@@ -5091,8 +5200,7 @@ def create_session_authoring_workflow_controller(
             raise ValueError("unsupported incremental geometry edit")
         metadata = envelope(controller, "geometry-edit")
         suffix = str(metadata.pop("identity_suffix"))
-        mode_reader = getattr(authoring_bridge.port, "geometry_edit_mode", None)
-        edit_mode = "in_place" if not callable(mode_reader) else mode_reader()
+        edit_mode = planned_geometry_edit_mode()
         proposal = create_geometry_edit_proposal(
             proposal_id=f"proposal-{suffix}",
             context=current_context(),
@@ -5105,11 +5213,9 @@ def create_session_authoring_workflow_controller(
         return proposal_outcome(
             proposal,
             summary=summary,
-            impact=(
-                "确认后创建迭代模型，迁移可保留的网格设置与模型定义；"
-                "实际网格、验证、运行和结果不迁移"
-                if edit_mode == "branch"
-                else "确认后在当前模型中更新该部件，并使旧网格与结果失效"
+            impact=geometry_edit_impact(
+                edit_mode,
+                "确认后在当前模型中更新该部件，并使旧网格与结果失效",
             ),
             confirm_label="应用修改",
             extra_data={"geometry_edit_mode": edit_mode},
@@ -5893,6 +5999,7 @@ __all__ = [
     "AgentPreflightRecord",
     "AgentPreflightState",
     "AgentPreflightTaskRequest",
+    "AgentGeometryMutation",
     "AgentMeshTaskRequest",
     "AgentSolveTaskRequest",
     "AgentAuthoringBridge",
