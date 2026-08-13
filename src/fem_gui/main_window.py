@@ -5525,10 +5525,7 @@ class FEMMainWindow(QMainWindow):
                 self._pending_result_selection is not None
                 or self._pending_result_query is not None
             ),
-            viewport_scene_available=(
-                provider is not None
-                and self.viewport.run_id == provider.source.run_id
-            ),
+            viewport_scene_available=self.viewport.can_capture,
             wire_editor_active=self._wire_editor_controller is not None,
             sketch_editor_active=self._sketch_editor_controller is not None,
             boolean_editor_active=(
@@ -16265,8 +16262,6 @@ class FEMMainWindow(QMainWindow):
         return self._result_deformation_scale(provider)
 
     def export_viewport_image(self) -> None:
-        if self._current_result_provider() is None:
-            return
         dialog = ViewportImageExportDialog(
             self.viewport.screenshot_size(),
             self,

@@ -259,7 +259,7 @@ class _ExportHarness:
         self.successes: list[tuple[str, object]] = []
 
     def _current_result_provider(self) -> object:
-        return object()
+        raise AssertionError("viewport export must not depend on a result provider")
 
     def _save_screenshot(self, *args, **kwargs) -> None:
         self.screenshot_calls.append((args, kwargs))

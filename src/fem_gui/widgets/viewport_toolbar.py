@@ -66,6 +66,8 @@ class ViewportToolBar(QToolBar):
         )
         self.addSeparator()
         self._add_group(actions, ("nodes", "edges", "node_labels", "element_labels", "symbols"))
+        self.addSeparator()
+        self._add_group(actions, ("screenshot",))
 
     def _add_group(self, actions: Mapping[str, QAction], names: tuple[str, ...]) -> None:
         for name in names:

@@ -326,6 +326,7 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
         assert export_action in result_menu.actions()
     assert window.actions["export_csv"] in ribbon_actions
     assert window.actions["screenshot"] in ribbon_actions
+    assert window.actions["screenshot"] in window.viewport_panel.toolbar.actions()
     assert window.actions["export_vtk"] not in ribbon_actions
     assert window.actions["export_csv"] in project_actions
     assert window.actions["screenshot"] in project_actions
