@@ -87,7 +87,11 @@ class FEMWorkspaceCatalogPort:
 
     @staticmethod
     def _summary(document: WorkspaceDocument) -> WorkspaceDocumentSummary:
-        projection = document.projection
+        projection = document.session.projection_snapshot()
+        result_count = sum(
+            document.session.result_identity_for(str(run.run_id)) is not None
+            for run in projection.runs
+        )
         lineage = document.lineage
         return WorkspaceDocumentSummary(
             target=WorkspaceDocumentIdentity(
@@ -101,6 +105,8 @@ class FEMWorkspaceCatalogPort:
             model_name=(
                 None if projection.model_name is None else str(projection.model_name)
             ),
+            run_count=len(projection.runs),
+            result_count=result_count,
             lineage=(
                 None
                 if lineage is None

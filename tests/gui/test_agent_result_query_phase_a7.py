@@ -380,7 +380,7 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
         )
     )
     assert no_result.scalar is None
-    assert no_result.diagnostics[0].code == "result.query.no_accepted_result"
+    assert no_result.diagnostics[0].code == "result.query.source_unavailable"
 
     session = _solved_session()
     port = SessionResultQueryPort(session)

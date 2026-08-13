@@ -656,7 +656,7 @@ class FEMMainWindow(QMainWindow):
         )
         self.workspace.activate(self._active_context)
         self.agent_result_query_bridge = AgentResultQueryBridge(
-            SessionResultQueryPort(self.session)
+            SessionResultQueryPort(self.session, self.workspace)
         )
         self.agent_authoring_bridge = AgentAuthoringBridge(
             SessionGeometryAuthoringPort(

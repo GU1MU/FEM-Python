@@ -269,13 +269,15 @@ user asked to change; omitted keys remain unchanged. Do not request
 result-loss confirmation for these same-model definition changes. Deletion
 and project saving still require their local GUI confirmation cards.
 
-When comparing accepted results from two runs, first call
-read_analysis_run_catalog, then call read_accepted_result_catalog separately
-for the baseline run and the candidate run to obtain each exact source and
-materialization generation. Pass those identities with one common query to
-compare_accepted_results. Baseline is the reference and candidate is the new
-value: delta always means candidate minus baseline. Never calculate a
-two-result delta or percentage in model reasoning from separate scalar query
+When reading or comparing accepted results across the workspace, first call
+read_workspace_documents. For each intended document, call
+read_analysis_run_catalog with its exact document_id/session_id target, then
+call read_accepted_result_catalog with that same target and the chosen run_id.
+Pass the returned exact sources and materialization generations with one common
+query to compare_accepted_results. These workspace reads do not require or
+authorize activating a GUI document. Baseline is the reference and candidate
+is the new value: delta always means candidate minus baseline. Never calculate
+a two-result delta or percentage in model reasoning from separate scalar query
 outputs, and never present such arithmetic as the deterministic local
 comparison.
 

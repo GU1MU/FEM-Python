@@ -135,8 +135,8 @@ def test_comparison_query_and_schema_are_closed_and_round_trip_provider_safe() -
         AgentResultComparisonQuery.from_dict(same_run)
     foreign_session = request.to_dict()
     foreign_session["candidate"]["expected_source"]["session_id"] = "foreign"
-    with pytest.raises(ResultAuthoringError, match="same session"):
-        AgentResultComparisonQuery.from_dict(foreign_session)
+    cross_session = AgentResultComparisonQuery.from_dict(foreign_session)
+    assert cross_session.candidate.expected_source.session_id == "foreign"
 
     schema = result_comparison_tool_schema()
     assert schema["name"] == "compare_accepted_results"
@@ -334,7 +334,7 @@ def test_comparison_fails_closed_for_foreign_stale_and_unavailable_inputs(
     unpublished = port.compare(historical_region)
 
     assert foreign.comparison is None
-    assert foreign.diagnostics[0].code == "result.comparison.foreign_session"
+    assert foreign.diagnostics[0].code == "result.comparison.source_unavailable"
     assert foreign.diagnostics[0].clarification_required
     assert stale.comparison is None
     assert stale.diagnostics[0].code == "result.comparison.stale"

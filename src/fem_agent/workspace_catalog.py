@@ -8,7 +8,7 @@ from typing import Protocol
 
 
 WORKSPACE_DOCUMENTS_TOOL_NAME = "read_workspace_documents"
-WORKSPACE_DOCUMENT_CATALOG_SCHEMA_VERSION = "1.1"
+WORKSPACE_DOCUMENT_CATALOG_SCHEMA_VERSION = "1.2"
 WORKSPACE_DOCUMENT_CATALOG_LIMIT = 128
 WORKSPACE_DOCUMENT_CATALOG_MAX_BYTES = 24_000
 
@@ -84,6 +84,8 @@ class WorkspaceDocumentSummary:
     display_name: str
     model_name: str | None
     lineage: WorkspaceDocumentLineage | None = None
+    run_count: int = 0
+    result_count: int = 0
 
     def __post_init__(self) -> None:
         if type(self.target) is not WorkspaceDocumentIdentity:
@@ -102,6 +104,12 @@ class WorkspaceDocumentSummary:
             raise ValueError("source_kind is unsupported")
         if self.model_name is not None:
             object.__setattr__(self, "model_name", _text(self.model_name, "model_name"))
+        for field_name in ("run_count", "result_count"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        if self.result_count > self.run_count:
+            raise ValueError("result_count cannot exceed run_count")
         if self.lineage is not None and type(self.lineage) is not WorkspaceDocumentLineage:
             raise TypeError("lineage must be WorkspaceDocumentLineage or None")
 
@@ -113,6 +121,8 @@ class WorkspaceDocumentSummary:
             "source_kind": self.source_kind,
             "display_name": self.display_name,
             "model_name": self.model_name,
+            "run_count": self.run_count,
+            "result_count": self.result_count,
             "lineage": None if self.lineage is None else self.lineage.to_dict(),
         }
 

@@ -155,7 +155,10 @@ from fem_agent.result_authoring import (
     AgentResultQueryBridge,
     compare_result_scalars,
 )
-from fem_agent.workspace_catalog import WorkspaceCatalogBridge
+from fem_agent.workspace_catalog import (
+    WorkspaceCatalogBridge,
+    WorkspaceDocumentIdentity,
+)
 from fem.geometry import (
     BooleanGeometry,
     BooleanLineageResolutionError,
@@ -177,6 +180,7 @@ from fem.geometry import (
     resolve_extrusion_source_faces,
     resolve_target_radius,
 )
+from .workspace import FEMWorkspace, WorkspaceDocument
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 
 
@@ -1101,13 +1105,31 @@ class AgentPreflightTaskRequest:
     model_revision: int
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedResultTarget:
+    document: WorkspaceDocument | None
+    document_id: str
+    session: ModelSession
+
+
+class _WorkspaceResultResolutionError(ValueError):
+    pass
+
+
 class SessionResultQueryPort:
     """A7 read-only adapter over the Session's exact accepted result provider."""
 
-    def __init__(self, session: ModelSession) -> None:
+    def __init__(
+        self,
+        session: ModelSession,
+        workspace: FEMWorkspace | None = None,
+    ) -> None:
         if type(session) is not ModelSession:
             raise TypeError("session must be ModelSession")
+        if workspace is not None and type(workspace) is not FEMWorkspace:
+            raise TypeError("workspace must be FEMWorkspace or None")
         self._session = session
+        self._workspace = workspace
 
     @property
     def session(self) -> ModelSession:
@@ -1131,8 +1153,157 @@ class SessionResultQueryPort:
 
     rebind_session = bind_session
 
-    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
-        projection = self._session.projection_snapshot()
+    def _resolve_target(
+        self,
+        target: WorkspaceDocumentIdentity | None,
+    ) -> _ResolvedResultTarget:
+        workspace = self._workspace
+        if workspace is None:
+            if target is not None and target.session_id != self._session.session_id:
+                raise _WorkspaceResultResolutionError(
+                    "target session is unavailable"
+                )
+            return _ResolvedResultTarget(
+                None,
+                (
+                    f"document:{self._session.session_id}"
+                    if target is None
+                    else target.document_id
+                ),
+                self._session,
+            )
+        if target is None:
+            matches = tuple(
+                document
+                for document in workspace.documents()
+                if document.session is self._session
+            )
+        else:
+            matches = tuple(
+                document
+                for document in workspace.documents()
+                if (
+                    str(document.document_id) == target.document_id
+                    and document.session.session_id == target.session_id
+                )
+            )
+        if len(matches) != 1:
+            raise _WorkspaceResultResolutionError(
+                "workspace target is missing, foreign, or ambiguous"
+            )
+        document = matches[0]
+        return _ResolvedResultTarget(
+            document,
+            str(document.document_id),
+            document.session,
+        )
+
+    def _resolve_source(self, session_id: str) -> _ResolvedResultTarget:
+        workspace = self._workspace
+        if workspace is None:
+            if session_id != self._session.session_id:
+                raise _WorkspaceResultResolutionError(
+                    "result source session is unavailable"
+                )
+            return _ResolvedResultTarget(
+                None,
+                f"document:{session_id}",
+                self._session,
+            )
+        matches = tuple(
+            document
+            for document in workspace.documents()
+            if document.session.session_id == session_id
+        )
+        if len(matches) != 1:
+            raise _WorkspaceResultResolutionError(
+                "result source session is missing or ambiguous"
+            )
+        document = matches[0]
+        return _ResolvedResultTarget(
+            document,
+            str(document.document_id),
+            document.session,
+        )
+
+    def _target_is_current(self, target: _ResolvedResultTarget) -> bool:
+        if target.document is None:
+            return target.session is self._session
+        workspace = self._workspace
+        if workspace is None:
+            return False
+        return any(
+            document is target.document and document.session is target.session
+            for document in workspace.documents()
+        )
+
+    def analysis_runs(
+        self,
+        *,
+        cursor: int = 0,
+        limit: int = ANALYSIS_RUN_CATALOG_MAX_LIMIT,
+        target: WorkspaceDocumentIdentity | None = None,
+    ) -> AnalysisRunCatalog:
+        resolved = self._resolve_target(target)
+        snapshot = resolved.session.snapshot()
+        runs = tuple(snapshot.runs)
+        if type(cursor) is not int or cursor < 0 or cursor > len(runs):
+            raise _WorkspaceResultResolutionError("run catalog cursor is invalid")
+        if type(limit) is not int or not 1 <= limit <= ANALYSIS_RUN_CATALOG_MAX_LIMIT:
+            raise _WorkspaceResultResolutionError("run catalog limit is invalid")
+        page = runs[cursor : cursor + limit]
+        entries = tuple(
+            AnalysisRunCatalogEntry(
+                run_id=str(run.run_id),
+                name=str(run.name),
+                step_name=str(run.step_name),
+                status=str(getattr(run.status, "value", run.status)),
+                artifact_id=str(run.artifact_id),
+                model_revision=int(run.model_revision),
+                source_run_id=(
+                    None if run.source_run_id is None else str(run.source_run_id)
+                ),
+                result_id=(None if run.result_id is None else str(run.result_id)),
+                materialization_generation=snapshot.result_generations.get(
+                    run.run_id
+                ),
+            )
+            for run in page
+        )
+        if not self._target_is_current(resolved):
+            raise _WorkspaceResultResolutionError(
+                "workspace target changed while reading runs"
+            )
+        next_cursor = cursor + len(entries)
+        return AnalysisRunCatalog(
+            document_id=resolved.document_id,
+            session_id=str(snapshot.session_id),
+            session_revision=int(snapshot.session_revision),
+            selected_run_id=snapshot.selected_run_id,
+            displayed_result_run_id=snapshot.displayed_result_run_id,
+            cursor=cursor,
+            limit=limit,
+            runs=entries,
+            next_cursor=(next_cursor if next_cursor < len(runs) else None),
+            total_count=len(runs),
+        )
+
+    def catalog(
+        self,
+        run_id: str | None = None,
+        *,
+        target: WorkspaceDocumentIdentity | None = None,
+    ) -> AgentResultCatalogResponse:
+        try:
+            resolved = self._resolve_target(target)
+        except _WorkspaceResultResolutionError:
+            return _result_catalog_failure(
+                "result.catalog.target_unavailable",
+                "The exact workspace result target is missing, foreign, or ambiguous.",
+                clarification_required=True,
+            )
+        session = resolved.session
+        projection = session.projection_snapshot()
         uses_displayed_result = run_id is None
         target_run_id = (
             projection.displayed_result_run_id
@@ -1145,8 +1316,8 @@ class SessionResultQueryPort:
                 "No accepted native result is available for the requested run.",
                 retryable=True,
             )
-        provider = self._session.result_provider_for(target_run_id)
-        identity = self._session.result_identity_for(target_run_id)
+        provider = session.result_provider_for(target_run_id)
+        identity = session.result_identity_for(target_run_id)
         if provider is None or identity is None:
             return _result_catalog_failure(
                 "result.catalog.no_accepted_result",
@@ -1164,10 +1335,10 @@ class SessionResultQueryPort:
                 retryable=True,
             )
         units = projection.unit_context
-        if projection.source_kind != "native" or units is None:
+        if projection.source_kind not in {"native", "result"} or units is None:
             return _result_catalog_failure(
                 "result.catalog.units_unavailable",
-                "A native project unit context is required for result values.",
+                "A project or result-archive unit context is required for result values.",
                 clarification_required=True,
             )
         fields = tuple(
@@ -1197,47 +1368,24 @@ class SessionResultQueryPort:
                 "The accepted result has no READY U, RF, or S fields.",
                 clarification_required=True,
             )
-        result_regions_are_current = _result_regions_are_current(
-            projection,
-            source,
-            target_run_id,
-        )
-        named_regions = (
-            tuple(projection.named_regions.values())
-            if result_regions_are_current
-            else ()
-        )
-        nodal_regions = (
-            "all_nodes",
-            *tuple(
-                region.name
-                for region in named_regions[:127]
-                if region.entity_kind in {"node", "edge", "face"}
-            ),
-        )
-        element_regions = (
-            "all_elements",
-            *tuple(
-                region.name
-                for region in named_regions[:127]
-                if region.entity_kind == "element"
-            ),
+        nodal_regions, element_regions = _published_result_regions(
+            projection, provider, source, target_run_id
         )
         catalog = AgentResultCatalog(
             source=_accepted_source(source),
             materialization_generation=generation,
             fields=fields,
-            nodal_regions=tuple(dict.fromkeys(nodal_regions)),
-            element_regions=tuple(dict.fromkeys(element_regions)),
+            nodal_regions=nodal_regions,
+            element_regions=element_regions,
         )
         if (
             uses_displayed_result
-            and self._session.projection_snapshot().displayed_result_run_id
+            and session.projection_snapshot().displayed_result_run_id
             != target_run_id
-        ) or self._session.result_identity_for(target_run_id) != (
+        ) or session.result_identity_for(target_run_id) != (
             source,
             generation,
-        ):
+        ) or not self._target_is_current(resolved):
             return _result_catalog_failure(
                 "result.catalog.stale",
                 "The accepted result changed before the catalog was returned.",
@@ -1248,9 +1396,25 @@ class SessionResultQueryPort:
     def query(self, request: AgentResultQuery) -> AgentResultQueryResponse:
         if type(request) is not AgentResultQuery:
             raise TypeError("request must be AgentResultQuery")
+        try:
+            resolved = self._resolve_source(request.expected_source.session_id)
+        except _WorkspaceResultResolutionError:
+            return _result_query_failure(
+                "result.query.source_unavailable",
+                "The exact workspace result source session is missing or ambiguous.",
+                clarification_required=True,
+            )
+        return self._query_resolved(request, resolved)
+
+    def _query_resolved(
+        self,
+        request: AgentResultQuery,
+        resolved: _ResolvedResultTarget,
+    ) -> AgentResultQueryResponse:
+        session = resolved.session
         target_run_id = request.expected_source.run_id
-        provider = self._session.result_provider_for(target_run_id)
-        identity = self._session.result_identity_for(target_run_id)
+        provider = session.result_provider_for(target_run_id)
+        identity = session.result_identity_for(target_run_id)
         if provider is None or identity is None:
             return _result_query_failure(
                 "result.query.no_accepted_result",
@@ -1277,26 +1441,23 @@ class SessionResultQueryPort:
                 retryable=True,
             )
 
-        projection = self._session.projection_snapshot()
+        projection = session.projection_snapshot()
         units = projection.unit_context
-        if projection.source_kind != "native" or units is None:
+        if projection.source_kind not in {"native", "result"} or units is None:
             return _result_query_failure(
                 "result.query.units_unavailable",
-                "A native project unit context is required for result values.",
+                "A project or result-archive unit context is required for result values.",
                 clarification_required=True,
             )
 
         try:
+            nodal_regions, element_regions = _published_result_regions(
+                projection, provider, source, target_run_id
+            )
             _require_published_result_region(
-                projection,
                 request,
-                allow_named=(
-                    _result_regions_are_current(
-                        projection,
-                        source,
-                        target_run_id,
-                    )
-                ),
+                nodal_regions=nodal_regions,
+                element_regions=element_regions,
             )
             availability = _resolve_result_availability(provider, request)
             native_query = _native_result_query(
@@ -1360,7 +1521,10 @@ class SessionResultQueryPort:
                 clarification_required=True,
             )
 
-        if self._session.result_identity_for(target_run_id) != (source, generation):
+        if session.result_identity_for(target_run_id) != (
+            source,
+            generation,
+        ) or not self._target_is_current(resolved):
             return _result_query_failure(
                 "result.query.stale",
                 "The accepted result changed before the query completed.",
@@ -1375,21 +1539,23 @@ class SessionResultQueryPort:
         if type(request) is not AgentResultComparisonQuery:
             raise TypeError("request must be AgentResultComparisonQuery")
         references = (request.baseline, request.candidate)
-        if any(
-            reference.expected_source.session_id != self._session.session_id
-            for reference in references
-        ):
+        try:
+            resolved = tuple(
+                self._resolve_source(reference.expected_source.session_id)
+                for reference in references
+            )
+        except _WorkspaceResultResolutionError:
             return _result_comparison_failure(
-                "result.comparison.foreign_session",
-                "Both accepted results must belong to the current model session.",
+                "result.comparison.source_unavailable",
+                "One or both workspace result source sessions are missing or ambiguous.",
                 clarification_required=True,
             )
 
         initial_identities = tuple(
-            self._session.result_identity_for(
+            target.session.result_identity_for(
                 reference.expected_source.run_id
             )
-            for reference in references
+            for target, reference in zip(resolved, references, strict=True)
         )
         if any(identity is None for identity in initial_identities):
             return _result_comparison_failure(
@@ -1414,24 +1580,26 @@ class SessionResultQueryPort:
                     retryable=True,
                 )
 
-        baseline_response = self.query(
-            request.result_query(request.baseline)
+        baseline_response = self._query_resolved(
+            request.result_query(request.baseline), resolved[0]
         )
         if not baseline_response.ok:
             return _comparison_query_failure("baseline", baseline_response)
-        candidate_response = self.query(
-            request.result_query(request.candidate)
+        candidate_response = self._query_resolved(
+            request.result_query(request.candidate), resolved[1]
         )
         if not candidate_response.ok:
             return _comparison_query_failure("candidate", candidate_response)
 
         final_identities = tuple(
-            self._session.result_identity_for(
+            target.session.result_identity_for(
                 reference.expected_source.run_id
             )
-            for reference in references
+            for target, reference in zip(resolved, references, strict=True)
         )
-        if final_identities != initial_identities:
+        if final_identities != initial_identities or not all(
+            self._target_is_current(target) for target in resolved
+        ):
             return _result_comparison_failure(
                 "result.comparison.stale",
                 "An accepted result changed while the comparison was running.",
@@ -1512,43 +1680,59 @@ def _resolve_result_availability(
 
 
 def _require_published_result_region(
-    projection: _SessionSnapshot,
     request: AgentResultQuery,
     *,
-    allow_named: bool = True,
+    nodal_regions: tuple[str, ...],
+    element_regions: tuple[str, ...],
 ) -> None:
-    if request.region in {"all_nodes", "all_elements"}:
-        return
-    if not allow_named:
-        raise _AgentResultQueryRejected(
-            "result.query.region_not_published",
-            "Historical results expose only all_nodes and all_elements.",
-        )
-    regions = tuple(projection.named_regions.values())[:127]  # type: ignore[union-attr]
-    matches = tuple(
-        region for region in regions if region.name == request.region
-    )
-    if len(matches) != 1:
-        raise _AgentResultQueryRejected(
-            "result.query.region_not_published",
-            "The requested named region is absent from the bounded result catalog.",
-        )
-    kind = matches[0].entity_kind
-    if (
-        request.variable
-        in {
-            AgentResultVariable.DISPLACEMENT,
-            AgentResultVariable.REACTION_FORCE,
-        }
-        and kind not in {"node", "edge", "face"}
-    ) or (
-        request.variable is AgentResultVariable.STRESS
-        and kind != "element"
-    ):
+    nodal_variable = request.variable in {
+        AgentResultVariable.DISPLACEMENT,
+        AgentResultVariable.REACTION_FORCE,
+    }
+    allowed = nodal_regions if nodal_variable else element_regions
+    wrong_entity_regions = element_regions if nodal_variable else nodal_regions
+    if request.region not in allowed and request.region in wrong_entity_regions:
         raise _AgentResultQueryRejected(
             "result.query.region_entity_unsupported",
-            "The requested named region entity type does not support this variable.",
+            "The requested region has the wrong entity kind for this field.",
         )
+    if request.region not in allowed:
+        raise _AgentResultQueryRejected(
+            "result.query.region_not_published",
+            "The requested region is absent from the bounded result catalog.",
+        )
+
+
+def _published_result_regions(
+    projection: _SessionSnapshot,
+    provider: ResultProvider,
+    source: ResultSourceKey,
+    run_id: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    nodal: tuple[str, ...] = ("all_nodes",)
+    element: tuple[str, ...] = ("all_elements",)
+    if projection.source_kind == "result":
+        archive = provider.model_projection
+        if archive is not None:
+            nodal = (
+                "all_nodes",
+                *tuple(archive.named_region_node_ids)[:127],
+            )
+            element = (
+                "all_elements",
+                *tuple(archive.named_region_element_ids)[:127],
+            )
+    elif _result_regions_are_current(projection, source, run_id):
+        regions = tuple(projection.named_regions.values())[:127]  # type: ignore[union-attr]
+        nodal = (
+            "all_nodes",
+            *(region.name for region in regions if region.entity_kind in {"node", "edge", "face"}),
+        )
+        element = (
+            "all_elements",
+            *(region.name for region in regions if region.entity_kind == "element"),
+        )
+    return tuple(dict.fromkeys(nodal)), tuple(dict.fromkeys(element))
 
 
 def _native_result_query(
@@ -5524,9 +5708,12 @@ def create_session_authoring_workflow_controller(
         arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        if set(arguments) - {"run_id"}:
+        if set(arguments) - {"run_id", "target"}:
             raise AuthoringContractError("result catalog has unknown fields")
-        response = result_bridge.catalog(arguments.get("run_id"))
+        response = result_bridge.catalog(
+            arguments.get("run_id"),
+            target=arguments.get("target"),
+        )
         return AuthoringToolOutcome(
             "Accepted result catalog read locally.",
             response.to_dict(),
@@ -5537,7 +5724,7 @@ def create_session_authoring_workflow_controller(
         arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
-        if set(arguments) - {"cursor", "limit"}:
+        if set(arguments) - {"cursor", "limit", "target"}:
             raise AuthoringContractError("run catalog has unknown fields")
         cursor = arguments.get("cursor", 0)
         limit = arguments.get("limit", 20)
@@ -5549,41 +5736,17 @@ def create_session_authoring_workflow_controller(
             or limit > ANALYSIS_RUN_CATALOG_MAX_LIMIT
         ):
             raise AuthoringContractError("limit is outside the run catalog bound")
-        snapshot = current_session().snapshot()
-        runs = tuple(snapshot.runs)
-        if cursor > len(runs):
-            raise AuthoringContractError("cursor exceeds the run catalog")
-        page = runs[cursor : cursor + limit]
-        entries = tuple(
-            AnalysisRunCatalogEntry(
-                run_id=str(run.run_id),
-                name=str(run.name),
-                step_name=str(run.step_name),
-                status=str(getattr(run.status, "value", run.status)),
-                artifact_id=str(run.artifact_id),
-                model_revision=int(run.model_revision),
-                source_run_id=(
-                    None if run.source_run_id is None else str(run.source_run_id)
-                ),
-                result_id=(None if run.result_id is None else str(run.result_id)),
-                materialization_generation=snapshot.result_generations.get(
-                    run.run_id
-                ),
-            )
-            for run in page
-        )
-        next_cursor = cursor + len(entries)
-        catalog = AnalysisRunCatalog(
-            document_id=current_context().binding.document_id,
-            session_id=str(snapshot.session_id),
-            session_revision=int(snapshot.session_revision),
-            selected_run_id=snapshot.selected_run_id,
-            displayed_result_run_id=snapshot.displayed_result_run_id,
+        target = arguments.get("target")
+        if target is None and workspace_catalog_bridge is None:
+            binding = current_context().binding
+            target = {
+                "document_id": binding.document_id,
+                "session_id": binding.session_id,
+            }
+        catalog = result_bridge.analysis_runs(
             cursor=cursor,
             limit=limit,
-            runs=entries,
-            next_cursor=(next_cursor if next_cursor < len(runs) else None),
-            total_count=len(runs),
+            target=target,
         )
         return AuthoringToolOutcome(
             "Analysis run catalog read locally.",
@@ -5672,6 +5835,15 @@ def create_session_authoring_workflow_controller(
             ok=response.ok,
         )
 
+    def workspace_result_inventory() -> tuple[int, int]:
+        if workspace_catalog_bridge is None:
+            return 0, 0
+        catalog = workspace_catalog_bridge.catalog()
+        return (
+            sum(item.run_count for item in catalog.documents),
+            sum(item.result_count for item in catalog.documents),
+        )
+
     controller = AuthoringWorkflowController(
         current_context,
         {
@@ -5704,8 +5876,14 @@ def create_session_authoring_workflow_controller(
                 else {"read_workspace_documents": read_workspace_documents}
             ),
         },
+        workspace_result_inventory=(
+            None
+            if workspace_catalog_bridge is None
+            else workspace_result_inventory
+        ),
     )
-    controller.observe_binding(current_context())
+    if authoring_bridge.context is not None:
+        controller.observe_binding(current_context())
     return controller
 
 

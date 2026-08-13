@@ -2887,6 +2887,8 @@ class AuthoringWorkflowController:
         self,
         context_reader: ContextReader,
         handlers: Mapping[str, AuthoringToolHandler],
+        *,
+        workspace_result_inventory: Callable[[], tuple[int, int]] | None = None,
     ) -> None:
         if not callable(context_reader):
             raise TypeError("context_reader must be callable")
@@ -2905,6 +2907,11 @@ class AuthoringWorkflowController:
             raise ValueError("confirmation handlers cannot be model-callable")
         self._context_reader = context_reader
         self._handlers = normalized
+        if workspace_result_inventory is not None and not callable(
+            workspace_result_inventory
+        ):
+            raise TypeError("workspace_result_inventory must be callable or None")
+        self._workspace_result_inventory = workspace_result_inventory
         self._ledger = RequirementLedger()
         self._stage = AuthoringWorkflowStage.REQUIREMENTS
         self._pending_review: RequirementReview | None = None
@@ -3050,20 +3057,46 @@ class AuthoringWorkflowController:
     @property
     def definitions(self) -> tuple[ToolDefinition, ...]:
         with self._lock:
+            inventory = self._result_inventory()
+            if self._observed_context is None and inventory is not None:
+                run_count, result_count = inventory
+                global_reads = (
+                    *(
+                        (_WORKSPACE_DOCUMENTS,)
+                        if _WORKSPACE_DOCUMENTS.name in self._handlers
+                        else ()
+                    ),
+                    *((_ANALYSIS_RUN_CATALOG,) if run_count > 0 else ()),
+                    *(
+                        (_RESULT_CATALOG, _RESULT_QUERY)
+                        if result_count > 0
+                        else ()
+                    ),
+                    *((_RESULT_COMPARISON,) if result_count >= 2 else ()),
+                )
+                return tuple(
+                    item for item in global_reads if item.name in self._handlers
+                )
             definitions = list(_STAGE_TOOLS[self._stage])
             if _WORKSPACE_DOCUMENTS.name in self._handlers:
                 definitions.append(_WORKSPACE_DOCUMENTS)
-            if (
-                self._stage in _PROJECT_SAVE_READY_STAGES
-                and self._observed_context is not None
-                and self._observed_context.run_count > 0
-            ):
+            run_count = (
+                self._observed_context.run_count
+                if inventory is None and self._observed_context is not None
+                else 0 if inventory is None else inventory[0]
+            )
+            result_count = (
+                self._observed_context.result_count
+                if inventory is None and self._observed_context is not None
+                else 0 if inventory is None else inventory[1]
+            )
+            if self._stage in _PROJECT_SAVE_READY_STAGES and run_count > 0:
                 historical_definitions = [_ANALYSIS_RUN_CATALOG]
-                if self._observed_context.result_count > 0:
+                if result_count > 0:
                     historical_definitions.extend(
                         (_RESULT_CATALOG, _RESULT_QUERY)
                     )
-                if self._observed_context.result_count >= 2:
+                if result_count >= 2:
                     historical_definitions.append(_RESULT_COMPARISON)
                 for result_definition in historical_definitions:
                     if all(
@@ -3125,8 +3158,7 @@ class AuthoringWorkflowController:
                     and (
                         item.name != _ANALYSIS_RUN_CATALOG.name
                         or (
-                            self._observed_context is not None
-                            and self._observed_context.run_count > 0
+                            run_count > 0
                         )
                     )
                     and (
@@ -3137,8 +3169,7 @@ class AuthoringWorkflowController:
                             _RESULT_COMPARISON.name,
                         }
                         or (
-                            self._observed_context is not None
-                            and self._observed_context.result_count
+                            result_count
                             >= (
                                 2
                                 if item.name == _RESULT_COMPARISON.name
@@ -3172,6 +3203,21 @@ class AuthoringWorkflowController:
                     )
                 )
             )
+
+    def _result_inventory(self) -> tuple[int, int] | None:
+        reader = self._workspace_result_inventory
+        if reader is None:
+            return None
+        run_count, result_count = reader()
+        if (
+            type(run_count) is not int
+            or type(result_count) is not int
+            or run_count < 0
+            or result_count < 0
+            or result_count > run_count
+        ):
+            raise ValueError("workspace result inventory is invalid")
+        return run_count, result_count
 
     def dispatch(
         self,

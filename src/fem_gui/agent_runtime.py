@@ -536,7 +536,14 @@ class QtAgentRuntime(QObject):
             else tuple(
                 item
                 for item in controller.definitions
-                if item.name == "read_workspace_documents"
+                if item.name
+                in {
+                    "read_workspace_documents",
+                    "read_analysis_run_catalog",
+                    "read_accepted_result_catalog",
+                    "query_accepted_result",
+                    "compare_accepted_results",
+                }
             )
         )
         with self._lock:
@@ -607,7 +614,14 @@ class QtAgentRuntime(QObject):
                 self._authoring_definitions = tuple(
                     item
                     for item in controller.definitions
-                    if item.name == "read_workspace_documents"
+                    if item.name
+                    in {
+                        "read_workspace_documents",
+                        "read_analysis_run_catalog",
+                        "read_accepted_result_catalog",
+                        "query_accepted_result",
+                        "compare_accepted_results",
+                    }
                 )
             return
         try:

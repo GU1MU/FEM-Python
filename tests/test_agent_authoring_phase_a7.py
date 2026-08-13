@@ -186,13 +186,14 @@ def test_a7_tool_catalog_exposes_query_without_display_or_confirmation() -> None
     )
 
     assert catalog_schema["name"] == "read_accepted_result_catalog"
-    assert catalog_schema["input_schema"]["properties"] == {
-        "run_id": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-        }
+    properties = catalog_schema["input_schema"]["properties"]
+    assert properties["run_id"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
     }
+    assert properties["target"]["additionalProperties"] is False
+    assert properties["target"]["required"] == ["document_id", "session_id"]
     assert "required" not in catalog_schema["input_schema"]
     assert query_schema["name"] == "query_accepted_result"
     assert query_schema["input_schema"]["additionalProperties"] is False

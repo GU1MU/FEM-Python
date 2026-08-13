@@ -9,6 +9,8 @@ import math
 from numbers import Real
 from typing import Mapping, Protocol
 
+from .workspace_catalog import WorkspaceDocumentIdentity
+
 
 RESULT_QUERY_SCHEMA_VERSION = "1.0"
 RESULT_QUERY_TOOL_NAME = "query_accepted_result"
@@ -452,18 +454,14 @@ class AgentResultComparisonQuery:
                     f"{field_name} must be AcceptedResultReference"
                 )
         if (
-            self.baseline.expected_source.run_id
-            == self.candidate.expected_source.run_id
+            self.baseline.expected_source.session_id,
+            self.baseline.expected_source.run_id,
+        ) == (
+            self.candidate.expected_source.session_id,
+            self.candidate.expected_source.run_id,
         ):
             raise ResultAuthoringError(
-                "baseline and candidate run_id must be different"
-            )
-        if (
-            self.baseline.expected_source.session_id
-            != self.candidate.expected_source.session_id
-        ):
-            raise ResultAuthoringError(
-                "baseline and candidate must belong to the same session"
+                "baseline and candidate must identify different session/run pairs"
             )
 
     def result_query(self, reference: AcceptedResultReference) -> AgentResultQuery:
@@ -743,13 +741,15 @@ class AgentResultComparison:
                 raise ResultAuthoringError(
                     "comparison scalars do not share the exact query identity"
                 )
-        if self.baseline.source.run_id == self.candidate.source.run_id:
+        if (
+            self.baseline.source.session_id,
+            self.baseline.source.run_id,
+        ) == (
+            self.candidate.source.session_id,
+            self.candidate.source.run_id,
+        ):
             raise ResultAuthoringError(
-                "comparison scalars must come from different runs"
-            )
-        if self.baseline.source.session_id != self.candidate.source.session_id:
-            raise ResultAuthoringError(
-                "comparison scalars must come from the same session"
+                "comparison scalars must come from different session/run pairs"
             )
         expected_delta = math.fsum(
             (self.candidate.value, -self.baseline.value)
@@ -1042,7 +1042,12 @@ class AgentResultCatalogResponse:
 class AgentResultQueryPort(Protocol):
     """Cross-layer read-only protocol; implementations return bounded DTOs."""
 
-    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse: ...
+    def catalog(
+        self,
+        run_id: str | None = None,
+        *,
+        target: WorkspaceDocumentIdentity | None = None,
+    ) -> AgentResultCatalogResponse: ...
 
     def query(self, request: AgentResultQuery) -> AgentResultQueryResponse: ...
 
@@ -1063,6 +1068,7 @@ class FakeAgentResultQueryPort:
         self.calls: list[AgentResultQuery] = []
         self.catalog_calls = 0
         self.catalog_run_ids: list[str | None] = []
+        self.catalog_targets: list[WorkspaceDocumentIdentity | None] = []
         self.comparison_calls: list[AgentResultComparisonQuery] = []
         self._catalog_response = catalog_response
 
@@ -1091,9 +1097,15 @@ class FakeAgentResultQueryPort:
                 clarification_required=True,
             )
 
-    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
+    def catalog(
+        self,
+        run_id: str | None = None,
+        *,
+        target: WorkspaceDocumentIdentity | None = None,
+    ) -> AgentResultCatalogResponse:
         self.catalog_calls += 1
         self.catalog_run_ids.append(run_id)
+        self.catalog_targets.append(target)
         if self._catalog_response is not None:
             return self._catalog_response
         return AgentResultCatalogResponse.failure(
@@ -1165,20 +1177,51 @@ class AgentResultQueryBridge:
         )
         return response
 
-    def catalog(self, run_id: str | None = None) -> AgentResultCatalogResponse:
+    def catalog(
+        self,
+        run_id: str | None = None,
+        *,
+        target: WorkspaceDocumentIdentity | Mapping[str, object] | None = None,
+    ) -> AgentResultCatalogResponse:
         if run_id is not None:
             run_id = _exact_string(run_id, "run_id")
             _bounded_text(run_id, "run_id", maximum=128)
+        normalized_target = _workspace_target(target)
         response = (
-            self._port.catalog()
-            if run_id is None
-            else self._port.catalog(run_id)
+            self._port.catalog(run_id, target=normalized_target)
+            if normalized_target is not None
+            else (
+                self._port.catalog()
+                if run_id is None
+                else self._port.catalog(run_id)
+            )
         )
         if type(response) is not AgentResultCatalogResponse:
             raise TypeError(
                 "result query port must return AgentResultCatalogResponse"
             )
         return response
+
+    def analysis_runs(
+        self,
+        *,
+        cursor: int = 0,
+        limit: int = ANALYSIS_RUN_CATALOG_MAX_LIMIT,
+        target: WorkspaceDocumentIdentity | Mapping[str, object] | None = None,
+    ) -> AnalysisRunCatalog:
+        read = getattr(self._port, "analysis_runs", None)
+        if not callable(read):
+            raise ResultAuthoringError(
+                "the local result port does not support analysis run catalogs"
+            )
+        catalog = read(
+            cursor=cursor,
+            limit=limit,
+            target=_workspace_target(target),
+        )
+        if type(catalog) is not AnalysisRunCatalog:
+            raise TypeError("result query port returned an invalid run catalog")
+        return catalog
 
     def compare(
         self,
@@ -1222,7 +1265,8 @@ def result_catalog_tool_schema() -> dict[str, object]:
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 128,
-                }
+                },
+                "target": _workspace_target_schema(),
             },
         },
     }
@@ -1244,12 +1288,33 @@ def analysis_run_catalog_tool_schema() -> dict[str, object]:
                     "minimum": 1,
                     "maximum": ANALYSIS_RUN_CATALOG_MAX_LIMIT,
                 },
+                "target": _workspace_target_schema(),
             },
         },
     }
 
 
 read_analysis_run_catalog_tool_schema = analysis_run_catalog_tool_schema
+
+
+def _workspace_target_schema() -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "document_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+            },
+            "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+            },
+        },
+        "required": ["document_id", "session_id"],
+        "additionalProperties": False,
+    }
 
 
 def result_query_tool_schema() -> dict[str, object]:
@@ -1514,6 +1579,40 @@ def _strict_mapping(
         raise TypeError(f"{label} keys must be strings")
     if set(value) != expected:
         raise ResultAuthoringError(f"{label} fields do not match the schema")
+    return value
+
+
+def _workspace_target(
+    value: WorkspaceDocumentIdentity | Mapping[str, object] | None,
+) -> WorkspaceDocumentIdentity | None:
+    if value is None:
+        return value
+    if type(value) is WorkspaceDocumentIdentity:
+        document_id = value.document_id
+        session_id = value.session_id
+    else:
+        data = _strict_mapping(
+            value,
+            {"document_id", "session_id"},
+            "workspace result target",
+        )
+        document_id = _exact_string(data["document_id"], "document_id")
+        session_id = _exact_string(data["session_id"], "session_id")
+    return WorkspaceDocumentIdentity(
+        _exact_workspace_target_text(document_id, "document_id"),
+        _exact_workspace_target_text(session_id, "session_id"),
+    )
+
+
+def _exact_workspace_target_text(value: str, label: str) -> str:
+    if not value or value != value.strip():
+        raise ResultAuthoringError(
+            f"{label} must be nonempty and have no surrounding whitespace"
+        )
+    if "\x00" in value:
+        raise ResultAuthoringError(f"{label} must not contain NUL")
+    if len(value) > 128:
+        raise ResultAuthoringError(f"{label} exceeds its bound")
     return value
 
 
