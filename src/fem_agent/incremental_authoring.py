@@ -15,7 +15,10 @@ from fem.application import (
     RegionAssignment,
     ScopedDefinitionBatch,
     SectionDefinition,
+    UnitContext,
+    describe_model_capabilities,
 )
+from fem.application.results import project_output_request
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -25,6 +28,7 @@ from fem.core.model import (
 )
 
 from .authoring import AuthoringContext, ModelPatch
+from .analysis_authoring import expected_result_units
 from .definition_authoring import (
     build_eccentric_plate_scopes,
     definition_state_operations,
@@ -58,6 +62,7 @@ class _Snapshot(Protocol):
     artifact: object | None
     model_current: bool
     runs: Sequence[object]
+    unit_context: UnitContext | None
 
 
 def create_incremental_definition_patch(
@@ -302,7 +307,10 @@ def create_incremental_definition_patch(
     else:
         _exact_fields(
             values,
-            {"name", "step_name", "target", "variables"},
+            {
+                "name", "step_name", "target", "variables", "units",
+                "confirmed",
+            },
         )
         name = _controlled_name(
             values["name"],
@@ -312,10 +320,22 @@ def create_incremental_definition_patch(
         step_name = _nonblank(values["step_name"], "analysis step name")
         target = _enum(values["target"], "result target", {"node", "element"})
         variables = _string_tuple(values["variables"], "result variables")
-        supported = {"node": {"U", "RF"}, "element": {"S"}}
+        supported = {
+            "node": {"U", "UR", "RF", "RM"},
+            "element": {"SF", "SM", "LE", "S"},
+        }
         if not set(variables).issubset(supported[target]):
             raise ValueError("result variables do not match their target")
+        units = snapshot.unit_context
+        if units is None:
+            raise ValueError("result request requires a project unit context")
+        requested_units = _string_tuple(values["units"], "result units")
+        if requested_units != expected_result_units(units, variables):
+            raise ValueError("result request units do not match the project context")
+        if values["confirmed"] is not True:
+            raise ValueError("result request engineering fields are not confirmed")
         output = OutputRequest("field", target, variables, name=name)
+        _require_output_capability(snapshot, output)
         steps = _append_step_child(
             steps,
             step_name,
@@ -530,6 +550,36 @@ def _require_live_native_context(
         or binding.session_revision != snapshot.session_revision
     ):
         raise ValueError("direct authoring context is stale or unavailable")
+
+
+def _require_output_capability(
+    snapshot: _Snapshot,
+    request: OutputRequest,
+) -> None:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise ValueError("result request requires a current realized model")
+    report = describe_model_capabilities(model)
+    catalog = report.output_request_catalog
+    if not report.compatible or catalog is None:
+        raise ValueError("result request requires a compatible current model")
+    projection = project_output_request(request, catalog, request_index=0)
+    executable = projection.executable_request
+    projected = (
+        ()
+        if executable is None
+        else tuple(
+            item.canonical_variable.value
+            for item in executable.variables
+            if item.canonical_variable is not None
+        )
+    )
+    if (
+        projection.diagnostics
+        or len(projected) != len(request.variables)
+        or set(projected) != set(request.variables)
+    ):
+        raise ValueError("result request is not fully executable by this model")
 
 
 def _require_scope(

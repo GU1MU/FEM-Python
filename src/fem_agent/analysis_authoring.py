@@ -11,7 +11,10 @@ from fem.application import (
     ModelDefinitions,
     NamedRegion,
     ScopedDefinitionBatch,
+    UnitContext,
+    describe_model_capabilities,
 )
+from fem.application.results import project_output_request
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -335,8 +338,8 @@ class ConfirmedResultRequest:
         if self.kind != "field":
             raise AnalysisAuthoringError("A5 supports only field output requests")
         supported = {
-            "node": frozenset({"U", "RF"}),
-            "element": frozenset({"S"}),
+            "node": frozenset({"U", "UR", "RF", "RM"}),
+            "element": frozenset({"SF", "SM", "LE", "S"}),
         }
         if self.target not in supported:
             raise AnalysisAuthoringError("result request target is unsupported")
@@ -537,6 +540,7 @@ def create_analysis_definition_change(
     _require_scope_kinds(snapshot, analysis)
 
     step = analysis.to_step()
+    _require_result_capabilities(snapshot, tuple(step.outputs))
     definitions = ModelDefinitions(
         tuple(snapshot.materials),
         tuple(snapshot.sections),
@@ -796,21 +800,76 @@ def _require_unit_semantics(
                 f"{item.name} unit must exactly match project analysis "
                 f"unit {expected!r}; conversion is unavailable"
             )
-    expected_result_units = {
-        "U": units.length,
-        "RF": units.force,
-        "S": units.stress,
-    }
     for item in analysis.results:
-        expected = tuple(
-            expected_result_units[variable]
-            for variable in item.variables
-        )
+        expected = expected_result_units(units, item.variables)
         if item.units != expected:
             raise AnalysisAuthoringError(
                 f"{item.name} units must be {expected!r} from the "
                 "confirmed project unit context"
             )
+
+
+def _require_result_capabilities(
+    snapshot: _Snapshot,
+    requests: tuple[OutputRequest, ...],
+) -> None:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise AnalysisAuthoringError(
+            "result requests require a current realized model"
+        )
+    report = describe_model_capabilities(model)
+    catalog = report.output_request_catalog
+    if not report.compatible or catalog is None:
+        raise AnalysisAuthoringError(
+            "result requests require a compatible output capability catalog"
+        )
+    for request_index, request in enumerate(requests):
+        projection = project_output_request(
+            request, catalog, request_index=request_index
+        )
+        executable = projection.executable_request
+        variables = (
+            ()
+            if executable is None
+            else tuple(
+                item.canonical_variable.value
+                for item in executable.variables
+                if item.canonical_variable is not None
+            )
+        )
+        if (
+            projection.diagnostics
+            or len(variables) != len(request.variables)
+            or set(variables) != set(request.variables)
+        ):
+            raise AnalysisAuthoringError(
+                "result request is not fully executable by this model"
+            )
+
+
+def expected_result_units(
+    units: UnitContext,
+    variables: Sequence[str],
+) -> tuple[str, ...]:
+    """Return exact project units for canonical result variables."""
+
+    mapping = {
+        "U": units.length,
+        "UR": "rad",
+        "RF": units.force,
+        "RM": f"{units.force}*{units.length}",
+        "SF": units.force,
+        "SM": f"{units.force}*{units.length}",
+        "LE": "1",
+        "S": units.stress,
+    }
+    try:
+        return tuple(mapping[variable] for variable in variables)
+    except KeyError as error:
+        raise AnalysisAuthoringError(
+            f"result variable {error.args[0]!r} has no unit semantics"
+        ) from error
 
 
 def _has_accepted_result(snapshot: _Snapshot) -> bool:

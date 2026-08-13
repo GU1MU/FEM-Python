@@ -26,6 +26,7 @@ from fem.application import (
     evaluate_native_line_load_candidate,
     validate_logical_reference,
 )
+from fem.application.results import project_output_request
 from fem.application.changes import SessionDelta
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
@@ -48,7 +49,12 @@ from fem.geometry import (
     namespace_part_logical_id,
 )
 
-from .analysis_authoring import ConfirmedDisplacement, ConfirmedLoad
+from .analysis_authoring import (
+    ConfirmedDisplacement,
+    ConfirmedLoad,
+    ConfirmedResultRequest,
+    expected_result_units,
+)
 from .authoring import (
     AgentProposal,
     AuthoringContext,
@@ -311,8 +317,19 @@ def editable_object_catalog(
                     "target",
                     "variables",
                     "metadata",
+                    "units",
+                    "confirmed",
                 ],
             }
+            canonical_variables = tuple(output.variables)
+            if set(canonical_variables).issubset(
+                {"U", "UR", "RF", "RM", "SF", "SM", "LE", "S"}
+            ):
+                units = _require_units(snapshot)
+                details["units"] = list(
+                    expected_result_units(units, canonical_variables)
+                )
+                details["confirmed"] = True
             items.append(
                 EditableObject(
                     "result_request",
@@ -1006,10 +1023,18 @@ def _validated_output_edit(
 ) -> tuple[dict[str, object], OutputRequest]:
     _require_change_keys(
         changes,
-        {"new_name", "output_kind", "kind", "target", "variables", "metadata"},
+        {
+            "new_name", "output_kind", "kind", "target", "variables",
+            "metadata", "units", "confirmed",
+        },
     )
     if "output_kind" in changes and "kind" in changes:
         raise ValueError("use either output_kind or kind, not both")
+    confirmation_fields = {"units", "confirmed"} & set(changes)
+    if confirmation_fields and confirmation_fields != {"units", "confirmed"}:
+        raise ValueError(
+            "result request edit units and confirmed must be provided together"
+        )
     current = _find_output(snapshot, target)
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
@@ -1043,7 +1068,10 @@ def _validated_output_edit(
         }
         normalized["metadata"] = deepcopy(metadata_updates)
     replacement = replace(current, **updates)
-    supported = {"node": {"U", "RF"}, "element": {"S"}}
+    supported = {
+        "node": {"U", "UR", "RF", "RM"},
+        "element": {"SF", "SM", "LE", "S"},
+    }
     if replacement.kind != "field":
         raise ValueError("output_kind is unsupported")
     if replacement.target not in supported:
@@ -1052,9 +1080,58 @@ def _validated_output_edit(
         raise ValueError("result request variables must not be empty")
     if not set(replacement.variables).issubset(supported[replacement.target]):
         raise ValueError("result variables do not match their target")
+    _require_output_edit_capability(snapshot, replacement)
+    if confirmation_fields:
+        units = _string_list(changes["units"], "units", max_items=16)
+        confirmed = ConfirmedResultRequest(
+            _controlled_name(replacement.name, "result request name", "结果请求"),
+            _controlled_name(target.step_name, "step_name", "分析步"),
+            replacement.kind,
+            replacement.target,
+            tuple(replacement.variables),
+            units,
+            _confirmed(changes["confirmed"]),
+        )
+        expected = expected_result_units(
+            _require_units(snapshot), confirmed.variables
+        )
+        if confirmed.units != expected:
+            raise ValueError(
+                "result request units do not match the project unit context"
+            )
     if replacement == current:
         raise ValueError("changes do not modify the selected result request")
     return normalized, replacement
+
+
+def _require_output_edit_capability(
+    snapshot: _Snapshot,
+    request: OutputRequest,
+) -> None:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise ValueError("result request edit requires a current realized model")
+    report = describe_model_capabilities(model)
+    catalog = report.output_request_catalog
+    if not report.compatible or catalog is None:
+        raise ValueError("result request edit requires a compatible catalog")
+    projection = project_output_request(request, catalog, request_index=0)
+    executable = projection.executable_request
+    projected = (
+        ()
+        if executable is None
+        else tuple(
+            item.canonical_variable.value
+            for item in executable.variables
+            if item.canonical_variable is not None
+        )
+    )
+    if (
+        projection.diagnostics
+        or len(projected) != len(request.variables)
+        or set(projected) != set(request.variables)
+    ):
+        raise ValueError("result request is not fully executable by this model")
 
 
 def _validated_boundary_edit(

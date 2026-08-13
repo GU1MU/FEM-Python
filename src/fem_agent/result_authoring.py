@@ -26,7 +26,12 @@ class ResultAuthoringError(ValueError):
 
 class AgentResultVariable(str, Enum):
     DISPLACEMENT = "U"
+    ROTATION = "UR"
     REACTION_FORCE = "RF"
+    REACTION_MOMENT = "RM"
+    SECTION_FORCE = "SF"
+    SECTION_MOMENT = "SM"
+    LOGARITHMIC_STRAIN = "LE"
     STRESS = "S"
 
 
@@ -286,10 +291,13 @@ class AgentResultQuery:
         )
         if (
             self.aggregation is AgentResultAggregation.SUM
-            and self.variable is not AgentResultVariable.REACTION_FORCE
+            and self.variable not in {
+                AgentResultVariable.REACTION_FORCE,
+                AgentResultVariable.REACTION_MOMENT,
+            }
         ):
             raise ResultAuthoringError(
-                "sum is supported only for reaction force RF"
+                "sum is supported only for reaction resultants RF and RM"
             )
 
     def to_dict(self) -> dict[str, object]:
@@ -421,10 +429,13 @@ class AgentResultQueryIdentity:
             _bounded_text(getattr(self, field_name), field_name, maximum=256)
         if (
             self.aggregation is AgentResultAggregation.SUM
-            and self.variable is not AgentResultVariable.REACTION_FORCE
+            and self.variable not in {
+                AgentResultVariable.REACTION_FORCE,
+                AgentResultVariable.REACTION_MOMENT,
+            }
         ):
             raise ResultAuthoringError(
-                "sum is supported only for reaction force RF"
+                "sum is supported only for reaction resultants RF and RM"
             )
 
     def to_dict(self) -> dict[str, object]:

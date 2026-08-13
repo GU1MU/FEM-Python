@@ -7,6 +7,7 @@ import pytest
 
 from fem.application.results.fields import (
     FieldPosition,
+    ResultFieldId,
     ResultVariable,
 )
 from fem.application.results.output_requests import (
@@ -143,6 +144,7 @@ def test_capability_catalog_exposes_registry_owned_profile_diagnostics() -> None
             (
                 ("node", "U", None),
                 ("node", "RF", None),
+                ("element", "LE", None),
                 ("element", "S", None),
             ),
         ),
@@ -189,6 +191,50 @@ def test_capability_catalog_owns_only_legal_source_independent_candidates(
     )
     with pytest.raises(FrozenInstanceError):
         catalog.candidates = ()
+
+
+def test_truss_le_is_centroid_executable_and_canonically_precedes_stress() -> None:
+    projection = _project(
+        OutputRequest("field", "element", ("S", "LE")),
+        ResultModelFamily.TRUSS,
+    )
+
+    assert projection.diagnostics == ()
+    assert projection.executable_request is not None
+    assert tuple(
+        item.canonical_variable
+        for item in projection.executable_request.variables
+    ) == (ResultVariable.LE, ResultVariable.S)
+    assert projection.executable_request.field_requests[0].field_id == (
+        ResultFieldId(ResultVariable.LE, FieldPosition.CENTROID)
+    )
+
+
+def test_le_rejects_wrong_target_family_and_non_centroid_position() -> None:
+    wrong_target = _project(
+        OutputRequest("field", "node", ("LE",)),
+        ResultModelFamily.TRUSS,
+    )
+    wrong_family = _project(
+        OutputRequest("field", "element", ("LE",)),
+        ResultModelFamily.PLANE_CONTINUUM,
+    )
+    wrong_position = _project(
+        OutputRequest(
+            "field",
+            "element",
+            ("LE",),
+            {"position": "integration_point"},
+        ),
+        ResultModelFamily.TRUSS,
+    )
+
+    assert _codes(wrong_target) == ("output.request.variable_unsupported",)
+    assert _codes(wrong_family) == ("output.request.model_family_unsupported",)
+    assert _codes(wrong_position) == ("output.request.position_unsupported",)
+    assert wrong_position.diagnostics[0].details["supported_positions"] == (
+        "centroid",
+    )
 
 
 def test_projection_rejects_a_forged_capability_catalog() -> None:

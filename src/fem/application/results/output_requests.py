@@ -31,6 +31,7 @@ _VARIABLE_ORDER = (
     ResultVariable.RM,
     ResultVariable.SF,
     ResultVariable.SM,
+    ResultVariable.LE,
     ResultVariable.S,
 )
 _VARIABLE_LOOKUP = {
@@ -43,6 +44,7 @@ _PRIMARY_TARGETS = {
     ResultVariable.RM: "node",
     ResultVariable.SF: "element",
     ResultVariable.SM: "element",
+    ResultVariable.LE: "element",
     ResultVariable.S: "element",
 }
 _EXECUTABLE_STRESS_POSITIONS = {
@@ -628,7 +630,12 @@ def _position_option_is_applicable(
         and bool(groups)
         and all(
             group.canonical_variable
-            in {ResultVariable.SF, ResultVariable.SM, ResultVariable.S}
+            in {
+                ResultVariable.SF,
+                ResultVariable.SM,
+                ResultVariable.LE,
+                ResultVariable.S,
+            }
             for group in groups
         )
     )
@@ -653,7 +660,7 @@ def _project_variable(
                 f"{group.source_variables[0]!r} is not executable."
             ),
             remediation=(
-                "Choose U, UR, RF, RM, SF, SM, or S for a supported target."
+                "Choose U, UR, RF, RM, SF, SM, LE, or S for a supported target."
             ),
             details={
                 "source_indices": list(group.source_indices),
@@ -690,7 +697,24 @@ def _project_variable(
             request_index=request_index,
         )
 
-    if canonical in {ResultVariable.SF, ResultVariable.SM}:
+    if canonical is ResultVariable.LE:
+        position = FieldPosition.CENTROID
+        if position_value is not _ABSENT:
+            requested = (
+                _POSITION_LOOKUP.get(position_value.casefold())
+                if type(position_value) is str
+                else None
+            )
+            if requested is not position:
+                return (), (
+                    _fixed_position_diagnostic(
+                        group,
+                        position_value=position_value,
+                        position=position,
+                        request_index=request_index,
+                    ),
+                )
+    elif canonical in {ResultVariable.SF, ResultVariable.SM}:
         position = FieldPosition.INTEGRATION_POINT
         if position_value is not _ABSENT:
             if type(position_value) is not str:
@@ -725,6 +749,34 @@ def _project_variable(
         )
         return (), (diagnostic,)
     return (entry.default_request(),), ()
+
+
+def _fixed_position_diagnostic(
+    group: _VariableGroup,
+    *,
+    position_value: object,
+    position: FieldPosition,
+    request_index: int,
+) -> ResultDiagnostic:
+    canonical = group.canonical_variable
+    return _diagnostic(
+        "output.request.position_unsupported",
+        request_index,
+        suffix=("metadata", "position"),
+        message=(
+            f"{canonical.value if canonical is not None else 'Field'} position "
+            f"{position_value!r} is not executable."
+        ),
+        remediation=f"Use the fixed position {position.value!r}.",
+        details={
+            "canonical_variable": (
+                None if canonical is None else canonical.value
+            ),
+            "position": position_value,
+            "source_indices": list(group.source_indices),
+            "supported_positions": [position.value],
+        },
+    )
 
 
 def _project_stress_variable(

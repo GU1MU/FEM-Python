@@ -27,6 +27,7 @@ from fem.application import (
     evaluate_native_assignment_candidate,
     validate_logical_reference,
 )
+from fem.application.results import project_output_request
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
@@ -52,6 +53,7 @@ from .analysis_authoring import (
     ConfirmedDisplacement,
     ConfirmedLoad,
     ConfirmedResultRequest,
+    expected_result_units,
 )
 from .authoring import (
     AgentProposal,
@@ -518,12 +520,7 @@ def _create_analysis_child_patch(
             _string_tuple(values["units"], "result units"),
             _confirmed(values["confirmed"]),
         )
-        expected_units = {
-            "U": units.length,
-            "RF": units.force,
-            "S": units.stress,
-        }
-        expected = tuple(expected_units[item] for item in confirmed.variables)
+        expected = expected_result_units(units, confirmed.variables)
         if confirmed.units != expected:
             raise AnalysisAuthoringError(
                 "result request units do not match the project unit context"
@@ -534,6 +531,7 @@ def _create_analysis_child_patch(
             confirmed.variables,
             name=confirmed.name,
         )
+        _require_output_request_capability(snapshot, child)
         steps = _append_step_child(
             steps,
             "outputs",
@@ -959,6 +957,45 @@ def _require_region_load_kind(
     if not capability.compatible or load_kind not in capability.load_kinds:
         raise AnalysisAuthoringError(
             f"target element region does not support {load_kind} load"
+        )
+
+
+def _require_output_request_capability(
+    snapshot: _Snapshot,
+    request: OutputRequest,
+) -> None:
+    model = getattr(snapshot.artifact, "model", None)
+    if model is None:
+        raise AnalysisAuthoringError(
+            "result request requires a current realized model"
+        )
+    report = describe_model_capabilities(model)
+    catalog = report.output_request_catalog
+    if not report.compatible or catalog is None:
+        raise AnalysisAuthoringError(
+            "result request requires a compatible output capability catalog"
+        )
+    projection = project_output_request(request, catalog, request_index=0)
+    executable = projection.executable_request
+    projected_variables = (
+        ()
+        if executable is None
+        else tuple(
+            variable.canonical_variable.value
+            for variable in executable.variables
+            if variable.canonical_variable is not None
+        )
+    )
+    if (
+        projection.diagnostics
+        or len(projected_variables) != len(request.variables)
+        or set(projected_variables) != set(request.variables)
+    ):
+        message = "; ".join(
+            diagnostic.message for diagnostic in projection.diagnostics
+        )
+        raise AnalysisAuthoringError(
+            message or "result request is not fully executable by this model"
         )
 
 

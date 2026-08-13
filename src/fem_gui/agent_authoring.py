@@ -1381,13 +1381,22 @@ class SessionResultQueryPort:
             if (
                 item.state is FieldState.READY
                 and item.descriptor.field_id.variable
-                in {ResultVariable.U, ResultVariable.RF, ResultVariable.S}
+                in {
+                    ResultVariable.U,
+                    ResultVariable.UR,
+                    ResultVariable.RF,
+                    ResultVariable.RM,
+                    ResultVariable.SF,
+                    ResultVariable.SM,
+                    ResultVariable.LE,
+                    ResultVariable.S,
+                }
             )
         )
         if not fields:
             return _result_catalog_failure(
                 "result.catalog.no_supported_ready_fields",
-                "The accepted result has no READY U, RF, or S fields.",
+                "The accepted result has no supported READY result fields.",
                 clarification_required=True,
             )
         nodal_regions, element_regions = _published_result_regions(
@@ -1709,7 +1718,9 @@ def _require_published_result_region(
 ) -> None:
     nodal_variable = request.variable in {
         AgentResultVariable.DISPLACEMENT,
+        AgentResultVariable.ROTATION,
         AgentResultVariable.REACTION_FORCE,
+        AgentResultVariable.REACTION_MOMENT,
     }
     allowed = nodal_regions if nodal_variable else element_regions
     wrong_entity_regions = element_regions if nodal_variable else nodal_regions
@@ -1766,12 +1777,14 @@ def _native_result_query(
     region = request.region
     if variable in {
         AgentResultVariable.DISPLACEMENT,
+        AgentResultVariable.ROTATION,
         AgentResultVariable.REACTION_FORCE,
+        AgentResultVariable.REACTION_MOMENT,
     }:
         if region == "all_elements":
             raise _AgentResultQueryRejected(
                 "result.query.region_entity_unsupported",
-                "Nodal U and RF queries cannot target all_elements.",
+                "Nodal result queries cannot target all_elements.",
             )
         node_ids = (
             ()
@@ -1786,7 +1799,7 @@ def _native_result_query(
     if region == "all_nodes":
         raise _AgentResultQueryRejected(
             "result.query.region_entity_unsupported",
-            "Stress S queries cannot target all_nodes.",
+            "Element result queries cannot target all_nodes.",
         )
     element_ids = (
         ()
@@ -1853,7 +1866,12 @@ def _result_unit(
 ) -> str:
     return {
         AgentResultVariable.DISPLACEMENT: units.length,
+        AgentResultVariable.ROTATION: "rad",
         AgentResultVariable.REACTION_FORCE: units.force,
+        AgentResultVariable.REACTION_MOMENT: f"{units.force}*{units.length}",
+        AgentResultVariable.SECTION_FORCE: units.force,
+        AgentResultVariable.SECTION_MOMENT: f"{units.force}*{units.length}",
+        AgentResultVariable.LOGARITHMIC_STRAIN: "1",
         AgentResultVariable.STRESS: units.stress,
     }[variable]
 

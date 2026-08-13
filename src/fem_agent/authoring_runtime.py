@@ -2074,17 +2074,17 @@ _APPLY_DEFINITION = _tool(
                                     "type": "array",
                                     "items": {
                                         "type": "string",
-                                        "enum": ["U", "RF"],
+                                        "enum": ["U", "UR", "RF", "RM"],
                                     },
                                     "minItems": 1,
-                                    "maxItems": 2,
+                                    "maxItems": 4,
                                     "uniqueItems": True,
                                 },
                                 "units": {
                                     "type": "array",
                                     "items": _UNIT_SCHEMA,
                                     "minItems": 1,
-                                    "maxItems": 2,
+                                    "maxItems": 4,
                                 },
                                 "confirmed": _CONFIRMED_SCHEMA,
                             }
@@ -2101,16 +2101,17 @@ _APPLY_DEFINITION = _tool(
                                     "type": "array",
                                     "items": {
                                         "type": "string",
-                                        "const": "S",
+                                        "enum": ["SF", "SM", "LE", "S"],
                                     },
                                     "minItems": 1,
-                                    "maxItems": 1,
+                                    "maxItems": 4,
+                                    "uniqueItems": True,
                                 },
                                 "units": {
                                     "type": "array",
                                     "items": _UNIT_SCHEMA,
                                     "minItems": 1,
-                                    "maxItems": 1,
+                                    "maxItems": 4,
                                 },
                                 "confirmed": _CONFIRMED_SCHEMA,
                             }
@@ -2359,11 +2360,17 @@ _EDIT_MODEL_OBJECT = _tool(
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": ["U", "RF", "S"],
+                            "enum": ["U", "UR", "RF", "RM", "SF", "SM", "LE", "S"],
                         },
                         "minItems": 1,
                         "maxItems": 16,
                         "uniqueItems": True,
+                    },
+                    "units": {
+                        "type": "array",
+                        "items": _UNIT_SCHEMA,
+                        "minItems": 1,
+                        "maxItems": 16,
                     },
                     "first_component": {
                         "type": "integer",

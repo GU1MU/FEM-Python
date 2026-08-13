@@ -102,6 +102,28 @@ def test_status_values_are_exact_and_execution_values_are_frozen() -> None:
         outcome.report = outcome.report  # type: ignore[misc]
 
 
+def test_truss_le_output_request_materializes_centroid_strain() -> None:
+    provider = _truss_provider()
+    outcome = execute_output_requests(
+        provider,
+        (OutputRequest("field", "element", ("LE",)),),
+    )
+
+    assert _status_values(outcome) == (OutputExecutionStatus.EXECUTED,)
+    execution = outcome.report.requests[0]
+    assert execution.variables[0].canonical_variable is ResultVariable.LE
+    assert execution.variables[0].field_keys[0].request.field_id == (
+        ResultFieldId(ResultVariable.LE, FieldPosition.CENTROID)
+    )
+    ready = next(
+        item
+        for item in outcome.provider_draft.catalog().fields
+        if item.descriptor.field_id
+        == ResultFieldId(ResultVariable.LE, FieldPosition.CENTROID)
+    )
+    assert ready.state is FieldState.READY
+
+
 def test_execution_rejects_lookalike_provider_and_outcome_draft() -> None:
     provider = _truss_provider()
 
