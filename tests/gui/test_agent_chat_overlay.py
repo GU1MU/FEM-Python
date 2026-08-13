@@ -276,9 +276,9 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states():
 
     assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
     assert drawer.composer_task_title.text() == "网格提案 2"
-    assert "生成第 2 版网格" in drawer.composer_task_summary.text()
+    assert drawer.composer_task_summary.isHidden()
     assert drawer.composer_task_impact.isHidden()
-    assert drawer.composer_task_status.text() == "等待确认"
+    assert drawer.composer_task_status.isHidden()
     visible_accepts = [
         button
         for button in drawer.findChildren(
@@ -315,6 +315,8 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states():
     )
     assert progress is not None
     assert progress.value() == 42
+    assert drawer.composer_task_summary.isVisible()
+    assert drawer.composer_task_status.isVisible()
     assert drawer.composer_task_status.text() == "正在划分单元"
     assert not drawer.composer_accept_button.isVisible()
 

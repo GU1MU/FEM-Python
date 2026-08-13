@@ -756,8 +756,9 @@ def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
     assert drawer.findChild(QLabel, "agentChatProposalStatus") is None
     assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
     assert drawer.composer_task_title.text() == "加入偏心孔板"
+    assert drawer.composer_task_summary.isHidden()
     assert drawer.composer_task_impact.isHidden()
-    assert drawer.composer_task_status.text() == "等待确认"
+    assert drawer.composer_task_status.isHidden()
     drawer.close()
 
 

@@ -2472,13 +2472,15 @@ class AgentChatDrawer(_BoundaryFrame):
             (local or continuing) and self._runtime_busy
         )
         self.composer_progress.setVisible(local or continuing)
+        self.composer_task_summary.setVisible(not pending)
+        self.composer_task_status.setVisible(not pending)
         self.composer_task_impact.hide()
 
         if pending and proposal is not None and turn_id is not None:
             self.composer_task_title.setText(proposal.title)
-            self.composer_task_summary.setText("摘要 · " + proposal.summary)
+            self.composer_task_summary.clear()
             self.composer_task_impact.clear()
-            self.composer_task_status.setText("等待确认")
+            self.composer_task_status.clear()
             self.composer_accept_button.setText(proposal.confirm_label)
             self.composer_accept_button.setToolTip(proposal.confirm_label)
             self._set_composer_proposal_properties(proposal)
