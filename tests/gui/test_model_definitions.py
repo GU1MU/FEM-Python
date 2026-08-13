@@ -4,6 +4,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from fem.application import SectionDefinition
 from fem.core.model import MaterialDefinition
+from fem_gui.dialogs import AdaptivePrecisionDoubleSpinBox
 from fem_gui.model_dialogs import (
     DensityBehaviorDialog,
     ElasticBehaviorDialog,
@@ -69,6 +72,33 @@ def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
     existing_elastic = ElasticBehaviorDialog({"E": 210000.0, "nu": 0.3})
     assert existing_elastic.ok_button.isEnabled()
     assert existing_elastic.values() == {"E": 210000.0, "nu": 0.3}
+
+
+def test_material_inputs_use_adaptive_precision_consistently():
+    _application()
+    elastic = ElasticBehaviorDialog({"E": 210000.123456, "nu": 0.333333})
+    density = DensityBehaviorDialog({"rho": 7850.123456})
+
+    editors = (
+        elastic.elastic_spin,
+        elastic.poisson_spin,
+        density.density_spin,
+    )
+    assert all(
+        isinstance(editor, AdaptivePrecisionDoubleSpinBox)
+        and editor.decimals() == 12
+        for editor in editors
+    )
+    assert elastic.elastic_spin.text() == "210000.12"
+    assert elastic.poisson_spin.text() == "0.33"
+    assert density.density_spin.text() == "7850.12"
+    assert elastic.values()["nu"] == 0.333333
+
+    elastic.poisson_spin.selectAll()
+    QTest.keyClicks(elastic.poisson_spin, "0.333333")
+    QTest.keyClick(elastic.poisson_spin, Qt.Key.Key_Return)
+    assert elastic.poisson_spin.text() == "0.333333"
+    assert elastic.values()["nu"] == 0.333333
 
 
 def test_section_dialog_uses_dimension_specific_supported_parameters():

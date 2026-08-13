@@ -51,13 +51,12 @@ from fem.core.model import (
 )
 from fem.steps.factory import static
 
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .dialogs import AdaptivePrecisionDoubleSpinBox, configure_form_layout
 
 
 def _value(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
-    box = CompactDoubleSpinBox(parent)
+    box = AdaptivePrecisionDoubleSpinBox(parent)
     box.setRange(-1.0e15, 1.0e15)
-    box.setDecimals(8)
     box.setValue(float(value))
     return box
 

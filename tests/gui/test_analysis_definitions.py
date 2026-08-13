@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 
 from fem.application import (
@@ -48,6 +49,7 @@ from fem_gui.analysis_definition_dialogs import (
     OutputRequestDialog,
     StaticStepDialog,
 )
+from fem_gui.dialogs import AdaptivePrecisionDoubleSpinBox
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 
@@ -297,6 +299,49 @@ def test_displacement_dialog_creates_independent_checked_dofs():
         ("支座位移", 2, 2, 0.25),
         ("支座位移-2", 3, 3, -0.5),
     ]
+
+
+def test_boundary_and_load_inputs_share_adaptive_precision():
+    _application()
+    boundary = DisplacementDialog(
+        ["Load"],
+        _regions("node_set", "Fixed"),
+        2,
+        selected_region=RegionRef("node_set", "Fixed"),
+        current=DisplacementConstraint("Fixed", 1, 1, 0.123456),
+    )
+    load = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Loaded"),
+        [],
+        [],
+        2,
+        selected_region=RegionRef("node_set", "Loaded"),
+        current=NodalLoad("Loaded", 1, 3.456789),
+    )
+
+    boundary_value = boundary.component_values[1]
+    assert isinstance(boundary_value, AdaptivePrecisionDoubleSpinBox)
+    assert isinstance(load.value_spin, AdaptivePrecisionDoubleSpinBox)
+    assert all(editor.decimals() == 12 for editor in boundary.component_values.values())
+    assert all(
+        editor.decimals() == 12
+        for editor in (load.value_spin, load.x_spin, load.y_spin, load.z_spin)
+    )
+    assert boundary_value.text() == "0.12"
+    assert load.value_spin.text() == "3.46"
+
+    boundary_value.selectAll()
+    QTest.keyClicks(boundary_value, "0.123456")
+    QTest.keyClick(boundary_value, Qt.Key.Key_Return)
+    load.value_spin.selectAll()
+    QTest.keyClicks(load.value_spin, "3.456789")
+    QTest.keyClick(load.value_spin, Qt.Key.Key_Return)
+
+    assert boundary_value.text() == "0.123456"
+    assert boundary.definitions()[1][0].value == 0.123456
+    assert load.value_spin.text() == "3.456789"
+    assert load.definition()[1].value == 3.456789
 
 
 def test_displacement_dialog_merges_adjacent_equal_dofs():

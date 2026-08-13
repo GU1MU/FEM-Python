@@ -60,7 +60,7 @@ from fem.geometry import (
     SketchVerticalConstraint,
     sketch_constraint_entity_ids,
 )
-from ..dialogs import CompactDoubleSpinBox
+from ..dialogs import AdaptivePrecisionDoubleSpinBox
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
     SketchPreferences,
@@ -246,10 +246,7 @@ class _DimensionEditorDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("sketchDimensionEditorDialog")
         self.setWindowTitle("编辑约束")
-        self.value_spin = CompactDoubleSpinBox(
-            self,
-            minimum_display_decimals=1,
-        )
+        self.value_spin = AdaptivePrecisionDoubleSpinBox(self)
         self.value_spin.setObjectName("sketchDimensionEditorValue")
         self.value_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         self.value_spin.setRange(1.0e-12, 1.0e12)
@@ -309,7 +306,7 @@ class _FixedConstraintEditorDialog(QDialog):
         layout.addWidget(buttons)
 
     def _coordinate_spin(self, object_name: str, value: float) -> QDoubleSpinBox:
-        editor = CompactDoubleSpinBox(self)
+        editor = AdaptivePrecisionDoubleSpinBox(self)
         editor.setObjectName(object_name)
         editor.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         editor.setRange(-1.0e12, 1.0e12)
@@ -440,6 +437,7 @@ class SketchEditorPanel(QWidget):
         self._polyline_first_id: str | None = None
         self._authoring_purpose = "geometry"
         self._selection_anchor_id: str | None = None
+        self._parameter_curve_id: str | None = None
         self._constraint_command_kind: str | None = None
         self._constraint_command_targets: list[tuple[str, str]] = []
         self._build_ui()
@@ -495,9 +493,9 @@ class SketchEditorPanel(QWidget):
         self.grid_visible_check.toggled.connect(
             self._preferences_changed
         )
-        self.spacing_spin = QDoubleSpinBox(self)
+        self.spacing_spin = AdaptivePrecisionDoubleSpinBox(self)
         self.spacing_spin.setObjectName("sketchGridSpacing")
-        self.spacing_spin.setDecimals(3)
+        self.spacing_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         self.spacing_spin.setRange(0.001, 1.0e12)
         self.spacing_spin.setSingleStep(0.1)
         self.spacing_spin.setValue(preferences.grid_spacing)
@@ -547,7 +545,7 @@ class SketchEditorPanel(QWidget):
         self.points_table.hide()
 
         def parameter_spin(object_name: str) -> QDoubleSpinBox:
-            editor = CompactDoubleSpinBox(self)
+            editor = AdaptivePrecisionDoubleSpinBox(self)
             editor.setObjectName(object_name)
             editor.setDecimals(_SKETCH_NUMERIC_DECIMALS)
             editor.setRange(-1.0e12, 1.0e12)
@@ -641,7 +639,7 @@ class SketchEditorPanel(QWidget):
         self.constraint_driving_check = QCheckBox("驱动尺寸", self)
         self.constraint_driving_check.setChecked(False)
         self.constraint_driving_check.hide()
-        self.constraint_value_spin = CompactDoubleSpinBox(self)
+        self.constraint_value_spin = AdaptivePrecisionDoubleSpinBox(self)
         self.constraint_value_spin.setObjectName("sketchConstraintValue")
         self.constraint_value_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
         self.constraint_value_spin.setRange(1.0e-12, 1.0e12)
@@ -831,6 +829,7 @@ class SketchEditorPanel(QWidget):
             raise TypeError("controller must be a SketchDraftController")
         self._controller = controller
         self._base_snapshot = base_snapshot or controller.snapshot()
+        self._parameter_curve_id = None
         self._reference_points = ()
         self._clear_pending()
         self._refresh()
@@ -2673,7 +2672,22 @@ class SketchEditorPanel(QWidget):
             ),
             None,
         )
+        preserve_user_precision = selected_id == self._parameter_curve_id
         point_map = {point.id: point for point in snapshot.points}
+
+        def set_parameter_value(
+            editor: AdaptivePrecisionDoubleSpinBox,
+            value: float,
+        ) -> None:
+            if preserve_user_precision and math.isclose(
+                editor.value(),
+                value,
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-12,
+            ):
+                return
+            editor.setValue(value)
+
         widgets = (
             self.line_start_combo,
             self.line_end_combo,
@@ -2710,24 +2724,28 @@ class SketchEditorPanel(QWidget):
                 )
                 start = point_map[curve.start_point_id]
                 end = point_map[curve.end_point_id]
-                self.line_length_spin.setValue(
+                set_parameter_value(
+                    self.line_length_spin,
                     math.hypot(end.u - start.u, end.v - start.v)
                 )
             elif isinstance(curve, SketchCircle):
-                self.circle_radius_spin.setValue(curve.radius)
+                set_parameter_value(self.circle_radius_spin, curve.radius)
             elif isinstance(curve, SketchArc):
                 center = point_map[curve.center_point_id]
                 start = point_map[curve.start_point_id]
                 end = point_map[curve.end_point_id]
-                self.arc_radius_spin.setValue(
+                set_parameter_value(
+                    self.arc_radius_spin,
                     math.hypot(start.u - center.u, start.v - center.v)
                 )
-                self.arc_start_angle_spin.setValue(
+                set_parameter_value(
+                    self.arc_start_angle_spin,
                     math.degrees(
                         math.atan2(start.v - center.v, start.u - center.u)
                     )
                 )
-                self.arc_end_angle_spin.setValue(
+                set_parameter_value(
+                    self.arc_end_angle_spin,
                     math.degrees(
                         math.atan2(end.v - center.v, end.u - center.u)
                     )
@@ -2736,6 +2754,7 @@ class SketchEditorPanel(QWidget):
                     self.arc_orientation_combo.findData(curve.orientation)
                 )
         finally:
+            self._parameter_curve_id = selected_id
             for widget in widgets:
                 widget.blockSignals(False)
 

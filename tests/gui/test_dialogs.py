@@ -4,9 +4,13 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
-from fem_gui.dialogs import CompactDoubleSpinBox
+from fem_gui.dialogs import (
+    AdaptivePrecisionDoubleSpinBox,
+    CompactDoubleSpinBox,
+)
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
     DisplaySettingsDialog,
@@ -39,6 +43,26 @@ def test_compact_number_input_hides_only_insignificant_trailing_zeroes():
     editor.setValue(0.0001)
     assert editor.text() == "0.0001"
     assert editor.value() == 0.0001
+
+
+def test_adaptive_number_input_preserves_only_user_typed_precision():
+    _application()
+    editor = AdaptivePrecisionDoubleSpinBox()
+
+    editor.setValue(2.3456789)
+    assert editor.decimals() == 12
+    assert editor.value() == 2.3456789
+    assert editor.text() == "2.35"
+
+    editor.selectAll()
+    QTest.keyClicks(editor, "0.2500")
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    assert editor.value() == 0.25
+    assert editor.text() == "0.2500"
+
+    editor.setValue(3.4567)
+    assert editor.value() == 3.4567
+    assert editor.text() == "3.46"
 
 
 def test_contour_display_and_symbol_dialogs_round_trip_settings():

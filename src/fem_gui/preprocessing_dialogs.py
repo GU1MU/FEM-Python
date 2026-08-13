@@ -51,7 +51,11 @@ from fem.geometry import (
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
 
-from .dialogs import CompactDoubleSpinBox, configure_form_layout
+from .dialogs import (
+    AdaptivePrecisionDoubleSpinBox,
+    CompactDoubleSpinBox,
+    configure_form_layout,
+)
 
 
 def _positive_spin_box(parent: QDialog, value: float) -> QDoubleSpinBox:
@@ -66,6 +70,13 @@ def _signed_spin_box(parent: QDialog, value: float) -> QDoubleSpinBox:
     editor = CompactDoubleSpinBox(parent)
     editor.setRange(-1.0e12, 1.0e12)
     editor.setDecimals(6)
+    editor.setValue(float(value))
+    return editor
+
+
+def _mesh_size_spin_box(parent: QDialog, value: float) -> QDoubleSpinBox:
+    editor = AdaptivePrecisionDoubleSpinBox(parent)
+    editor.setRange(1.0e-9, 1.0e12)
     editor.setValue(float(value))
     return editor
 
@@ -938,7 +949,7 @@ class LocalMeshControlDialog(QDialog):
             )
         )
         names = {"point": "点", "edge": "边", "face": "面"}
-        self.size_spin = _positive_spin_box(
+        self.size_spin = _mesh_size_spin_box(
             self,
             float(current_size)
             if current_size is not None
@@ -1425,7 +1436,7 @@ class MeshSettingsDialog(QDialog):
         current_size = (
             settings.size if settings is not None else float(suggested_size)
         )
-        self.size_spin = _positive_spin_box(self, current_size)
+        self.size_spin = _mesh_size_spin_box(self, current_size)
         self._local_controls = () if settings is None else settings.local_controls
         if self._local_controls:
             self.size_spin.setMinimum(

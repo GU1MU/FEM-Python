@@ -91,7 +91,7 @@ def test_panel_uses_fine_default_grid_and_omits_curve_profile_lists() -> None:
     panel = SketchEditorPanel(SketchDraftController("compact-panel"))
 
     assert panel.spacing_spin.value() == 0.1
-    assert panel.spacing_spin.text() == "0.100"
+    assert panel.spacing_spin.text() == "0.1"
     assert not hasattr(panel, "curves_list")
     assert not hasattr(panel, "profiles_list")
     assert panel.findChildren(QListWidget) == []
@@ -624,7 +624,7 @@ def test_dimension_dialog_accepts_precise_input_and_blocks_wheel() -> None:
     _application()
     dialog = sketch_editor_panel_module._DimensionEditorDialog(
         "半径",
-        2.0,
+        2.3456789,
     )
     value = dialog.value_spin.value()
 
@@ -632,19 +632,24 @@ def test_dimension_dialog_accepts_precise_input_and_blocks_wheel() -> None:
 
     assert dialog.value_spin.decimals() == 12
     assert dialog.value_spin.singleStep() == 0.1
-    assert dialog.value_spin.text() == "2.0"
+    assert dialog.value_spin.text() == "2.35"
     assert dialog.value_spin.value() == value
     dialog.value_spin.selectAll()
     QTest.keyClicks(dialog.value_spin, "0.25")
     QTest.keyClick(dialog.value_spin, Qt.Key.Key_Return)
     assert dialog.value_spin.value() == 0.25
     assert dialog.value_spin.text() == "0.25"
+    dialog.value_spin.selectAll()
+    QTest.keyClicks(dialog.value_spin, "0.2500")
+    QTest.keyClick(dialog.value_spin, Qt.Key.Key_Return)
+    assert dialog.value_spin.value() == 0.25
+    assert dialog.value_spin.text() == "0.2500"
     assert not hasattr(dialog, "driving_check")
     assert "驱动尺寸" not in {label.text() for label in dialog.findChildren(QLabel)}
     dialog.close()
 
 
-def test_sketch_numeric_editors_share_full_precision() -> None:
+def test_sketch_numeric_editors_default_to_two_display_decimals() -> None:
     _application()
     panel = SketchEditorPanel(SketchDraftController("precise-inputs"))
     fixed_dialog = sketch_editor_panel_module._FixedConstraintEditorDialog(
@@ -662,10 +667,23 @@ def test_sketch_numeric_editors_share_full_precision() -> None:
         panel.arc_start_angle_spin,
         panel.arc_end_angle_spin,
         panel.constraint_value_spin,
+        panel.spacing_spin,
     )
     assert all(editor.decimals() == 12 for editor in editors)
     assert fixed_dialog.u_spin.value() == 0.123456789012
     assert fixed_dialog.v_spin.value() == -0.123456789012
+    assert fixed_dialog.u_spin.text() == "0.12"
+    assert fixed_dialog.v_spin.text() == "-0.12"
+
+    panel.circle_radius_spin.setValue(2.3456789)
+    assert panel.circle_radius_spin.value() == 2.3456789
+    assert panel.circle_radius_spin.text() == "2.35"
+
+    panel.circle_radius_spin.selectAll()
+    QTest.keyClicks(panel.circle_radius_spin, "2.3456789")
+    QTest.keyClick(panel.circle_radius_spin, Qt.Key.Key_Return)
+    assert panel.circle_radius_spin.value() == 2.3456789
+    assert panel.circle_radius_spin.text() == "2.3456789"
 
     fixed_dialog.close()
     panel.close()
@@ -831,18 +849,24 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
     controller = SketchDraftController("curve-parameters")
     circle = controller.add_circle((0.0, 0.0), 2.0)
     arc = controller.add_arc((3.0, 0.0), (4.0, 1.0), (3.0, 2.0))
+    matching_circle = controller.add_circle((7.0, 0.0), 3.4567)
     panel = SketchEditorPanel(controller)
 
     panel._select_curve(circle.id)
     assert panel.circle_parameter_group.isHidden() is False
-    panel.circle_radius_spin.setValue(3.5)
-    panel._circle_radius_changed()
+    panel.circle_radius_spin.selectAll()
+    QTest.keyClicks(panel.circle_radius_spin, "3.4567")
+    QTest.keyClick(panel.circle_radius_spin, Qt.Key.Key_Return)
     updated_circle = next(
         curve
         for curve in controller.snapshot().curves
         if curve.id == circle.id
     )
-    assert updated_circle.radius == 3.5
+    assert updated_circle.radius == 3.4567
+    assert panel.circle_radius_spin.text() == "3.4567"
+
+    panel._select_curve(matching_circle.id)
+    assert panel.circle_radius_spin.text() == "3.46"
 
     panel._select_curve(arc.id)
     assert panel.arc_parameter_group.isHidden() is False

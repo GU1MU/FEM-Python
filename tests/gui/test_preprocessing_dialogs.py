@@ -4,6 +4,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
 
 from fem.application import MeshEntityRef, NamedRegion
@@ -16,6 +18,7 @@ from fem.geometry import (
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
+from fem_gui.dialogs import AdaptivePrecisionDoubleSpinBox
 from fem_gui.preprocessing_dialogs import (
     BasicSolidCreationDialog,
     GeometryCreationDialog,
@@ -162,6 +165,41 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
     labels = {label.text() for label in dialog.findChildren(QLabel)}
     assert "已选择 1 个边" in labels
     assert "边 2" not in labels
+
+
+def test_global_and_local_mesh_sizes_share_adaptive_precision() -> None:
+    _application()
+    global_dialog = MeshSettingsDialog(MeshSettings(5.123456))
+    local_dialog = LocalMeshControlDialog(
+        LogicalEntityRef("edge:right"),
+        5.123456,
+        current_size=1.234567,
+    )
+
+    assert isinstance(
+        global_dialog.size_spin,
+        AdaptivePrecisionDoubleSpinBox,
+    )
+    assert isinstance(
+        local_dialog.size_spin,
+        AdaptivePrecisionDoubleSpinBox,
+    )
+    assert global_dialog.size_spin.decimals() == 12
+    assert local_dialog.size_spin.decimals() == 12
+    assert global_dialog.size_spin.text() == "5.12"
+    assert local_dialog.size_spin.text() == "1.23"
+
+    global_dialog.size_spin.selectAll()
+    QTest.keyClicks(global_dialog.size_spin, "0.2500")
+    QTest.keyClick(global_dialog.size_spin, Qt.Key.Key_Return)
+    local_dialog.size_spin.selectAll()
+    QTest.keyClicks(local_dialog.size_spin, "0.125000")
+    QTest.keyClick(local_dialog.size_spin, Qt.Key.Key_Return)
+
+    assert global_dialog.size_spin.text() == "0.2500"
+    assert global_dialog.settings().size == 0.25
+    assert local_dialog.size_spin.text() == "0.125000"
+    assert local_dialog.control().size == 0.125
 
 
 def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
