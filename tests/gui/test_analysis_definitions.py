@@ -127,11 +127,57 @@ def test_boundary_scope_highlight_reuses_entity_highlighter(monkeypatch):
         lambda: cleared.append(True),
     )
 
+    window._highlight_analysis_scope(RegionRef("node_set", "FixedNodes"))
+    window._highlight_analysis_scope(RegionRef("edge", "FixedEdge"))
     window._highlight_analysis_scope(RegionRef("surface", "FixedFace"))
+    window._highlight_analysis_scope(RegionRef("element_set", "Domain"))
+    window._highlight_analysis_scope(7)
     window._highlight_analysis_scope(None)
 
-    assert highlighted == [("surface", "FixedFace")]
+    assert highlighted == [
+        ("node_set", "FixedNodes"),
+        ("edge", "FixedEdge"),
+        ("surface", "FixedFace"),
+        ("element_set", "Domain"),
+        ("element", 7),
+    ]
     assert cleared == [True]
+    window.close()
+
+
+@pytest.mark.parametrize("result", (0, 1))
+def test_analysis_scope_dialog_always_clears_highlight(
+    monkeypatch,
+    result,
+):
+    _application()
+    window = FEMMainWindow()
+    dialog = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Loaded-1", "Loaded-2"),
+        [],
+        [],
+        2,
+    )
+    highlighted = []
+    monkeypatch.setattr(
+        window,
+        "_highlight_analysis_scope",
+        highlighted.append,
+    )
+
+    def execute(active_dialog):
+        active_dialog.region_combo.setCurrentIndex(1)
+        return result
+
+    monkeypatch.setattr(window, "_exec_dialog", execute)
+
+    assert window._exec_analysis_scope_dialog(dialog) == result
+    assert highlighted == [
+        RegionRef("node_set", "Loaded-1"),
+        RegionRef("node_set", "Loaded-2"),
+        None,
+    ]
     window.close()
 
 
@@ -605,6 +651,62 @@ def test_load_dialog_saves_names_for_every_load_kind(kind):
     assert load.name == "工况载荷"
 
 
+def test_load_dialog_reports_every_supported_scope_change():
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        _regions("node_set", "Nodes"),
+        _regions("edge", "Edges"),
+        _regions("surface", "Faces"),
+        3,
+        spatial_dimensions=3,
+        line_regions=_regions("element_set", "Lines"),
+        body_regions=_regions("element_set", "Domain"),
+    )
+    selected = []
+    dialog.scopeChanged.connect(selected.append)
+
+    expected = (
+        ("edge", RegionRef("edge", "Edges")),
+        ("surface", RegionRef("surface", "Faces")),
+        ("line", RegionRef("element_set", "Lines")),
+        ("body", RegionRef("element_set", "Domain")),
+        ("gravity", None),
+        ("node", RegionRef("node_set", "Nodes")),
+    )
+    for kind, _scope in expected:
+        dialog.kind_combo.setCurrentIndex(
+            dialog.kind_combo.findData(kind)
+        )
+
+    assert selected == [scope for _kind, scope in expected]
+
+
+@pytest.mark.parametrize(
+    ("target", "scope"),
+    (
+        ("Domain", RegionRef("element_set", "Domain")),
+        (7, 7),
+        (None, None),
+    ),
+)
+def test_load_dialog_reports_targeted_and_global_gravity_scopes(
+    target,
+    scope,
+):
+    _application()
+    dialog = LoadDialog(
+        ["Load"],
+        [],
+        [],
+        [],
+        3,
+        current=GravityLoad((0.0, 0.0, -9.81), target),
+    )
+
+    assert dialog.selected_scope() == scope
+
+
 def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
     _application()
     step = static("Load")
@@ -677,6 +779,38 @@ def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
     assert selected == [
         RegionRef("node_set", "Fixed"),
         RegionRef("node_set", "Roller"),
+        None,
+    ]
+
+
+def test_analysis_manager_forwards_and_clears_load_scope_changes(
+    monkeypatch,
+):
+    _application()
+    step = static("Load")
+    step.edge_loads = (EdgeLoad("Edge-1", (1.0, 0.0)),)
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        _regions("edge", "Edge-1", "Edge-2"),
+        [],
+        2,
+    )
+    selected = []
+    manager.scopeChanged.connect(selected.append)
+
+    def select_scope(dialog):
+        assert selected == [RegionRef("edge", "Edge-1")]
+        dialog.region_combo.setCurrentIndex(1)
+        return False
+
+    monkeypatch.setattr(LoadDialog, "exec", select_scope)
+
+    assert not manager.edit_definition(("edge_load", 0, 0))
+    assert selected == [
+        RegionRef("edge", "Edge-1"),
+        RegionRef("edge", "Edge-2"),
+        None,
     ]
 
 

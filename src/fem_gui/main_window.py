@@ -11987,9 +11987,7 @@ class FEMMainWindow(QMainWindow):
             ),
             form_state=dialog_state,
         )
-        dialog.scopeChanged.connect(self._highlight_analysis_scope)
-        self._highlight_analysis_scope(dialog.selected_scope())
-        if not self._exec_dialog(dialog):
+        if not self._exec_analysis_scope_dialog(dialog):
             requested_scope_kind = (
                 dialog.requested_scope_kind()
                 if hasattr(dialog, "requested_scope_kind")
@@ -12118,7 +12116,7 @@ class FEMMainWindow(QMainWindow):
             ),
             form_state=dialog_state,
         )
-        if not self._exec_dialog(dialog):
+        if not self._exec_analysis_scope_dialog(dialog):
             requested_scope_kind = (
                 dialog.requested_scope_kind()
                 if hasattr(dialog, "requested_scope_kind")
@@ -12388,9 +12386,25 @@ class FEMMainWindow(QMainWindow):
         dialog.scopeChanged.connect(self._highlight_analysis_scope)
         return dialog
 
+    def _exec_analysis_scope_dialog(
+        self,
+        dialog: DisplacementDialog | LoadDialog,
+    ) -> int:
+        """Highlight an analysis scope only while its editor is open."""
+
+        dialog.scopeChanged.connect(self._highlight_analysis_scope)
+        self._highlight_analysis_scope(dialog.selected_scope())
+        try:
+            return self._exec_dialog(dialog)
+        finally:
+            self._highlight_analysis_scope(None)
+
     def _highlight_analysis_scope(self, region: object) -> None:
         """Project the scope selected by an analysis editor to the viewport."""
 
+        if isinstance(region, int):
+            self.highlight_entity("element", int(region))
+            return
         if not isinstance(region, RegionRef):
             self.viewport.clear_selection()
             return

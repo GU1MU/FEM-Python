@@ -54,6 +54,9 @@ from fem.steps.factory import static
 from .dialogs import AdaptivePrecisionDoubleSpinBox, configure_form_layout
 
 
+_SCOPE_NOT_REPORTED = object()
+
+
 def _value(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
     box = AdaptivePrecisionDoubleSpinBox(parent)
     box.setRange(-1.0e15, 1.0e15)
@@ -178,6 +181,7 @@ class DisplacementDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("位移边界条件")
+        self._reported_scope: object = _SCOPE_NOT_REPORTED
         supported_scope_kinds = frozenset(
             str(kind)
             for kind in scope_selection_kinds
@@ -377,7 +381,11 @@ class DisplacementDialog(QDialog):
 
     def _on_scope_changed(self) -> None:
         self._update_accept_state()
-        self.scopeChanged.emit(self.selected_scope())
+        scope = self.selected_scope()
+        if scope == self._reported_scope:
+            return
+        self._reported_scope = scope
+        self.scopeChanged.emit(scope)
 
     def _update_accept_state(self) -> None:
         buttons = getattr(self, "buttons", None)
@@ -449,6 +457,8 @@ class LoadDialogState:
 
 
 class LoadDialog(QDialog):
+    scopeChanged = Signal(object)
+
     _COMPONENT_LABELS = ("Fx", "Fy", "Fz", "Mx", "My", "Mz")
 
     def __init__(
@@ -483,6 +493,7 @@ class LoadDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
+        self._reported_scope: object = _SCOPE_NOT_REPORTED
         supported_scope_kinds = frozenset(
             str(kind)
             for kind in scope_selection_kinds
@@ -708,7 +719,7 @@ class LoadDialog(QDialog):
         layout.addWidget(self.buttons)
         self.setMinimumWidth(350)
         self.region_combo.currentIndexChanged.connect(
-            self._update_candidate_state
+            self._on_scope_changed
         )
         self.step_combo.currentIndexChanged.connect(
             self._update_candidate_state
@@ -757,6 +768,28 @@ class LoadDialog(QDialog):
             self.name_edit.text(),
         )
 
+    def selected_scope(self) -> RegionRef | int | None:
+        kind = str(self.kind_combo.currentData() or "")
+        if kind == "gravity":
+            if isinstance(self._gravity_target, int):
+                return int(self._gravity_target)
+            if self._gravity_target is not None:
+                return RegionRef(
+                    "element_set",
+                    str(self._gravity_target),
+                )
+            return None
+        region = self.region_combo.currentData()
+        return region if isinstance(region, RegionRef) else None
+
+    def _on_scope_changed(self) -> None:
+        self._update_candidate_state()
+        scope = self.selected_scope()
+        if scope == self._reported_scope:
+            return
+        self._reported_scope = scope
+        self.scopeChanged.emit(scope)
+
     def _set_distributed_values(
         self,
         vector: tuple[float, ...],
@@ -797,17 +830,21 @@ class LoadDialog(QDialog):
         )
         gravity = kind == "gravity"
         current = self.region_combo.currentData()
-        self.region_combo.clear()
-        if gravity:
-            if self._gravity_target is not None:
-                self.region_combo.addItem(
-                    str(self._gravity_target),
-                    self._gravity_target,
-                )
-        else:
-            for reference in self._regions[kind]:
-                self.region_combo.addItem(reference.name, reference)
-        _select_region(self.region_combo, current)
+        signals_blocked = self.region_combo.blockSignals(True)
+        try:
+            self.region_combo.clear()
+            if gravity:
+                if self._gravity_target is not None:
+                    self.region_combo.addItem(
+                        str(self._gravity_target),
+                        self._gravity_target,
+                    )
+            else:
+                for reference in self._regions[kind]:
+                    self.region_combo.addItem(reference.name, reference)
+            _select_region(self.region_combo, current)
+        finally:
+            self.region_combo.blockSignals(signals_blocked)
         distributed = kind in {"edge", "surface"}
         pressure = self.load_type_combo.currentData() == "pressure"
         self.form.setRowVisible(
@@ -869,7 +906,7 @@ class LoadDialog(QDialog):
             self.z_spin,
             show_vector and vector_dimensions == 3,
         )
-        self._update_candidate_state()
+        self._on_scope_changed()
 
     def candidate_decision(
         self,
@@ -1704,6 +1741,17 @@ class AnalysisDefinitionManagerDialog(QDialog):
             else [*values, existing]
         )
 
+    def _exec_scope_dialog(
+        self,
+        dialog: DisplacementDialog | LoadDialog,
+    ) -> int:
+        dialog.scopeChanged.connect(self.scopeChanged.emit)
+        self.scopeChanged.emit(dialog.selected_scope())
+        try:
+            return int(dialog.exec())
+        finally:
+            self.scopeChanged.emit(None)
+
     def _edit(self) -> None:
         selected = self._selected()
         if selected is None:
@@ -1761,14 +1809,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     else None
                 ),
             )
-            dialog.scopeChanged.connect(self.scopeChanged.emit)
-            self.scopeChanged.emit(dialog.selected_scope())
             if not isinstance(
                 self._dialog_state_override,
                 DisplacementDialogState,
             ):
                 dialog.step_combo.setCurrentText(step.name)
-            if not dialog.exec():
+            if not self._exec_scope_dialog(dialog):
                 requested_kind = dialog.requested_scope_kind()
                 if requested_kind is not None:
                     self._scope_selection_request = (
@@ -1880,7 +1926,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 LoadDialogState,
             ):
                 dialog.step_combo.setCurrentText(step.name)
-            if not dialog.exec():
+            if not self._exec_scope_dialog(dialog):
                 requested_kind = dialog.requested_scope_kind()
                 if requested_kind is not None:
                     self._scope_selection_request = (

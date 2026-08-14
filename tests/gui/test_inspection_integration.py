@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.io.inp import read
-from fem.application import MeshEntityRef, NativePart
+from fem.application import MeshEntityRef, NativePart, RegionRef
 from fem.application.results import build_solve_result_bundle
 from fem.core.model import (
     AnalysisStep,
@@ -376,6 +376,30 @@ def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) 
         expected,
         {"entity_kind": "edge"},
     )
+
+    cleared = []
+    monkeypatch.setattr(
+        window.viewport,
+        "clear_selection",
+        lambda **options: cleared.append(options),
+    )
+
+    def reject_edge_load_editor(dialog):
+        assert dialog.selected_scope() == RegionRef(
+            "edge",
+            "FIXED_EDGE",
+        )
+        assert highlighted_scopes[-1] == (
+            expected,
+            {"entity_kind": "edge"},
+        )
+        return False
+
+    monkeypatch.setattr(LoadDialog, "exec", reject_edge_load_editor)
+
+    window._edit_analysis_definition_key(("edge_load", 0, 0))
+
+    assert cleared == [{"render": False}, {}]
     window.close()
 
 
