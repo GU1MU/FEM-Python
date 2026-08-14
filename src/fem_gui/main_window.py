@@ -10252,20 +10252,33 @@ class FEMMainWindow(QMainWindow):
             or self._active_editor()
         ):
             return False
-        answer = QMessageBox.question(
-            self,
-            "删除模型",
-            f"是否删除当前选中的模型“{context.display_name}”？\n"
-            "未保存的修改和关联结果将一并移除。",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle("删除模型")
+        dialog.setText(f"是否删除当前选中的模型“{context.display_name}”？")
+        dialog.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        confirm_button = dialog.button(QMessageBox.StandardButton.Ok)
+        cancel_button = dialog.button(QMessageBox.StandardButton.Cancel)
+        confirm_button.setText("确定")
+        cancel_button.setText("取消")
+        dialog.setDefaultButton(cancel_button)
+        dialog.setEscapeButton(cancel_button)
+        answer = QMessageBox.StandardButton(dialog.exec())
+        if answer != QMessageBox.StandardButton.Ok:
+            return False
+        try:
+            preserved_results = self._preserve_model_results(context)
+        except (RuntimeError, TypeError, ValueError) as error:
+            self._show_error("删除模型", f"保留关联结果失败：{error}")
             return False
         deleted = self.close_model(
             confirm=False,
             document_id=context.document_id,
         )
+        if not deleted:
+            self._remove_preserved_result_contexts(preserved_results)
         if deleted:
             self._update_action_states()
             self.status_panel.set_state(
@@ -10273,6 +10286,81 @@ class FEMMainWindow(QMainWindow):
                 5000,
             )
         return deleted
+
+    def _preserve_model_results(
+        self,
+        context: WorkspaceDocument,
+    ) -> tuple[WorkspaceDocument, ...]:
+        """Move successful model runs into independent result documents."""
+
+        preserved: list[WorkspaceDocument] = []
+        try:
+            for run in context.projection.runs:
+                if run.status is not RunStatus.SUCCEEDED or run.result_id is None:
+                    continue
+                prepared = context.session.prepare_result_archive_save(run.run_id)
+                archive = prepared.archive
+                file_state = context.projection.result_file_state_for(run.run_id)
+                generation = context.projection.result_generations.get(run.run_id)
+                source_path = (
+                    file_state.path
+                    if file_state is not None
+                    and file_state.saved_generation == generation
+                    else None
+                )
+                if (
+                    source_path is not None
+                    and canonical_path(source_path) in self.workspace.result_paths
+                ):
+                    source_path = None
+
+                session = ModelSession()
+                delta = session.replace_from_result_archive(
+                    archive,
+                    path=source_path,
+                )
+                if not delta.accepted:
+                    raise RuntimeError(delta.reason or "结果文档创建失败")
+                projection = session.projection_snapshot()
+                geometry = build_result_archive_geometry(
+                    archive.model_projection,
+                )
+                model_view = build_result_archive_model_view(
+                    archive.model_projection,
+                    archive.profile,
+                    name=str(archive.origin.model_name or "Result"),
+                )
+                result_context = self.workspace.add_result(
+                    session=session,
+                    projection=projection,
+                    display_name=run.name,
+                    source_path=source_path,
+                )
+                preserved.append(result_context)
+                result_context.presentation_state.module_name = "结果"
+                artifact = projection.artifact
+                result_context.presentation_cache.artifact_id = (
+                    None if artifact is None else artifact.artifact_id
+                )
+                result_context.presentation_cache.model_geometry = geometry
+                result_context.presentation_cache.result_model_view = model_view
+                identity = session.current_result_identity()
+                if identity is not None:
+                    result_context.presentation_cache.result_source = identity[0]
+                    result_context.presentation_cache.result_generation = identity[1]
+                self._refresh_result_tree_for_context(result_context)
+        except Exception:
+            self._remove_preserved_result_contexts(preserved)
+            raise
+        return tuple(preserved)
+
+    def _remove_preserved_result_contexts(
+        self,
+        contexts: Sequence[WorkspaceDocument],
+    ) -> None:
+        for context in reversed(tuple(contexts)):
+            self.result_tree.remove_archive(context.document_id)
+            self.workspace.remove(context)
 
     def _create_native_model(self, model_name: str) -> None:
         """Create a native project after its model name has been collected."""

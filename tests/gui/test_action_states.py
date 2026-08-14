@@ -234,26 +234,38 @@ def test_delete_model_requires_confirmation_and_removes_active_model(
     window = FEMMainWindow()
     original = window.workspace.active_document()
     assert original is not None
-    window._create_native_model("待删除模型")
+    window._create_native_model("模型-2")
     target = window.workspace.active_document()
     assert target is not None
     assert target is not original
     prompts = []
     answers = iter(
         (
-            main_window_module.QMessageBox.StandardButton.No,
-            main_window_module.QMessageBox.StandardButton.Yes,
+            main_window_module.QMessageBox.StandardButton.Cancel,
+            main_window_module.QMessageBox.StandardButton.Ok,
         )
     )
 
-    def question(_parent, title, text, buttons, default):
-        prompts.append((title, text, buttons, default))
+    def execute(dialog):
+        prompts.append(
+            (
+                dialog.windowTitle(),
+                dialog.text(),
+                dialog.button(
+                    main_window_module.QMessageBox.StandardButton.Ok
+                ).text(),
+                dialog.button(
+                    main_window_module.QMessageBox.StandardButton.Cancel
+                ).text(),
+                dialog.defaultButton().text(),
+            )
+        )
         return next(answers)
 
     monkeypatch.setattr(
         main_window_module.QMessageBox,
-        "question",
-        question,
+        "exec",
+        execute,
     )
 
     assert window.actions["delete_model"].isEnabled()
@@ -265,7 +277,75 @@ def test_delete_model_requires_confirmation_and_removes_active_model(
     assert window.workspace.active_document() is original
     assert len(prompts) == 2
     assert all(title == "删除模型" for title, *_rest in prompts)
-    assert all("待删除模型" in text for _title, text, *_rest in prompts)
+    assert all(
+        text == "是否删除当前选中的模型“模型-2”？"
+        for _title, text, *_rest in prompts
+    )
+    assert all(
+        (confirm, cancel, default) == ("确定", "取消", "取消")
+        for _title, _text, confirm, cancel, default in prompts
+    )
+    new_model_prompts = []
+
+    def cancel_new_model(_parent, title, prompt, **options):
+        new_model_prompts.append((title, prompt, options.get("text")))
+        return "", False
+
+    monkeypatch.setattr(
+        main_window_module.QInputDialog,
+        "getText",
+        cancel_new_model,
+    )
+    window.new_native_model()
+    assert new_model_prompts == [("新建模型", "模型名称：", "模型-2")]
+    window.close()
+
+
+def test_delete_model_preserves_successful_results_as_result_documents(
+    gui_inp_path,
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    geometry = build_model_geometry(model)
+    window._model_loaded(gui_inp_path, (model, geometry))
+    target = window.workspace.active_document()
+    assert target is not None
+    assert window.check_current_model(show_success=False)
+
+    task = window.session.prepare_solve("Static-1", "保留结果")
+    assert task.delta is not None
+    window._apply_session_delta(task.delta)
+    window._apply_session_delta(window.session.begin_run(task.token))
+    result = solve(task.model, task.step_name)
+    window._job_succeeded(
+        task.token,
+        (build_solve_result_bundle(task, result), {}),
+    )
+    assert any(key[0] == target.document_id for key in window.result_tree.roots)
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "exec",
+        lambda _dialog: main_window_module.QMessageBox.StandardButton.Ok,
+    )
+
+    assert window.delete_current_model()
+
+    assert target.document_id not in window.workspace.models
+    assert len(window.workspace.results) == 1
+    preserved = next(iter(window.workspace.results.values()))
+    assert window.workspace.active_document() is preserved
+    assert preserved.projection.result_only
+    assert preserved.projection.result_path is None
+    assert preserved.projection.unsaved_result_count == 1
+    assert all(key[0] != target.document_id for key in window.result_tree.roots)
+    assert any(key[0] == preserved.document_id for key in window.result_tree.roots)
+    assert preserved.session.current_result_provider() is not None
+    assert window.close_model(
+        confirm=False,
+        document_id=preserved.document_id,
+    )
     window.close()
 
 

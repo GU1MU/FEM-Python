@@ -146,6 +146,20 @@ def test_model_default_number_skips_imported_model_names(
     assert workspace.next_model_number == 3
 
 
+def test_model_default_number_reuses_a_deleted_gap(gui_application):
+    workspace = FEMWorkspace()
+    workspace.add_model(display_name="模型-1")
+    removed = workspace.add_model(display_name="模型-2")
+    assert workspace.next_model_number == 3
+
+    workspace.remove(removed)
+
+    assert workspace.next_model_number == 2
+    replacement = workspace.add_model()
+    assert replacement.display_name == "模型-2"
+    assert workspace.next_model_number == 3
+
+
 def test_workspace_disambiguates_real_model_and_result_names(gui_application, tmp_path):
     workspace = FEMWorkspace()
 

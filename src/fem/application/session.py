@@ -1775,7 +1775,8 @@ class ModelSession:
         The archive is validated and rebound completely before any current
         session state is changed.  A fresh session/artifact/run/result identity
         is assigned; the archive origin and original run metadata remain on the
-        immutable provider for inspection.
+        immutable provider for inspection.  A missing path keeps the installed
+        result in memory as an unsaved result document.
         """
 
         self._check_expected(expected_session_revision)
@@ -1798,9 +1799,9 @@ class ModelSession:
                 target_path = Path(path)
             except (TypeError, ValueError) as error:
                 raise TypeError("result archive path must be path-like") from error
-        if target_path is None or not target_path.name:
+        if target_path is not None and not target_path.name:
             raise ValueError(
-                "result-only installation requires the archive path"
+                "result-only installation path must identify a file"
             )
 
         # Prepare every candidate object up front.  Constructors validate the
@@ -1863,11 +1864,15 @@ class ModelSession:
             source_kind="result",
             model=rebound.model_projection,
         )
-        file_state = ResultFileState(
-            path=target_path,
-            saved_generation=rebound.materialization.generation,
-            run_id=candidate_run_id,
-            result_id=candidate_result_id,
+        file_state = (
+            None
+            if target_path is None
+            else ResultFileState(
+                path=target_path,
+                saved_generation=rebound.materialization.generation,
+                run_id=candidate_run_id,
+                result_id=candidate_result_id,
+            )
         )
 
         self._session_id = candidate_session_id
@@ -1886,7 +1891,8 @@ class ModelSession:
         self._result_model_fingerprints[candidate_run_id] = (
             rebound.origin.model_fingerprint
         )
-        self._result_file_states[candidate_run_id] = file_state
+        if file_state is not None:
+            self._result_file_states[candidate_run_id] = file_state
         self._selected_run_id = candidate_run_id
         self._displayed_result_run_id = candidate_run_id
         self._saved_project_revision = self._project_revision

@@ -230,6 +230,7 @@ class FEMWorkspace:
     def next_model_number(self) -> int:
         """The next unused default display number for a newly created model."""
 
+        self._next_model_number = 1
         while self.model_name_exists(f"模型-{self._next_model_number}"):
             self._next_model_number += 1
         return self._next_model_number
@@ -527,12 +528,12 @@ class FEMWorkspace:
                 name = f"Result-{self._next_result_number}"
                 self._next_result_number += 1
             else:
-                name = f"模型-{self._next_model_number}"
+                name = f"模型-{self.next_model_number}"
                 self._next_model_number += 1
         elif (
             kind == "model"
             and path is None
-            and name == f"模型-{self._next_model_number}"
+            and name == f"模型-{self.next_model_number}"
         ):
             self._next_model_number += 1
         name = self._unique_display_name(kind, name)

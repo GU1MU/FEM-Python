@@ -163,6 +163,22 @@ def test_result_archive_install_rebinds_all_source_keys_without_array_copy() -> 
     assert session.find_run(session.snapshot().selected_run_id).name == archive.run.name
 
 
+def test_result_archive_install_without_path_remains_unsaved_in_memory() -> None:
+    archive = _snapshot(make_continuum_nodal_semantics_result, "in-memory")
+    session = ModelSession()
+
+    delta = session.replace_from_result_archive(archive)
+    snapshot = session.snapshot()
+
+    assert delta.accepted
+    assert snapshot.result_only
+    assert snapshot.path is None
+    assert snapshot.result_path is None
+    assert snapshot.unsaved_result_count == 1
+    assert snapshot.unsaved_result_run_ids == (snapshot.displayed_result_run_id,)
+    assert session.current_result_provider() is not None
+
+
 def test_result_archive_install_failure_is_atomic() -> None:
     archive = _snapshot(make_truss_field_characterization_result, "atomic")
     session = ModelSession()
