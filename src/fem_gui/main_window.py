@@ -16781,23 +16781,77 @@ class FEMMainWindow(QMainWindow):
         )
         if entry is None:
             return
-        _document_id, kind, _key = entry
+        _document_id, kind, entry_key = entry
         if self.busy or self.document.source_kind != "native":
             return
+        definition_index: int | None = None
+        analysis_key: tuple[int, int] | None = None
+        original_name: str | None
         if kind == "model":
             current = str(self.document.model_name or "模型-1")
+            original_name = current
             title = "重命名模型"
             prompt = "模型名称："
-            rename = self.session.rename_native_model
-        elif kind == "part" and type(_key) is str:
+        elif kind == "part" and type(entry_key) is str:
             try:
-                part = self.document.part(_key)
+                part = self.document.part(entry_key)
             except KeyError:
                 return
             current = part.name
+            original_name = current
             title = "重命名部件"
             prompt = "部件名称："
-            rename = None
+        elif kind == "material":
+            definition_index = next(
+                (
+                    index
+                    for index, material in enumerate(
+                        self.document.materials
+                    )
+                    if material.name == str(entry_key)
+                ),
+                None,
+            )
+            if definition_index is None:
+                return
+            current = self.document.materials[definition_index].name
+            original_name = current
+            title = "重命名材料"
+            prompt = "材料名称："
+        elif kind == "section":
+            try:
+                definition_index = int(entry_key)
+                section = self.document.sections[definition_index]
+            except (IndexError, TypeError, ValueError):
+                return
+            current = section.name
+            original_name = current
+            title = "重命名截面"
+            prompt = "截面名称："
+        elif kind in {"node_set", "element_set", "surface", "edge"}:
+            original_name = str(entry_key)
+            region = self.document.named_regions.get(original_name)
+            if region is None:
+                return
+            current = region.name
+            title = "重命名作用域"
+            prompt = "作用域名称："
+        elif kind == "boundary":
+            analysis_key = _resolve_analysis_object_key(
+                tuple(self.document.steps),
+                "boundaries",
+                entry_key,
+            )
+            if analysis_key is None:
+                return
+            step_index, boundary_index = analysis_key
+            boundary = self.document.steps[step_index].boundaries[
+                boundary_index
+            ]
+            original_name = boundary.name
+            current = original_name or f"位移约束 {boundary_index + 1}"
+            title = "重命名边界条件"
+            prompt = "边界条件名称："
         else:
             return
         name, accepted = QInputDialog.getText(
@@ -16808,28 +16862,99 @@ class FEMMainWindow(QMainWindow):
         )
         if not accepted:
             return
+        name = str(name).strip()
+        if not name:
+            self._show_error(title, "名称不能为空。")
+            return
+        if name == original_name:
+            return
         try:
             if kind == "part":
                 delta = self.session.rename_native_part(
-                    str(_key),
+                    str(entry_key),
                     name,
                     expected_part_revision=self.document.part_revision(
-                        str(_key)
+                        str(entry_key)
                     ),
                     expected_session_revision=(
                         self.document.session_revision
                     ),
                 )
-            else:
-                if rename is None:
-                    raise RuntimeError("重命名命令不可用")
-                delta = rename(
+                self._apply_session_delta(delta)
+            elif kind == "model":
+                delta = self.session.rename_native_model(
                     name,
                     expected_session_revision=(
                         self.document.session_revision
                     ),
                 )
-            self._apply_session_delta(delta)
+                self._apply_session_delta(delta)
+            elif kind == "material":
+                materials = list(self.document.materials)
+                materials[definition_index] = replace(
+                    materials[definition_index],
+                    name=name,
+                )
+                self._apply_model_definition_changes(
+                    "材料已重命名，相关截面引用已更新",
+                    materials=materials,
+                    material_renames=(RenameIntent(current, name),),
+                )
+                return
+            elif kind == "section":
+                sections = list(self.document.sections)
+                sections[definition_index] = replace(
+                    sections[definition_index],
+                    name=name,
+                )
+                self._apply_model_definition_changes(
+                    "截面已重命名，相关截面分配已更新",
+                    sections=sections,
+                    section_renames=(RenameIntent(current, name),),
+                )
+                return
+            elif kind in {"node_set", "element_set", "surface", "edge"}:
+                regions = tuple(
+                    NamedRegion(name, candidate.references)
+                    if candidate.name == current
+                    else candidate
+                    for candidate in self.document.named_regions.values()
+                )
+                receipt = self.apply_named_region_edit(
+                    NamedRegionEditBatch(
+                        base_session_revision=(
+                            self.document.session_revision
+                        ),
+                        regions=regions,
+                        renames=(RenameIntent(current, name),),
+                    )
+                )
+                if receipt.diagnostic is not None:
+                    self._show_command_rejection(title, receipt)
+                else:
+                    self.status_panel.set_state(
+                        "作用域已重命名，相关引用已更新",
+                        5000,
+                    )
+                return
+            elif kind == "boundary":
+                step_index, boundary_index = analysis_key
+                steps = list(deepcopy(self.document.steps))
+                step = steps[step_index]
+                boundaries = list(step.boundaries)
+                boundaries[boundary_index] = replace(
+                    boundaries[boundary_index],
+                    name=name,
+                )
+                steps[step_index] = replace(
+                    step,
+                    boundaries=tuple(boundaries),
+                )
+                self._apply_model_definition_changes(
+                    "边界条件已重命名",
+                    steps=steps,
+                )
+                return
             if self.document.artifact is not None:
                 self._refresh_model_tree(self.document.model)
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:

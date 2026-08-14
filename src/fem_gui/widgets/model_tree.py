@@ -139,6 +139,18 @@ _DELETABLE_KINDS = {
     "gravity_load",
 }
 
+_NATIVE_RENAMABLE_KINDS = frozenset({
+    "model",
+    "part",
+    "material",
+    "section",
+    "node_set",
+    "element_set",
+    "surface",
+    "edge",
+    "boundary",
+})
+
 _NATIVE_FEATURE_NAMES = {
     "Wire": "线体",
     "Sketch": "草图",
@@ -562,9 +574,14 @@ class ModelTree(QTreeWidget):
             if previous_root is not None
             else None
         )
+        editable_native_tree = (
+            part_name is not None
+            or bool(native_parts)
+            or scope_names is not None
+        )
         self._renamable_kinds = (
-            frozenset({"model", "part"})
-            if part_name is not None or native_parts
+            _NATIVE_RENAMABLE_KINDS
+            if editable_native_tree
             else frozenset()
         )
         self._non_highlightable_kinds = (
@@ -714,7 +731,12 @@ class ModelTree(QTreeWidget):
         for name in model.materials:
             materials.addChild(self._item(name, "material", name))
         compiled_sections = tuple(model.sections)
-        visible_sections = compiled_sections or tuple(section_definitions)
+        editable_sections = (
+            tuple(section_definitions)
+            if editable_native_tree
+            else ()
+        )
+        visible_sections = editable_sections or compiled_sections
         sections = self._category(root, "截面", len(visible_sections))
         elements_by_id = {
             int(element.id): element
@@ -722,8 +744,21 @@ class ModelTree(QTreeWidget):
             if getattr(element, "id", None) is not None
         }
         for index, section in enumerate(visible_sections):
+            element_set_name = getattr(section, "element_set", "")
+            if editable_sections:
+                assignment = next(
+                    (
+                        candidate
+                        for candidate in region_assignments
+                        if str(candidate.section_name)
+                        == str(section.name)
+                    ),
+                    None,
+                )
+                if assignment is not None:
+                    element_set_name = str(assignment.region_name)
             element_set = model.element_sets.get(
-                getattr(section, "element_set", "")
+                element_set_name
             )
             representative = (
                 elements_by_id.get(element_set.element_ids[0])
@@ -731,9 +766,9 @@ class ModelTree(QTreeWidget):
                 else None
             )
             section_name = (
-                f"截面 {index + 1}"
-                if compiled_sections
-                else str(getattr(section, "name", f"截面 {index + 1}"))
+                str(getattr(section, "name", f"截面 {index + 1}"))
+                if editable_sections
+                else f"截面 {index + 1}"
             )
             sections.addChild(
                 self._item(
@@ -1017,7 +1052,7 @@ class ModelTree(QTreeWidget):
                 placeholder = self.topLevelItem(0)
                 if placeholder.data(0, ROLE_KIND) == "empty":
                     self.takeTopLevelItem(0)
-        self._renamable_kinds = frozenset({"model", "part"})
+        self._renamable_kinds = _NATIVE_RENAMABLE_KINDS
         self._non_highlightable_kinds = (
             frozenset({"model", "feature"})
             if parts is not None
@@ -1418,12 +1453,19 @@ class ModelTree(QTreeWidget):
         )
         if root:
             activate = menu.addAction("激活")
+            rename = (
+                menu.addAction("重命名")
+                if entry[1] in renamable
+                else None
+            )
             save = menu.addAction("保存")
             save_as = menu.addAction("另存为")
             close = menu.addAction("关闭")
             chosen = menu.exec(self.viewport().mapToGlobal(position))
             if chosen is activate:
                 self.rootActionRequested.emit(entry[0], "activate")
+            elif rename is not None and chosen is rename:
+                self._emit_routed(self.renameRequested, entry)
             elif chosen is save:
                 self.rootActionRequested.emit(entry[0], "save")
             elif chosen is save_as:
