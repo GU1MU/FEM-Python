@@ -31,6 +31,7 @@ from fem.mesh.settings import MeshSettings
 class GuiActionKey(str, Enum):
     OPEN = "open"
     NEW_NATIVE = "new_native"
+    DELETE_MODEL = "delete_model"
     OPEN_PROJECT = "open_project"
     SAVE_PROJECT = "save_project"
     SAVE_PROJECT_AS = "save_project_as"
@@ -158,6 +159,12 @@ def _d(
 ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.OPEN, "打开 INP", "open_inp", "open_inp"),
     _d(GuiActionKey.NEW_NATIVE, "新建模型", "new_native_model", "new_model"),
+    _d(
+        GuiActionKey.DELETE_MODEL,
+        "删除模型",
+        "delete_current_model",
+        "geometry_delete",
+    ),
     _d(GuiActionKey.OPEN_PROJECT, "打开模型", "open_native_project", "open_project"),
     _d(GuiActionKey.SAVE_PROJECT, "保存模型", "save_native_project", "save_project"),
     _d(GuiActionKey.SAVE_PROJECT_AS, "模型另存为...", "save_native_project_as"),
@@ -258,6 +265,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
 @dataclass(frozen=True, slots=True)
 class GuiActionContext:
     busy: bool = False
+    model_document_active: bool = False
     selected_step_name: str | None = None
     geometry_selection: tuple[LogicalEntityRef, ...] = ()
     fem_selection_kind: str | None = None
@@ -284,6 +292,7 @@ class GuiActionContext:
     def __post_init__(self) -> None:
         for name in (
             "busy",
+            "model_document_active",
             "display_backend_available",
             "viewport_capture_active",
             "result_source_current",
@@ -395,6 +404,15 @@ def derive_action_availability(
 
     set_state(GuiActionKey.OPEN, not busy, "后台任务运行时不能打开 INP")
     set_state(GuiActionKey.NEW_NATIVE, not busy, "后台任务运行时不能新建项目")
+    set_state(
+        GuiActionKey.DELETE_MODEL,
+        context.model_document_active and not busy,
+        (
+            "后台任务运行时不能删除模型"
+            if busy
+            else "当前没有选中的模型"
+        ),
+    )
     set_state(GuiActionKey.OPEN_PROJECT, not busy, "后台任务运行时不能打开项目")
     for key in (GuiActionKey.SAVE_PROJECT, GuiActionKey.SAVE_PROJECT_AS):
         set_state(
@@ -898,6 +916,7 @@ def derive_action_availability(
         mutation_keys = (
             GuiActionKey.OPEN,
             GuiActionKey.NEW_NATIVE,
+            GuiActionKey.DELETE_MODEL,
             GuiActionKey.OPEN_PROJECT,
             GuiActionKey.SAVE_PROJECT,
             GuiActionKey.SAVE_PROJECT_AS,

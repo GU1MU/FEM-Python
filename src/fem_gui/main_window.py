@@ -4471,6 +4471,7 @@ class FEMMainWindow(QMainWindow):
                 "文件",
                 (
                     "new_native",
+                    "delete_model",
                     "open_project",
                     "save_project",
                     "open",
@@ -4478,7 +4479,7 @@ class FEMMainWindow(QMainWindow):
                     "open_result",
                     "model_info",
                 ),
-                ("new_native", "open"),
+                ("new_native", "delete_model", "open"),
             ),
             ("输出", ("export_csv", "screenshot"), ()),
         ))
@@ -5547,6 +5548,10 @@ class FEMMainWindow(QMainWindow):
                 selected_availability = None
         context = GuiActionContext(
             busy=self.busy,
+            model_document_active=(
+                self.workspace.active_kind == "model"
+                and self.workspace.active_document_id is not None
+            ),
             selected_step_name=self._current_step_name,
             geometry_selection=tuple(
                 sorted(
@@ -10229,6 +10234,39 @@ class FEMMainWindow(QMainWindow):
         # New models are appended as independent workspace documents; the
         # current document remains intact, so no discard confirmation applies.
         self._create_native_model(model_name)
+
+    def delete_current_model(self) -> bool:
+        """Confirm and remove the active model document from the workspace."""
+
+        context = self.workspace.active_document()
+        if (
+            context is None
+            or context.is_result
+            or self.busy
+            or self._active_editor()
+        ):
+            return False
+        answer = QMessageBox.question(
+            self,
+            "删除模型",
+            f"是否删除当前选中的模型“{context.display_name}”？\n"
+            "未保存的修改和关联结果将一并移除。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        deleted = self.close_model(
+            confirm=False,
+            document_id=context.document_id,
+        )
+        if deleted:
+            self._update_action_states()
+            self.status_panel.set_state(
+                f"模型“{context.display_name}”已删除",
+                5000,
+            )
+        return deleted
 
     def _create_native_model(self, model_name: str) -> None:
         """Create a native project after its model name has been collected."""

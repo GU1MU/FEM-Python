@@ -68,11 +68,35 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     )
 
     assert idle[GuiActionKey.OPEN].enabled
+    assert not idle[GuiActionKey.DELETE_MODEL].enabled
     assert not idle[GuiActionKey.GEOMETRY_SKETCH].enabled
     assert "请先新建模型" in idle[GuiActionKey.GEOMETRY_SKETCH].reason
     assert not idle[GuiActionKey.OUTPUT_CREATE].enabled
     assert not busy[GuiActionKey.OPEN].enabled
     assert "后台任务" in busy[GuiActionKey.OPEN].reason
+
+
+def test_delete_model_requires_an_idle_active_model_document() -> None:
+    snapshot = ModelSession().snapshot()
+    projection = describe_session_authoring(snapshot)
+
+    active = _by_key(
+        derive_action_availability(
+            snapshot,
+            projection,
+            GuiActionContext(model_document_active=True),
+        )
+    )
+    busy = _by_key(
+        derive_action_availability(
+            snapshot,
+            projection,
+            GuiActionContext(model_document_active=True, busy=True),
+        )
+    )
+
+    assert active[GuiActionKey.DELETE_MODEL].enabled
+    assert not busy[GuiActionKey.DELETE_MODEL].enabled
 
 
 def test_sketch_editor_context_gates_mutating_actions() -> None:

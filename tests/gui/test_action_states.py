@@ -227,6 +227,48 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
     window.close()
 
 
+def test_delete_model_requires_confirmation_and_removes_active_model(
+    monkeypatch,
+):
+    _application()
+    window = FEMMainWindow()
+    original = window.workspace.active_document()
+    assert original is not None
+    window._create_native_model("待删除模型")
+    target = window.workspace.active_document()
+    assert target is not None
+    assert target is not original
+    prompts = []
+    answers = iter(
+        (
+            main_window_module.QMessageBox.StandardButton.No,
+            main_window_module.QMessageBox.StandardButton.Yes,
+        )
+    )
+
+    def question(_parent, title, text, buttons, default):
+        prompts.append((title, text, buttons, default))
+        return next(answers)
+
+    monkeypatch.setattr(
+        main_window_module.QMessageBox,
+        "question",
+        question,
+    )
+
+    assert window.actions["delete_model"].isEnabled()
+    assert not window.delete_current_model()
+    assert target.document_id in window.workspace.models
+
+    assert window.delete_current_model()
+    assert target.document_id not in window.workspace.models
+    assert window.workspace.active_document() is original
+    assert len(prompts) == 2
+    assert all(title == "删除模型" for title, *_rest in prompts)
+    assert all("待删除模型" in text for _title, text, *_rest in prompts)
+    window.close()
+
+
 def test_project_save_ui_follows_can_save_in_all_session_states(
     gui_inp_path,
     monkeypatch,
@@ -519,6 +561,7 @@ def test_short_action_labels_fit_the_ribbon_vocabulary():
     window = FEMMainWindow()
 
     assert window.actions["new_native"].text() == "新建模型"
+    assert window.actions["delete_model"].text() == "删除模型"
     assert window.actions["open_project"].text() == "打开模型"
     assert window.actions["save_project"].text() == "保存模型"
     assert window.actions["save_project_as"].text() == "模型另存为..."

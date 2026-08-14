@@ -377,6 +377,19 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["screenshot"] in project_actions
     assert window.actions["export_vtk"] not in project_actions
     assert window.actions["model_info"] in project_actions
+    project_buttons = {
+        button.defaultAction(): button
+        for button in window.ribbon.stack.widget(
+            tab_names.index("项目")
+        ).findChildren(QToolButton)
+        if button.defaultAction() is not None
+    }
+    assert project_buttons[window.actions["new_native"]].objectName() == (
+        "ribbonLargeButton"
+    )
+    assert project_buttons[window.actions["delete_model"]].objectName() == (
+        "ribbonLargeButton"
+    )
     assert window.actions["submit_job"] not in project_actions
     assert window.actions["save_project_as"] not in project_action_order
     assert window.actions["save_result_as"] not in project_action_order
