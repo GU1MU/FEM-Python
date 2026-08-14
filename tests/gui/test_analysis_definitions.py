@@ -111,6 +111,30 @@ def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
     window.close()
 
 
+def test_boundary_scope_highlight_reuses_entity_highlighter(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    highlighted = []
+    cleared = []
+    monkeypatch.setattr(
+        window,
+        "highlight_entity",
+        lambda kind, key: highlighted.append((kind, key)),
+    )
+    monkeypatch.setattr(
+        window.viewport,
+        "clear_selection",
+        lambda: cleared.append(True),
+    )
+
+    window._highlight_analysis_scope(RegionRef("surface", "FixedFace"))
+    window._highlight_analysis_scope(None)
+
+    assert highlighted == [("surface", "FixedFace")]
+    assert cleared == [True]
+    window.close()
+
+
 def _regions(kind: str, *names: str) -> list[RegionRef]:
     return [RegionRef(kind, name) for name in names]
 
@@ -298,6 +322,30 @@ def test_displacement_dialog_creates_independent_checked_dofs():
     ] == [
         ("支座位移", 2, 2, 0.25),
         ("支座位移-2", 3, 3, -0.5),
+    ]
+
+
+def test_displacement_dialog_reports_selected_scope_changes():
+    _application()
+    dialog = DisplacementDialog(
+        ["Load"],
+        [
+            *_regions("node_set", "Fixed", "Roller"),
+            *_regions("edge", "SupportedEdge"),
+        ],
+        2,
+    )
+    selected = []
+    dialog.scopeChanged.connect(selected.append)
+
+    dialog.region_combo.setCurrentIndex(1)
+    dialog.kind_combo.setCurrentIndex(
+        dialog.kind_combo.findData("edge")
+    )
+
+    assert selected == [
+        RegionRef("node_set", "Roller"),
+        RegionRef("edge", "SupportedEdge"),
     ]
 
 
@@ -600,6 +648,36 @@ def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
     updated = manager.values()[0]
     assert updated.boundaries[0].name == "固定端位移"
     assert updated.edge_loads[0].name == "加载边牵引"
+
+
+def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
+    _application()
+    step = static("Load")
+    step.boundaries = (
+        DisplacementConstraint("Fixed", 1, 2),
+    )
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        _regions("node_set", "Fixed", "Roller"),
+        [],
+        [],
+        2,
+    )
+    selected = []
+    manager.scopeChanged.connect(selected.append)
+
+    def select_scope(dialog):
+        assert selected == [RegionRef("node_set", "Fixed")]
+        dialog.region_combo.setCurrentIndex(1)
+        return False
+
+    monkeypatch.setattr(DisplacementDialog, "exec", select_scope)
+
+    assert not manager.edit_definition(("boundary", 0, 0))
+    assert selected == [
+        RegionRef("node_set", "Fixed"),
+        RegionRef("node_set", "Roller"),
+    ]
 
 
 def test_edge_load_editor_refreshes_only_after_dialog_construction(

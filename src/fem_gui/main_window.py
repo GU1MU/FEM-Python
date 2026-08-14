@@ -11978,6 +11978,8 @@ class FEMMainWindow(QMainWindow):
             ),
             form_state=dialog_state,
         )
+        dialog.scopeChanged.connect(self._highlight_analysis_scope)
+        self._highlight_analysis_scope(dialog.selected_scope())
         if not self._exec_dialog(dialog):
             requested_scope_kind = (
                 dialog.requested_scope_kind()
@@ -12315,7 +12317,7 @@ class FEMMainWindow(QMainWindow):
             and capability_report.dofs_per_node is not None
             else 3
         )
-        return AnalysisDefinitionManagerDialog(
+        dialog = AnalysisDefinitionManagerDialog(
             source_steps,
             node_regions,
             edge_regions,
@@ -12374,6 +12376,16 @@ class FEMMainWindow(QMainWindow):
                 "output_request.delete"
             ),
         )
+        dialog.scopeChanged.connect(self._highlight_analysis_scope)
+        return dialog
+
+    def _highlight_analysis_scope(self, region: object) -> None:
+        """Project the scope selected by an analysis editor to the viewport."""
+
+        if not isinstance(region, RegionRef):
+            self.viewport.clear_selection()
+            return
+        self.highlight_entity(region.kind, region.name)
 
     def _evaluate_line_load_candidate(
         self,

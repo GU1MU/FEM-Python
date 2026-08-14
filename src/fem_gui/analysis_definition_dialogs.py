@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from math import isfinite
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -158,6 +158,8 @@ class DisplacementDialogState:
 
 
 class DisplacementDialog(QDialog):
+    scopeChanged = Signal(object)
+
     _COMPONENT_LABELS = ("U1", "U2", "U3", "UR1", "UR2", "UR3")
 
     def __init__(
@@ -300,7 +302,7 @@ class DisplacementDialog(QDialog):
         self.setMinimumWidth(350)
         self.kind_combo.currentIndexChanged.connect(self._refresh_regions)
         self.region_combo.currentIndexChanged.connect(
-            self._update_accept_state
+            self._on_scope_changed
         )
         if selected_region is not None:
             index = self.kind_combo.findData(selected_region.kind)
@@ -350,11 +352,15 @@ class DisplacementDialog(QDialog):
     def _refresh_regions(self) -> None:
         current = self.region_combo.currentData()
         kind = str(self.kind_combo.currentData() or "")
-        self.region_combo.clear()
-        for reference in self._regions.get(kind, ()):
-            self.region_combo.addItem(reference.name, reference)
-        if isinstance(current, RegionRef) and current.kind == kind:
-            _select_region(self.region_combo, current)
+        signals_blocked = self.region_combo.blockSignals(True)
+        try:
+            self.region_combo.clear()
+            for reference in self._regions.get(kind, ()):
+                self.region_combo.addItem(reference.name, reference)
+            if isinstance(current, RegionRef) and current.kind == kind:
+                _select_region(self.region_combo, current)
+        finally:
+            self.region_combo.blockSignals(signals_blocked)
         request_kind = {
             "node_set": "node",
             "edge": "edge",
@@ -363,7 +369,15 @@ class DisplacementDialog(QDialog):
         self.scope_pick_button.setEnabled(
             request_kind in self._scope_selection_kinds
         )
+        self._on_scope_changed()
+
+    def selected_scope(self) -> RegionRef | None:
+        region = self.region_combo.currentData()
+        return region if isinstance(region, RegionRef) else None
+
+    def _on_scope_changed(self) -> None:
         self._update_accept_state()
+        self.scopeChanged.emit(self.selected_scope())
 
     def _update_accept_state(self) -> None:
         buttons = getattr(self, "buttons", None)
@@ -1275,6 +1289,8 @@ def _visible_output_request_candidates(
 class AnalysisDefinitionManagerDialog(QDialog):
     """Edit existing supported analysis definitions in one flat dialog."""
 
+    scopeChanged = Signal(object)
+
     def __init__(
         self,
         steps: list[AnalysisStep],
@@ -1745,6 +1761,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     else None
                 ),
             )
+            dialog.scopeChanged.connect(self.scopeChanged.emit)
+            self.scopeChanged.emit(dialog.selected_scope())
             if not isinstance(
                 self._dialog_state_override,
                 DisplacementDialogState,
