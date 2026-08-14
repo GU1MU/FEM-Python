@@ -49,6 +49,7 @@ _VIEWPORT_ACTIONS = (
     "undeformed",
     "deformed",
     "contour",
+    "screenshot",
 )
 
 
@@ -397,6 +398,8 @@ def test_drawer_open_close_and_resize_commit_viewport_geometry():
     host.show()
     application.processEvents()
 
+    application.processEvents()
+
     baseline_geometry = QRect(viewport.geometry())
     baseline_size = QSize(viewport.size())
     assert host.layout().count() == 1
@@ -473,6 +476,81 @@ def test_drawer_open_close_and_resize_commit_viewport_geometry():
 
     host.set_drawer_open(False, animated=False)
     assert viewport.geometry() == baseline_geometry
+    host.close()
+
+
+def test_agent_chat_can_be_hidden_temporarily_without_losing_drawer_state():
+    application = _application()
+    viewport = FEMViewport()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.show()
+    host.set_drawer_open(True, animated=False)
+    application.processEvents()
+    commit_visibility = []
+    animation_frames = []
+    host.viewportGeometryCommitted.connect(
+        lambda: commit_visibility.append(
+            (
+                host.agent_chat_drawer.isVisible(),
+                host._drawer_resize_preview.isVisible(),
+            )
+        )
+    )
+    host._animation.valueChanged.connect(animation_frames.append)
+
+    full_size = QSize(host.size())
+    assert host.agent_chat_enabled
+    assert host.drawer_is_open
+    assert viewport.width() == full_size.width() - host.DEFAULT_DRAWER_WIDTH
+
+    host.set_agent_chat_enabled(False)
+    application.processEvents()
+
+    assert not host.agent_chat_enabled
+    assert host.drawer_is_open
+    assert host.agent_chat_drawer.isHidden()
+    assert host.chat_launcher.isHidden()
+    assert viewport.size() == full_size
+    assert commit_visibility == [(False, False)]
+    assert animation_frames == []
+
+    host.set_agent_chat_enabled(True)
+    application.processEvents()
+
+    assert host.agent_chat_enabled
+    assert host.drawer_is_open
+    assert host.chat_launcher.isHidden()
+    assert viewport.width() == full_size.width() - host.DEFAULT_DRAWER_WIDTH
+    assert commit_visibility == [(False, False), (False, False)]
+    assert animation_frames == []
+    host.close()
+
+
+def test_disabling_agent_chat_waits_for_resize_preview_to_hide_before_commit():
+    application = _application()
+    viewport = FEMViewport()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(720, 460)
+    host.show()
+    host.set_drawer_open(True, animated=False)
+    application.processEvents()
+    geometry_commits = []
+    host.viewportGeometryCommitted.connect(lambda: geometry_commits.append(True))
+
+    host._begin_drawer_resize()
+    assert host._drawer_resize_preview.isVisible()
+
+    host.set_agent_chat_enabled(False)
+
+    assert host._drawer_resize_preview.isHidden()
+    assert host.agent_chat_drawer.isVisible()
+    assert geometry_commits == []
+
+    application.processEvents()
+
+    assert host.agent_chat_drawer.isHidden()
+    assert geometry_commits == [True]
     host.close()
 
 

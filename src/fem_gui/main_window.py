@@ -4812,6 +4812,11 @@ class FEMMainWindow(QMainWindow):
         self._main_splitter_repaint_timer.timeout.connect(
             self._finish_main_splitter_resize
         )
+        self._main_splitter_viewport_repaint_timer = QTimer(self)
+        self._main_splitter_viewport_repaint_timer.setSingleShot(True)
+        self._main_splitter_viewport_repaint_timer.timeout.connect(
+            self.viewport.schedule_resize_repaint
+        )
         splitter.setSizes([260, 1020, 0, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -4939,7 +4944,7 @@ class FEMMainWindow(QMainWindow):
         """Remove the drag marker before invalidating the native VTK surface."""
 
         self._clear_main_splitter_drag_marker()
-        self.viewport.schedule_resize_repaint()
+        self._main_splitter_viewport_repaint_timer.start(0)
 
     def _viewport_geometry_committed(self) -> None:
         """Coalesce drawer resizes with QtInteractor's queued resize paint."""
@@ -6017,6 +6022,7 @@ class FEMMainWindow(QMainWindow):
             self._face_sketch_reference_points,
             refresh_controller=False,
         )
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
         self.sketch_editor_panel.begin(self.viewport, purpose="face_sketch")
         self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
         launch = controller.launch_snapshot
@@ -6522,6 +6528,7 @@ class FEMMainWindow(QMainWindow):
             controller,
             base_snapshot=controller.snapshot(),
         )
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
         self.sketch_editor_panel.begin(
             self.viewport,
             display_size=display_size,
@@ -6689,6 +6696,7 @@ class FEMMainWindow(QMainWindow):
         return_to_planar_boolean: bool = False,
     ) -> None:
         self.sketch_editor_panel.end()
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(True)
         self._sketch_editor_controller = None
         self._sketch_editor_original_recipe = None
         self._sketch_editor_base_revision = None
@@ -7507,6 +7515,7 @@ class FEMMainWindow(QMainWindow):
                     plane=draft.plane,
                 )
             )
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
         self.sketch_editor_panel.begin(
             self.viewport,
             purpose="planar_boolean_tool",

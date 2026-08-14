@@ -3695,6 +3695,7 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_width = self.DEFAULT_DRAWER_WIDTH
         self._drawer_reveal = 0
         self._drawer_open = False
+        self._agent_chat_enabled = True
         self._drawer_resize_initial_width: int | None = None
         self._drawer_resize_delta = 0
         self._pending_drawer_width: int | None = None
@@ -3715,6 +3716,11 @@ class ModelViewportOverlayHost(QWidget):
         self._drawer_resize_commit_timer.setSingleShot(True)
         self._drawer_resize_commit_timer.timeout.connect(
             self._commit_drawer_resize
+        )
+        self._agent_chat_state_commit_timer = QTimer(self)
+        self._agent_chat_state_commit_timer.setSingleShot(True)
+        self._agent_chat_state_commit_timer.timeout.connect(
+            self._commit_agent_chat_enabled_state
         )
         native_surface_updated = getattr(
             self.viewport,
@@ -3742,6 +3748,7 @@ class ModelViewportOverlayHost(QWidget):
             self._shutting_down = True
             self._animation.stop()
             self._overlay_sync_timer.stop()
+            self._agent_chat_state_commit_timer.stop()
             self._cancel_drawer_resize()
         self.agent_chat_drawer.shutdown_runtime(wait=wait)
         self.agent_chat_drawer.hide()
@@ -3778,6 +3785,41 @@ class ModelViewportOverlayHost(QWidget):
         """返回当前宿主尺寸下聊天框实际可见的目标宽度。"""
         return self._effective_drawer_width()
 
+    @property
+    def agent_chat_enabled(self) -> bool:
+        return self._agent_chat_enabled
+
+    def set_agent_chat_enabled(self, enabled: bool) -> None:
+        """临时隐藏 Agent 覆盖层，同时保留聊天框原有开合状态。"""
+
+        enabled = bool(enabled)
+        if enabled == self._agent_chat_enabled:
+            return
+        self._animation.stop()
+        self._agent_chat_state_commit_timer.stop()
+        preview_was_visible = self._drawer_resize_preview.isVisible()
+        self._cancel_drawer_resize()
+        self._agent_chat_enabled = enabled
+        target = (
+            self._effective_drawer_width()
+            if enabled and self._drawer_open
+            else 0
+        )
+        if preview_was_visible:
+            self._agent_chat_state_commit_timer.start(0)
+            return
+        self._commit_drawer_open_state(target)
+
+    def _commit_agent_chat_enabled_state(self) -> None:
+        if self._shutting_down:
+            return
+        target = (
+            self._effective_drawer_width()
+            if self._agent_chat_enabled and self._drawer_open
+            else 0
+        )
+        self._commit_drawer_open_state(target)
+
     def set_drawer_open(
         self,
         opened: bool,
@@ -3786,7 +3828,11 @@ class ModelViewportOverlayHost(QWidget):
     ) -> None:
         """拉出或收起聊天框，并同步模型视口的可用宽度。"""
         opened = bool(opened)
-        target = self._effective_drawer_width() if opened else 0
+        target = (
+            self._effective_drawer_width()
+            if opened and self._agent_chat_enabled
+            else 0
+        )
         if (
             opened == self._drawer_open
             and self._animation.state()
@@ -3817,9 +3863,12 @@ class ModelViewportOverlayHost(QWidget):
     def _commit_drawer_open_state(self, reveal: int) -> None:
         """Apply one fast visibility transaction without native-window frames."""
 
-        if not self._drawer_open:
+        if not self._drawer_open or not self._agent_chat_enabled:
             # Remove the native drawer before the VTK surface grows underneath it.
             self.agent_chat_drawer.hide()
+        if not self._agent_chat_enabled:
+            self.chat_launcher.hide()
+            self._drawer_resize_preview.hide()
         self._drawer_reveal = int(reveal)
         self._sync_viewport_reservation()
         self._position_overlays(sync_visibility=False)
@@ -3832,7 +3881,7 @@ class ModelViewportOverlayHost(QWidget):
             return
         self._animation.stop()
         self._drawer_width = width
-        if self._drawer_open:
+        if self._drawer_open and self._agent_chat_enabled:
             self._drawer_reveal = self._effective_drawer_width()
         else:
             self._drawer_reveal = 0
@@ -3964,7 +4013,9 @@ class ModelViewportOverlayHost(QWidget):
 
     def _sync_viewport_reservation(self) -> None:
         reserved_width = (
-            self._effective_drawer_width() if self._drawer_open else 0
+            self._effective_drawer_width()
+            if self._drawer_open and self._agent_chat_enabled
+            else 0
         )
         if reserved_width == self._viewport_reserved_width:
             return
@@ -3976,7 +4027,9 @@ class ModelViewportOverlayHost(QWidget):
     def _settle_overlay_geometry(self) -> None:
         self._animation.stop()
         self._drawer_reveal = (
-            self._effective_drawer_width() if self._drawer_open else 0
+            self._effective_drawer_width()
+            if self._drawer_open and self._agent_chat_enabled
+            else 0
         )
         self._sync_viewport_reservation()
         self._position_overlays()
@@ -4127,6 +4180,11 @@ class ModelViewportOverlayHost(QWidget):
             self._bottom_overlay.raise_()
         elif self._bottom_overlay is not None:
             self._bottom_overlay.hide()
+        if not self._agent_chat_enabled:
+            self.agent_chat_drawer.hide()
+            self.chat_launcher.hide()
+            self._drawer_resize_preview.hide()
+            return
         if self._drawer_open or self._drawer_reveal:
             self.chat_launcher.hide()
             self.agent_chat_drawer.show()

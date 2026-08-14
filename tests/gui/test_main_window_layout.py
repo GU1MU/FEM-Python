@@ -116,9 +116,14 @@ def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
     window.show()
     window.resize(1000, 700)
     application.processEvents()
-    repaint_calls = []
-    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(True)
     splitter = window.main_splitter
+    repaint_calls = []
+    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(
+        any(
+            band.isVisible()
+            for band in splitter.findChildren(QRubberBand)
+        )
+    )
     handle = splitter.handle(1)
     original_sizes = splitter.sizes()
     start = handle.rect().center()
@@ -145,7 +150,8 @@ def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
     assert splitter.sizes() != original_sizes
     assert repaint_calls == []
     application.processEvents()
-    assert repaint_calls == [True]
+    application.processEvents()
+    assert repaint_calls == [False]
     assert not any(
         band.isVisible()
         for band in splitter.findChildren(QRubberBand)
@@ -159,17 +165,19 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
     window.show()
     window.resize(1000, 700)
     application.processEvents()
-    repaint_calls = []
-    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(True)
     host = window.viewport_panel.overlay_host
+    repaint_calls = []
+    window.viewport.schedule_resize_repaint = lambda: repaint_calls.append(
+        host._drawer_resize_preview.isVisible()
+    )
     baseline_width = window.viewport.width()
 
     host.set_drawer_open(True, animated=False)
 
     assert window.viewport.width() == baseline_width - host.drawer_width
-    assert repaint_calls == [True]
+    assert repaint_calls == [False]
     application.processEvents()
-    assert repaint_calls == [True]
+    assert repaint_calls == [False]
 
     repaint_calls.clear()
     handle = host.agent_chat_drawer.resize_handle
@@ -205,7 +213,7 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
 
     assert host.drawer_width == drawer_width + 30
     assert window.viewport.width() == viewport_width - 30
-    assert repaint_calls == [True]
+    assert repaint_calls == [False]
     window.close()
 
 

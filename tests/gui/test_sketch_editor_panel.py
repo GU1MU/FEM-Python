@@ -1612,6 +1612,9 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     assert window.document.parts == ()
     assert window.sketch_editor_panel.isHidden() is False
     assert window.viewport.sketch_authoring_active
+    assert not window.viewport_panel.overlay_host.agent_chat_enabled
+    assert window.viewport_panel.agent_chat_drawer.isHidden()
+    assert window.viewport_panel.overlay_host.chat_launcher.isHidden()
 
     controller.add_rectangle((0.0, 0.0), (4.0, 2.0))
     preview_renders = []
@@ -1647,6 +1650,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(monkeypatch) -> None:
     assert window._sketch_editor_controller is None
     assert window.sketch_editor_panel.isHidden()
     assert not window.viewport.sketch_authoring_active
+    assert window.viewport_panel.overlay_host.agent_chat_enabled
     assert preview_renders == [False]
     assert fit_calls == []
 
