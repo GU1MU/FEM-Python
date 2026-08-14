@@ -51,6 +51,20 @@ def test_action_states_without_model_or_result():
     window.close()
 
 
+def test_startup_model_tree_has_no_automatic_part_placeholder():
+    _application()
+    window = FEMMainWindow()
+    document_id = window.workspace.active_document_id
+
+    assert document_id is not None
+    root = window.model_tree.roots[document_id]
+    assert root.text(0) == "模型-1"
+    assert root.childCount() == 0
+    assert window.document.parts == ()
+
+    window.close()
+
+
 def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
     _application()
     window = FEMMainWindow()

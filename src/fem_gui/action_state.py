@@ -449,20 +449,29 @@ def derive_action_availability(
         snapshot.source_kind is not None and not busy,
         "当前没有打开的模型或项目",
     )
-    geometry_reason = (
+    create_part_enabled = (
+        snapshot.source_kind == "native"
+        and not snapshot.parts
+        and not busy
+    )
+    create_part_reason = (
         "请先新建模型"
         if snapshot.source_kind is None
         else "INP 模型没有可编辑 CAD；请新建自主模型"
+        if snapshot.source_kind != "native"
+        else "当前模型已存在部件；暂不支持创建多个部件"
+        if snapshot.parts
+        else "后台任务运行时不能新建部件"
     )
     set_state(
         GuiActionKey.GEOMETRY_CREATE,
-        snapshot.source_kind == "native" and not busy,
-        geometry_reason,
+        create_part_enabled,
+        create_part_reason,
     )
     set_state(
         GuiActionKey.GEOMETRY_SKETCH,
-        snapshot.source_kind == "native" and not busy,
-        geometry_reason,
+        create_part_enabled,
+        create_part_reason,
     )
     set_state(
         GuiActionKey.GEOMETRY_FACE_SKETCH,
@@ -479,8 +488,8 @@ def derive_action_availability(
     )
     set_state(
         GuiActionKey.GEOMETRY_WIRE,
-        snapshot.source_kind == "native" and not busy,
-        geometry_reason,
+        create_part_enabled,
+        create_part_reason,
     )
     for key in (
         GuiActionKey.GEOMETRY_MOVE,

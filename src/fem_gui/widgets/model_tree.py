@@ -984,6 +984,8 @@ class ModelTree(QTreeWidget):
         source_path: str | Path | None = None,
     ) -> QTreeWidgetItem:
         """显示模型以及稳定的原生部件层级。"""
+        if parts is None and not feature_rows and not bodies:
+            parts = ()
         previous_root = (
             None
             if document_id is None

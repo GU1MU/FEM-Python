@@ -76,6 +76,32 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     assert "后台任务" in busy[GuiActionKey.OPEN].reason
 
 
+def test_existing_part_disables_all_new_part_actions() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    session.add_native_part(
+        RectangleGeometry("Part-1", 4.0, 2.0),
+        name="部件-1",
+    )
+    snapshot = session.snapshot()
+
+    states = _by_key(
+        derive_action_availability(
+            snapshot,
+            describe_session_authoring(snapshot),
+            GuiActionContext(),
+        )
+    )
+
+    for key in (
+        GuiActionKey.GEOMETRY_CREATE,
+        GuiActionKey.GEOMETRY_SKETCH,
+        GuiActionKey.GEOMETRY_WIRE,
+    ):
+        assert not states[key].enabled
+        assert "暂不支持创建多个部件" in states[key].reason
+
+
 def test_delete_model_requires_an_idle_active_model_document() -> None:
     snapshot = ModelSession().snapshot()
     projection = describe_session_authoring(snapshot)

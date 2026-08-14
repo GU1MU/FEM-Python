@@ -176,7 +176,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     window.close()
 
 
-def test_new_model_unlocks_model_definition_and_sketch_commands():
+def test_new_model_unlocks_new_part_commands_until_first_part_exists():
     _application()
     window = FEMMainWindow()
 
@@ -184,8 +184,18 @@ def test_new_model_unlocks_model_definition_and_sketch_commands():
 
     assert window.actions["geometry_create"].isEnabled()
     assert window.actions["geometry_sketch"].isEnabled()
+    assert window.actions["geometry_wire"].isEnabled()
     assert window.actions["material_manager"].isEnabled()
     assert window.actions["step_create"].isEnabled()
+
+    window._set_native_geometry(
+        RectangleGeometry("Part-1", 2.0, 1.0),
+        "矩形",
+    )
+
+    assert not window.actions["geometry_create"].isEnabled()
+    assert not window.actions["geometry_sketch"].isEnabled()
+    assert not window.actions["geometry_wire"].isEnabled()
     window.close()
 
 
