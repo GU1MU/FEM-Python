@@ -375,6 +375,45 @@ def test_native_geometry_module_restores_pre_mesh_geometry() -> None:
     window.close()
 
 
+def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
+    monkeypatch,
+) -> None:
+    window = _new_window()
+    window._create_native_model("Model-1")
+    recipe = RectangleGeometry("Plate", 2.0, 1.0)
+    window._set_native_geometry(recipe, "矩形")
+    task = window.session.prepare_mesh_generation()
+    model = make_static_pull_truss_model()
+    assert window._apply_session_delta(
+        window.session.accept_generated_model(task.token, model),
+        model_geometry=build_model_geometry(model),
+    )
+    window.ribbon.set_current("模型")
+    window._geometry_preview_cache = None
+    rebuilds = []
+    monkeypatch.setattr(
+        window,
+        "_recipe_contains_strict_boolean",
+        lambda candidate: candidate == recipe,
+    )
+    monkeypatch.setattr(
+        window,
+        "_schedule_exact_boolean_preview",
+        lambda snapshot, candidate: rebuilds.append(
+            (snapshot.session_id, candidate)
+        ),
+    )
+
+    window.ribbon.set_current("几何")
+
+    assert window.document.artifact is not None
+    assert rebuilds == [(window.document.session_id, recipe)]
+    window.ribbon.set_current("模型")
+    window.ribbon.set_current("几何")
+    assert rebuilds == [(window.document.session_id, recipe)]
+    window.close()
+
+
 def test_definition_change_replaces_artifact_and_retains_result_history() -> None:
     window = _new_window()
     _install_imported(window)

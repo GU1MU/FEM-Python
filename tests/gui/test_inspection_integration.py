@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from fem.io.inp import read
 from fem.application import MeshEntityRef, NativePart, RegionRef
@@ -354,10 +354,22 @@ def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) 
         "highlight_nodes",
         lambda node_ids: highlighted_nodes.append(node_ids),
     )
-
-    window.model_tree._on_clicked(
-        _find_kind(window.model_tree, "boundary")
+    authored_boundary = window.document.steps[0].boundaries[0]
+    compiled_step = window.document.model.steps[0]
+    compiled_boundary = compiled_step.boundaries[0]
+    assert authored_boundary is not compiled_boundary
+    compiled_step.boundaries = (
+        DisplacementConstraint(
+            "MISSING_EDGE",
+            1,
+            3,
+            target_kind="edge",
+            name="Fixed",
+        ),
     )
+
+    boundary_item = _find_kind(window.model_tree, "boundary")
+    window.model_tree._on_clicked(boundary_item)
 
     expected = (
         MeshEntityRef.edge(1, 4, (5, 6)),
@@ -367,6 +379,26 @@ def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) 
     ]
     assert highlighted_nodes == []
     assert "set_highlight" not in window.viewport._actors
+    compiled_step.boundaries = (compiled_boundary,)
+
+    highlighted_scopes.clear()
+    window._show_entry_information(
+        "boundary",
+        boundary_item.data(0, ROLE_KEY),
+    )
+    information = window._inspection_windows[-1]
+    highlight_button = next(
+        button
+        for button in information.findChildren(QPushButton)
+        if button.text() == "高亮"
+    )
+
+    highlight_button.click()
+
+    assert highlighted_scopes == [
+        (expected, {"entity_kind": "edge"})
+    ]
+    information.close()
 
     window.model_tree._on_clicked(
         _find_kind(window.model_tree, "edge_load")

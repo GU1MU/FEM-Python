@@ -288,6 +288,7 @@ class GuiActionContext:
     selection_space: str = "mesh"
     selection_filter: str = "point"
     selection_topological_dimension: int | None = None
+    symbol_display_disabled: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -305,6 +306,7 @@ class GuiActionContext:
             "sketch_editor_active",
             "boolean_editor_active",
             "planar_solid_face_selected",
+            "symbol_display_disabled",
         ):
             if type(getattr(self, name)) is not bool:
                 raise TypeError(f"{name} must be a bool")
@@ -449,19 +451,26 @@ def derive_action_availability(
         snapshot.source_kind is not None and not busy,
         "当前没有打开的模型或项目",
     )
-    create_part_enabled = (
+    create_part_model_ready = (
         snapshot.source_kind == "native"
+        or (
+            snapshot.source_kind is None
+            and context.model_document_active
+        )
+    )
+    create_part_enabled = (
+        create_part_model_ready
         and not snapshot.parts
         and not busy
     )
     create_part_reason = (
-        "请先新建模型"
-        if snapshot.source_kind is None
-        else "INP 模型没有可编辑 CAD；请新建自主模型"
-        if snapshot.source_kind != "native"
+        "后台任务运行时不能新建部件"
+        if busy
         else "当前模型已存在部件；暂不支持创建多个部件"
         if snapshot.parts
-        else "后台任务运行时不能新建部件"
+        else "请先新建模型"
+        if snapshot.source_kind is None
+        else "INP 模型没有可编辑 CAD；请新建自主模型"
     )
     set_state(
         GuiActionKey.GEOMETRY_CREATE,
@@ -816,10 +825,18 @@ def derive_action_availability(
         GuiActionKey.NODES,
         GuiActionKey.NODE_LABELS,
         GuiActionKey.ELEMENT_LABELS,
-        GuiActionKey.SYMBOLS,
         GuiActionKey.SYMBOL_SETTINGS,
     ):
         set_state(key, has_model, "请先生成网格或打开 INP 模型")
+    set_state(
+        GuiActionKey.SYMBOLS,
+        has_model and not context.symbol_display_disabled,
+        (
+            "当前功能栏下不能显示约束和载荷"
+            if context.symbol_display_disabled
+            else "请先生成网格或打开 INP 模型"
+        ),
+    )
     selection_keys = {
         "point": GuiActionKey.SELECT_POINT,
         "element": GuiActionKey.SELECT_ELEMENT,

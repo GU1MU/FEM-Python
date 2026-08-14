@@ -84,10 +84,11 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     _application()
     window = FEMMainWindow()
     assert window.actions["open"].isEnabled()
-    assert not window.actions["geometry_create"].isEnabled()
+    assert window.actions["geometry_create"].isEnabled()
     assert window.actions["geometry_create"].toolTip() == "新建部件"
-    assert not window.actions["geometry_sketch"].isEnabled()
+    assert window.actions["geometry_sketch"].isEnabled()
     assert window.actions["geometry_sketch"].toolTip() == "新建草图"
+    assert window.actions["geometry_wire"].isEnabled()
     assert not window.actions["material_manager"].isEnabled()
     assert not window.actions["geometry_undo"].isEnabled()
     assert not window.actions["geometry_delete"].isEnabled()
@@ -173,6 +174,37 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
     assert window.status_panel.step_label.text() == "Step：—"
     assert window.status_panel.result_label.text() == "结果：—"
     assert not window.actions["submit_job"].isEnabled()
+    window.close()
+
+
+def test_startup_new_part_command_initializes_model_before_dialog(
+    monkeypatch,
+):
+    _application()
+
+    class _CancelledCreationDialog:
+        def __init__(self, _parent, *, default_part_name):
+            assert default_part_name == "部件-1"
+
+        def exec(self):
+            return False
+
+    monkeypatch.setattr(
+        main_window_module,
+        "GeometryCreationDialog",
+        _CancelledCreationDialog,
+    )
+    window = FEMMainWindow()
+
+    assert window.document.source_kind is None
+    assert window.actions["geometry_create"].isEnabled()
+
+    window.create_geometry()
+
+    assert window.document.source_kind == "native"
+    assert window.document.model_name == "模型-1"
+    assert window.document.parts == ()
+    assert window.actions["geometry_create"].isEnabled()
     window.close()
 
 

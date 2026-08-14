@@ -1121,6 +1121,11 @@ class FEMMainWindow(QMainWindow):
                 context.presentation_state.module_name
                 or self._current_module_name()
             )
+            self._apply_module_symbol_policy(
+                context.presentation_state.module_name
+                or self._current_module_name(),
+                render=False,
+            )
             # First display fits once; warm displays restore the saved camera
             # and do not reset/fit it.  All preceding calls use render=False.
             self.viewport._render_suppressed = viewport_render_suppressed
@@ -4982,6 +4987,24 @@ class FEMMainWindow(QMainWindow):
         elif module_name in {"项目", "几何", "网格", "模型", "分析"}:
             self.navigation.show_model()
         self._project_viewport_for_module(module_name)
+        self._apply_module_symbol_policy(module_name)
+        self._update_action_states()
+
+    def _apply_module_symbol_policy(
+        self,
+        module_name: str,
+        *,
+        render: bool = True,
+    ) -> None:
+        """Keep boundary/load symbols consistent with the active module."""
+
+        if module_name not in {"几何", "分析", "结果"}:
+            return
+        visible = module_name == "分析"
+        action = self.actions["symbols"]
+        with QSignalBlocker(action):
+            action.setChecked(visible)
+        self.viewport.set_symbols_visible(visible, render=render)
 
     def _current_module_name(self) -> str:
         tab_bar = getattr(getattr(self, "ribbon", None), "tab_bar", None)
@@ -5102,25 +5125,27 @@ class FEMMainWindow(QMainWindow):
             return None
         preview_key = self._native_part_preview_cache_key(self.document)
         cached = self._geometry_preview_cache
+        cached_is_current = (
+            cached is not None
+            and cached[0] == self.document.session_id
+            and cached[1] == preview_key
+        )
         preview = (
             cached[2]
-            if (
-                cached is not None
-                and cached[0] == self.document.session_id
-                and cached[1] == preview_key
-            )
+            if cached_is_current
             else build_multi_part_geometry_preview((active,))
         )
-        if (
-            cached is None
-            or cached[0] != self.document.session_id
-            or cached[1] != preview_key
-        ):
+        if not cached_is_current:
             self._geometry_preview_cache = (
                 self.document.session_id,
                 preview_key,
                 preview,
             )
+            if self._recipe_contains_strict_boolean(active.geometry_recipe):
+                self._schedule_exact_boolean_preview(
+                    self.document,
+                    active.geometry_recipe,
+                )
         suppressed_parts = tuple(
             part
             for part in self.document.parts
@@ -5615,6 +5640,9 @@ class FEMMainWindow(QMainWindow):
                 if self._selection_context.space == "mesh"
                 else None
             ),
+            symbol_display_disabled=(
+                self._current_module_name() in {"几何", "结果"}
+            ),
         )
         for availability in derive_action_availability(
             self.document,
@@ -5689,11 +5717,7 @@ class FEMMainWindow(QMainWindow):
             or self._sketch_editor_controller is not None
         ):
             return
-        if self.document.source_kind != "native":
-            self._show_error(
-                "新建线体",
-                "请先新建自主模型，再创建线体。",
-            )
+        if not self._ensure_native_model_for_new_part("新建线体"):
             return
         default_name = (
             f"部件-{self.session.next_native_part_id[1:]}"
@@ -5843,11 +5867,7 @@ class FEMMainWindow(QMainWindow):
             or self._sketch_editor_controller is not None
         ):
             return
-        if self.document.source_kind != "native":
-            self._show_error(
-                "新建部件",
-                "请先新建自主模型；INP 模型不能反向转换为可编辑 CAD。",
-            )
+        if not self._ensure_native_model_for_new_part("新建部件"):
             return
         dialog = GeometryCreationDialog(
             self,
@@ -5884,6 +5904,32 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "geometry creation dialog returned an unknown kind"
             )
+
+    def _ensure_native_model_for_new_part(self, title: str) -> bool:
+        """Initialize the startup model before its first Part is authored."""
+
+        if self.document.source_kind == "native":
+            return True
+        if self.document.source_kind is not None:
+            self._show_error(
+                title,
+                "INP 模型不能反向转换为可编辑 CAD；请新建自主模型。",
+            )
+            return False
+        context = self.workspace.active_document()
+        if context is None or context.is_result:
+            self._show_error(title, "请先新建自主模型。")
+            return False
+        receipt = self.new_native_project(
+            NewNativeProjectCommand(
+                str(context.display_name or "模型-1"),
+                expected_session_revision=self.document.session_revision,
+            )
+        )
+        if receipt.diagnostic is not None:
+            self._show_command_rejection(title, receipt)
+            return False
+        return True
 
     def create_sketch_geometry(self) -> None:
         """Compatibility action: enter the interactive 2D sketch workflow."""
@@ -6475,11 +6521,7 @@ class FEMMainWindow(QMainWindow):
             or self._sketch_editor_controller is not None
         ):
             return
-        if self.document.source_kind != "native":
-            self._show_error(
-                "新建二维草图",
-                "请先新建自主模型，再创建二维草图。",
-            )
+        if not self._ensure_native_model_for_new_part("新建二维草图"):
             return
         current_part_name = (
             f"部件-{self.session.next_native_part_id[1:]}"
@@ -8299,7 +8341,10 @@ class FEMMainWindow(QMainWindow):
                 if (
                     self.document.session_id == key[0]
                     and self.document.geometry_recipe == recipe
-                    and self.document.artifact is None
+                    and (
+                        self.document.artifact is None
+                        or self._current_module_name() == "几何"
+                    )
                 ):
                     self.viewport.show_geometry_preview(payload)
                     self.status_panel.set_state(
@@ -8383,7 +8428,10 @@ class FEMMainWindow(QMainWindow):
                 and self.document.part_revision(key[1]) == key[2]
                 and self.document.project_revision == key[3]
                 and self.document.geometry_recipe == recipe
-                and self.document.artifact is None
+                and (
+                    self.document.artifact is None
+                    or self._current_module_name() == "几何"
+                )
             ):
                 self.viewport.show_geometry_preview(payload)
                 self.status_panel.set_state(
@@ -8462,7 +8510,10 @@ class FEMMainWindow(QMainWindow):
                 and self.document.part_revision(key[1]) == key[2]
                 and self.document.project_revision == key[3]
                 and self.document.geometry_recipe == recipe
-                and self.document.artifact is None
+                and (
+                    self.document.artifact is None
+                    or self._current_module_name() == "几何"
+                )
             ):
                 self.viewport.show_geometry_preview(payload)
                 self.status_panel.set_state(
@@ -15031,6 +15082,29 @@ class FEMMainWindow(QMainWindow):
             key,
         )
 
+    def _displacement_boundary_scope(
+        self,
+        key: object,
+    ) -> RegionRef | int | None:
+        resolved = _resolve_analysis_object_key(
+            tuple(self.document.steps),
+            "boundaries",
+            key,
+        )
+        if resolved is None:
+            return None
+        step_index, boundary_index = resolved
+        boundary = self.document.steps[step_index].boundaries[
+            boundary_index
+        ]
+        target = boundary.target
+        if isinstance(target, int):
+            return int(target)
+        return RegionRef(
+            displacement_target_kind(boundary),
+            str(target),
+        )
+
     def _model_root_action_requested(self, document_id: int, action: str) -> None:
         """Handle model-root lifecycle actions after routing by document id."""
 
@@ -15137,17 +15211,14 @@ class FEMMainWindow(QMainWindow):
         if resolved_key is None:
             return
         if kind == "boundary":
-            step_index, boundary_index = resolved_key
-            boundary = self.document.model.steps[step_index].boundaries[
-                boundary_index
-            ]
-            target_kind = displacement_target_kind(boundary)
-            target = boundary.target
-            self.highlight_entity(
-                "node" if target_kind == "node_set" and isinstance(target, int)
-                else target_kind,
-                target,
+            scope = self._displacement_boundary_scope(resolved_key)
+            if scope is None:
+                return
+            self._highlight_analysis_scope(scope)
+            target_kind = (
+                "node_set" if isinstance(scope, int) else scope.kind
             )
+            target = scope if isinstance(scope, int) else scope.name
             names = {
                 "node_set": "节点集",
                 "edge": "边集合",
@@ -16870,21 +16941,12 @@ class FEMMainWindow(QMainWindow):
     def highlight_entity(self, kind: str, key: object) -> None:
         if self.inspection_service is None:
             return
-        self.viewport.clear_selection(render=False)
         if kind == "boundary":
-            step_index, boundary_index = key
-            boundary = self.document.model.steps[int(step_index)].boundaries[
-                int(boundary_index)
-            ]
-            target_kind = displacement_target_kind(boundary)
-            self.highlight_entity(
-                "node"
-                if target_kind == "node_set"
-                and isinstance(boundary.target, int)
-                else target_kind,
-                boundary.target,
-            )
+            scope = self._displacement_boundary_scope(key)
+            if scope is not None:
+                self._highlight_analysis_scope(scope)
             return
+        self.viewport.clear_selection(render=False)
         if kind in {"surface", "edge", "surface_load", "edge_load"}:
             region_kind = "surface" if kind in {"surface", "surface_load"} else "edge"
             if kind in {"surface_load", "edge_load"}:

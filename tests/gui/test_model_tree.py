@@ -244,7 +244,7 @@ def test_boundary_and_load_context_menus_emit_delete_request(
 
     tree._show_context_menu(QPoint())
 
-    assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
+    assert action_labels == ["编辑", "删除", "查看信息"]
     assert deleted == [("boundary", boundary.data(0, ROLE_KEY))]
 
     selected[0] = load

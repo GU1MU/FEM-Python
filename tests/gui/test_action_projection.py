@@ -76,6 +76,24 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     assert "后台任务" in busy[GuiActionKey.OPEN].reason
 
 
+def test_startup_model_enables_new_part_actions_before_session_initialization() -> None:
+    snapshot = ModelSession().snapshot()
+    states = _by_key(
+        derive_action_availability(
+            snapshot,
+            describe_session_authoring(snapshot),
+            GuiActionContext(model_document_active=True),
+        )
+    )
+
+    for key in (
+        GuiActionKey.GEOMETRY_CREATE,
+        GuiActionKey.GEOMETRY_SKETCH,
+        GuiActionKey.GEOMETRY_WIRE,
+    ):
+        assert states[key].enabled
+
+
 def test_existing_part_disables_all_new_part_actions() -> None:
     session = ModelSession()
     session.new_native_project()

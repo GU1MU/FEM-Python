@@ -1433,7 +1433,10 @@ class ModelTree(QTreeWidget):
             return
         highlight = (
             menu.addAction("高亮")
-            if entry[1] not in non_highlightable
+            if (
+                entry[1] not in non_highlightable
+                and entry[1] != "boundary"
+            )
             else None
         )
         rename = (

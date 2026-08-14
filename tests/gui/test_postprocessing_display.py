@@ -190,16 +190,47 @@ def test_ribbon_modules_switch_between_result_contour_and_mesh(
     ) == "结果"
     assert window.viewport._result_render_payload is not None
     assert window.viewport._display.contour_enabled
+    assert not window.actions["symbols"].isChecked()
+    assert not window.actions["symbols"].isEnabled()
+    assert not window.viewport._symbols_visible
 
     for module_name in ("分析", "模型", "网格"):
         window.ribbon.set_current(module_name)
         assert window.viewport._result_render_payload is None
         assert window.viewport._geometry_preview is None
         assert window.viewport.artifact_id == window.document.artifact.artifact_id
+        if module_name == "分析":
+            assert window.actions["symbols"].isChecked()
+            assert window.actions["symbols"].isEnabled()
+            assert window.viewport._symbols_visible
 
     window.ribbon.set_current("结果")
     assert window.viewport._result_render_payload is not None
     assert window.viewport._display.contour_enabled
+    assert not window.actions["symbols"].isChecked()
+    assert not window.actions["symbols"].isEnabled()
+    assert not window.viewport._symbols_visible
+    window._update_action_states()
+    assert not window.actions["symbols"].isEnabled()
+
+    window.ribbon.set_current("分析")
+    assert window.actions["symbols"].isChecked()
+    assert window.actions["symbols"].isEnabled()
+    assert window.viewport._symbols_visible
+
+    window.ribbon.set_current("几何")
+    assert not window.actions["symbols"].isChecked()
+    assert not window.actions["symbols"].isEnabled()
+    assert not window.viewport._symbols_visible
+    window._update_action_states()
+    assert not window.actions["symbols"].isEnabled()
+
+    window.ribbon.set_current("分析")
+    assert window.actions["symbols"].isChecked()
+    assert window.actions["symbols"].isEnabled()
+    assert window.viewport._symbols_visible
+
+    window.ribbon.set_current("结果")
     assert (
         window.viewport._result_render_payload.topology.selection
         == window.result_selection
