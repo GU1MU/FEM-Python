@@ -351,6 +351,67 @@ def test_open_projects_use_real_model_name_and_disambiguate_collisions(
         dispose_gui_widget(window)
 
 
+def test_imported_default_name_is_skipped_and_duplicate_new_name_is_rejected(
+    monkeypatch,
+    dispose_gui_widget,
+):
+    _application()
+    path = Path("C:/model-2.fempy")
+    monkeypatch.setattr(
+        main_window_module,
+        "load_project",
+        lambda _path: _loaded_project(path, "模型-2"),
+    )
+    window = FEMMainWindow()
+    prompts = []
+    errors = []
+    try:
+        await_succeeded(window.open_project_path(path), timeout=2.0)
+        imported = window.workspace.active_document()
+        assert imported is not None
+
+        def duplicate_name(_parent, title, prompt, **options):
+            prompts.append((title, prompt, options.get("text")))
+            return "模型-2", True
+
+        monkeypatch.setattr(
+            main_window_module.QInputDialog,
+            "getText",
+            duplicate_name,
+        )
+        monkeypatch.setattr(
+            window,
+            "_show_error",
+            lambda title, message: errors.append((title, message)),
+        )
+
+        window.new_native_model()
+
+        assert prompts == [("新建模型", "模型名称：", "模型-3")]
+        assert errors == [("新建模型", "模型名称已存在：模型-2")]
+        assert window.workspace.active_document() is imported
+        assert len(window.workspace.models) == 2
+
+        monkeypatch.setattr(
+            main_window_module.QInputDialog,
+            "getText",
+            lambda _parent, _title, _prompt, **options: (
+                str(options["text"]),
+                True,
+            ),
+        )
+        window.new_native_model()
+
+        created = window.workspace.active_document()
+        assert created is not None
+        assert created is not imported
+        assert created.display_name == "模型-3"
+        assert created.projection.model_name == "模型-3"
+        assert window.model_tree.roots[created.document_id].text(0) == "模型-3"
+    finally:
+        dispose_gui_widget(window)
+
+
 def test_open_inp_paths_append_independent_models_and_reuse_duplicate_path(
     tmp_path,
     monkeypatch,

@@ -10231,6 +10231,12 @@ class FEMMainWindow(QMainWindow):
         if not model_name:
             self._show_error("新建模型", "模型名称不能为空。")
             return
+        if self.workspace.model_name_exists(model_name):
+            self._show_error(
+                "新建模型",
+                f"模型名称已存在：{model_name}",
+            )
+            return
         # New models are appended as independent workspace documents; the
         # current document remains intact, so no discard confirmation applies.
         self._create_native_model(model_name)

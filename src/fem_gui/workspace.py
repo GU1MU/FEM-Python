@@ -228,9 +228,35 @@ class FEMWorkspace:
 
     @property
     def next_model_number(self) -> int:
-        """The next default display number for a newly created model."""
+        """The next unused default display number for a newly created model."""
 
+        while self.model_name_exists(f"模型-{self._next_model_number}"):
+            self._next_model_number += 1
         return self._next_model_number
+
+    def model_name_exists(
+        self,
+        name: str,
+        *,
+        exclude_document_id: int | None = None,
+    ) -> bool:
+        """Return whether a model already uses *name* in the workspace."""
+
+        normalized = str(name).strip().casefold()
+        if not normalized:
+            return False
+        for context in self.models.values():
+            if context.document_id == exclude_document_id:
+                continue
+            persistent_name = str(
+                getattr(context.projection, "model_name", "") or ""
+            ).strip()
+            if normalized in {
+                context.display_name.strip().casefold(),
+                persistent_name.casefold(),
+            }:
+                return True
+        return False
 
     def next_job_name(self) -> str:
         """Return the next workspace-global default job name."""

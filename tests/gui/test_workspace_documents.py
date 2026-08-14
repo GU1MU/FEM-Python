@@ -131,6 +131,21 @@ def test_model_default_names_use_model_sequence_across_result_ids(gui_applicatio
     assert second.display_name == "模型-2"
 
 
+def test_model_default_number_skips_imported_model_names(
+    tmp_path,
+    gui_application,
+):
+    workspace = FEMWorkspace()
+    workspace.add_model(display_name="模型-1")
+    workspace.add_model(
+        display_name="模型-2",
+        source_path=tmp_path / "imported.fempy",
+    )
+
+    assert workspace.model_name_exists(" 模型-2 ")
+    assert workspace.next_model_number == 3
+
+
 def test_workspace_disambiguates_real_model_and_result_names(gui_application, tmp_path):
     workspace = FEMWorkspace()
 
