@@ -2080,6 +2080,19 @@ class QtAgentRuntime(QObject):
                 )
                 self._schedule_delta_flush_locked(context)
             return events
+        if event.event is EngineEventType.MESSAGE_PRESENTATION:
+            raw_kind = event.data.get(
+                "presentation_kind",
+                MessagePresentationKind.PROCESS.value,
+            )
+            try:
+                presentation_kind = MessagePresentationKind(raw_kind).value
+            except (TypeError, ValueError):
+                presentation_kind = MessagePresentationKind.PROCESS.value
+            return self._complete_active_message_locked(
+                context,
+                presentation_kind=presentation_kind,
+            )
         if event.event is EngineEventType.DIAGNOSTIC:
             raw_diagnostic = event.data.get("diagnostic")
             identity = _diagnostic_identity(raw_diagnostic)

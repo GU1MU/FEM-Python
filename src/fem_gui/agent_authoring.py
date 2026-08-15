@@ -129,6 +129,7 @@ from fem_agent.geometry_authoring import (
     feature_topology_catalog,
     geometry_recipe_from_payload,
     planar_construction_proposal_evidence,
+    planar_feature_geometry_catalog,
     planar_geometry_catalog,
     planar_path_slot_vertices,
     planar_polygon_geometry,
@@ -5134,7 +5135,14 @@ def create_session_authoring_workflow_controller(
         except TypeError:
             if part.dimension == 2:
                 topology = describe_recipe_topology(part.geometry_recipe)
-                selection = resolve_extrusion_source_faces(part.geometry_recipe)
+                try:
+                    selection = resolve_extrusion_source_faces(
+                        part.geometry_recipe
+                    )
+                except ValueError:
+                    selected_face_ids: tuple[str, ...] = ()
+                else:
+                    selected_face_ids = selection.face_ids
                 catalog = {
                     "kind": "planar_feature_recipe",
                     "recipe_kind": _provider_recipe_kind(part.geometry_recipe),
@@ -5149,13 +5157,13 @@ def create_session_authoring_workflow_controller(
                     ],
                     "profile_summary": {
                         "topology_exact": topology.exact,
-                        "material_profile_count": len(selection.face_ids),
+                        "material_profile_count": len(selected_face_ids),
                         "profiles": [
                             {
                                 "profile_id": face_id,
                                 "role": "outer",
                             }
-                            for face_id in selection.face_ids
+                            for face_id in selected_face_ids
                         ],
                     },
                     "freeform_profile_policy": {
@@ -5169,6 +5177,9 @@ def create_session_authoring_workflow_controller(
                             "append one proven cut feature to feature history"
                         ),
                     },
+                    "planar_feature_geometry": planar_feature_geometry_catalog(
+                        part.geometry_recipe
+                    ),
                 }
             else:
                 catalog = {
@@ -5760,6 +5771,101 @@ def create_session_authoring_workflow_controller(
                 first_failed_member=_first_failed_path_member(arguments.get("path")),
             )
 
+    def verify_spatial_relation(
+        before_recipe: object,
+        after_recipe: object,
+        raw_relation: object,
+    ) -> dict[str, object] | None:
+        if raw_relation is None:
+            return None
+        if not isinstance(raw_relation, Mapping) or not {
+            "reference_feature_id",
+            "relation",
+            "clearance",
+        } <= set(raw_relation) <= {
+            "reference_feature_id",
+            "relation",
+            "clearance",
+            "tolerance",
+        }:
+            raise ValueError("spatial_relation fields do not match")
+        reference_feature_id = str(raw_relation["reference_feature_id"]).strip()
+        relation = str(raw_relation["relation"])
+        if not reference_feature_id:
+            raise ValueError("reference_feature_id must be non-empty")
+        if relation not in {"above", "below", "left_of", "right_of"}:
+            raise ValueError("spatial relation is unsupported")
+        raw_clearance = raw_relation["clearance"]
+        if isinstance(raw_clearance, bool) or not isinstance(
+            raw_clearance,
+            (int, float),
+        ):
+            raise TypeError("spatial clearance must be a number")
+        clearance = float(raw_clearance)
+        if not math.isfinite(clearance) or clearance < 0.0:
+            raise ValueError("spatial clearance must be finite and non-negative")
+        raw_tolerance = raw_relation.get(
+            "tolerance",
+            max(1.0e-9, abs(clearance) * 1.0e-9),
+        )
+        if isinstance(raw_tolerance, bool) or not isinstance(
+            raw_tolerance,
+            (int, float),
+        ):
+            raise TypeError("spatial tolerance must be a number")
+        tolerance = float(raw_tolerance)
+        if not math.isfinite(tolerance) or tolerance <= 0.0:
+            raise ValueError("spatial tolerance must be finite and positive")
+
+        before_features = planar_feature_geometry_catalog(before_recipe)["features"]
+        after_features = planar_feature_geometry_catalog(after_recipe)["features"]
+        before_by_id = {
+            str(item["feature_id"]): item
+            for item in before_features
+            if isinstance(item, Mapping) and "feature_id" in item
+        }
+        reference = before_by_id.get(reference_feature_id)
+        if reference is None:
+            raise AuthoringContractError(
+                "geometry.spatial-reference-missing: reference_feature_id "
+                "does not identify an existing planar feature"
+            )
+        added = [
+            item
+            for item in after_features
+            if isinstance(item, Mapping)
+            and str(item.get("feature_id", "")) not in before_by_id
+        ]
+        if len(added) != 1:
+            raise AuthoringContractError(
+                "geometry.spatial-target-ambiguous: relation validation "
+                "requires exactly one new planar feature"
+            )
+        target = added[0]
+        reference_box = tuple(float(value) for value in reference["bounding_box"])
+        target_box = tuple(float(value) for value in target["bounding_box"])
+        measured = {
+            "above": target_box[1] - reference_box[3],
+            "below": reference_box[1] - target_box[3],
+            "left_of": reference_box[0] - target_box[2],
+            "right_of": target_box[0] - reference_box[2],
+        }[relation]
+        if abs(measured - clearance) > tolerance:
+            raise AuthoringContractError(
+                "geometry.spatial-relation-mismatch: "
+                f"requested {relation} clearance={clearance:g}, "
+                f"measured={measured:g}"
+            )
+        return {
+            "reference_feature_id": reference_feature_id,
+            "target_feature_id": str(target["feature_id"]),
+            "relation": relation,
+            "requested_clearance": clearance,
+            "measured_clearance": measured,
+            "tolerance": tolerance,
+            "verified": True,
+        }
+
     def prepare_geometry_edit(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
@@ -5770,6 +5876,18 @@ def create_session_authoring_workflow_controller(
             raise TypeError("edit must be an object")
         edit = dict(raw_edit)
         operation = str(edit.pop("operation"))
+        raw_spatial_relation = arguments.get("spatial_relation")
+        if raw_spatial_relation is not None and operation in {
+            "part_boolean",
+            "body_boolean",
+            "extrude_profiles",
+            "revolve_profile",
+            "path_sweep_profile",
+        }:
+            raise AuthoringContractError(
+                "geometry.spatial-relation-operation: spatial_relation "
+                "applies only to one new planar Boolean feature"
+            )
         snapshot = current_session().snapshot()
         part = next(
             (
@@ -5852,6 +5970,11 @@ def create_session_authoring_workflow_controller(
                     boolean_operation,
                 )
             draft = geometry_draft(prepared.geometry)
+            spatial_proof = verify_spatial_relation(
+                part.geometry_recipe,
+                draft.recipe,
+                raw_spatial_relation,
+            )
             action = "切除" if boolean_operation == "cut" else "合并"
             summary = f"在部件 {part.name} 上追加二维{action}特征：工具轮廓为 {kind}"
             metadata = envelope(controller, "geometry-planar-boolean")
@@ -5874,7 +5997,14 @@ def create_session_authoring_workflow_controller(
                     f"确认后追加二维{action}特征，并使旧网格与结果失效",
                 ),
                 confirm_label=f"追加{action}特征",
-                extra_data={"geometry_edit_mode": edit_mode},
+                extra_data={
+                    "geometry_edit_mode": edit_mode,
+                    **(
+                        {"spatial_relation_proof": spatial_proof}
+                        if spatial_proof is not None
+                        else {}
+                    ),
+                },
             )
         if operation == "part_boolean":
             if set(edit) != {
@@ -6439,6 +6569,11 @@ def create_session_authoring_workflow_controller(
             summary = f"旋转部件 {part.name}"
         else:
             raise ValueError("unsupported incremental geometry edit")
+        spatial_proof = verify_spatial_relation(
+            part.geometry_recipe,
+            draft.recipe,
+            raw_spatial_relation,
+        )
         metadata = envelope(controller, "geometry-edit")
         suffix = str(metadata.pop("identity_suffix"))
         edit_mode = planned_geometry_edit_mode()
@@ -6459,7 +6594,14 @@ def create_session_authoring_workflow_controller(
                 "确认后在当前模型中更新该部件，并使旧网格与结果失效",
             ),
             confirm_label="应用修改",
-            extra_data={"geometry_edit_mode": edit_mode},
+            extra_data={
+                "geometry_edit_mode": edit_mode,
+                **(
+                    {"spatial_relation_proof": spatial_proof}
+                    if spatial_proof is not None
+                    else {}
+                ),
+            },
         )
 
     def prepare_geometry_edit_with_diagnostics(
@@ -7194,15 +7336,36 @@ def create_session_authoring_workflow_controller(
         )
 
     def read_geometry_feature_catalog(
-        _arguments: Mapping[str, object],
+        arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
+        if set(arguments) - {"part_id"}:
+            raise AuthoringContractError(
+                "read_geometry_feature_catalog accepts only optional part_id"
+            )
+        requested_part_id = arguments.get("part_id")
+        if requested_part_id is not None and (
+            type(requested_part_id) is not str
+            or not requested_part_id.strip()
+        ):
+            raise AuthoringContractError("part_id must be a non-empty string")
         snapshot = current_session().snapshot()
         active_parts = tuple(
             part
             for part in snapshot.parts
-            if not part.suppressed and part.geometry_recipe is not None
+            if (
+                not part.suppressed
+                and part.geometry_recipe is not None
+                and (
+                    requested_part_id is None
+                    or str(part.id) == requested_part_id
+                )
+            )
         )
+        if requested_part_id is not None and not active_parts:
+            raise AuthoringContractError(
+                "part_id does not identify one active native Part"
+            )
         source_parts = active_parts[:128]
         catalogs: list[dict[str, object]] = []
         for part in source_parts:

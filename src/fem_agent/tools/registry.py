@@ -184,9 +184,23 @@ class AgentToolRegistry:
     ) -> ToolResult:
         tool = self._tools.get(str(name))
         if tool is None:
-            if self._dynamic_tools is not None and name in {
-                item.name for item in self._dynamic_tools.definitions
-            }:
+            dynamic_names = (
+                set()
+                if self._dynamic_tools is None
+                else {item.name for item in self._dynamic_tools.definitions}
+            )
+            snapshot = self.provider_snapshot
+            workflow_stage = getattr(snapshot, "workflow_stage", None)
+            if hasattr(workflow_stage, "value"):
+                workflow_stage = workflow_stage.value
+            stale_read = (
+                isinstance(name, str)
+                and name.startswith("read_")
+                and workflow_stage in {"stale", "cancelled"}
+            )
+            if self._dynamic_tools is not None and (
+                name in dynamic_names or stale_read
+            ):
                 return self._dynamic_tools.dispatch(
                     name,
                     arguments,

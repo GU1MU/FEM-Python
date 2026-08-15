@@ -724,6 +724,55 @@ def test_runtime_flushes_whitespace_only_stream_delta(tmp_path) -> None:
         runtime.shutdown()
 
 
+def test_runtime_finalizes_streamed_message_presentation_kind(tmp_path) -> None:
+    runtime = QtAgentRuntime(tmp_path / "agent-private-presentation")
+    try:
+        context, _reset = runtime._start_turn(1, "agent-session-presentation")
+        with runtime._lock:
+            mapped = runtime._map_engine_event_locked(
+                context,
+                EngineEvent(
+                    EngineEventType.MESSAGE_STARTED,
+                    context.session_id,
+                    {"role": "assistant"},
+                    "2026-08-15T08:00:00Z",
+                ),
+            )
+            mapped.extend(
+                runtime._map_engine_event_locked(
+                    context,
+                    EngineEvent(
+                        EngineEventType.MESSAGE_DELTA,
+                        context.session_id,
+                        {"text": "Please provide the opening depth."},
+                        "2026-08-15T08:00:01Z",
+                    ),
+                )
+            )
+            mapped.extend(runtime._flush_pending_delta_locked(context))
+            mapped.extend(
+                runtime._map_engine_event_locked(
+                    context,
+                    EngineEvent(
+                        EngineEventType.MESSAGE_PRESENTATION,
+                        context.session_id,
+                        {"presentation_kind": "decision_request"},
+                        "2026-08-15T08:00:02Z",
+                    ),
+                )
+            )
+
+        assert [event.event_type for event in mapped] == [
+            EventType.MESSAGE_START,
+            EventType.MESSAGE_DELTA,
+            EventType.MESSAGE_COMPLETE,
+        ]
+        assert mapped[-1].payload["presentation_kind"] == "decision_request"
+        assert context.active_message_id is None
+    finally:
+        runtime.shutdown()
+
+
 def test_runtime_marks_text_before_automatic_patch_as_full_preview(
     tmp_path,
 ) -> None:

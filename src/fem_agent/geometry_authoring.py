@@ -105,6 +105,8 @@ GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
 PROFILE_TRANSFORM_CONTEXT_SCHEMA_VERSION = 1
 PROFILE_TRANSFORM_MAX_PROFILES = 32
 PROFILE_TRANSFORM_MAX_BYTES = 24_576
+PLANAR_FEATURE_GEOMETRY_MAX_FEATURES = 32
+PLANAR_FEATURE_GEOMETRY_MAX_BYTES = 20_480
 
 
 @dataclass(frozen=True, slots=True)
@@ -2986,6 +2988,127 @@ def profile_transform_context(
     return data
 
 
+def planar_feature_geometry_catalog(recipe: object) -> dict[str, object]:
+    """Project bounded coordinate-bearing details for planar Boolean features.
+
+    The projection stays recipe-native and contains no CAD tags.  Each feature
+    keeps a compact bounding box even when its exact tool recipe cannot fit in
+    the detail budget, so callers can still resolve general spatial relations.
+    """
+
+    if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+        raise TypeError("recipe must be native geometry")
+    if geometry_dimension(recipe) != 2:
+        return {
+            "coordinate_space": "part_xy",
+            "features": [],
+            "truncated": False,
+            "omitted_feature_count": 0,
+            "geometry_detail_truncated": False,
+        }
+
+    discovered: list[tuple[BooleanGeometry, tuple[object, ...]]] = []
+
+    def visit(item: object, transforms: tuple[object, ...] = ()) -> None:
+        if type(item) is MovedGeometry or type(item) is RotatedGeometry:
+            visit(item.base, (*transforms, item))
+            return
+        if type(item) is BooleanGeometry:
+            visit(item.object_geometry, transforms)
+            discovered.append((item, transforms))
+            return
+        if type(item) is MultiBodyGeometry:
+            for body in item.bodies:
+                visit(body.recipe, transforms)
+
+    def transformed_tool(
+        tool: object,
+        transforms: tuple[object, ...],
+    ) -> object:
+        result = tool
+        for transform in reversed(transforms):
+            if type(transform) is MovedGeometry:
+                result = MovedGeometry(
+                    result,
+                    transform.dx,
+                    transform.dy,
+                    transform.dz,
+                )
+            else:
+                assert type(transform) is RotatedGeometry
+                result = RotatedGeometry(
+                    result,
+                    transform.axis,
+                    transform.angle_degrees,
+                )
+        return result
+
+    visit(recipe)
+    source = discovered[:PLANAR_FEATURE_GEOMETRY_MAX_FEATURES]
+    compact_features: list[dict[str, object]] = []
+    exact_recipes: list[dict[str, object] | None] = []
+    for index, (feature, transforms) in enumerate(source, start=1):
+        tool = transformed_tool(feature.tool_geometry, transforms)
+        context = feature.planar_context
+        preview = _preview(tool)
+        x_min, x_max, y_min, y_max, _z_min, _z_max = preview.bounds
+        feature_id = (
+            context.feature_id
+            if context is not None
+            else f"planar-boolean-{index}"
+        )
+        compact: dict[str, object] = {
+            "feature_id": feature_id,
+            "operation": feature.operation,
+            "order": index,
+            "bounding_box": [x_min, y_min, x_max, y_max],
+            "centroid": [
+                (x_min + x_max) / 2.0,
+                (y_min + y_max) / 2.0,
+            ],
+        }
+        if context is not None:
+            compact["target_face_id"] = context.target_face_id
+            compact["tool_face_ids"] = list(context.tool_face_ids)
+        compact_features.append(compact)
+        try:
+            exact_recipes.append(geometry_recipe_to_payload(tool))
+        except (TypeError, ValueError):
+            exact_recipes.append(None)
+
+    detailed_features: list[dict[str, object]] = []
+    geometry_detail_truncated = False
+    for compact, tool_recipe in zip(
+        compact_features,
+        exact_recipes,
+        strict=True,
+    ):
+        candidate = dict(compact)
+        if tool_recipe is not None:
+            candidate["tool_geometry_recipe"] = tool_recipe
+        projected = [*detailed_features, candidate]
+        encoded = json.dumps(
+            projected,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded) <= PLANAR_FEATURE_GEOMETRY_MAX_BYTES:
+            detailed_features.append(candidate)
+        else:
+            geometry_detail_truncated = True
+            detailed_features.append(dict(compact))
+
+    omitted = len(discovered) - len(source)
+    return {
+        "coordinate_space": "part_xy",
+        "features": detailed_features,
+        "truncated": omitted > 0,
+        "omitted_feature_count": omitted,
+        "geometry_detail_truncated": geometry_detail_truncated,
+    }
+
+
 def feature_topology_catalog(
     recipe: object,
     *,
@@ -3033,6 +3156,9 @@ def feature_topology_catalog(
             for item in topology.diagnostics[:32]
         ],
     }
+    planar_features = planar_feature_geometry_catalog(recipe)
+    if planar_features["features"]:
+        catalog["planar_feature_geometry"] = planar_features
     if isinstance(recipe, MultiBodyGeometry):
         catalog["canonical_part_ownership"] = [
             {"body_id": body.id, "part_id": f"P{body.id[1:]}"} for body in recipe.bodies
@@ -3048,7 +3174,7 @@ def feature_topology_catalog(
 
 
 def geometry_feature_catalog_tool_schema() -> dict[str, object]:
-    """Return the strict no-argument schema for the local catalog read."""
+    """Return the strict optional-Part schema for the local catalog read."""
 
     return {
         "name": GEOMETRY_FEATURE_CATALOG_TOOL_NAME,
@@ -3058,7 +3184,13 @@ def geometry_feature_catalog_tool_schema() -> dict[str, object]:
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "part_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 96,
+                }
+            },
             "required": [],
             "additionalProperties": False,
         },
@@ -4440,6 +4572,7 @@ __all__ = [
     "geometry_feature_catalog_tool_schema",
     "profile_transform_context",
     "feature_topology_catalog",
+    "planar_feature_geometry_catalog",
     "planar_geometry_catalog",
     "planar_construction_proposal_evidence",
     "planar_path_slot_vertices",

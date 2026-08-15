@@ -226,6 +226,11 @@ the authoring context first when it is the only published read, then read the
 geometry edit context and verify the intended Profile or hole-count change
 before continuing; never reuse IDs or a revision from an earlier successful
 edit.
+When the user specifies an exact above, below, left, or right clearance from an
+existing planar Boolean feature, use its feature_id and bounding_box from the
+latest read and attach the generic spatial_relation field to the edit proposal. Keep
+that local relation proof in the proposal instead of relying on conversational
+coordinate arithmetic.
 
 For a new planar region, use prepare_planar_construction_proposal as the sole
 planar creation path. Express composite regions with general primitives,
@@ -360,6 +365,7 @@ class _ConversationStorageLimit(ValueError):
 class EngineEventType(str, Enum):
     MESSAGE_STARTED = "message_started"
     MESSAGE_DELTA = "message_delta"
+    MESSAGE_PRESENTATION = "message_presentation"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     ANALYSIS_SUMMARY = "analysis_summary"
@@ -852,6 +858,7 @@ class AgentSessionEngine:
             recovery: str,
             *,
             storage_error: str,
+            presentation_kind: str = "result_summary",
         ) -> tuple[EngineEvent, ...]:
             try:
                 self._append_message(AssistantMessage("assistant", recovery))
@@ -872,7 +879,10 @@ class AgentSessionEngine:
             events.append(
                 self._event(
                     EngineEventType.MESSAGE_STARTED,
-                    {"role": "assistant"},
+                    {
+                        "role": "assistant",
+                        "presentation_kind": presentation_kind,
+                    },
                 )
             )
             events.append(
@@ -1038,6 +1048,10 @@ class AgentSessionEngine:
                     hold_stream = hold_stream or required_resync_tool is not None
                     hold_stream = hold_stream or new_model_follow_up_pending
                     hold_stream = hold_stream or requested_response_language == "zh-CN"
+                    # A response following a failed tool can mix provider
+                    # self-correction with one concise user decision request.
+                    # Hold that round until its semantic sections are known.
+                    hold_stream = hold_stream or previous_tool_failed
 
                     def receive_text_delta(delta: str) -> None:
                         nonlocal stream_started
@@ -1376,11 +1390,13 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            if streamed_events:
-                presentation_kind = _assistant_message_presentation_kind(
-                    response.message,
-                    trusted_terminal,
-                )
+            presentations = _assistant_message_presentations(
+                response.message,
+                trusted_terminal,
+                previous_tool_failed=previous_tool_failed,
+            )
+            if streamed_events and len(presentations) == 1:
+                presentation_kind, _content = presentations[0]
                 events.extend(
                     self._event(
                         event,
@@ -1392,28 +1408,52 @@ class AgentSessionEngine:
                     )
                     for event, data in streamed_events
                 )
-            if not stream_started:
-                events.append(
-                    self._event(
-                        EngineEventType.MESSAGE_STARTED,
-                        {
-                            "role": "assistant",
-                            "presentation_kind": (
-                                _assistant_message_presentation_kind(
-                                    response.message,
-                                    trusted_terminal,
-                                )
-                            ),
-                        },
-                    )
-                )
-                if response.message.content:
+            elif streamed_events:
+                for presentation_kind, content in presentations:
                     events.append(
                         self._event(
-                            EngineEventType.MESSAGE_DELTA,
-                            {"text": response.message.content},
+                            EngineEventType.MESSAGE_STARTED,
+                            {
+                                "role": "assistant",
+                                "presentation_kind": presentation_kind,
+                            },
                         )
                     )
+                    if content:
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": content},
+                            )
+                        )
+            elif stream_started:
+                # Unheld streams begin conservatively as PROCESS.  Finalize
+                # their semantic presentation after the provider response is
+                # complete, without delaying live text deltas.
+                events.append(
+                    self._event(
+                        EngineEventType.MESSAGE_PRESENTATION,
+                        {"presentation_kind": presentations[0][0]},
+                    )
+                )
+            else:
+                for presentation_kind, content in presentations:
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_STARTED,
+                            {
+                                "role": "assistant",
+                                "presentation_kind": presentation_kind,
+                            },
+                        )
+                    )
+                    if content:
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": content},
+                            )
+                        )
             if not response.message.tool_calls:
                 return tuple(events)
 
@@ -3061,6 +3101,21 @@ _AUTHORING_CLARIFICATION_MARKERS = (
     "which ",
     "what ",
 )
+_DECISION_REQUEST_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"(?:请|烦请|需要(?:你|您)|能否|可以(?:请)?你|可以(?:请)?您)"
+        r".{0,48}(?:确认|提供|指定|选择|决定|告诉|给出|说明)",
+        r"(?:请|直接).{0,24}(?:给出|回复|选择|确认)",
+        r"(?:^|[。！\n])\s*"
+        r"(?:是否|要不要|需不需要|哪个|哪种|多少|多大|多深|多宽|多高)"
+        r".{0,48}(?:确认|选择|合适|采用|需要|希望)?",
+        r"(?:please|could you|would you|can you|i need you to)"
+        r".{0,64}(?:confirm|provide|specify|choose|decide|tell|state)",
+        r"(?:^|[.!?\n])\s*"
+        r"(?:which|what|how (?:much|many|deep|wide|high|large))\b",
+    )
+)
 _BRANCHING_TOPOLOGY_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE | re.DOTALL)
     for pattern in (
@@ -3826,15 +3881,98 @@ def _tool_stage_narration(
 def _assistant_message_presentation_kind(
     message: AssistantMessage,
     trusted_terminal: tuple[str, str, str] | None,
+    *,
+    previous_tool_failed: bool = False,
 ) -> str:
     if trusted_terminal is not None:
         return "result_summary"
     if message.tool_calls:
         return "process"
-    content = message.content or ""
-    if "?" in content or "？" in content:
+    if _message_requests_user_decision(message):
         return "decision_request"
+    if previous_tool_failed or _claims_authoring_progress_without_tool(message):
+        return "process"
     return "result_summary"
+
+
+def _message_requests_user_decision(message: AssistantMessage) -> bool:
+    """Return whether visible text explicitly asks the user for input."""
+
+    if not isinstance(message.content, str):
+        return False
+    content = message.content.strip()
+    if not content:
+        return False
+    return (
+        "?" in content
+        or "？" in content
+        or any(pattern.search(content) is not None for pattern in _DECISION_REQUEST_PATTERNS)
+    )
+
+
+def _split_failed_process_decision(content: str) -> tuple[str, str] | None:
+    """Split a failed-tool self-correction from its final concise question."""
+
+    boundaries = {
+        match.end()
+        for match in re.finditer(r"\n\s*\n+|[。！？.!?]\s*", content)
+    }
+    for boundary in sorted(boundaries, reverse=True):
+        process = content[:boundary].strip()
+        decision = content[boundary:].strip()
+        if not process or not decision:
+            continue
+        if _message_requests_user_decision(
+            AssistantMessage("assistant", content=decision)
+        ):
+            return process, decision
+    matches = [
+        match
+        for pattern in _DECISION_REQUEST_PATTERNS
+        for match in pattern.finditer(content)
+        if match.start() > 0
+    ]
+    for match in sorted(matches, key=lambda item: item.start(), reverse=True):
+        process = content[: match.start()].strip()
+        decision = content[match.start() :].strip()
+        if process and decision:
+            return process, decision
+    return None
+
+
+def _assistant_message_presentations(
+    message: AssistantMessage,
+    trusted_terminal: tuple[str, str, str] | None,
+    *,
+    previous_tool_failed: bool,
+) -> tuple[tuple[str, str], ...]:
+    """Project one provider message into semantically presented UI sections."""
+
+    content = message.content or ""
+    requests_decision = _message_requests_user_decision(message)
+    if (
+        (previous_tool_failed or bool(message.tool_calls))
+        and trusted_terminal is None
+        and requests_decision
+    ):
+        split = _split_failed_process_decision(content)
+        if split is not None:
+            process, decision = split
+            return (
+                ("process", process),
+                ("decision_request", decision),
+            )
+        return (("decision_request", content),)
+    return (
+        (
+            _assistant_message_presentation_kind(
+                message,
+                trusted_terminal,
+                previous_tool_failed=previous_tool_failed,
+            ),
+            content,
+        ),
+    )
 
 
 def _proposal_preview_message(
@@ -4102,6 +4240,30 @@ def _geometry_edit_preview(
     edit = arguments.get("edit")
     if isinstance(edit, Mapping):
         lines.extend(_geometry_edit_description(edit, user_request, chinese))
+    spatial_relation = arguments.get("spatial_relation")
+    if isinstance(spatial_relation, Mapping):
+        reference = str(spatial_relation.get("reference_feature_id", "?"))
+        relation = str(spatial_relation.get("relation", "?"))
+        clearance = _preview_number(spatial_relation.get("clearance"))
+        labels = {
+            "above": ("上方", "above"),
+            "below": ("下方", "below"),
+            "left_of": ("左侧", "to the left of"),
+            "right_of": ("右侧", "to the right of"),
+        }
+        label = labels.get(relation, (relation, relation))[0 if chinese else 1]
+        lines.append(
+            (
+                f"- 空间约束：位于特征 {reference} {label}，"
+                f"要求净间距 {clearance}（提交时由本地校验）"
+                if chinese
+                else (
+                    f"- Spatial constraint: {label} feature {reference}, "
+                    f"required clearance {clearance} "
+                    "(validated locally on submission)"
+                )
+            )
+        )
     return lines
 
 

@@ -1948,9 +1948,28 @@ _legacy_edit["oneOf"].append(
         "additionalProperties": False,
     }
 )
+_SPATIAL_RELATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reference_feature_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+        },
+        "relation": {
+            "type": "string",
+            "enum": ["above", "below", "left_of", "right_of"],
+        },
+        "clearance": {"type": "number", "minimum": 0},
+        "tolerance": {"type": "number", "exclusiveMinimum": 0},
+    },
+    "required": ["reference_feature_id", "relation", "clearance"],
+    "additionalProperties": False,
+}
 _legacy_geometry_edit_parameters["properties"] = {
     **dict(_legacy_geometry_edit_parameters["properties"]),
     "edit": _legacy_edit,
+    "spatial_relation": _SPATIAL_RELATION_SCHEMA,
 }
 _PREPARE_GEOMETRY_EDIT = ToolDefinition(
     _PREPARE_GEOMETRY_EDIT.name,
@@ -1963,7 +1982,11 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
         "and one width fully define the slot. Branching centerlines and arbitrary "
         "silhouettes require one complete closed add_polygon boundary or one "
         "complete line/arc batch. Invalid Profiles return exact topology diagnostics "
-        "and must be revised before presenting a confirmation."
+        "and must be revised before presenting a confirmation. When the user "
+        "specifies an exact clearance from an existing planar Boolean feature, "
+        "include optional spatial_relation with that feature_id, direction, and "
+        "clearance; "
+        "the local preflight rejects a mismatched proposal."
     ),
     _legacy_geometry_edit_parameters,
 )
@@ -4391,6 +4414,25 @@ class AuthoringWorkflowController:
     ) -> ToolResult:
         with self._lock:
             available = {item.name for item in self.definitions}
+            if (
+                name not in available
+                and self._stage
+                in {
+                    AuthoringWorkflowStage.STALE,
+                    AuthoringWorkflowStage.CANCELLED,
+                }
+                and name.startswith("read_")
+                and (name == _READ_CONTEXT.name or name in self._handlers)
+            ):
+                try:
+                    self._read_context()
+                except Exception as error:
+                    return self._failure(
+                        context,
+                        DiagnosticCode.INVALID_MODEL,
+                        f"Authoring context resynchronization failed: {error}",
+                    )
+                available = {item.name for item in self.definitions}
             if name not in available:
                 return self._failure(
                     context,
@@ -4418,6 +4460,7 @@ class AuthoringWorkflowController:
                         _CREATE_NATIVE_MODEL_DOCUMENT.name,
                         _PREPARE_GEOMETRY.name,
                         _PREPARE_PLANAR_CONSTRUCTION.name,
+                        _GEOMETRY_FEATURE_CATALOG.name,
                         _READ_GEOMETRY_EDIT_CONTEXT.name,
                         _PREPARE_GEOMETRY_EDIT.name,
                         *_PROFILE_TRANSFORM_TOOLS,

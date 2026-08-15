@@ -368,6 +368,26 @@ def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
     assert "".join(sink_deltas) == "正在检查当前模型"
 
 
+def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
+    provider = _StreamingFakeProvider(
+        [_text_response("Please provide the target value.")]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_streaming_presentation",
+    )
+
+    events = engine.send_message("Help me choose a target value.")
+
+    presentation = next(
+        event
+        for event in events
+        if event.event is EngineEventType.MESSAGE_PRESENTATION
+    )
+    assert presentation.data["presentation_kind"] == "decision_request"
+
+
 def test_chinese_turn_retries_and_hides_an_english_only_response(tmp_path):
     provider = FakeProvider(
         [
@@ -994,6 +1014,11 @@ def test_batch_geometry_edit_preview_uses_natural_language():
         _geometry_edit_preview(
             {
                 "part_id": "P1",
+                "spatial_relation": {
+                    "reference_feature_id": "PB1",
+                    "relation": "above",
+                    "clearance": 10,
+                },
                 "edit": {
                     "operation": "batch",
                     "edits": [
@@ -1027,6 +1052,7 @@ def test_batch_geometry_edit_preview_uses_natural_language():
     )
 
     assert "一次完成 3 项草图修改" in preview
+    assert "位于特征 PB1 上方，要求净间距 10（提交时由本地校验）" in preview
     assert "增加矩形轮廓，左下角 (85, 30)，尺寸 30 × 12" in preview
     assert "P1" not in preview
     assert "add_rectangle" not in preview
@@ -1356,6 +1382,172 @@ def test_planar_edit_allows_clarification_after_context_read(tmp_path):
         and event.data.get("text") == "请提供U形槽的槽宽和外包尺寸。"
         for event in events
     )
+    clarification_start = next(
+        event
+        for event in events
+        if event.event is EngineEventType.MESSAGE_STARTED
+        and event.data.get("presentation_kind") == "decision_request"
+    )
+    assert clarification_start.data["presentation_kind"] == "decision_request"
+
+
+def test_failed_tool_self_correction_is_presented_as_process(tmp_path):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_polygon",
+            "vertices": [
+                {"x": 20, "y": 20},
+                {"x": 40, "y": 20},
+                {"x": 40, "y": 40},
+                {"x": 20, "y": 40},
+            ],
+        },
+    }
+    self_correction = (
+        "此前的轮廓推导包含多段坐标映射。局部校验失败后，"
+        "这些中间推演不能作为已完成结果，需要在后续请求中继续处理。"
+    )
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
+            ),
+            _text_response(self_correction),
+        ]
+    )
+    tools = _RetryingGeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_failed_tool_process_presentation",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在现有平板上增加一个槽")
+
+    correction_delta_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event is EngineEventType.MESSAGE_DELTA
+        and event.data.get("text") == self_correction
+    )
+    correction_start = events[correction_delta_index - 1]
+    assert correction_start.event is EngineEventType.MESSAGE_STARTED
+    assert correction_start.data["presentation_kind"] == "process"
+
+
+def test_tool_round_keeps_explicit_user_decision_visible(tmp_path):
+    process = "我先读取现有特征位置。"
+    decision = "请确认开口深度。"
+    provider = FakeProvider(
+        [
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    content=f"{process}\n\n{decision}",
+                    tool_calls=(
+                        ToolCall(
+                            "read-edit",
+                            "read_geometry_edit_context",
+                            {"part_id": "P1"},
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            _text_response("读取完成。"),
+        ]
+    )
+    tools = _GeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_tool_round_decision_presentation",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在现有平板上增加一个槽")
+
+    displayed = [
+        (
+            event.data.get("presentation_kind"),
+            events[index + 1].data.get("text"),
+        )
+        for index, event in enumerate(events[:-1])
+        if event.event is EngineEventType.MESSAGE_STARTED
+        and events[index + 1].event is EngineEventType.MESSAGE_DELTA
+        and events[index + 1].data.get("text") in {process, decision}
+    ]
+    assert displayed == [
+        ("process", process),
+        ("decision_request", decision),
+    ]
+
+
+def test_failed_tool_mixed_process_and_decision_are_presented_separately(
+    tmp_path,
+):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_polygon",
+            "vertices": [
+                {"x": 20, "y": 20},
+                {"x": 40, "y": 20},
+                {"x": 40, "y": 40},
+                {"x": 20, "y": 40},
+            ],
+        },
+    }
+    process = "本地校验拒绝了刚才的轮廓，我重新核对了已有尺寸。"
+    decision = "请提供开口深度。"
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
+            ),
+            _text_response(f"{process}\n\n{decision}"),
+        ]
+    )
+    tools = _RetryingGeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_mixed_process_decision_presentation",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在现有平板上增加一个槽")
+
+    displayed = [
+        (
+            event.data.get("presentation_kind"),
+            events[index + 1].data.get("text"),
+        )
+        for index, event in enumerate(events[:-1])
+        if event.event is EngineEventType.MESSAGE_STARTED
+        and events[index + 1].event is EngineEventType.MESSAGE_DELTA
+        and events[index + 1].data.get("text") in {process, decision}
+    ]
+    assert displayed == [
+        ("process", process),
+        ("decision_request", decision),
+    ]
 
 
 def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):

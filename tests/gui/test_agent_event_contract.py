@@ -1058,7 +1058,7 @@ def test_long_process_message_collapses_and_expands_while_streaming():
     assert section.collapsible
     assert section.primary_label.isHidden()
     assert section.summary_row.isVisible()
-    assert section.summary_label.text().endswith("…")
+    assert section.summary_label.text() == "过程说明。…"
     assert section.details.isHidden()
     assert section.toggle_button.arrowType() is Qt.ArrowType.DownArrow
 
@@ -1083,6 +1083,84 @@ def test_long_process_message_collapses_and_expands_while_streaming():
 
     assert section.details.isVisible()
     assert "继续流式输出。" in section.details_label.text()
+    drawer.close()
+
+
+def test_short_process_message_shows_summary_by_default():
+    application = _application()
+    events = _Events(session_id="short-process-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "short-process-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": "process",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "short-process-message",
+                    "delta": "正在重新校验当前轮廓。",
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert section.collapsible
+    assert section.primary_label.isHidden()
+    assert section.summary_label.text() == "正在重新校验当前轮廓。"
+    drawer.close()
+
+
+@pytest.mark.parametrize(
+    "presentation_kind",
+    ["decision_request", "patch_preview", "result_summary"],
+)
+def test_formal_assistant_messages_never_collapse_when_long(
+    presentation_kind,
+):
+    application = _application()
+    events = _Events(session_id=f"formal-{presentation_kind}-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": f"formal-{presentation_kind}-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": presentation_kind,
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": f"formal-{presentation_kind}-message",
+                    "delta": "需要完整展示的正式内容。" * 50,
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert not section.collapsible
+    assert section.primary_label.isVisible()
+    assert section.summary_row.isHidden()
     drawer.close()
 
 

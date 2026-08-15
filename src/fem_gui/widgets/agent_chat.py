@@ -132,8 +132,7 @@ _AGENT_CHAT_SCROLL_UP_ARROW = (
 _AGENT_CHAT_SCROLL_DOWN_ARROW = (
     _AGENT_CHAT_ICON_ROOT / "agent_chat_scroll_down.svg"
 ).as_posix()
-_PROCESS_MESSAGE_COLLAPSE_CHARACTERS = 240
-_PROCESS_MESSAGE_EXCERPT_CHARACTERS = 120
+_PROCESS_MESSAGE_SUMMARY_CHARACTERS = 56
 
 
 _AGENT_CHAT_STYLESHEET = """
@@ -1163,20 +1162,28 @@ def _visible_markdown_text(markdown: str) -> str:
     return text.strip()
 
 
-def _message_excerpt(markdown: str) -> str:
+def _process_message_summary(markdown: str) -> str:
     visible = _visible_markdown_text(markdown)
-    limit = _PROCESS_MESSAGE_EXCERPT_CHARACTERS
-    if len(visible) <= limit:
-        return visible
-    candidate = visible[:limit]
-    lower_bound = max(0, limit * 2 // 3)
-    boundary = max(
-        (candidate.rfind(mark) for mark in "。！？；.!?"),
-        default=-1,
-    )
-    if boundary >= lower_bound:
-        candidate = candidate[: boundary + 1]
-    return candidate.rstrip() + "…"
+    if not visible:
+        return "处理中…"
+
+    limit = _PROCESS_MESSAGE_SUMMARY_CHARACTERS
+    sentence = re.match(r"^.*?(?:[。！？]|[.!?](?=\s|$))", visible)
+    if sentence is not None and len(sentence.group(0).strip()) <= limit:
+        summary = sentence.group(0).strip()
+    else:
+        summary = visible[:limit].rstrip()
+        lower_bound = limit * 2 // 3
+        boundary = max(
+            (summary.rfind(mark) for mark in "，、；,; "),
+            default=-1,
+        )
+        if boundary >= lower_bound:
+            summary = summary[:boundary].rstrip("，、；,; ")
+
+    if len(summary) < len(visible):
+        summary = summary.rstrip("…") + "…"
+    return summary
 
 
 class AgentNarrativeSection(QWidget):
@@ -1270,7 +1277,7 @@ class AgentNarrativeSection(QWidget):
         visible = _visible_markdown_text(text)
         self._collapsible = (
             message.presentation_kind is MessagePresentationKind.PROCESS
-            and len(visible) > _PROCESS_MESSAGE_COLLAPSE_CHARACTERS
+            and bool(visible)
         )
         rendered = (
             _streaming_plaintext_html(text)
@@ -1283,7 +1290,9 @@ class AgentNarrativeSection(QWidget):
         )
         self.primary_label.setText(rendered)
         self.details_label.setText(rendered)
-        self.summary_label.setText(_message_excerpt(text))
+        self.summary_label.setText(
+            _process_message_summary(text) if self._collapsible else ""
+        )
         self.primary_label.setVisible(not self._collapsible)
         self.summary_row.setVisible(self._collapsible)
         self.details.setVisible(

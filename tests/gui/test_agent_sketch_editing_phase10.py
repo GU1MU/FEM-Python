@@ -1037,6 +1037,20 @@ def test_new_constraint_edit_uses_phase7_branch_migration_semantics() -> None:
 
 def test_prepare_geometry_edit_schema_advertises_all_phase10_operations() -> None:
     edit_schema = _PREPARE_GEOMETRY_EDIT.parameters["properties"]["edit"]
+    spatial_relation = _PREPARE_GEOMETRY_EDIT.parameters["properties"][
+        "spatial_relation"
+    ]
+    assert spatial_relation["properties"]["relation"]["enum"] == [
+        "above",
+        "below",
+        "left_of",
+        "right_of",
+    ]
+    assert spatial_relation["required"] == [
+        "reference_feature_id",
+        "relation",
+        "clearance",
+    ]
     operations = {
         branch["properties"]["operation"]["const"] for branch in edit_schema["oneOf"]
     }
