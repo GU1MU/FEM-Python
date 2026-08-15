@@ -13,6 +13,7 @@ from fem_agent.engine import (
     EngineEventType,
     _geometry_edit_preview,
     _missing_requested_geometry_features,
+    _point_chain,
 )
 from fem_agent.providers.base import (
     AssistantMessage,
@@ -266,7 +267,7 @@ class _StaleGeometryEditToolRegistry:
             data = {
                 "state": "pending_confirmation",
                 "proposal_view": {
-                    "summary": "修正 U 形槽",
+                    "summary": "修正连续定宽槽",
                     "impact": "确认后更新该部件并刷新 GUI",
                 },
                 "continuation_checkpoint": {
@@ -286,6 +287,47 @@ class _StaleGeometryEditToolRegistry:
             summary=f"{name} completed",
             data=data,
         )
+
+
+class _GeometryEditWithCatalogToolRegistry(_GeometryEditToolRegistry):
+    def __init__(self):
+        super().__init__()
+        no_arguments = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        self.definitions = (
+            *self.definitions,
+            ToolDefinition(
+                "read_geometry_feature_catalog",
+                "read_geometry_feature_catalog",
+                no_arguments,
+            ),
+        )
+
+
+class _RetryingGeometryEditWithCatalogToolRegistry(
+    _GeometryEditWithCatalogToolRegistry
+):
+    def __init__(self):
+        super().__init__()
+        self.prepare_attempts = 0
+
+    def dispatch(self, name, arguments, context):
+        if name == "prepare_geometry_edit":
+            self.prepare_attempts += 1
+            if self.prepare_attempts == 1:
+                self.calls.append((name, dict(arguments)))
+                return ToolResult(
+                    ok=False,
+                    session_id=context.session_id,
+                    input_revision=context.expected_revision,
+                    idempotency_key=context.idempotency_key,
+                    summary="geometry validation needs refreshed feature context",
+                    data={"retryable": True},
+                )
+        return super().dispatch(name, arguments, context)
 
 
 class _StreamingFakeProvider(FakeProvider):
@@ -433,6 +475,12 @@ def test_provider_prompt_contains_restrained_engineering_response_contract(
     assert "do not write guessed or inferred values" not in system_prompt
 
 
+def test_planar_path_preview_renders_json_coordinate_pairs():
+    assert _point_chain([[140, 35], [160, 35], [160, 65]]) == (
+        "(140, 35) → (160, 35) → (160, 65)"
+    )
+
+
 def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     tmp_path,
 ):
@@ -454,11 +502,16 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "never create a separate unit-selection" in system_prompt
     assert "do not add a natural-language instruction asking" in system_prompt
     assert "material removal is represented by a closed" in system_prompt
-    assert "prefer one non-self-intersecting add_polygon" in system_prompt
+    assert "prefer one non-self-intersecting" in system_prompt
+    assert "add_polygon edit" in system_prompt
     assert "use every returned diagnostic and affected logical" in system_prompt
     assert "use prepare_planar_construction_proposal as the sole" in system_prompt
-    assert "never calculate the final" in system_prompt
-    assert "or submit that centerline as a wire Part" in system_prompt
+    assert "never calculate its final" in system_prompt
+    assert "submit its centerline as a wire" in system_prompt
+    assert "one ordered, open, non-branching" in system_prompt
+    assert "S-shaped" not in system_prompt
+    assert "U-shaped" not in system_prompt
+    assert "H-shaped" not in system_prompt
     assert "Never use a user-visible" in system_prompt
     assert "diagnostic probe" in system_prompt
     assert "call create_native_model_document" in system_prompt
@@ -1041,29 +1094,290 @@ def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_pa
     )
 
 
-def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
-    corrected_edit = {
+def test_planar_edit_blocks_premature_prepare_but_audit_distinguishes_it(tmp_path):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_rectangle",
+            "x": 20,
+            "y": 20,
+            "width": 10,
+            "height": 10,
+        },
+    }
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall("premature-prepare", "prepare_geometry_edit", edit)
+            ),
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepared", "prepare_geometry_edit", edit)
+            ),
+        ]
+    )
+    tools = _GeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_planar_edit_premature_prepare",
+        dynamic_tools=tools,
+    )
+
+    engine.send_message("在现有平板上增加一个矩形槽")
+
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    ]
+    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
+    assert audit["entries"][0]["tool_call_flags"]["called_tool_names"] == [
+        "prepare_geometry_edit"
+    ]
+    assert audit["entries"][0]["tool_call_flags"]["accepted_tool_names"] == []
+    assert audit["entries"][1]["tool_call_flags"]["accepted_tool_names"] == [
+        "read_geometry_edit_context"
+    ]
+
+
+def test_planar_edit_allows_supplemental_read_before_prepare(tmp_path):
+    edit = {
         "part_id": "P1",
         "edit": {
             "operation": "add_path_slot",
             "points": [
-                {"x": 70, "y": 30},
-                {"x": 70, "y": -30},
-                {"x": 40, "y": -30},
-                {"x": 40, "y": 30},
+                {"x": 190, "y": 75},
+                {"x": 190, "y": 25},
+                {"x": 225, "y": 25},
+                {"x": 225, "y": 75},
             ],
-            "width": 12,
-            "cap": "butt",
+            "width": 6,
+            "cap": "square",
             "join": "miter",
         },
     }
     provider = FakeProvider(
         [
-            _text_response("我先按旧坐标说明。"),
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall(
+                    "read-features",
+                    "read_geometry_feature_catalog",
+                    {},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
+            ),
+        ]
+    )
+    tools = _GeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_planar_edit_supplemental_read",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在H槽旁边加入一个U形槽")
+
+    assert len(provider.requests) == 3
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_edit_context",
+        "read_geometry_feature_catalog",
+        "prepare_geometry_edit",
+    ]
+    assert not any(
+        event.event is EngineEventType.MESSAGE_DELTA
+        and event.data.get("text") == "当前几何能力检查未完成，请重试。"
+        for event in events
+    )
+    assert any(
+        event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["tool"] == "prepare_geometry_edit"
+        and event.data["result"]["data"]["state"] == "pending_confirmation"
+        for event in events
+    )
+
+
+def test_planar_edit_allows_read_only_discovery_before_required_probe(tmp_path):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_polygon",
+            "vertices": [
+                {"x": 190, "y": 75},
+                {"x": 190, "y": 25},
+                {"x": 225, "y": 25},
+                {"x": 225, "y": 75},
+            ],
+        },
+    }
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "read-features",
+                    "read_geometry_feature_catalog",
+                    {},
+                )
+            ),
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
+            ),
+        ]
+    )
+    tools = _GeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_planar_edit_discovery_before_probe",
+        dynamic_tools=tools,
+    )
+
+    engine.send_message("在现有平板上增加一个槽")
+
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_feature_catalog",
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    ]
+
+
+def test_planar_edit_allows_context_reread_after_failed_prepare(tmp_path):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_polygon",
+            "vertices": [
+                {"x": 190, "y": 75},
+                {"x": 190, "y": 25},
+                {"x": 225, "y": 25},
+                {"x": 225, "y": 75},
+            ],
+        },
+    }
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
+            ),
+            _tool_response(
+                ToolCall(
+                    "read-features",
+                    "read_geometry_feature_catalog",
+                    {},
+                )
+            ),
+            _tool_response(
+                ToolCall("prepare-corrected", "prepare_geometry_edit", edit)
+            ),
+        ]
+    )
+    tools = _RetryingGeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_planar_edit_reread_after_failure",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在现有平板上增加一个槽")
+
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+        "read_geometry_feature_catalog",
+        "prepare_geometry_edit",
+    ]
+    assert any(
+        event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["call_id"] == "prepare-corrected"
+        and event.data["result"]["data"]["state"] == "pending_confirmation"
+        for event in events
+    )
+
+
+def test_planar_edit_allows_clarification_after_context_read(tmp_path):
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "read-edit",
+                    "read_geometry_edit_context",
+                    {"part_id": "P1"},
+                )
+            ),
+            _text_response("请提供U形槽的槽宽和外包尺寸。"),
+        ]
+    )
+    tools = _GeometryEditWithCatalogToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_planar_edit_clarification",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("在H槽旁边加入一个U形槽")
+
+    assert len(provider.requests) == 2
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_edit_context"
+    ]
+    assert any(
+        event.event is EngineEventType.MESSAGE_DELTA
+        and event.data.get("text") == "请提供U形槽的槽宽和外包尺寸。"
+        for event in events
+    )
+
+
+def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
+    corrected_edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_polygon",
+            "vertices": [
+                {"x": 20, "y": 20},
+                {"x": 35, "y": 20},
+                {"x": 35, "y": 35},
+                {"x": 20, "y": 35},
+            ],
+        },
+    }
+    provider = FakeProvider(
+        [
+            _text_response("我先按旧版本说明。"),
             _tool_response(
                 ToolCall("sync", "read_authoring_context", {})
             ),
-            _text_response("修正路径如下。"),
+            _text_response("修正轮廓如下。"),
             _tool_response(
                 ToolCall("read-edit", "read_geometry_edit_context", {})
             ),
@@ -1081,7 +1395,7 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
         dynamic_tools=tools,
     )
 
-    events = engine.send_message("还是不对，注意开口朝着+y方向")
+    events = engine.send_message("撤销后重新生成这个槽轮廓")
 
     assert [name for name, _arguments in tools.calls] == [
         "read_authoring_context",
@@ -1095,11 +1409,11 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
     assert "read_geometry_edit_context" in (
         provider.requests[3].messages[-1].content or ""
     )
-    assert "prepare_geometry_edit" in (
+    assert "proposal-grounding correction" in (
         provider.requests[5].messages[-1].content or ""
     )
     assert not any(
-        "旧坐标" in str(event.data.get("text", ""))
+        "旧版本" in str(event.data.get("text", ""))
         or "等待本地操作执行完成" in str(event.data.get("text", ""))
         for event in events
         if event.event is EngineEventType.MESSAGE_DELTA
@@ -1108,60 +1422,6 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
         event.event is EngineEventType.TOOL_COMPLETED
         and event.data["tool"] == "prepare_geometry_edit"
         and event.data["result"]["data"]["state"] == "pending_confirmation"
-        for event in events
-    )
-
-
-def test_text_only_geometry_preview_approval_inherits_edit_route(tmp_path):
-    edit = {
-        "part_id": "P1",
-        "edit": {
-            "operation": "add_path_slot",
-            "points": [
-                {"x": 70, "y": 30},
-                {"x": 70, "y": -30},
-                {"x": 40, "y": -30},
-                {"x": 40, "y": 30},
-            ],
-            "width": 12,
-            "cap": "butt",
-            "join": "miter",
-        },
-    }
-    provider = FakeProvider(
-        [
-            _text_response(
-                "**方案预览**\n- 修改内容：切除 U 形槽，中心路径见上，槽宽 12"
-            ),
-            _text_response("我现在提交修订方案。"),
-            _tool_response(
-                ToolCall("read-edit", "read_geometry_edit_context", {})
-            ),
-            _text_response("提交。"),
-            _tool_response(
-                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
-            ),
-        ]
-    )
-    tools = _GeometryEditToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_text_preview_follow_up",
-        dynamic_tools=tools,
-    )
-
-    engine.send_message("请先给出这个 U 形槽的坐标预览")
-    events = engine.send_message("可以")
-
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
-    ]
-    assert tools.calls[-1][1] == edit
-    assert any(
-        event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "prepare_geometry_edit"
         for event in events
     )
 
@@ -1198,7 +1458,149 @@ def test_unbacked_proposal_execution_claim_is_not_exposed(tmp_path):
     )
 
 
-def test_shaped_slot_request_rejects_disconnected_rectangle_fallback(tmp_path):
+def test_branching_slot_rejects_single_path_before_dispatch(tmp_path):
+    invalid = {
+        "part_function": "二维平板，中央分叉槽",
+        "construction": {
+            "schema_version": 1,
+            "name": "invalid_branching_slot",
+            "plane": "XY",
+            "nodes": [
+                {
+                    "id": "plate",
+                    "kind": "rectangle",
+                    "x": 0,
+                    "y": 0,
+                    "width": 300,
+                    "height": 100,
+                },
+                {
+                    "id": "slot",
+                    "kind": "path_stroke",
+                    "points": [
+                        {"x": 140, "y": 35},
+                        {"x": 160, "y": 35},
+                        {"x": 160, "y": 65},
+                        {"x": 140, "y": 65},
+                    ],
+                    "width": 10,
+                    "cap": "butt",
+                    "join": "miter",
+                },
+                {
+                    "id": "result",
+                    "kind": "difference",
+                    "base": "plate",
+                    "subtract": ["slot"],
+                },
+            ],
+            "result_node_id": "result",
+        },
+        "output": {"kind": "planar"},
+    }
+    corrected = {
+        "part_function": "二维平板，中央分叉槽",
+        "construction": {
+            "schema_version": 1,
+            "name": "connected_branching_slot",
+            "plane": "XY",
+            "nodes": [
+                {
+                    "id": "plate",
+                    "kind": "rectangle",
+                    "x": 0,
+                    "y": 0,
+                    "width": 300,
+                    "height": 100,
+                },
+                {
+                    "id": "left_stem",
+                    "kind": "rectangle",
+                    "x": 130,
+                    "y": 30,
+                    "width": 10,
+                    "height": 40,
+                },
+                {
+                    "id": "cross_stem",
+                    "kind": "rectangle",
+                    "x": 130,
+                    "y": 45,
+                    "width": 40,
+                    "height": 10,
+                },
+                {
+                    "id": "right_stem",
+                    "kind": "rectangle",
+                    "x": 160,
+                    "y": 30,
+                    "width": 10,
+                    "height": 40,
+                },
+                {
+                    "id": "slot",
+                    "kind": "union",
+                    "operands": ["left_stem", "cross_stem", "right_stem"],
+                },
+                {
+                    "id": "result",
+                    "kind": "difference",
+                    "base": "plate",
+                    "subtract": ["slot"],
+                },
+            ],
+            "result_node_id": "result",
+        },
+        "output": {"kind": "planar"},
+    }
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "invalid-slot",
+                    "prepare_planar_construction_proposal",
+                    invalid,
+                )
+            ),
+            _tool_response(
+                ToolCall(
+                    "corrected-slot",
+                    "prepare_planar_construction_proposal",
+                    corrected,
+                )
+            ),
+        ]
+    )
+    tools = _AdditionalModelToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_branching_slot_guard",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message(
+        "创建一个2D平板，在中央做一条中心线包含分叉节点的槽"
+    )
+
+    assert tools.calls == [
+        ("prepare_planar_construction_proposal", corrected)
+    ]
+    assert len(provider.requests) == 2
+    assert "single non-branching open centerline" in (
+        provider.requests[1].messages[-1].content or ""
+    )
+    completed = [
+        event
+        for event in events
+        if event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["tool"] == "prepare_planar_construction_proposal"
+    ]
+    assert completed[0].data["result"]["ok"] is False
+    assert completed[-1].data["result"]["data"]["state"] == "pending_confirmation"
+
+
+def test_nonbranching_path_slot_rejects_disconnected_rectangle_fallback(tmp_path):
     correct_edit = {
         "part_id": "P1",
         "edit": {
@@ -1269,11 +1671,13 @@ def test_shaped_slot_request_rejects_disconnected_rectangle_fallback(tmp_path):
     engine = AgentSessionEngine(
         tmp_path / "workspace",
         provider,
-        session_id="ses_shaped_slot_guard",
+        session_id="ses_nonbranching_path_slot_guard",
         dynamic_tools=tools,
     )
 
-    events = engine.send_message("请在H字母的左边加入一个字母S")
+    events = engine.send_message(
+        "请加入一条由单条开放无分叉中心线定义的连续定宽槽"
+    )
 
     assert [name for name, _arguments in tools.calls] == [
         "read_geometry_edit_context",
@@ -1300,7 +1704,7 @@ def test_shaped_slot_request_rejects_disconnected_rectangle_fallback(tmp_path):
         if event.event is EngineEventType.MESSAGE_DELTA
         and "方案预览" in event.data["text"]
     )
-    assert "切除一条连续的S 形定宽槽" in preview
+    assert "切除一条连续定宽槽" in preview
     assert "(75, 80) → (40, 80)" in preview
     assert "add_path_slot" not in preview
     assert "P1" not in preview

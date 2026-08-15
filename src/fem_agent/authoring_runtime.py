@@ -782,9 +782,9 @@ _COMPOSITE_PROFILE_ARRAY_SCHEMA = {
     "description": (
         "Closed boundaries of the final Part. The first planar boundary is "
         "the outer material profile; contained boundaries are cuts. Encode a "
-        "non-convex or letter-shaped cutout, including an H-shaped slot, as "
-        "one ordered, closed, non-self-intersecting polygon with role=hole "
-        "and operation=cut. Never represent an H-shaped slot as its bounding "
+        "non-convex cutout or any cutout whose centerline would branch as one "
+        "ordered, closed, non-self-intersecting polygon with role=hole and "
+        "operation=cut. Do not replace the requested boundary with a bounding "
         "rectangle plus a material island."
     ),
     "items": _COMPOSITE_PROFILE_ITEM_SCHEMA,
@@ -988,9 +988,9 @@ _PREPARE_GEOMETRY = _tool(
                                 "minItems": 2,
                                 "maxItems": 32,
                                 "description": (
-                                    "Ordered open XY centerline for a constant-width "
-                                    "slot. Use this for S-shaped, U-shaped, or "
-                                    "serpentine cutouts instead of a wire Part."
+                                    "Ordered open XY centerline for a slot fully "
+                                    "defined by one non-branching path and one "
+                                    "constant width. This is a cutout, not a wire Part."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -1519,9 +1519,8 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "minItems": 2,
                                 "maxItems": 64,
                                 "description": (
-                                    "Ordered open centerline of one connected, "
-                                    "constant-width slot. Use this for S-, U-, "
-                                    "or serpentine-shaped cutouts; do not submit "
+                                    "Ordered open, non-branching centerline of one "
+                                    "connected constant-width slot. Do not submit "
                                     "offset boundary vertices or disconnected rectangles."
                                 ),
                                 "items": {
@@ -1960,10 +1959,11 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
         "transforms use the dedicated prepare_profile_* tools; this compatibility "
         "tool retains sketch, rigid, and exact Boolean edits. A planar cutout is "
         "one contained closed inner Profile, so it does not require Part Boolean. "
-        "Constant-width S-, U-, and serpentine-shaped slots must use add_path_slot "
-        "with one ordered open centerline; arbitrary silhouettes should use one "
-        "ordered add_polygon or one complete line/arc batch. Invalid Profiles return exact topology "
-        "diagnostics and must be revised before presenting a confirmation."
+        "Use add_path_slot only when one ordered open, non-branching centerline "
+        "and one width fully define the slot. Branching centerlines and arbitrary "
+        "silhouettes require one complete closed add_polygon boundary or one "
+        "complete line/arc batch. Invalid Profiles return exact topology diagnostics "
+        "and must be revised before presenting a confirmation."
     ),
     _legacy_geometry_edit_parameters,
 )
@@ -2806,6 +2806,11 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
                 "minItems": 2,
                 "maxItems": MAX_PATH_POINTS,
                 "items": _PLANAR_POINT_SCHEMA,
+                "description": (
+                    "One ordered, open, non-branching centerline. A slot with "
+                    "a junction cannot be represented by one path_stroke; use "
+                    "overlapping primitives or strokes and a union node."
+                ),
             },
             "width": {"type": "number", "exclusiveMinimum": 0},
             "cap": {"type": "string", "enum": ["butt", "square", "round"]},
@@ -3031,6 +3036,8 @@ _PREPARE_PLANAR_CONSTRUCTION = _tool(
         "Part proposal. "
         "Use general primitives, Boolean operations, transforms, and patterns; "
         "rectangle x/y are the lower-left corner, circle radius is not diameter, "
+        "path_stroke is one non-branching open centerline and branching slots "
+        "must unite multiple overlapping connected primitives or strokes, "
         "semantically distinct slots and hole patterns use separate subtraction "
         "operands so they remain separate native Cut features, "
         "and 2D output accepts either the literal string 'planar' or the "

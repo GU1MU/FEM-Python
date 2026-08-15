@@ -42,6 +42,7 @@ _TOOLS = (
 class _DynamicRegistry:
     def __init__(self, *, dimension: int = 2, tools=_TOOLS):
         self.definitions = tuple(tools)
+        self.calls = []
         self.provider_snapshot = AuthoringTurnSnapshot(
             available=True,
             source_kind="native",
@@ -64,6 +65,7 @@ class _DynamicRegistry:
         return self.provider_snapshot
 
     def dispatch(self, name, arguments, context):
+        self.calls.append((name, dict(arguments)))
         return ToolResult(
             ok=True,
             session_id=context.session_id,
@@ -157,7 +159,7 @@ def test_phase2_route_hint_covers_bilingual_transform_fields_and_arbitrary_size(
     assert geometry_route_hint("普通聊天") is None
 
 
-def test_phase2_guard_retry_requires_the_typed_probe(tmp_path) -> None:
+def test_phase2_guard_retry_allows_a_clarification_before_the_probe(tmp_path) -> None:
     provider = FakeProvider(
         [
             _refusal(),
@@ -181,7 +183,7 @@ def test_phase2_guard_retry_requires_the_typed_probe(tmp_path) -> None:
         for item in events
         if item.event is EngineEventType.MESSAGE_DELTA
     ]
-    assert visible == ["当前几何能力检查未完成，请重试。"]
+    assert visible == ["请提供拉伸高度。"]
     correction = provider.requests[1].messages[-1]
     assert correction.role == "system"
     assert "required_probe_tool" in (correction.content or "")
@@ -260,11 +262,82 @@ def test_phase2_guard_retry_continues_after_the_required_probe(tmp_path) -> None
         and item.data.get("tool") == "read_profile_transform_context"
         for item in events
     )
-    assert [
+    visible = [
         item.data.get("text")
         for item in events
         if item.event is EngineEventType.MESSAGE_DELTA
-    ] == ["请提供拉伸高度。"]
+    ]
+    assert visible[-1] == "请提供拉伸高度。"
+    assert "当前几何能力检查未完成，请重试。" not in visible
+
+
+def test_phase2_refusal_correction_allows_read_only_discovery(tmp_path) -> None:
+    feature_catalog = ToolDefinition(
+        "read_geometry_feature_catalog",
+        "Read bounded native geometry features.",
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    )
+    provider = FakeProvider(
+        [
+            _refusal(),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    tool_calls=(
+                        ToolCall(
+                            "read-features",
+                            "read_geometry_feature_catalog",
+                            {},
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    tool_calls=(
+                        ToolCall(
+                            "read-transform",
+                            "read_profile_transform_context",
+                            {"part_id": "P1"},
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            ),
+            ProviderResponse(
+                AssistantMessage("assistant", "请提供拉伸高度。"),
+                finish_reason="stop",
+            ),
+        ]
+    )
+    registry = _DynamicRegistry(
+        tools=(_TOOLS[0], feature_catalog, _TOOLS[1])
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "read-only-after-refusal",
+        provider,
+        dynamic_tools=registry,
+    )
+
+    events = engine.send_message("拉伸成3d")
+
+    assert [name for name, _arguments in registry.calls] == [
+        "read_geometry_feature_catalog",
+        "read_profile_transform_context",
+    ]
+    visible = [
+        item.data.get("text")
+        for item in events
+        if item.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert visible[-1] == "请提供拉伸高度。"
+    assert "当前几何能力检查未完成，请重试。" not in visible
 
 
 def test_phase2_guard_second_refusal_returns_local_recovery(tmp_path) -> None:

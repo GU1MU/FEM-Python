@@ -156,9 +156,27 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     circle = next(
         item for item in variants if item["properties"]["kind"]["const"] == "circle"
     )
+    path_stroke = next(
+        item
+        for item in variants
+        if item["properties"]["kind"]["const"] == "path_stroke"
+    )
     assert "lower-left" in rectangle["properties"]["x"]["description"]
     assert "not the center" in rectangle["properties"]["y"]["description"]
     assert "never diameter" in circle["properties"]["radius"]["description"]
+    assert "non-branching centerline" in (
+        path_stroke["properties"]["points"]["description"]
+    )
+    provider_surface = json.dumps(
+        {
+            "description": definition.description,
+            "parameters": definition.parameters,
+        },
+        ensure_ascii=False,
+    )
+    assert "S-shaped" not in provider_surface
+    assert "U-shaped" not in provider_surface
+    assert "H-shaped" not in provider_surface
 
     context = controller.dispatch(
         "read_authoring_context",

@@ -433,6 +433,7 @@ def test_phase1_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> 
     assert entry["tool_call_flags"] == {
         "provider_called": False,
         "called_tool_names": [],
+        "accepted_tool_names": [],
         "read_tool_called": False,
         "prepare_tool_called": False,
     }

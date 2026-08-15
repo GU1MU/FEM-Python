@@ -205,14 +205,14 @@ Before every planar geometry modification, call read_geometry_edit_context and
 use the latest exact point, curve, constraint, and Profile summary from that
 read. In a two-dimensional sketch, material removal is represented by a closed
 inner Profile contained by a material Profile; do not claim that a Part Boolean
-is required. For a constant-width S-, U-, or serpentine-shaped slot in an existing
-sketch, use one add_path_slot edit with its ordered open centerline and width. The
-local compiler turns that centerline into one closed cutout and enforces exactly one
-new hole Profile. Never approximate one requested shaped slot with disconnected
-rectangles. For an arbitrary non-convex silhouette, trace the complete boundary in
-order and prefer one non-self-intersecting add_polygon edit unless exact arcs are
-important. Use one batch for an ordered line/arc boundary and include every member
-needed to close it. Never submit a placeholder shape, a standalone open-centerline
+is required. Use add_path_slot only when one ordered, open, non-branching
+centerline and one width fully define the requested slot. The local compiler
+turns that centerline into one closed cutout and enforces exactly one new hole
+Profile. When the intended centerline branches or the width is not constant,
+trace the complete boundary in order and prefer one non-self-intersecting
+add_polygon edit unless exact arcs are important. Use one batch for an ordered
+line/arc boundary and include every member needed to close it. Never submit a
+placeholder shape, a standalone open-centerline
 Part, or geometry unrelated to the requested final contour. Never use a user-visible
 geometry confirmation proposal as a diagnostic probe, and never deliberately
 omit a requested slot, cutout, or hole from that proposal. When the requested hole
@@ -229,10 +229,14 @@ edit.
 
 For a new planar region, use prepare_planar_construction_proposal as the sole
 planar creation path. Express composite regions with general primitives,
-Boolean operations, transforms, and patterns. Express a constant-width cutout
-with path_stroke and its ordered open centerline; never calculate the final
-offset polygon or submit that centerline as a wire Part. The same tool wraps a
-new planar construction in a direct extrusion, revolution, or path sweep.
+Boolean operations, transforms, and patterns. Use path_stroke only when one
+ordered, open, non-branching centerline and one width fully define the cutout;
+never calculate its final offset polygon or submit its centerline as a wire
+Part. When the intended centerline contains a junction, build the cutout from
+overlapping connected primitives or strokes, unite them into one operand, and
+subtract that operand from the material; one complete closed polygon is also
+valid. The same tool wraps a new planar construction in a direct extrusion,
+revolution, or path sweep.
 In Planar Construction IR, rectangle x/y are always the lower-left corner, not
 the center; center a rectangle by subtracting half its width and height from the
 desired center. Circle radius is never diameter: when the user gives a diameter
@@ -240,8 +244,8 @@ desired center. Circle radius is never diameter: when the user gives a diameter
 subtraction operand must actually remove material.
 Keep semantically distinct cut groups, such as one shaped slot and one hole
 pattern, as separate subtraction operands so each becomes its own native Cut
-feature. Connected primitives that form one letter-shaped slot remain united as
-one operand.
+feature. Connected primitives that form one topologically single cutout remain
+united as one operand.
 
 Geometry transforms happen before mesh generation. A mesh is never a
 prerequisite for profile extrusion, profile revolution, or path sweep, and a
@@ -825,7 +829,6 @@ class AgentSessionEngine:
         refusal_retry_used = False
         route_probe_called = False
         route_probe_failed = False
-        route_progress_retries: set[str] = set()
         route_correction: str | None = None
         proposal_claim_retry_used = False
         proposal_claim_correction: str | None = None
@@ -1157,7 +1160,7 @@ class AgentSessionEngine:
             # intentionally written before dispatching any local tool so an
             # empty tool-call response remains auditable as "published but not
             # called".
-            self._append_round_audit(
+            round_audit_entry = self._append_round_audit(
                 available_tools,
                 response.message.tool_calls,
             )
@@ -1236,21 +1239,21 @@ class AgentSessionEngine:
                     )
                 )
             )
-            if required_edit_tool is not None and tuple(
-                call.name for call in response.message.tool_calls
-            ) != (required_edit_tool,):
-                if required_edit_tool not in route_progress_retries:
-                    route_progress_retries.add(required_edit_tool)
-                    if required_edit_tool == required_resync_tool:
-                        route_correction = _authoring_resync_progress_correction()
-                    else:
-                        assert route_hint is not None
-                        route_correction = _geometry_edit_route_progress_correction(
-                            route_hint,
-                            required_edit_tool,
-                        )
-                    continue
-                return local_geometry_recovery()
+            if required_edit_tool is not None and (
+                _should_correct_authoring_route_progress(
+                    response.message,
+                    required_tool=required_edit_tool,
+                )
+            ):
+                if required_edit_tool == required_resync_tool:
+                    route_correction = _authoring_resync_progress_correction()
+                else:
+                    assert route_hint is not None
+                    route_correction = _geometry_edit_route_progress_correction(
+                        route_hint,
+                        required_edit_tool,
+                    )
+                continue
 
             if (
                 refusal_retry_used
@@ -1262,13 +1265,13 @@ class AgentSessionEngine:
                     call.name == route_hint.required_probe_tool
                     for call in response.message.tool_calls
                 )
+                and _message_calls_guarded_authoring_action(response.message)
             ):
-                # Once the bounded correction has been issued, only the
-                # required typed-context probe is a valid continuation.  A
-                # second text response or a prepare call that skips the probe
-                # terminates locally instead of trusting another ungrounded
-                # capability claim.
-                return local_geometry_recovery()
+                # Read-only discovery and clarification remain valid after a
+                # refusal correction.  Only an authoring action that skips the
+                # required typed probe is held back.
+                route_correction = _geometry_route_correction(route_hint)
+                continue
 
             if _should_guard_geometry_refusal(
                 route_hint,
@@ -1435,6 +1438,11 @@ class AgentSessionEngine:
                     )
                     events.append(self._diagnostic_event(diagnostic))
                     return tuple(events)
+                accepted_tool_names = round_audit_entry["tool_call_flags"].get(
+                    "accepted_tool_names"
+                )
+                if isinstance(accepted_tool_names, list):
+                    accepted_tool_names.append(call.name)
                 current = self.revisions.latest(self.session_id)
                 active_run = self._matching_active_run(current)
                 context = ToolExecutionContext(
@@ -1519,13 +1527,22 @@ class AgentSessionEngine:
                         if call.name == "prepare_geometry_proposal"
                         else ()
                     )
-                    shaped_slot_error = (
-                        _invalid_shaped_slot_edit_result(
+                    path_slot_error = (
+                        _invalid_nonbranching_path_slot_edit_result(
                             context,
                             latest_user_request,
                             call.arguments,
                         )
                         if call.name == "prepare_geometry_edit"
+                        else None
+                    )
+                    branching_slot_error = (
+                        _invalid_branching_slot_construction_result(
+                            context,
+                            latest_user_request,
+                            call.arguments,
+                        )
+                        if call.name == "prepare_planar_construction_proposal"
                         else None
                     )
                     if output_dimension_error is not None:
@@ -1535,8 +1552,10 @@ class AgentSessionEngine:
                             context,
                             missing_features,
                         )
-                    elif shaped_slot_error is not None:
-                        result = shaped_slot_error
+                    elif path_slot_error is not None:
+                        result = path_slot_error
+                    elif branching_slot_error is not None:
+                        result = branching_slot_error
                     else:
                         result = self.registry.dispatch(
                             call.name,
@@ -2232,18 +2251,7 @@ class AgentSessionEngine:
         user_text = self._latest_user_request()
         if user_text is None:
             return None
-        direct = geometry_route_hint(user_text)
-        if direct is not None:
-            return direct
-        if _continues_text_only_geometry_edit_preview(self._history, user_text):
-            return GeometryRouteHint(
-                "planar_geometry_edit",
-                target_part_dimension=2,
-                required_probe_tool="read_geometry_edit_context",
-                required_prepare_tool="prepare_geometry_edit",
-                intent_kind="edit",
-            )
-        return None
+        return geometry_route_hint(user_text)
 
     def _latest_user_request(self) -> str | None:
         return next(
@@ -2559,7 +2567,7 @@ class AgentSessionEngine:
         self,
         available_tools: Sequence[object],
         tool_calls: Sequence[ToolCall],
-    ) -> None:
+    ) -> dict[str, Any]:
         """Collect one bounded, privacy-safe record for a provider round."""
 
         snapshot_dict = _provider_snapshot_dict(self.registry.provider_snapshot) or {}
@@ -2601,6 +2609,7 @@ class AgentSessionEngine:
             "tool_call_flags": {
                 "provider_called": bool(tool_calls),
                 "called_tool_names": list(called_names),
+                "accepted_tool_names": [],
                 "read_tool_called": any(
                     name.startswith("read_") for name in called_names
                 ),
@@ -2613,10 +2622,11 @@ class AgentSessionEngine:
             pending = self._pending_round_audit
             if pending is not None:
                 pending.append(entry)
-                return
+                return entry
         # Keep direct/internal callers durable too; provider turns install a
         # batch above so normal rounds never take this synchronous path.
         self._persist_round_audit_entries((entry,))
+        return entry
 
     def _queue_round_audit_batch(
         self,
@@ -3025,32 +3035,40 @@ _UNBACKED_PROPOSAL_EXECUTION_PATTERNS = tuple(
         r"(?:proposal|plan).{0,24}(?:confirmed|submitted|sent|executing)",
     )
 )
-_GEOMETRY_EDIT_FOLLOW_UP_PATTERNS = tuple(
+_AUTHORING_PROGRESS_ONLY_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE | re.DOTALL)
     for pattern in (
-        r"^\s*(?:可以|确认|好的?|对|就这样|按这个(?:方案)?|ok(?:ay)?|yes)"
-        r"(?:了)?[。.!！]?\s*$",
-        r"(?:还是)?不对|画反|开口|横档|竖臂|对齐|间距|"
-        r"朝\s*[+-]?[xyz]|沿着?\s*[+-]?[xyz]|改成|修正|重做|重新生成",
+        r"^\s*(?:提交|生成|创建|修改|修正|更新|执行|开始|继续)"
+        r"(?:方案|提案)?[。.!！]?\s*$",
+        r"(?:我|现在|马上|接下来|随后|先|将|会).{0,32}"
+        r"(?:读取|检查|说明|提交|发送|生成|创建|修改|修正|更新|执行|处理)",
+        r"(?:修改|修正|更新).{0,24}(?:轮廓|几何|槽|孔|方案|提案).{0,8}"
+        r"(?:如下|开始|进行|提交|生成)",
+        r"\b(?:i(?:'ll|\s+will)|now|next)\b.{0,40}"
+        r"(?:read|inspect|check|submit|send|create|modify|update|execute|apply)",
     )
 )
-_GEOMETRY_EDIT_PREVIEW_MARKERS = (
-    "方案预览",
-    "修正方案",
-    "修改对象",
-    "中心路径",
-    "槽宽",
-    "geometry preview",
-    "centerline",
+_AUTHORING_CLARIFICATION_MARKERS = (
+    "请提供",
+    "请指定",
+    "请说明",
+    "需要知道",
+    "还需要",
+    "缺少",
+    "provide",
+    "specify",
+    "clarify",
+    "which ",
+    "what ",
 )
-_GEOMETRY_EDIT_PREVIEW_FEATURE_MARKERS = (
-    "槽",
-    "切除",
-    "开口",
-    "轮廓",
-    "profile",
-    "slot",
-    "cutout",
+_BRANCHING_TOPOLOGY_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"(?:分叉|分支|交叉|十字).{0,12}(?:槽|切口|开口)",
+        r"(?:槽|切口|开口).{0,12}(?:分叉|分支|交叉|十字)",
+        r"(?:branching|branched|junction-based|intersecting-centerline)\s+"
+        r"(?:slot|cutout|notch)",
+    )
 )
 _PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
     {
@@ -3109,24 +3127,14 @@ _HOLE_REQUEST_MARKERS = (
     "hole",
     "perforat",
 )
-_SHAPED_PATH_SLOT_MARKERS = (
-    "字母s",
-    "s字母",
-    "s形",
-    "s型",
-    "s状",
-    "s槽",
-    "字母u",
-    "u字母",
-    "u形",
-    "u型",
-    "u状",
-    "u槽",
-    "蛇形",
-    "曲折槽",
-    "serpentine",
-    "s-shaped",
-    "u-shaped",
+_NON_BRANCHING_PATH_SLOT_MARKERS = (
+    "无分叉中心线",
+    "不分叉中心线",
+    "单条开放中心线",
+    "单条开口中心线",
+    "non-branchingcenterline",
+    "singlenon-branchingcenterline",
+    "oneopencenterline",
 )
 _EXPLICIT_2D_MARKERS = (
     "2d",
@@ -3307,27 +3315,28 @@ def _incomplete_geometry_proposal_result(
     )
 
 
-def _invalid_shaped_slot_edit_result(
+def _invalid_nonbranching_path_slot_edit_result(
     context: ToolExecutionContext,
     user_request: str | None,
     arguments: Mapping[str, Any],
 ) -> ToolResult | None:
-    """Require the semantic path-slot operation for one shaped slot request."""
+    """Require a path slot when the request explicitly defines its topology."""
 
     if not isinstance(user_request, str) or not isinstance(arguments, Mapping):
         return None
     compact = re.sub(r"\s+", "", user_request.casefold())
-    if not any(marker in compact for marker in _SHAPED_PATH_SLOT_MARKERS):
+    if not any(marker in compact for marker in _NON_BRANCHING_PATH_SLOT_MARKERS):
         return None
     edit = arguments.get("edit")
     operation = edit.get("operation") if isinstance(edit, Mapping) else None
     if operation == "add_path_slot":
         return None
     message = (
-        "This request requires one connected constant-width shaped slot. Use "
-        "prepare_geometry_edit with edit.operation=add_path_slot, ordered open "
-        "centerline points, and one width. Disconnected rectangles or separate "
-        "cutout Profiles cannot satisfy the request."
+        "The request explicitly defines one open, non-branching centerline "
+        "with constant width. Use prepare_geometry_edit with "
+        "edit.operation=add_path_slot, ordered centerline points, and one "
+        "width. Disconnected rectangles or separate cutout Profiles cannot "
+        "satisfy those topology constraints."
     )
     return ToolResult(
         ok=False,
@@ -3351,6 +3360,102 @@ def _invalid_shaped_slot_edit_result(
             ),
         ),
     )
+
+
+def _invalid_branching_slot_construction_result(
+    context: ToolExecutionContext,
+    user_request: str | None,
+    arguments: Mapping[str, Any],
+) -> ToolResult | None:
+    """Reject one non-branching path used for a requested branching slot."""
+
+    if not isinstance(user_request, str) or not any(
+        pattern.search(user_request) is not None
+        for pattern in _BRANCHING_TOPOLOGY_PATTERNS
+    ):
+        return None
+    construction = arguments.get("construction")
+    nodes = construction.get("nodes") if isinstance(construction, Mapping) else None
+    if not isinstance(nodes, list) or any(
+        not isinstance(node, Mapping) for node in nodes
+    ):
+        return None
+    if not any(node.get("kind") == "path_stroke" for node in nodes):
+        return None
+    if _has_multi_primitive_slot_union(nodes):
+        return None
+    message = (
+        "The requested slot has branching centerline topology, but one "
+        "path_stroke is a single non-branching open centerline. Build the "
+        "slot from at least two overlapping connected primitives or strokes "
+        "and unite them into one subtraction operand, or use one closed "
+        "polygon. Retry the same planar construction before presenting it."
+    )
+    return ToolResult(
+        ok=False,
+        session_id=context.session_id,
+        input_revision=max(context.expected_revision, 0),
+        idempotency_key=context.idempotency_key,
+        summary=message,
+        data={
+            "retryable": True,
+            "required_topology": "branching_connected_slot",
+            "forbidden_representation": "single_path_stroke",
+            "required_action": "retry_same_construction_with_branching_slot",
+        },
+        diagnostics=(
+            make_diagnostic(
+                DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                message,
+                source="agent.engine",
+            ),
+        ),
+    )
+
+
+def _has_multi_primitive_slot_union(nodes: Sequence[Mapping[str, Any]]) -> bool:
+    by_id = {
+        str(node["id"]): node
+        for node in nodes
+        if isinstance(node.get("id"), str)
+    }
+    path_ids = {
+        node_id
+        for node_id, node in by_id.items()
+        if node.get("kind") == "path_stroke"
+    }
+    subtraction_roots = {
+        str(operand)
+        for node in nodes
+        if node.get("kind") == "difference"
+        and isinstance(node.get("subtract"), list)
+        for operand in node["subtract"]
+    }
+
+    def shape_leaves(node_id: str, visited: frozenset[str]) -> frozenset[str]:
+        if node_id in visited:
+            return frozenset()
+        node = by_id.get(node_id)
+        if node is None:
+            return frozenset()
+        kind = node.get("kind")
+        if kind in {"rectangle", "polygon", "path_stroke"}:
+            return frozenset({node_id})
+        if kind != "union" or not isinstance(node.get("operands"), list):
+            return frozenset()
+        current = visited | {node_id}
+        return frozenset().union(
+            *(
+                shape_leaves(str(operand), current)
+                for operand in node["operands"]
+            )
+        )
+
+    for root in subtraction_roots:
+        leaves = shape_leaves(root, frozenset())
+        if len(leaves) >= 2 and not path_ids.isdisjoint(leaves):
+            return True
+    return False
 
 
 def _default_native_geometry_units_apply(user_request: str | None) -> bool:
@@ -3421,6 +3526,77 @@ def _claims_unbacked_proposal_execution(message: AssistantMessage) -> bool:
         pattern.search(message.content) is not None
         for pattern in _UNBACKED_PROPOSAL_EXECUTION_PATTERNS
     )
+
+
+def _message_calls_guarded_authoring_action(message: AssistantMessage) -> bool:
+    """Return whether a response attempts a proposal or direct model change."""
+
+    guarded = _PROPOSAL_PREPARE_TOOL_NAMES | _AUTOMATIC_MODEL_PATCH_TOOL_NAMES | {
+        "create_native_model_document"
+    }
+    return any(call.name in guarded for call in message.tool_calls)
+
+
+def _message_calls_only_read_tools(message: AssistantMessage) -> bool:
+    """Return whether every call is provider-visible, read-only discovery."""
+
+    return bool(message.tool_calls) and all(
+        call.name.startswith("read_") or call.name == "show_capabilities"
+        for call in message.tool_calls
+    )
+
+
+def _message_is_authoring_clarification_or_blocker(
+    message: AssistantMessage,
+) -> bool:
+    """Allow questions and typed blockers to end an authoring turn safely."""
+
+    if message.tool_calls or not isinstance(message.content, str):
+        return False
+    content = message.content.casefold()
+    return (
+        "?" in content
+        or "？" in content
+        or any(marker in content for marker in _AUTHORING_CLARIFICATION_MARKERS)
+        or any(marker in content for marker in _TYPED_DIAGNOSTIC_MARKERS)
+    )
+
+
+def _claims_authoring_progress_without_tool(message: AssistantMessage) -> bool:
+    """Return whether text promises authoring progress without doing it."""
+
+    if message.tool_calls or not isinstance(message.content, str):
+        return False
+    return any(
+        pattern.search(message.content) is not None
+        for pattern in _AUTHORING_PROGRESS_ONLY_PATTERNS
+    )
+
+
+def _should_correct_authoring_route_progress(
+    message: AssistantMessage,
+    *,
+    required_tool: str,
+) -> bool:
+    """Protect authoring prerequisites without blocking read-only discovery."""
+
+    call_names = tuple(call.name for call in message.tool_calls)
+    if call_names:
+        if _message_calls_only_read_tools(message):
+            return False
+        if call_names == (required_tool,):
+            return False
+        return _message_calls_guarded_authoring_action(message)
+    if _message_is_authoring_clarification_or_blocker(message):
+        return False
+    if required_tool.startswith("read_") and isinstance(message.content, str):
+        content = message.content.casefold()
+        if any(
+            marker in content
+            for marker in _GEOMETRY_REFUSAL_MARKERS + _MESH_PREREQUISITE_MARKERS
+        ):
+            return True
+    return _claims_authoring_progress_without_tool(message)
 
 
 def _unbacked_proposal_execution_correction() -> str:
@@ -4001,11 +4177,10 @@ def _single_edit_description(
     if operation == "add_path_slot":
         width = _preview_number(edit.get("width"))
         points = _point_chain(edit.get("points"))
-        shape = _slot_shape_label(user_request, chinese)
         return (
-            f"切除一条连续的{shape}定宽槽，中心路径 {points}，槽宽 {width}"
+            f"切除一条连续定宽槽，中心路径 {points}，槽宽 {width}"
             if chinese
-            else f"Cut one continuous {shape}constant-width slot, centerline {points}, width {width}"
+            else f"Cut one continuous constant-width slot, centerline {points}, width {width}"
         )
     if operation == "planar_boolean":
         boolean_operation = str(edit.get("boolean_operation", ""))
@@ -4248,27 +4423,19 @@ def _natural_value(value: object, chinese: bool) -> str:
     return str(value)
 
 
-def _slot_shape_label(user_request: str | None, chinese: bool) -> str:
-    request = user_request or ""
-    if re.search(r"(?:S\s*形|字母\s*S|S[- ]?shaped)", request, re.IGNORECASE):
-        return "S 形" if chinese else "S-shaped "
-    if re.search(r"(?:U\s*形|字母\s*U|U[- ]?shaped)", request, re.IGNORECASE):
-        return "U 形" if chinese else "U-shaped "
-    if "蛇形" in request or "serpentine" in request.lower():
-        return "蛇形" if chinese else "serpentine "
-    return ""
-
-
 def _point_chain(value: object) -> str:
     if not isinstance(value, list):
         return "?"
     rendered: list[str] = []
     for point in value[:12]:
-        if not isinstance(point, Mapping):
+        if isinstance(point, Mapping):
+            x = point.get("x")
+            y = point.get("y")
+        elif isinstance(point, (list, tuple)) and len(point) == 2:
+            x, y = point
+        else:
             continue
-        rendered.append(
-            f"({_preview_number(point.get('x'))}, {_preview_number(point.get('y'))})"
-        )
+        rendered.append(f"({_preview_number(x)}, {_preview_number(y)})")
     suffix = " → …" if len(value) > 12 else ""
     return " → ".join(rendered) + suffix
 
@@ -4347,43 +4514,6 @@ def _should_guard_geometry_refusal(
     return not _snapshot_proves_transform_unsupported(snapshot)
 
 
-def _continues_text_only_geometry_edit_preview(
-    history: Sequence[AssistantMessage],
-    user_text: str,
-) -> bool:
-    """Carry one bounded edit intent across a plain-text preview follow-up."""
-
-    if len(user_text) > 240 or not any(
-        pattern.search(user_text) is not None
-        for pattern in _GEOMETRY_EDIT_FOLLOW_UP_PATTERNS
-    ):
-        return False
-    user_index = next(
-        (
-            index
-            for index in range(len(history) - 1, -1, -1)
-            if history[index].role == "user"
-            and isinstance(history[index].content, str)
-        ),
-        None,
-    )
-    if user_index is None or user_index == 0:
-        return False
-    preview = history[user_index - 1]
-    if preview.role != "assistant" or not isinstance(preview.content, str):
-        return False
-    if user_index >= 2 and history[user_index - 2].role == "tool":
-        # A tool-backed preview already has its own confirmation card. Plain
-        # text approval must not create a duplicate or replace GUI consent.
-        return False
-    lowered = preview.content.casefold()
-    return any(
-        marker in lowered for marker in _GEOMETRY_EDIT_PREVIEW_MARKERS
-    ) and any(
-        marker in lowered for marker in _GEOMETRY_EDIT_PREVIEW_FEATURE_MARKERS
-    )
-
-
 def _required_authoring_resync_tool(
     snapshot: object | None,
     available_tools: Sequence[object],
@@ -4412,9 +4542,12 @@ def _authoring_resync_progress_correction() -> str:
     return (
         "Local authoring resynchronization (deterministic): the GUI document "
         "revision changed outside the active Agent workflow, for example by "
-        "undo. Call read_authoring_context as the only tool in this response. "
-        "Do not answer from the stale revision or claim that a proposal was "
-        "submitted, confirmed, or executed."
+        "undo. Refresh with read_authoring_context before preparing any "
+        "revision-bound proposal or changing the model. Other published "
+        "read-only tools may be used when they provide relevant context, and "
+        "a necessary clarification or typed blocker may be reported. Do not "
+        "answer from the stale revision or claim that a proposal was submitted, "
+        "confirmed, or executed."
     )
 
 
@@ -4425,7 +4558,7 @@ def _required_edit_route_progress_tool(
     route_probe_called: bool,
     route_probe_failed: bool,
 ) -> str | None:
-    """Return the one valid next tool for an explicit planar edit route."""
+    """Return an unmet prerequisite for an explicit planar edit route."""
 
     if route_hint is None or not route_hint.is_edit or route_probe_failed:
         return None
@@ -4457,18 +4590,17 @@ def _geometry_edit_route_progress_correction(
     )
     if required_tool == "read_authoring_context":
         instruction = (
-            "The authoring stage needs deterministic resynchronization. Call "
-            "read_authoring_context as the only tool in this response."
+            "The authoring stage needs deterministic resynchronization. Read "
+            "authoring context before preparing a revision-bound proposal."
         )
     elif required_tool == route_hint.required_probe_tool:
         instruction = (
-            f"Call {required_tool} as the only tool in this response before "
-            "constructing edit arguments."
+            f"Call {required_tool} before constructing edit arguments."
         )
     else:
         instruction = (
             f"Use the exact IDs and editable geometry returned by the probe, "
-            f"then call {required_tool} as the only tool in this response."
+            f"then call {required_tool} when the proposal is ready."
         )
     return (
         "Local planar-edit progress correction (deterministic, "
@@ -4476,9 +4608,10 @@ def _geometry_edit_route_progress_correction(
         + hint
         + ". "
         + instruction
-        + " Do not describe, promise, or claim submission without that tool "
-        "call. If the typed context reports a blocker, report that exact "
-        "blocker after the read."
+        + " Published read-only tools may be used as needed, and a necessary "
+        "clarification may be requested. Do not describe, promise, or claim "
+        "submission without the matching prepare call. If typed context "
+        "reports a blocker, report that exact blocker after the read."
     )
 
 
@@ -4531,11 +4664,11 @@ def _geometry_route_correction(route_hint: GeometryRouteHint) -> str:
         "explicit user request matches this transform hint: "
         + hint
         + ". Do not claim that the operation is unsupported or that a mesh is "
-        "required. First call the required probe tool to read typed transform "
-        "context; only then call the matching prepare tool with IDs returned "
-        "by that read. If the read result contains a typed unsupported "
-        "diagnostic, report that diagnostic; otherwise do not invent IDs or "
-        "geometry facts."
+        "required. Read-only discovery tools may be used as needed. Before "
+        "calling the matching prepare tool, call the required probe tool and "
+        "use IDs returned by that read. A necessary clarification may be "
+        "requested. If the read result contains a typed unsupported diagnostic, "
+        "report that diagnostic; otherwise do not invent IDs or geometry facts."
     )
 
 
