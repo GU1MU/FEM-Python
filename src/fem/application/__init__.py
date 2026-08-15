@@ -171,6 +171,7 @@ from .planar_construction import (
     PlanarConstructionProof,
     PlanarCurveLineage,
     compile_planar_construction,
+    compile_planar_feature_recipe,
 )
 from .session import (
     BooleanReferenceUndoRecord,
@@ -292,6 +293,7 @@ __all__ = [
     "compile_model_definitions",
     "compile_named_region_edit",
     "compile_planar_construction",
+    "compile_planar_feature_recipe",
     "compiled_model_snapshot",
     "describe_model_capabilities",
     "describe_native_mesh_contract",

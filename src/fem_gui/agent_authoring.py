@@ -22,11 +22,17 @@ from fem.application import (
     ModelSession,
     PlanarConstructionCompileError,
     UnitContext,
+    compile_planar_feature_recipe,
     compile_planar_construction,
+    prepare_planar_boolean,
     prepare_part_boolean,
     prepare_solid_body_boolean,
 )
 from fem.application.changes import SessionDelta
+from fem.application.feature_history import (
+    derive_feature_history,
+    remove_terminal_feature,
+)
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
@@ -105,6 +111,7 @@ from fem_agent.geometry_authoring import (
     add_planar_circle,
     add_planar_constraint,
     add_planar_line,
+    add_planar_path_slot,
     add_planar_polygon,
     add_planar_rectangle,
     _as_strict_planar_sketch,
@@ -256,7 +263,9 @@ def _normalize_profile_preflight_error(error: BaseException) -> AuthoringContrac
     )
 
 
-def _run_profile_transform_preflight(callback: Callable[..., None], *args: object) -> None:
+def _run_profile_transform_preflight(
+    callback: Callable[..., None], *args: object
+) -> None:
     """Normalize backend failures at the detached preflight boundary."""
 
     try:
@@ -498,7 +507,8 @@ def _bounded_geometry_design_summary(
         candidate = f"{prefix}：" + "；".join((*kept, detail))
         if len(candidate) > 720:
             return (
-                f"{prefix}：" + "；".join(kept)
+                f"{prefix}："
+                + "；".join(kept)
                 + f"；另有 {len(details) - index} 个轮廓"
             )
         kept.append(detail)
@@ -632,8 +642,7 @@ def _profile_vertices(value: object) -> tuple[tuple[object, object], ...]:
         not isinstance(value, list)
         or not 3 <= len(value) <= 64
         or any(
-            not isinstance(item, Mapping) or set(item) != {"x", "y"}
-            for item in value
+            not isinstance(item, Mapping) or set(item) != {"x", "y"} for item in value
         )
     ):
         raise ValueError("polygon vertices must contain 3 to 64 x/y objects")
@@ -655,11 +664,13 @@ def _composite_profile_order_key(value: object) -> tuple[str, str]:
         if isinstance(vertices, list):
             return (
                 kind,
-                repr(tuple(
-                    (item.get("x"), item.get("y"))
-                    for item in vertices
-                    if isinstance(item, Mapping)
-                )),
+                repr(
+                    tuple(
+                        (item.get("x"), item.get("y"))
+                        for item in vertices
+                        if isinstance(item, Mapping)
+                    )
+                ),
             )
         return (kind, repr(vertices))
     else:
@@ -716,9 +727,7 @@ def _composite_profile_contours(
                     item["width"],
                     item["height"],
                 )
-                summaries.append(
-                    _planar_profile_design_summary(kind, item, index)
-                )
+                summaries.append(_planar_profile_design_summary(kind, item, index))
                 if draft is None:
                     draft = planar_sketch_geometry(
                         recipe_name,
@@ -741,9 +750,7 @@ def _composite_profile_contours(
                     item["center_y"],
                     item["radius"],
                 )
-                summaries.append(
-                    _planar_profile_design_summary(kind, item, index)
-                )
+                summaries.append(_planar_profile_design_summary(kind, item, index))
                 if draft is None:
                     draft = planar_sketch_geometry(
                         recipe_name,
@@ -780,7 +787,9 @@ def _composite_profile_contours(
             else:
                 raise ValueError("unsupported composite profile kind")
         except (TypeError, ValueError) as error:
-            raise ValueError(f"composite profile {index} is invalid: {error}") from error
+            raise ValueError(
+                f"composite profile {index} is invalid: {error}"
+            ) from error
     if draft is None:  # pragma: no cover - guarded by the non-empty input check
         raise ValueError("composite profiles did not produce a sketch")
     sketch = draft.recipe
@@ -829,8 +838,7 @@ def _composite_path(value: object, *, name: str) -> WireGeometry:
             for item in raw_points
         ),
         tuple(
-            WireMember(item["name"], item["start"], item["end"])
-            for item in raw_members
+            WireMember(item["name"], item["start"], item["end"]) for item in raw_members
         ),
     )
 
@@ -847,9 +855,7 @@ def authoring_context_from_snapshot(
     supported = source_kind in {"blank", "native"}
     binding = LocalModelBinding(
         document_id=(
-            f"document:{session_id}"
-            if document_id is None
-            else str(document_id)
+            f"document:{session_id}" if document_id is None else str(document_id)
         ),
         session_id=session_id,
         session_revision=int(snapshot.session_revision),
@@ -877,9 +883,7 @@ def authoring_context_from_snapshot(
         and element_count is not None
         and element_count > 0
     )
-    mesh_current = bool(
-        mesh_present and getattr(snapshot, "mesh_current", False)
-    )
+    mesh_current = bool(mesh_present and getattr(snapshot, "mesh_current", False))
     validation_status = "not_run"
     validations = getattr(snapshot, "validations", {})
     if _bounded_count(validations):
@@ -1009,11 +1013,7 @@ def authoring_context_from_snapshot(
         CapabilitySummary(
             "delete_model_objects",
             deletable_objects_available,
-            (
-                None
-                if deletable_objects_available
-                else "当前 native 项目没有可删除对象"
-            ),
+            (None if deletable_objects_available else "当前 native 项目没有可删除对象"),
         ),
         CapabilitySummary(
             "edit_model_objects",
@@ -1026,18 +1026,10 @@ def authoring_context_from_snapshot(
         ),
         CapabilitySummary(
             "query_accepted_result",
-            (
-                supported
-                and source_kind == "native"
-                and result_count > 0
-            ),
+            (supported and source_kind == "native" and result_count > 0),
             (
                 None
-                if (
-                    supported
-                    and source_kind == "native"
-                    and result_count > 0
-                )
+                if (supported and source_kind == "native" and result_count > 0)
                 else "结果查询需要当前已接受的 native 结果"
             ),
         ),
@@ -1169,6 +1161,27 @@ class AppliedPatchRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class FeatureProposalUndoRecord:
+    """One accepted geometry proposal that appended one native feature."""
+
+    proposal_id: str
+    proposal_hash: str
+    target_document_id: str
+    target_session_id: str
+    part_id: str
+    feature_name: str
+    before_recipe: object
+    after_recipe: object
+    session_revision: int
+    state: AppliedPatchState = AppliedPatchState.APPLIED
+    message: str = ""
+
+    @property
+    def undo_available(self) -> bool:
+        return self.state is AppliedPatchState.APPLIED
+
+
+@dataclass(frozen=True, slots=True)
 class _GuiControlAuthorization:
     proposal_id: str
     action: str
@@ -1208,8 +1221,7 @@ class AgentGeometryMutation:
         if type(self.operation_kind) is not OperationKind:
             raise TypeError("operation_kind must be OperationKind")
         if not self.affected_part_ids or any(
-            type(item) is not str or not item.strip()
-            for item in self.affected_part_ids
+            type(item) is not str or not item.strip() for item in self.affected_part_ids
         ):
             raise ValueError("affected_part_ids must contain nonblank strings")
         if len(set(self.affected_part_ids)) != len(self.affected_part_ids):
@@ -1285,9 +1297,7 @@ class SessionResultQueryPort:
         workspace = self._workspace
         if workspace is None:
             if target is not None and target.session_id != self._session.session_id:
-                raise _WorkspaceResultResolutionError(
-                    "target session is unavailable"
-                )
+                raise _WorkspaceResultResolutionError("target session is unavailable")
             return _ResolvedResultTarget(
                 None,
                 (
@@ -1389,9 +1399,7 @@ class SessionResultQueryPort:
                     None if run.source_run_id is None else str(run.source_run_id)
                 ),
                 result_id=(None if run.result_id is None else str(run.result_id)),
-                materialization_generation=snapshot.result_generations.get(
-                    run.run_id
-                ),
+                materialization_generation=snapshot.result_generations.get(run.run_id),
             )
             for run in page
         )
@@ -1450,10 +1458,7 @@ class SessionResultQueryPort:
                 retryable=True,
             )
         source, generation = identity
-        if (
-            provider.source != source
-            or provider.snapshot.generation != generation
-        ):
+        if provider.source != source or provider.snapshot.generation != generation:
             return _result_catalog_failure(
                 "result.catalog.current_identity_invalid",
                 "The current accepted result provider identity is inconsistent.",
@@ -1468,16 +1473,12 @@ class SessionResultQueryPort:
             )
         fields = tuple(
             AgentResultField(
-                variable=AgentResultVariable(
-                    item.descriptor.field_id.variable.value
-                ),
+                variable=AgentResultVariable(item.descriptor.field_id.variable.value),
                 position=item.descriptor.field_id.position.value,
                 components=item.descriptor.columns,
                 unit=_result_unit(
                     units,
-                    AgentResultVariable(
-                        item.descriptor.field_id.variable.value
-                    ),
+                    AgentResultVariable(item.descriptor.field_id.variable.value),
                 ),
             )
             for item in provider.catalog().fields
@@ -1513,13 +1514,18 @@ class SessionResultQueryPort:
             element_regions=element_regions,
         )
         if (
-            uses_displayed_result
-            and session.projection_snapshot().displayed_result_run_id
-            != target_run_id
-        ) or session.result_identity_for(target_run_id) != (
-            source,
-            generation,
-        ) or not self._target_is_current(resolved):
+            (
+                uses_displayed_result
+                and session.projection_snapshot().displayed_result_run_id
+                != target_run_id
+            )
+            or session.result_identity_for(target_run_id)
+            != (
+                source,
+                generation,
+            )
+            or not self._target_is_current(resolved)
+        ):
             return _result_catalog_failure(
                 "result.catalog.stale",
                 "The accepted result changed before the catalog was returned.",
@@ -1556,10 +1562,7 @@ class SessionResultQueryPort:
                 retryable=True,
             )
         source, generation = identity
-        if (
-            provider.source != source
-            or provider.snapshot.generation != generation
-        ):
+        if provider.source != source or provider.snapshot.generation != generation:
             return _result_query_failure(
                 "result.query.current_identity_invalid",
                 "The current accepted result provider identity is inconsistent.",
@@ -1686,9 +1689,7 @@ class SessionResultQueryPort:
             )
 
         initial_identities = tuple(
-            target.session.result_identity_for(
-                reference.expected_source.run_id
-            )
+            target.session.result_identity_for(reference.expected_source.run_id)
             for target, reference in zip(resolved, references, strict=True)
         )
         if any(identity is None for identity in initial_identities):
@@ -1705,8 +1706,7 @@ class SessionResultQueryPort:
             source, generation = identity
             if (
                 _accepted_source(source) != reference.expected_source
-                or generation
-                != reference.expected_materialization_generation
+                or generation != reference.expected_materialization_generation
             ):
                 return _result_comparison_failure(
                     "result.comparison.stale",
@@ -1726,9 +1726,7 @@ class SessionResultQueryPort:
             return _comparison_query_failure("candidate", candidate_response)
 
         final_identities = tuple(
-            target.session.result_identity_for(
-                reference.expected_source.run_id
-            )
+            target.session.result_identity_for(reference.expected_source.run_id)
             for target, reference in zip(resolved, references, strict=True)
         )
         if final_identities != initial_identities or not all(
@@ -1769,8 +1767,7 @@ def _result_regions_are_current(
         run_id == projection.displayed_result_run_id
         and artifact is not None
         and str(getattr(artifact, "artifact_id", "")) == source.artifact_id
-        and int(getattr(projection, "model_revision", -1))
-        == source.model_revision
+        and int(getattr(projection, "model_revision", -1)) == source.model_revision
     )
 
 
@@ -1862,7 +1859,11 @@ def _published_result_regions(
         regions = tuple(projection.named_regions.values())[:127]  # type: ignore[union-attr]
         nodal = (
             "all_nodes",
-            *(region.name for region in regions if region.entity_kind in {"node", "edge", "face"}),
+            *(
+                region.name
+                for region in regions
+                if region.entity_kind in {"node", "edge", "face"}
+            ),
         )
         element = (
             "all_elements",
@@ -1890,9 +1891,7 @@ def _native_result_query(
                 "Nodal result queries cannot target all_elements.",
             )
         node_ids = (
-            ()
-            if region == "all_nodes"
-            else provider.named_region_node_ids(region)
+            () if region == "all_nodes" else provider.named_region_node_ids(region)
         )
         return NativeResultQuery(
             field_key,
@@ -1905,9 +1904,7 @@ def _native_result_query(
             "Element result queries cannot target all_nodes.",
         )
     element_ids = (
-        ()
-        if region == "all_elements"
-        else provider.named_region_element_ids(region)
+        () if region == "all_elements" else provider.named_region_element_ids(region)
     )
     return NativeResultQuery(
         field_key,
@@ -2057,6 +2054,13 @@ def _ignore_projection_refresh() -> None:
     pass
 
 
+def _snapshot_part_recipe(snapshot: object, part_id: str) -> object | None:
+    for part in tuple(getattr(snapshot, "parts", ())):
+        if str(getattr(part, "id", "")) == part_id:
+            return getattr(part, "geometry_recipe", None)
+    return None
+
+
 class SessionGeometryAuthoringPort:
     """A2/A3 port for atomic geometry writes and detached mesh tasks."""
 
@@ -2092,15 +2096,14 @@ class SessionGeometryAuthoringPort:
         self._commit_geometry_edit_callback = commit_geometry_edit
         self._latest_geometry_iteration_report: dict[str, object] | None = None
         self._geometry_iteration_report_binding: tuple[str, str] | None = None
-        if apply_definition_delta is not None and not callable(
-            apply_definition_delta
-        ):
+        if apply_definition_delta is not None and not callable(apply_definition_delta):
             raise TypeError("apply_definition_delta must be callable or None")
         self._apply_definition_delta = apply_definition_delta
         self._context: AuthoringContext | None = None
         self._records: dict[str, ProposalPortRecord] = {}
         self._mesh_tasks: dict[str, object] = {}
         self._patch_records: dict[str, AppliedPatchRecord] = {}
+        self._feature_proposal_records: dict[str, FeatureProposalUndoRecord] = {}
         self._preflight_records: dict[str, AgentPreflightRecord] = {}
         self._preflight_counter = 0
         self._record_listener: Callable[[ProposalPortRecord], None] | None = None
@@ -2159,9 +2162,13 @@ class SessionGeometryAuthoringPort:
     def latest_geometry_iteration_report(self) -> Mapping[str, object] | None:
         report = self._latest_geometry_iteration_report
         context = self._context
-        binding = None if context is None else (
-            context.binding.document_id,
-            context.binding.session_id,
+        binding = (
+            None
+            if context is None
+            else (
+                context.binding.document_id,
+                context.binding.session_id,
+            )
         )
         if report is None or binding != self._geometry_iteration_report_binding:
             return None
@@ -2175,9 +2182,13 @@ class SessionGeometryAuthoringPort:
         if type(context) is not AuthoringContext:
             raise AuthoringContractError("context must be AuthoringContext")
         previous = self._context
-        previous_binding = None if previous is None else (
-            previous.binding.document_id,
-            previous.binding.session_id,
+        previous_binding = (
+            None
+            if previous is None
+            else (
+                previous.binding.document_id,
+                previous.binding.session_id,
+            )
         )
         next_binding = (
             context.binding.document_id,
@@ -2218,13 +2229,11 @@ class SessionGeometryAuthoringPort:
                 OperationKind.APPLY_BODY_BOOLEAN,
             }
         )
-        mesh_valid = (
-            proposal.proposal_kind is ProposalKind.MESH
-            and tuple(item.kind for item in proposal.operations)
-            == (
-                OperationKind.SET_PART_MESH_INTENT,
-                OperationKind.REQUEST_MESH,
-            )
+        mesh_valid = proposal.proposal_kind is ProposalKind.MESH and tuple(
+            item.kind for item in proposal.operations
+        ) == (
+            OperationKind.SET_PART_MESH_INTENT,
+            OperationKind.REQUEST_MESH,
         )
         destructive_valid = (
             proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT
@@ -2303,6 +2312,7 @@ class SessionGeometryAuthoringPort:
                     )
                     if operation.parameters["object_type"] not in {
                         "part",
+                        "feature",
                         "generated_mesh",
                     }:
                         self._project_definition_delta(delta)
@@ -2461,6 +2471,7 @@ class SessionGeometryAuthoringPort:
                 )
                 for face_id in source_face_ids
             )
+
             def commit_profile_extrusion(
                 session: ModelSession,
                 expected_revision: int,
@@ -2490,9 +2501,7 @@ class SessionGeometryAuthoringPort:
                 (source_face_id,),
             )
             if selection.face_ids != (source_face_id,):
-                raise AuthoringContractError(
-                    "derived Profile source is not canonical"
-                )
+                raise AuthoringContractError("derived Profile source is not canonical")
             part_id = str(parameters["part_id"])
             snapshot = self._session.snapshot()
             source_part = next(
@@ -2533,6 +2542,7 @@ class SessionGeometryAuthoringPort:
                     (source_face_id,),
                     str(parameters["frame_strategy"]),
                 )
+
             def commit_derived_feature(
                 session: ModelSession,
                 expected_revision: int,
@@ -2625,9 +2635,7 @@ class SessionGeometryAuthoringPort:
         mutation: AgentGeometryMutation,
     ) -> ProposalPortRecord:
         proposal = record.proposal
-        planned_mode = str(
-            proposal.preconditions.get("geometry_edit_mode", "in_place")
-        )
+        planned_mode = str(proposal.preconditions.get("geometry_edit_mode", "in_place"))
         if planned_mode not in {"in_place", "branch"}:
             raise AuthoringContractError(
                 "geometry proposal omitted a valid frozen edit mode"
@@ -2636,6 +2644,11 @@ class SessionGeometryAuthoringPort:
             raise AuthoringContractError(
                 "geometry edit policy changed after proposal creation"
             )
+        before_snapshot = self._session.snapshot()
+        before_recipe = _snapshot_part_recipe(
+            before_snapshot,
+            mutation.affected_part_ids[0],
+        )
         commit = self._commit_geometry_edit_callback
         if commit is None:
             if planned_mode != "in_place":
@@ -2674,6 +2687,12 @@ class SessionGeometryAuthoringPort:
                 "geometry edit commit mode does not match its proposal"
             )
         provider_safe_authoring_payload(report)
+        self._record_feature_proposal_undo(
+            proposal,
+            mutation,
+            before_recipe,
+            report,
+        )
         self._latest_geometry_iteration_report = deepcopy(report)
         context = self._context
         self._geometry_iteration_report_binding = (
@@ -2687,6 +2706,136 @@ class SessionGeometryAuthoringPort:
         succeeded = replace(record, state=ProposalState.SUCCEEDED)
         self._records[proposal.proposal_id] = succeeded
         return succeeded
+
+    def _record_feature_proposal_undo(
+        self,
+        proposal: AgentProposal,
+        mutation: AgentGeometryMutation,
+        before_recipe: object | None,
+        report: Mapping[str, object],
+    ) -> None:
+        if mutation.operation_kind is OperationKind.EXTRUDE_PART_PROFILES:
+            source_face_ids = proposal.operations[0].parameters.get(
+                "source_face_ids"
+            )
+            if not isinstance(source_face_ids, list) or len(source_face_ids) != 1:
+                return
+        if (
+            before_recipe is None
+            or len(mutation.affected_part_ids) != 1
+            or mutation.operation_kind
+            not in {
+                OperationKind.REPLACE_PART_GEOMETRY,
+                OperationKind.EXTRUDE_PART_PROFILES,
+                OperationKind.REVOLVE_PART_PROFILE,
+                OperationKind.SWEEP_PART_PROFILE,
+            }
+        ):
+            return
+        target = report.get("target")
+        if not isinstance(target, Mapping):
+            return
+        target_session_id = str(target.get("session_id", "")).strip()
+        target_document_id = str(target.get("document_id", "")).strip()
+        if (
+            not target_session_id
+            or not target_document_id
+            or target_session_id != self._session.session_id
+        ):
+            return
+        part_id = mutation.affected_part_ids[0]
+        after_recipe = _snapshot_part_recipe(self._session.snapshot(), part_id)
+        if after_recipe is None:
+            return
+        try:
+            predecessor = remove_terminal_feature(after_recipe)
+            feature_name = derive_feature_history(after_recipe)[-1].name
+        except (IndexError, TypeError, ValueError):
+            return
+        if predecessor != before_recipe:
+            return
+        self._feature_proposal_records[proposal.proposal_id] = (
+            FeatureProposalUndoRecord(
+                proposal.proposal_id,
+                proposal.proposal_hash,
+                target_document_id,
+                target_session_id,
+                part_id,
+                feature_name,
+                deepcopy(before_recipe),
+                deepcopy(after_recipe),
+                self._session.session_revision,
+            )
+        )
+
+    def feature_proposal_record(
+        self,
+        proposal_id: str,
+    ) -> FeatureProposalUndoRecord:
+        try:
+            return self._feature_proposal_records[str(proposal_id)]
+        except KeyError as error:
+            raise AuthoringContractError(
+                "proposal did not append a reversible native feature"
+            ) from error
+
+    def can_undo_proposal(self, proposal_id: str) -> bool:
+        record = self._feature_proposal_records.get(str(proposal_id))
+        if (
+            record is None
+            or record.state is not AppliedPatchState.APPLIED
+            or self._session.session_id != record.target_session_id
+            or self._session.session_revision != record.session_revision
+        ):
+            return False
+        context = self._context
+        if (
+            context is not None
+            and context.binding.document_id != record.target_document_id
+        ):
+            return False
+        current = _snapshot_part_recipe(self._session.snapshot(), record.part_id)
+        if current != record.after_recipe:
+            return False
+        try:
+            return remove_terminal_feature(current) == record.before_recipe
+        except (TypeError, ValueError):
+            return False
+
+    def undo_proposal(self, proposal_id: str) -> FeatureProposalUndoRecord:
+        try:
+            record = self._feature_proposal_records[str(proposal_id)]
+        except KeyError as error:
+            raise AuthoringContractError(
+                "proposal did not append a reversible native feature"
+            ) from error
+        if record.state is not AppliedPatchState.APPLIED:
+            raise AuthoringAuthorizationError(
+                f"proposal feature is already {record.state.value}"
+            )
+        if not self.can_undo_proposal(proposal_id):
+            stale = replace(
+                record,
+                state=AppliedPatchState.STALE,
+                message="session revision or terminal feature changed after proposal",
+            )
+            self._feature_proposal_records[str(proposal_id)] = stale
+            raise AuthoringAuthorizationError(stale.message)
+        snapshot = self._session.snapshot()
+        delta = self._session.replace_part_geometry(
+            record.part_id,
+            deepcopy(record.before_recipe),
+            expected_part_revision=snapshot.part_revision(record.part_id),
+            expected_session_revision=record.session_revision,
+        )
+        undone = replace(
+            record,
+            session_revision=delta.session_revision,
+            state=AppliedPatchState.UNDONE,
+            message=f"removed native feature {record.feature_name}",
+        )
+        self._feature_proposal_records[str(proposal_id)] = undone
+        return undone
 
     def can_accept(self, proposal_id: str) -> bool:
         """Return whether the current Session still satisfies the proposal."""
@@ -2819,8 +2968,7 @@ class SessionGeometryAuthoringPort:
         )
         if (
             patch.target_session_id != snapshot.session_id
-            or patch.target_document_id
-            != current_document_id
+            or patch.target_document_id != current_document_id
             or patch.base_session_revision != snapshot.session_revision
         ):
             raise AuthoringContractError("automatic patch target is stale")
@@ -2833,10 +2981,7 @@ class SessionGeometryAuthoringPort:
         has_results = any(
             bool(getattr(run, "has_result", False)) for run in snapshot.runs
         )
-        if (
-            has_results
-            and patch.invalidation_impact.get("results") is True
-        ):
+        if has_results and patch.invalidation_impact.get("results") is True:
             raise AuthoringAuthorizationError(
                 "a result-invalidating edit requires GUI confirmation"
             )
@@ -2844,8 +2989,7 @@ class SessionGeometryAuthoringPort:
         if authoring_mode == "direct_edit":
             if (
                 len(patch.operations) != 1
-                or patch.operations[0].kind
-                is not OperationKind.EDIT_MODEL_OBJECT
+                or patch.operations[0].kind is not OperationKind.EDIT_MODEL_OBJECT
             ):
                 raise AuthoringContractError(
                     "direct edit patch requires one edit operation"
@@ -2925,8 +3069,7 @@ class SessionGeometryAuthoringPort:
         return (
             record is not None
             and record.state is AppliedPatchState.APPLIED
-            and self._session.session_id
-            == record.inverse_patch.target_session_id
+            and self._session.session_id == record.inverse_patch.target_session_id
             and self._session.session_revision
             == record.inverse_patch.base_session_revision
         )
@@ -2937,9 +3080,7 @@ class SessionGeometryAuthoringPort:
         try:
             record = self._patch_records[str(patch_id)]
         except KeyError as error:
-            raise AuthoringContractError(
-                "automatic patch is not registered"
-            ) from error
+            raise AuthoringContractError("automatic patch is not registered") from error
         if record.state is not AppliedPatchState.APPLIED:
             raise AuthoringAuthorizationError(
                 f"automatic patch is already {record.state.value}"
@@ -2975,9 +3116,7 @@ class SessionGeometryAuthoringPort:
         try:
             return self._patch_records[str(patch_id)]
         except KeyError as error:
-            raise AuthoringContractError(
-                "automatic patch is not registered"
-            ) from error
+            raise AuthoringContractError("automatic patch is not registered") from error
 
     def _project_definition_delta(self, delta: SessionDelta) -> None:
         if self._apply_definition_delta is not None:
@@ -2985,9 +3124,7 @@ class SessionGeometryAuthoringPort:
 
     def _accept_mesh(self, record: ProposalPortRecord) -> ProposalPortRecord:
         if self._start_mesh_task is None:
-            raise AuthoringContractError(
-                "mesh proposal execution is not configured"
-            )
+            raise AuthoringContractError("mesh proposal execution is not configured")
         proposal = record.proposal
         intent_operation, request_operation = proposal.operations
         intent = MeshIntent.from_dict(
@@ -3051,9 +3188,7 @@ class SessionGeometryAuthoringPort:
         record: ProposalPortRecord,
     ) -> ProposalPortRecord:
         if self._start_solve_task is None:
-            raise AuthoringContractError(
-                "solve proposal execution is not configured"
-            )
+            raise AuthoringContractError("solve proposal execution is not configured")
         proposal = record.proposal
         (
             step_name,
@@ -3114,11 +3249,9 @@ class SessionGeometryAuthoringPort:
         )
         if (
             proposal.target_session_id != snapshot.session_id
-            or proposal.target_document_id
-            != current_document_id
+            or proposal.target_document_id != current_document_id
             or proposal.base_session_revision != snapshot.session_revision
-            or artifact_id
-            != getattr(snapshot.artifact, "artifact_id", None)
+            or artifact_id != getattr(snapshot.artifact, "artifact_id", None)
             or model_revision != snapshot.model_revision
             or stamp != current_stamp
         ):
@@ -3180,9 +3313,7 @@ class SessionGeometryAuthoringPort:
     ) -> SessionDelta:
         record = self._records.get(proposal_id)
         if record is None or record.state is not ProposalState.RUNNING:
-            raise AuthoringAuthorizationError(
-                "mesh result requires a running proposal"
-            )
+            raise AuthoringAuthorizationError("mesh result requires a running proposal")
         task = self._mesh_tasks[proposal_id]
         delta = self._session.accept_agent_generated_model(task.token, model)
         if delta.accepted:
@@ -3553,6 +3684,38 @@ class AgentAuthoringBridge:
             self._patch_listener(record)
         return record
 
+    def feature_proposal_record(
+        self,
+        proposal_id: str,
+    ) -> FeatureProposalUndoRecord | None:
+        getter = getattr(self._port, "feature_proposal_record", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter(proposal_id)
+        except AuthoringContractError:
+            return None
+
+    def can_undo_proposal(self, proposal_id: str) -> bool:
+        check = getattr(self._port, "can_undo_proposal", None)
+        return bool(callable(check) and check(proposal_id))
+
+    def undo_proposal_from_gui_control(
+        self,
+        proposal_id: str,
+    ) -> FeatureProposalUndoRecord:
+        self._require_gui_thread()
+        undo = getattr(self._port, "undo_proposal", None)
+        if not callable(undo):
+            raise AuthoringContractError(
+                "authoring port does not support proposal feature removal"
+            )
+        record = undo(proposal_id)
+        refresh = getattr(self._port, "refresh_projection", None)
+        if callable(refresh):
+            refresh()
+        return record
+
     def accept_proposal(
         self,
         proposal_id: str,
@@ -3584,26 +3747,22 @@ class AgentAuthoringBridge:
         finally:
             self._accepting_proposal_id = None
         self._records[proposal_id] = accepted
-        self._notify_lifecycle(accepted)
-        if (
-            accepted.state is ProposalState.SUCCEEDED
-            and (
-                accepted.proposal.proposal_kind is ProposalKind.GEOMETRY
-                or (
-                    accepted.proposal.proposal_kind
-                    is ProposalKind.DESTRUCTIVE_EDIT
-                    and len(accepted.proposal.operations) == 1
-                    and accepted.proposal.operations[0].kind
-                    in {
-                        OperationKind.DELETE_MODEL_OBJECT,
-                        OperationKind.EDIT_MODEL_OBJECT,
-                    }
-                )
+        if accepted.state is ProposalState.SUCCEEDED and (
+            accepted.proposal.proposal_kind is ProposalKind.GEOMETRY
+            or (
+                accepted.proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT
+                and len(accepted.proposal.operations) == 1
+                and accepted.proposal.operations[0].kind
+                in {
+                    OperationKind.DELETE_MODEL_OBJECT,
+                    OperationKind.EDIT_MODEL_OBJECT,
+                }
             )
         ):
             refresh = getattr(self._port, "refresh_projection", None)
             if callable(refresh):
                 refresh()
+        self._notify_lifecycle(accepted)
         return self._receipt(accepted)
 
     def reject_proposal(
@@ -3809,7 +3968,10 @@ class AgentAuthoringBridge:
 
     def _receive_port_record(self, record: ProposalPortRecord) -> None:
         current = self._records.get(record.proposal.proposal_id)
-        if current is None or current.proposal.proposal_hash != record.proposal.proposal_hash:
+        if (
+            current is None
+            or current.proposal.proposal_hash != record.proposal.proposal_hash
+        ):
             raise AuthoringContractError(
                 "port lifecycle update does not match a registered proposal"
             )
@@ -4004,9 +4166,7 @@ def create_session_authoring_workflow_controller(
         part_function = str(arguments["part_function"]).strip()
         raw_geometry = arguments["geometry"]
         if not part_function or not isinstance(raw_geometry, Mapping):
-            raise AuthoringContractError(
-                "part_function and geometry must be non-empty"
-            )
+            raise AuthoringContractError("part_function and geometry must be non-empty")
         geometry = dict(raw_geometry)
         kind = str(geometry.get("kind", ""))
         _require_geometry_intent_compatibility(part_function, kind)
@@ -4014,9 +4174,7 @@ def create_session_authoring_workflow_controller(
             f"草图-{part_function}"
             if kind == "planar_profiles"
             else (
-                f"线框-{part_function}"
-                if kind == "wire"
-                else f"实体-{part_function}"
+                f"线框-{part_function}" if kind == "wire" else f"实体-{part_function}"
             )
         )
         if kind == "planar_profiles":
@@ -4099,9 +4257,7 @@ def create_session_authoring_workflow_controller(
                 _pop_profile_annotations(profile)
                 if profile_kind == "rectangle":
                     if set(profile) != {"x", "y", "width", "height"}:
-                        raise ValueError(
-                            "rectangle profile fields do not match"
-                        )
+                        raise ValueError("rectangle profile fields do not match")
                     draft = add_planar_rectangle(draft.recipe, **profile)
                     profile_summaries.append(
                         _planar_profile_design_summary(
@@ -4153,9 +4309,7 @@ def create_session_authoring_workflow_controller(
             }
             required = allowed - {"provisional"}
             if set(geometry) - allowed or not required <= set(geometry):
-                raise ValueError(
-                    "extruded_path_slot_plate fields do not match"
-                )
+                raise ValueError("extruded_path_slot_plate fields do not match")
             if "provisional" in geometry and type(geometry["provisional"]) is not bool:
                 raise TypeError("path slot provisional must be a boolean")
             raw_plate = geometry["plate"]
@@ -4175,13 +4329,8 @@ def create_session_authoring_workflow_controller(
                     for item in raw_path
                 )
             ):
-                raise ValueError(
-                    "slot_path must contain 2 to 32 ordered x/y objects"
-                )
-            path_points = tuple(
-                (item["x"], item["y"])
-                for item in raw_path
-            )
+                raise ValueError("slot_path must contain 2 to 32 ordered x/y objects")
+            path_points = tuple((item["x"], item["y"]) for item in raw_path)
             slot_vertices = planar_path_slot_vertices(
                 path_points,
                 geometry["slot_width"],
@@ -4197,9 +4346,7 @@ def create_session_authoring_workflow_controller(
                 },
                 {
                     "kind": "polygon",
-                    "vertices": [
-                        {"x": x, "y": y} for x, y in slot_vertices
-                    ],
+                    "vertices": [{"x": x, "y": y} for x, y in slot_vertices],
                     "role": "hole",
                 },
             ]
@@ -4240,10 +4387,7 @@ def create_session_authoring_workflow_controller(
                     1,
                 ),
                 f"槽中心路径={shown_path}",
-                (
-                    f"槽宽={_display_number(geometry['slot_width'])} "
-                    f"{length_unit}"
-                ),
+                (f"槽宽={_display_number(geometry['slot_width'])} {length_unit}"),
                 f"拉伸高={_display_number(height)} {length_unit}",
                 "holes=1",
             ]
@@ -4308,8 +4452,7 @@ def create_session_authoring_workflow_controller(
                 )
                 draft = geometry_draft(recipe)
                 transform_summary = (
-                    f"拉伸高={_display_number(height)} {length_unit}，"
-                    "方向=XY 正法向"
+                    f"拉伸高={_display_number(height)} {length_unit}，方向=XY 正法向"
                 )
             else:
                 path = _composite_path(
@@ -4333,8 +4476,7 @@ def create_session_authoring_workflow_controller(
                 )
                 draft = geometry_draft(recipe)
                 transform_summary = (
-                    f"路径扫掠段数={len(path.members)}，"
-                    f"frame={frame_strategy}"
+                    f"路径扫掠段数={len(path.members)}，frame={frame_strategy}"
                 )
             profile_summary = _bounded_geometry_design_summary(
                 "2D Profile",
@@ -4348,7 +4490,9 @@ def create_session_authoring_workflow_controller(
                 ],
             )
             provisional = bool(geometry.get("provisional", False))
-            provisional_summary = "；尺寸标记为 provisional 提案值" if provisional else ""
+            provisional_summary = (
+                "；尺寸标记为 provisional 提案值" if provisional else ""
+            )
             geometry_summary = (
                 f"{profile_summary}；3D {kind}：{transform_summary}"
                 f"{provisional_summary}"
@@ -4364,10 +4508,12 @@ def create_session_authoring_workflow_controller(
                 raise ValueError("wire members must be an array")
             points = []
             for raw_point in raw_points:
-                if (
-                    not isinstance(raw_point, Mapping)
-                    or set(raw_point) != {"name", "x", "y", "z"}
-                ):
+                if not isinstance(raw_point, Mapping) or set(raw_point) != {
+                    "name",
+                    "x",
+                    "y",
+                    "z",
+                }:
                     raise ValueError("wire point fields do not match")
                 points.append(
                     WirePoint(
@@ -4379,10 +4525,11 @@ def create_session_authoring_workflow_controller(
                 )
             members = []
             for raw_member in raw_members:
-                if (
-                    not isinstance(raw_member, Mapping)
-                    or set(raw_member) != {"name", "start", "end"}
-                ):
+                if not isinstance(raw_member, Mapping) or set(raw_member) != {
+                    "name",
+                    "start",
+                    "end",
+                }:
                     raise ValueError("wire member fields do not match")
                 members.append(
                     WireMember(
@@ -4396,9 +4543,7 @@ def create_session_authoring_workflow_controller(
                 points=points,
                 members=members,
             )
-            geometry_summary = (
-                f"1D 空间线几何(点={len(points)}，杆件={len(members)})"
-            )
+            geometry_summary = f"1D 空间线几何(点={len(points)}，杆件={len(members)})"
         elif kind == "box":
             if set(geometry) != {"kind", "width", "depth", "height"}:
                 raise ValueError("box geometry fields do not match")
@@ -4442,9 +4587,7 @@ def create_session_authoring_workflow_controller(
             draft=draft,
             part_function=part_function,
             project_function=(
-                part_function
-                if context.binding.source_kind == "blank"
-                else None
+                part_function if context.binding.source_kind == "blank" else None
             ),
             summary=proposal_summary,
             unit_context=UnitContextSummary(
@@ -4496,13 +4639,19 @@ def create_session_authoring_workflow_controller(
         "planar-ir.unreachable-node": "二维构造包含未参与结果的节点，请删除或连接该节点。",
         "planar-ir.invalid-primitive": "二维基础区域参数无效，请修正诊断指出的节点。",
         "planar-ir.invalid-path-stroke": "定宽路径无效，请修正失败线段、宽度或连接方式。",
+        "planar-ir.subtract-no-effect": (
+            "减材节点未切除任何材料；请检查坐标，并注意矩形 x/y 表示左下角。"
+        ),
         "planar-ir.boolean-empty": "二维布尔运算结果为空，请调整 operand 或尺寸。",
         "planar-ir.degenerate-result": "二维构造产生退化边或区域，请调整尺寸关系。",
         "planar-ir.unsupported-boundary": "结果包含当前版本不支持的边界曲线。",
         "planar-ir.materialization-failed": "二维边界无法物化为严格草图，模型保持不变。",
         "planar-ir.profile-invalid": "物化草图未通过 Profile 拓扑证明。",
         "planar-ir.equivalence-failed": "物化草图与布尔结果不等价，已阻止提案。",
-        "planar-ir.transform-invalid": "三维变换参数或源 Profile 无效，请修正 output。",
+        "planar-ir.transform-invalid": (
+            "输出参数无效：二维可使用 output: \"planar\" 或 "
+            "output: {\"kind\": \"planar\"}；三维请检查变换参数与源 Profile。"
+        ),
         "planar-ir.preflight-failed": "最终三维 Recipe 未通过本地精确预检。",
         "planar-ir.stale-context": "文档、Session 或 revision 已变化，请重新读取上下文。",
     }
@@ -4547,23 +4696,18 @@ def create_session_authoring_workflow_controller(
         )
 
     def _planar_construction_profile_selection(
-        sketch: SketchGeometry,
+        recipe: object,
         raw_selection: object,
     ) -> tuple[str, ...]:
-        context = profile_transform_context(sketch)
-        profiles = context.get("profiles")
-        if not context.get("topology_exact") or not isinstance(profiles, list):
+        try:
+            canonical = resolve_extrusion_source_faces(recipe).face_ids
+        except (TypeError, ValueError) as error:
             raise AuthoringContractError(
                 "profile-transform.topology-unproven: IR-derived Profile "
                 "topology is not exact"
-            )
-        canonical = tuple(
-            str(item["face_id"])
-            for item in profiles
-            if isinstance(item, Mapping) and isinstance(item.get("face_id"), str)
-        )
+            ) from error
         if raw_selection == "unique_material_profile":
-            if len(canonical) != 1 or int(context["material_profile_count"]) != 1:
+            if len(canonical) != 1:
                 candidates = ", ".join(canonical) or "none"
                 raise AuthoringContractError(
                     "profile-transform.ambiguous-material-profiles: "
@@ -4596,40 +4740,23 @@ def create_session_authoring_workflow_controller(
         return requested
 
     def _planar_construction_output_recipe(
-        sketch: SketchGeometry,
+        planar_recipe: object,
         output: object,
         *,
         part_function: str,
     ) -> tuple[str, object, _DetachedRecipeMesh | None]:
+        output = _normalize_planar_construction_output(output)
         if output == "planar":
-            return "planar", sketch, None
-        if not isinstance(output, Mapping) or not isinstance(output.get("kind"), str):
-            raise ValueError("output must be planar or a derived output object")
+            return "planar", planar_recipe, None
+        assert isinstance(output, Mapping)
         kind = str(output["kind"])
-        required = {
-            "extrusion": {"kind", "profile_selection", "height"},
-            "revolution": {
-                "kind",
-                "profile_selection",
-                "axis",
-                "angle_degrees",
-            },
-            "path_sweep": {
-                "kind",
-                "profile_selection",
-                "path",
-                "frame_strategy",
-            },
-        }.get(kind)
-        if required is None or set(output) != required:
-            raise ValueError("derived output fields do not match")
         selected = _planar_construction_profile_selection(
-            sketch,
+            planar_recipe,
             output["profile_selection"],
         )
         if kind == "extrusion":
             extrusions = tuple(
-                ExtrudedGeometry(sketch, output["height"], (face_id,))
+                ExtrudedGeometry(planar_recipe, output["height"], (face_id,))
                 for face_id in selected
             )
             recipe = (
@@ -4650,7 +4777,7 @@ def create_session_authoring_workflow_controller(
                     "requires exactly one canonical material Profile"
                 )
             recipe = RevolvedGeometry(
-                sketch,
+                planar_recipe,
                 str(output["axis"]),
                 output["angle_degrees"],
                 selected,
@@ -4666,7 +4793,7 @@ def create_session_authoring_workflow_controller(
                 name=f"扫掠路径-{part_function}",
             )
             recipe = PathSweptGeometry(
-                sketch,
+                planar_recipe,
                 path,
                 selected,
                 str(output["frame_strategy"]),
@@ -4677,6 +4804,102 @@ def create_session_authoring_workflow_controller(
                 "planar-ir.preflight-failed: detached preview was not produced"
             )
         return kind, recipe, preview
+
+    def _normalize_planar_construction_output(
+        output: object,
+    ) -> str | dict[str, object]:
+        """Normalize the two accepted planar spellings before any CAD work."""
+
+        if output == "planar":
+            return "planar"
+        if not isinstance(output, Mapping) or not isinstance(output.get("kind"), str):
+            raise ValueError(
+                "output must be 'planar', {'kind': 'planar'}, or a valid "
+                "derived 3D output object"
+            )
+        kind = str(output["kind"])
+        if kind == "planar":
+            if set(output) != {"kind"}:
+                raise ValueError(
+                    "planar output object must contain only kind='planar'"
+                )
+            return "planar"
+        required = {
+            "extrusion": {"kind", "profile_selection", "height"},
+            "revolution": {
+                "kind",
+                "profile_selection",
+                "axis",
+                "angle_degrees",
+            },
+            "path_sweep": {
+                "kind",
+                "profile_selection",
+                "path",
+                "frame_strategy",
+            },
+        }.get(kind)
+        if required is None:
+            raise ValueError(
+                "output.kind must be planar, extrusion, revolution, or path_sweep"
+            )
+        if set(output) != required:
+            fields = ", ".join(sorted(required))
+            raise ValueError(
+                f"output kind {kind!r} requires exactly these fields: {fields}"
+            )
+        normalized = dict(output)
+        selection = normalized["profile_selection"]
+        if selection != "unique_material_profile":
+            if isinstance(selection, list):
+                source_ids = selection
+            elif isinstance(selection, Mapping) and set(selection) == {
+                "source_face_ids"
+            }:
+                source_ids = selection["source_face_ids"]
+            else:
+                raise ValueError(
+                    "profile_selection must be unique_material_profile, a "
+                    "source_face_ids array, or an object containing only "
+                    "source_face_ids"
+                )
+            if (
+                not isinstance(source_ids, list)
+                or not source_ids
+                or any(not isinstance(item, str) or not item for item in source_ids)
+                or len(source_ids) != len(set(source_ids))
+            ):
+                raise ValueError(
+                    "profile_selection.source_face_ids must be a non-empty "
+                    "array of unique strings"
+                )
+        if kind == "extrusion":
+            height = normalized["height"]
+            if (
+                isinstance(height, bool)
+                or not isinstance(height, (int, float))
+                or height <= 0
+            ):
+                raise ValueError("extrusion height must be greater than zero")
+        elif kind == "revolution":
+            if normalized["axis"] not in {"x", "y", "z"}:
+                raise ValueError("revolution axis must be x, y, or z")
+            angle = normalized["angle_degrees"]
+            if (
+                isinstance(angle, bool)
+                or not isinstance(angle, (int, float))
+                or not 0 < angle <= 360
+            ):
+                raise ValueError(
+                    "revolution angle_degrees must be greater than zero and at most 360"
+                )
+        else:
+            if normalized["frame_strategy"] not in {"fixed", "transport"}:
+                raise ValueError(
+                    "path_sweep frame_strategy must be fixed or transport"
+                )
+            _composite_path(normalized["path"], name="扫掠路径-output-validation")
+        return normalized
 
     def prepare_planar_construction(
         arguments: Mapping[str, object],
@@ -4700,6 +4923,35 @@ def create_session_authoring_workflow_controller(
         if not isinstance(raw_construction, Mapping):
             raise AuthoringContractError("construction must be an object")
 
+        retry_blocker = controller.planar_construction_retry_blocker()
+        if retry_blocker is not None:
+            return AuthoringToolOutcome(
+                "二维构造本轮已达到三次重试上限，请在下一轮重新提交。",
+                {
+                    "retry": retry_blocker,
+                    "authoring_path": "planar_construction_ir_v1",
+                    "required_action": "restart_planar_construction_in_new_turn",
+                },
+                ok=False,
+            )
+
+        try:
+            normalized_output = _normalize_planar_construction_output(
+                arguments["output"]
+            )
+        except (TypeError, ValueError) as error:
+            return _planar_construction_failure(
+                geometry_runtime.PlanarIRDiagnostic(
+                    "planar-ir.transform-invalid",
+                    str(error),
+                    None,
+                    True,
+                    ("output",),
+                ),
+                arguments,
+                controller,
+            )
+
         initial_context = current_context()
         try:
             construction = PlanarConstructionIR.from_dict(raw_construction)
@@ -4715,10 +4967,22 @@ def create_session_authoring_workflow_controller(
                 "planar construction compiler returned no strict sketch"
             )
         try:
-            output_kind, output_recipe, output_mesh = _planar_construction_output_recipe(
-                compiled.recipe,
-                arguments["output"],
-                part_function=part_function,
+            feature_recipe = compile_planar_feature_recipe(
+                construction,
+                compiled=compiled,
+            )
+            output_kind, output_recipe, output_mesh = (
+                _planar_construction_output_recipe(
+                    feature_recipe,
+                    normalized_output,
+                    part_function=part_function,
+                )
+            )
+        except PlanarConstructionCompileError as error:
+            return _planar_construction_failure(
+                error.diagnostic,
+                arguments,
+                controller,
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
             code = (
@@ -4801,9 +5065,7 @@ def create_session_authoring_workflow_controller(
             draft=draft,
             part_function=part_function,
             project_function=(
-                part_function
-                if current.binding.source_kind == "blank"
-                else None
+                part_function if current.binding.source_kind == "blank" else None
             ),
             summary=proposal_summary,
             unit_context=UnitContextSummary(
@@ -4835,18 +5097,12 @@ def create_session_authoring_workflow_controller(
                 "output_kind": output_kind,
                 "construction_summary": construction_summary,
                 "proof_summary": proof_summary,
-                "construction_digest_short": str(
-                    evidence["construction_digest"]
-                )[:12],
-                "recipe_proof_digest_short": str(
-                    evidence["recipe_proof_digest"]
-                )[:12],
-                "output_recipe_digest_short": str(
-                    evidence["output_recipe_digest"]
-                )[:12],
-                "output_proof_digest_short": str(
-                    evidence["output_proof_digest"]
-                )[:12],
+                "construction_digest_short": str(evidence["construction_digest"])[:12],
+                "recipe_proof_digest_short": str(evidence["recipe_proof_digest"])[:12],
+                "output_recipe_digest_short": str(evidence["output_recipe_digest"])[
+                    :12
+                ],
+                "output_proof_digest_short": str(evidence["output_proof_digest"])[:12],
             },
         )
         controller.record_planar_construction_proposal(
@@ -4876,16 +5132,57 @@ def create_session_authoring_workflow_controller(
         try:
             catalog = planar_geometry_catalog(part.geometry_recipe)
         except TypeError:
-            catalog = {
-                "kind": _provider_recipe_kind(part.geometry_recipe),
-                "supported_edits": ["translate", "rotate"],
-            }
+            if part.dimension == 2:
+                topology = describe_recipe_topology(part.geometry_recipe)
+                selection = resolve_extrusion_source_faces(part.geometry_recipe)
+                catalog = {
+                    "kind": "planar_feature_recipe",
+                    "recipe_kind": _provider_recipe_kind(part.geometry_recipe),
+                    "supported_edits": [
+                        "planar_boolean",
+                        "extrude_profiles",
+                        "revolve_profile",
+                        "path_sweep_profile",
+                        "add_path_slot",
+                        "translate",
+                        "rotate",
+                    ],
+                    "profile_summary": {
+                        "topology_exact": topology.exact,
+                        "material_profile_count": len(selection.face_ids),
+                        "profiles": [
+                            {
+                                "profile_id": face_id,
+                                "role": "outer",
+                            }
+                            for face_id in selection.face_ids
+                        ],
+                    },
+                    "freeform_profile_policy": {
+                        "two_dimensional_cut_representation": (
+                            "native_planar_boolean_feature"
+                        ),
+                        "preferred_operation_for_constant_width_slot": (
+                            "add_path_slot"
+                        ),
+                        "postcondition_for_one_cutout": (
+                            "append one proven cut feature to feature history"
+                        ),
+                    },
+                }
+            else:
+                catalog = {
+                    "kind": _provider_recipe_kind(part.geometry_recipe),
+                    "supported_edits": ["translate", "rotate"],
+                }
         else:
             catalog["supported_edits"] = [
+                "planar_boolean",
                 "add_line",
                 "add_arc",
                 "add_circle",
                 "add_rectangle",
+                "add_path_slot",
                 "add_polygon",
                 "update_point",
                 "update_line",
@@ -4945,7 +5242,8 @@ def create_session_authoring_workflow_controller(
             catalog["freeform_profile_policy"] = {
                 "two_dimensional_cut_representation": "closed_inner_profile",
                 "part_boolean_required": False,
-                "preferred_operation": "add_polygon",
+                "preferred_operation_for_constant_width_slot": "add_path_slot",
+                "preferred_operation_for_arbitrary_silhouette": "add_polygon",
                 "alternate_operation": "one_batch_of_ordered_lines_and_arcs",
                 "required_invariants": [
                     "closed",
@@ -4953,10 +5251,14 @@ def create_session_authoring_workflow_controller(
                     "contained_by_material_profile",
                 ],
                 "forbidden_intermediate_geometry": [
-                    "open_centerline",
+                    "open_centerline_as_standalone_geometry",
                     "placeholder_unrelated_to_final_contour",
+                    "disconnected_rectangles_for_one_shaped_slot",
                 ],
-                "postcondition_for_one_cutout": "hole_count increases by 1",
+                "postcondition_for_one_cutout": (
+                    "material_profile_count is unchanged and hole_count increases by 1"
+                ),
+                "path_slot_postcondition_enforced_locally": True,
             }
         if part.dimension == 3:
             if type(part.geometry_recipe) is MultiBodyGeometry:
@@ -5023,8 +5325,7 @@ def create_session_authoring_workflow_controller(
             (
                 candidate
                 for candidate in snapshot.parts
-                if str(candidate.id) == normalized_part_id
-                and not candidate.suppressed
+                if str(candidate.id) == normalized_part_id and not candidate.suppressed
             ),
             None,
         )
@@ -5037,7 +5338,17 @@ def create_session_authoring_workflow_controller(
 
     def _strict_profile_recipe(part):
         try:
-            return _as_strict_planar_sketch(part.geometry_recipe)
+            try:
+                return _as_strict_planar_sketch(part.geometry_recipe)
+            except TypeError:
+                pass
+            recipe = part.geometry_recipe
+            if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
+                raise TypeError("recipe is not native geometry")
+            if geometry_dimension(recipe) != 2:
+                raise ValueError("recipe is not planar")
+            resolve_extrusion_source_faces(recipe)
+            return recipe
         except (TypeError, ValueError) as error:
             raise AuthoringContractError(
                 "profile-transform.source-not-planar: Profile transforms "
@@ -5054,14 +5365,18 @@ def create_session_authoring_workflow_controller(
             raw_selection = arguments["source_face_ids"]
         else:
             raw_selection = arguments.get("profile_selection")
-        unique_selection = raw_selection == "unique_material_profile" or (
-            isinstance(raw_selection, Mapping)
-            and set(raw_selection) == {"mode"}
-            and raw_selection.get("mode") == "unique_material_profile"
-        ) or (
-            isinstance(raw_selection, Mapping)
-            and set(raw_selection) == {"kind"}
-            and raw_selection.get("kind") == "unique_material_profile"
+        unique_selection = (
+            raw_selection == "unique_material_profile"
+            or (
+                isinstance(raw_selection, Mapping)
+                and set(raw_selection) == {"mode"}
+                and raw_selection.get("mode") == "unique_material_profile"
+            )
+            or (
+                isinstance(raw_selection, Mapping)
+                and set(raw_selection) == {"kind"}
+                and raw_selection.get("kind") == "unique_material_profile"
+            )
         )
         if not unique_selection and "context_revision" not in arguments:
             raise AuthoringContractError(
@@ -5096,9 +5411,7 @@ def create_session_authoring_workflow_controller(
                 and operation_context.get("blocking_reason")
                 else "Profile topology is not available"
             )
-            raise AuthoringContractError(
-                f"{blocking_code}: {blocking_reason}"
-            )
+            raise AuthoringContractError(f"{blocking_code}: {blocking_reason}")
         if not context["topology_exact"]:
             reason = str(
                 context.get("extrusion", {}).get(
@@ -5277,9 +5590,7 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         try:
             if set(arguments) != {"part_id"}:
-                raise ValueError(
-                    "read_profile_transform_context fields do not match"
-                )
+                raise ValueError("read_profile_transform_context fields do not match")
             snapshot, part = _profile_transform_part(arguments["part_id"])
             data = profile_transform_context(
                 part.geometry_recipe,
@@ -5326,8 +5637,13 @@ def create_session_authoring_workflow_controller(
                     )
                 )
                 raise AuthoringContractError(
-                    missing_code + ": "
-                    + ("missing height" if "height" in missing else "missing required fields")
+                    missing_code
+                    + ": "
+                    + (
+                        "missing height"
+                        if "height" in missing
+                        else "missing required fields"
+                    )
                 )
             if extra:
                 raise ValueError("prepare_profile_extrusion fields do not match")
@@ -5469,12 +5785,96 @@ def create_session_authoring_workflow_controller(
             )
         base_recipe_override = arguments.get("_canonical_base_recipe")
         if base_recipe_override is not None and (
-            type(base_recipe_override) is not SketchGeometry
-            or not base_recipe_override.is_strict
+            not isinstance(base_recipe_override, NATIVE_GEOMETRY_TYPES)
+            or geometry_dimension(base_recipe_override) != 2
         ):
             raise AuthoringContractError(
                 "profile-transform.source-not-strict: canonical base recipe "
                 "must be a strict planar sketch"
+            )
+        if operation == "planar_boolean":
+            if set(edit) != {"boolean_operation", "tool"}:
+                raise ValueError("planar_boolean fields do not match")
+            if part.dimension != 2:
+                raise AuthoringContractError(
+                    "planar_boolean requires a two-dimensional Part"
+                )
+            boolean_operation = str(edit["boolean_operation"])
+            if boolean_operation not in {"fuse", "cut"}:
+                raise AuthoringContractError(
+                    "planar_boolean operation must be fuse or cut"
+                )
+            raw_tool = edit["tool"]
+            if not isinstance(raw_tool, Mapping):
+                raise TypeError("planar_boolean tool must be an object")
+            tool = dict(raw_tool)
+            kind = str(tool.get("kind", ""))
+            if kind in {"polygon", "path_stroke"}:
+                coordinate_field = "vertices" if kind == "polygon" else "points"
+                raw_coordinates = tool.get(coordinate_field)
+                if not isinstance(raw_coordinates, list) or any(
+                    not isinstance(item, Mapping) or set(item) != {"x", "y"}
+                    for item in raw_coordinates
+                ):
+                    raise ValueError(
+                        f"planar_boolean {coordinate_field} must contain x/y objects"
+                    )
+                tool[coordinate_field] = [
+                    [item["x"], item["y"]] for item in raw_coordinates
+                ]
+            tool_node = {"id": "tool-profile", **tool}
+            construction = PlanarConstructionIR.from_dict(
+                {
+                    "schema_version": 1,
+                    "name": "agent-planar-boolean-tool",
+                    "plane": "XY",
+                    "nodes": [tool_node],
+                    "result_node_id": "tool-profile",
+                }
+            )
+            compiled_tool = compile_planar_construction(construction).recipe
+            target_faces = resolve_extrusion_source_faces(part.geometry_recipe).face_ids
+            tool_faces = resolve_extrusion_source_faces(compiled_tool).face_ids
+            if len(target_faces) != 1:
+                raise AuthoringContractError(
+                    "planar_boolean requires one material target Profile"
+                )
+            with geometry_runtime.model(
+                f"{part.name}-{boolean_operation}-agent-feature",
+                dimension=2,
+            ) as cad:
+                prepared = prepare_planar_boolean(
+                    cad,
+                    part.geometry_recipe,
+                    target_faces[0],
+                    compiled_tool,
+                    tool_faces,
+                    boolean_operation,
+                )
+            draft = geometry_draft(prepared.geometry)
+            action = "切除" if boolean_operation == "cut" else "合并"
+            summary = f"在部件 {part.name} 上追加二维{action}特征：工具轮廓为 {kind}"
+            metadata = envelope(controller, "geometry-planar-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
+            proposal = create_geometry_edit_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part_id,
+                draft=draft,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    f"确认后追加二维{action}特征，并使旧网格与结果失效",
+                ),
+                confirm_label=f"追加{action}特征",
+                extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "part_boolean":
             if set(edit) != {
@@ -5657,9 +6057,20 @@ def create_session_authoring_workflow_controller(
                 if base_recipe_override is not None
                 else part.geometry_recipe
             )
-            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+            if (
+                base_recipe_override is None
+                and type(base_recipe) is not SketchGeometry
+                and type(base_recipe) is not BooleanGeometry
+            ):
                 raise AuthoringContractError(
-                    "Agent Profile extrusion requires a strict planar sketch Part"
+                    "Agent Profile extrusion requires a canonical planar feature recipe"
+                )
+            if (
+                not isinstance(base_recipe, NATIVE_GEOMETRY_TYPES)
+                or geometry_dimension(base_recipe) != 2
+            ):
+                raise AuthoringContractError(
+                    "Agent Profile extrusion requires an exact planar feature Part"
                 )
             raw_source_ids = edit["source_face_ids"]
             if not isinstance(raw_source_ids, list) or not raw_source_ids:
@@ -5721,9 +6132,12 @@ def create_session_authoring_workflow_controller(
                 if base_recipe_override is not None
                 else part.geometry_recipe
             )
-            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+            if (
+                not isinstance(base_recipe, NATIVE_GEOMETRY_TYPES)
+                or geometry_dimension(base_recipe) != 2
+            ):
                 raise AuthoringContractError(
-                    "Agent Profile revolution requires a strict planar sketch Part"
+                    "Agent Profile revolution requires an exact planar feature Part"
                 )
             source_face_id = str(edit["source_face_id"])
             selection = resolve_extrusion_source_faces(
@@ -5769,8 +6183,7 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后将 Profile 原子替换为旋转实体，"
-                    "并使旧网格、定义与结果失效",
+                    "确认后将 Profile 原子替换为旋转实体，并使旧网格、定义与结果失效",
                 ),
                 confirm_label="旋转扫掠 Profile",
                 extra_data={"geometry_edit_mode": edit_mode},
@@ -5783,9 +6196,12 @@ def create_session_authoring_workflow_controller(
                 if base_recipe_override is not None
                 else part.geometry_recipe
             )
-            if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+            if (
+                not isinstance(base_recipe, NATIVE_GEOMETRY_TYPES)
+                or geometry_dimension(base_recipe) != 2
+            ):
                 raise AuthoringContractError(
-                    "Agent path sweep requires a strict planar sketch Part"
+                    "Agent path sweep requires an exact planar feature Part"
                 )
             source_face_id = str(edit["source_face_id"])
             selection = resolve_extrusion_source_faces(
@@ -5797,21 +6213,22 @@ def create_session_authoring_workflow_controller(
                     "path_sweep_profile requires one canonical material Profile"
                 )
             raw_path = edit["path"]
-            if not isinstance(raw_path, Mapping) or set(raw_path) != {"points", "members"}:
+            if not isinstance(raw_path, Mapping) or set(raw_path) != {
+                "points",
+                "members",
+            }:
                 raise ValueError("path fields do not match")
             raw_points = raw_path["points"]
             raw_members = raw_path["members"]
             if not isinstance(raw_points, list) or not isinstance(raw_members, list):
                 raise TypeError("path points and members must be arrays")
             if any(
-                not isinstance(item, Mapping)
-                or set(item) != {"name", "x", "y", "z"}
+                not isinstance(item, Mapping) or set(item) != {"name", "x", "y", "z"}
                 for item in raw_points
             ):
                 raise ValueError("path point fields do not match")
             if any(
-                not isinstance(item, Mapping)
-                or set(item) != {"name", "start", "end"}
+                not isinstance(item, Mapping) or set(item) != {"name", "start", "end"}
                 for item in raw_members
             ):
                 raise ValueError("path member fields do not match")
@@ -5904,32 +6321,42 @@ def create_session_authoring_workflow_controller(
                 for item in raw_vertices
             ):
                 raise ValueError("vertices must contain x/y objects")
-            vertices = tuple(
-                (item["x"], item["y"]) for item in raw_vertices
-            )
+            vertices = tuple((item["x"], item["y"]) for item in raw_vertices)
             draft = add_planar_polygon(
                 part.geometry_recipe,
                 vertices=vertices,
             )
+            summary = f"在部件 {part.name} 的平面草图中增加{len(vertices)} 边闭合轮廓"
+        elif operation == "add_path_slot":
+            if set(edit) != {"points", "width", "cap", "join"}:
+                raise ValueError("add_path_slot fields do not match")
+            raw_points = edit["points"]
+            if not isinstance(raw_points, list) or any(
+                not isinstance(item, Mapping) or set(item) != {"x", "y"}
+                for item in raw_points
+            ):
+                raise ValueError("path slot points must contain x/y objects")
+            points = tuple((item["x"], item["y"]) for item in raw_points)
+            draft = add_planar_path_slot(
+                part.geometry_recipe,
+                points=points,
+                width=edit["width"],
+                cap=str(edit["cap"]),
+                join=str(edit["join"]),
+            )
             summary = (
-                f"在部件 {part.name} 的平面草图中增加"
-                f"{len(vertices)} 边闭合轮廓"
+                f"在部件 {part.name} 的平面草图中增加一个连通定宽路径槽："
+                f"{len(points)} 个中心线路径点，槽宽 {edit['width']}"
             )
         elif operation == "update_point":
             allowed = {"point_id", "x", "y"}
-            if (
-                not {"point_id"} <= set(edit) <= allowed
-                or len(edit) == 1
-            ):
+            if not {"point_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_point fields do not match")
             draft = update_planar_point(part.geometry_recipe, **edit)
             summary = f"更新部件 {part.name} 中的草图点 {edit['point_id']}"
         elif operation == "update_circle":
             allowed = {"circle_id", "center_x", "center_y", "radius"}
-            if (
-                not {"circle_id"} <= set(edit) <= allowed
-                or len(edit) == 1
-            ):
+            if not {"circle_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_circle fields do not match")
             draft = update_planar_circle(part.geometry_recipe, **edit)
             summary = f"更新部件 {part.name} 中的圆 {edit['circle_id']}"
@@ -5955,8 +6382,7 @@ def create_session_authoring_workflow_controller(
                 raise ValueError("delete_circles fields do not match")
             draft = delete_planar_circles(part.geometry_recipe, **edit)
             summary = (
-                f"从部件 {part.name} 的平面草图中删除 "
-                f"{len(edit['circle_ids'])} 个圆"
+                f"从部件 {part.name} 的平面草图中删除 {len(edit['circle_ids'])} 个圆"
             )
         elif operation == "replace_circle_pattern":
             if set(edit) != {
@@ -5970,10 +6396,7 @@ def create_session_authoring_workflow_controller(
             }:
                 raise ValueError("replace_circle_pattern fields do not match")
             draft = replace_planar_circle_pattern(part.geometry_recipe, **edit)
-            summary = (
-                f"将部件 {part.name} 中的圆替换为 "
-                f"{edit['count']} 孔线性阵列"
-            )
+            summary = f"将部件 {part.name} 中的圆替换为 {edit['count']} 孔线性阵列"
         elif operation == "add_constraint":
             if set(edit) != {"constraint"}:
                 raise ValueError("add_constraint fields do not match")
@@ -6000,8 +6423,7 @@ def create_session_authoring_workflow_controller(
                 edits=raw_edits,
             )
             summary = (
-                f"批量修改部件 {part.name} 的平面草图："
-                f"{len(raw_edits)} 个原子步骤"
+                f"批量修改部件 {part.name} 的平面草图：{len(raw_edits)} 个原子步骤"
             )
         elif operation == "translate":
             if not {"dx", "dy"} <= set(edit) <= {"dx", "dy", "dz"}:
@@ -6061,9 +6483,7 @@ def create_session_authoring_workflow_controller(
             }
             first = error.diagnostics[0]
             code = str(first["code"])
-            affected = ", ".join(
-                str(item) for item in first["affected_logical_ids"]
-            )
+            affected = ", ".join(str(item) for item in first["affected_logical_ids"])
             location = f" ({affected})" if affected else ""
             return AuthoringToolOutcome(
                 "Exact planar Profile validation rejected the edit: "
@@ -6079,11 +6499,7 @@ def create_session_authoring_workflow_controller(
         """Keep composite Profile failures on the same typed boundary."""
 
         geometry = arguments.get("geometry")
-        kind = (
-            str(geometry.get("kind", ""))
-            if isinstance(geometry, Mapping)
-            else ""
-        )
+        kind = str(geometry.get("kind", "")) if isinstance(geometry, Mapping) else ""
         try:
             return prepare_geometry(arguments, controller)
         except _GeometryIntentMismatchError as error:
@@ -6123,8 +6539,7 @@ def create_session_authoring_workflow_controller(
             (
                 candidate
                 for candidate in snapshot.parts
-                if candidate.id == snapshot.active_part_id
-                and not candidate.suppressed
+                if candidate.id == snapshot.active_part_id and not candidate.suppressed
             ),
             None,
         )
@@ -6335,9 +6750,7 @@ def create_session_authoring_workflow_controller(
             global_size=float(requirements["mesh_global_size"]),
             local_controls=tuple(local_controls),
             line_element_type=(
-                str(requirements["line_element_type"])
-                if part.dimension == 1
-                else None
+                str(requirements["line_element_type"]) if part.dimension == 1 else None
             ),
         )
         try:
@@ -6389,7 +6802,7 @@ def create_session_authoring_workflow_controller(
         if set(arguments) != {"action", "parameters"}:
             raise AuthoringContractError(
                 "apply_model_definition requires action and parameters"
-        )
+            )
         metadata = envelope(controller, "definition")
         suffix = str(metadata.pop("identity_suffix"))
         change = create_definition_change(
@@ -6411,9 +6824,7 @@ def create_session_authoring_workflow_controller(
                 extra_data={
                     "action": change.action,
                     "definition_object_type": change.resume_object_type,
-                    "objects": list(
-                        proposal.expected_changes.get("created_names", ())
-                    ),
+                    "objects": list(proposal.expected_changes.get("created_names", ())),
                 },
             )
         patch = change.value
@@ -6424,9 +6835,7 @@ def create_session_authoring_workflow_controller(
                 "action": arguments["action"],
                 "patch_id": patch.patch_id,
                 "undo_available": True,
-                "objects": list(
-                    patch.expected_changes.get("created_names", ())
-                ),
+                "objects": list(patch.expected_changes.get("created_names", ())),
                 "gui_synchronized": True,
                 "definition_object_type": change.resume_object_type,
             },
@@ -6440,9 +6849,7 @@ def create_session_authoring_workflow_controller(
                 "action": arguments["action"],
                 "patch_id": applied.patch.patch_id,
                 "undo_available": applied.undo_available,
-                "objects": list(
-                    patch.expected_changes.get("created_names", ())
-                ),
+                "objects": list(patch.expected_changes.get("created_names", ())),
                 "gui_synchronized": True,
                 "definition_object_type": change.resume_object_type,
             },
@@ -6486,9 +6893,7 @@ def create_session_authoring_workflow_controller(
             else next_job_name()
         )
         if type(supplied_job_name) is not str or not supplied_job_name.strip():
-            raise AuthoringContractError(
-                "next_job_name must return a nonblank string"
-            )
+            raise AuthoringContractError("next_job_name must return a nonblank string")
         proposal = create_solve_proposal(
             proposal_id=f"proposal-{suffix}",
             snapshot=current_session().snapshot(),
@@ -6568,9 +6973,7 @@ def create_session_authoring_workflow_controller(
             or requested_name != requested_name.strip()
             or len(requested_name) > 160
         ):
-            raise AuthoringContractError(
-                "model_name must be a nonblank trimmed string"
-            )
+            raise AuthoringContractError("model_name must be a nonblank trimmed string")
         previous = current_context().binding
         model_name = create_model_document(requested_name)
         if type(model_name) is not str or not model_name.strip():
@@ -6621,9 +7024,7 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         allowed = {"object_type", "target_id", "step_name"}
         if set(arguments) - allowed:
-            raise AuthoringContractError(
-                "prepare_delete_proposal has unknown fields"
-            )
+            raise AuthoringContractError("prepare_delete_proposal has unknown fields")
         if not {"object_type", "target_id"}.issubset(arguments):
             raise AuthoringContractError(
                 "prepare_delete_proposal requires object_type and target_id"
@@ -6684,13 +7085,10 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         allowed = {"object_type", "target_id", "step_name", "changes"}
         if set(arguments) - allowed:
-            raise AuthoringContractError(
-                "edit_model_object has unknown fields"
-            )
+            raise AuthoringContractError("edit_model_object has unknown fields")
         if not {"object_type", "target_id", "changes"}.issubset(arguments):
             raise AuthoringContractError(
-                "edit_model_object requires "
-                "object_type, target_id, and changes"
+                "edit_model_object requires object_type, target_id, and changes"
             )
         metadata = envelope(controller, "edit")
         suffix = str(metadata.pop("identity_suffix"))
@@ -6892,9 +7290,7 @@ def create_session_authoring_workflow_controller(
             **(
                 {}
                 if create_model_document is None
-                else {
-                    "create_native_model_document": create_native_model_document
-                }
+                else {"create_native_model_document": create_native_model_document}
             ),
             "read_deletable_objects": read_deletable_objects,
             "prepare_delete_proposal": prepare_delete,
@@ -6912,9 +7308,7 @@ def create_session_authoring_workflow_controller(
             ),
         },
         workspace_result_inventory=(
-            None
-            if workspace_catalog_bridge is None
-            else workspace_result_inventory
+            None if workspace_catalog_bridge is None else workspace_result_inventory
         ),
     )
     if authoring_bridge.context is not None:
@@ -6925,6 +7319,7 @@ def create_session_authoring_workflow_controller(
 __all__ = [
     "AppliedPatchRecord",
     "AppliedPatchState",
+    "FeatureProposalUndoRecord",
     "AgentPreflightRecord",
     "AgentPreflightState",
     "AgentPreflightTaskRequest",

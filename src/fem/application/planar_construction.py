@@ -27,6 +27,7 @@ from fem.geometry.construction_ir import (
     UnionNode,
 )
 from fem.geometry.recipe_analysis import SketchProfileAnalysis, analyze_sketch_profiles
+from fem.geometry.extrusion_selection import resolve_extrusion_source_faces
 from fem.geometry.recipes import (
     SketchArc,
     SketchCircle,
@@ -220,6 +221,187 @@ def compile_planar_construction(
     )
 
 
+def compile_planar_feature_recipe(
+    construction: PlanarConstructionIR,
+    *,
+    compiled: CompiledPlanarConstruction | None = None,
+    model_factory: Callable[..., Any] = geometry_model,
+) -> object:
+    """Compile top-level planar Booleans into the native feature recipe chain.
+
+    ``compile_planar_construction`` deliberately materializes the final exact
+    boundary as one strict sketch.  That representation is useful for profile
+    proof, but it erases the authoring operations that the GUI model tree is
+    derived from.  This companion compiler keeps operand sketches detached and
+    commits each object-side union/difference as the same proven planar Boolean
+    feature used by the interactive GUI workflow.
+    """
+
+    if type(construction) is not PlanarConstructionIR:
+        raise TypeError("construction must be a PlanarConstructionIR")
+    if compiled is None:
+        compiled = compile_planar_construction(
+            construction,
+            model_factory=model_factory,
+        )
+    elif type(compiled) is not CompiledPlanarConstruction:
+        raise TypeError("compiled must be CompiledPlanarConstruction or None")
+    if compiled.construction_digest != construction.digest():
+        raise ValueError("compiled construction digest does not match the IR")
+
+    nodes = {node.id: node for node in construction.nodes}
+    flattened: dict[str, SketchGeometry] = {
+        construction.result_node_id: compiled.recipe,
+    }
+
+    def dependencies(node: object) -> tuple[str, ...]:
+        if isinstance(node, (UnionNode, IntersectionNode)):
+            return node.operands
+        if isinstance(node, DifferenceNode):
+            return (node.base, *node.subtract)
+        if isinstance(node, (TranslateNode, RotateNode, MirrorNode)):
+            return (node.source,)
+        if isinstance(
+            node,
+            (LinearPatternNode, RectangularPatternNode, CircularPatternNode),
+        ):
+            return (node.seed,)
+        return ()
+
+    def subconstruction(node_id: str) -> PlanarConstructionIR:
+        required: set[str] = set()
+
+        def collect(current_id: str) -> None:
+            if current_id in required:
+                return
+            required.add(current_id)
+            for dependency in dependencies(nodes[current_id]):
+                collect(dependency)
+
+        collect(node_id)
+        return PlanarConstructionIR(
+            construction.schema_version,
+            f"{construction.name}-{node_id}",
+            construction.plane,
+            tuple(node for node in construction.nodes if node.id in required),
+            node_id,
+        )
+
+    def flatten(node_id: str) -> SketchGeometry:
+        recipe = flattened.get(node_id)
+        if recipe is None:
+            recipe = compile_planar_construction(
+                subconstruction(node_id),
+                model_factory=model_factory,
+            ).recipe
+            flattened[node_id] = recipe
+        return recipe
+
+    def boolean_feature(
+        object_recipe: object,
+        tool_recipe: SketchGeometry,
+        operation: Literal["fuse", "cut"],
+        node_id: str,
+    ) -> object:
+        from .planar_boolean import prepare_planar_boolean
+
+        target_faces = resolve_extrusion_source_faces(object_recipe).face_ids
+        tool_faces = resolve_extrusion_source_faces(tool_recipe).face_ids
+        if len(target_faces) != 1:
+            _fail(
+                "planar-ir.feature-target-ambiguous",
+                "A planar Boolean feature requires one material target Profile.",
+                node_id=node_id,
+                allowed_fields=("nodes", "result_node_id"),
+            )
+        try:
+            with model_factory(
+                f"planar-feature-{node_id}-{operation}",
+                dimension=2,
+            ) as cad:
+                return prepare_planar_boolean(
+                    cad,
+                    object_recipe,
+                    target_faces[0],
+                    tool_recipe,
+                    tool_faces,
+                    operation,
+                ).geometry
+        except PlanarConstructionCompileError:
+            raise
+        except Exception as error:
+            _fail(
+                "planar-ir.feature-materialization-failed",
+                f"Planar Boolean feature {node_id} could not be proven: {error}",
+                node_id=node_id,
+                allowed_fields=("nodes", "result_node_id"),
+            )
+
+    def build(node_id: str) -> object:
+        node = nodes[node_id]
+        if isinstance(node, DifferenceNode):
+            result = build(node.base)
+            for tool_id in node.subtract:
+                tool_node = nodes[tool_id]
+                tool_ids = (tool_id,)
+                if (
+                    isinstance(tool_node, UnionNode)
+                    and len(resolve_extrusion_source_faces(flatten(tool_id)).face_ids)
+                    > 1
+                ):
+                    tool_ids = tool_node.operands
+                for separated_tool_id in tool_ids:
+                    result = boolean_feature(
+                        result,
+                        flatten(separated_tool_id),
+                        "cut",
+                        node.id,
+                    )
+            return result
+        if isinstance(node, UnionNode):
+            if len(resolve_extrusion_source_faces(flatten(node_id)).face_ids) > 1:
+                return flatten(node_id)
+            result = build(node.operands[0])
+            for tool_id in node.operands[1:]:
+                result = boolean_feature(result, flatten(tool_id), "fuse", node.id)
+            return result
+        return flatten(node_id)
+
+    feature_recipe = build(construction.result_node_id)
+    if type(feature_recipe) is SketchGeometry:
+        return feature_recipe
+    try:
+        with model_factory(
+            f"planar-feature-proof-{construction.digest()[:12]}",
+            dimension=2,
+        ) as cad:
+            feature_compiled = compile_recipe(cad, feature_recipe)
+            feature_loops = cad.planar_boundary_loops(feature_compiled.domain)
+            feature_facts = _native_facts(cad, feature_compiled.domain, feature_loops)
+        expected_facts = _NativeFacts(
+            compiled.proof.area,
+            compiled.proof.bounding_box,
+            compiled.proof.component_count,
+            compiled.proof.hole_count,
+            compiled.proof.curve_type_counts,
+        )
+        _require_equivalent(
+            expected_facts,
+            feature_facts,
+            construction.result_node_id,
+        )
+    except PlanarConstructionCompileError:
+        raise
+    except Exception as error:
+        _fail(
+            "planar-ir.feature-equivalence-failed",
+            f"Feature recipe proof failed: {error}",
+            node_id=construction.result_node_id,
+            allowed_fields=("nodes", "result_node_id"),
+        )
+    return feature_recipe
+
+
 def _canonical_nodes(construction: PlanarConstructionIR) -> tuple[Any, ...]:
     order = tuple(
         node["id"] for node in json.loads(construction.canonical_json())["nodes"]
@@ -252,12 +434,11 @@ def _evaluate(
                 output = _union(cad, tuple(values[item] for item in node.operands))
                 sources = frozenset().union(*(lineage[item] for item in node.operands))
             elif isinstance(node, DifferenceNode):
-                base = _copies(cad, values[node.base])
-                tools = _copies(
+                output = _difference(
                     cad,
-                    tuple(entity for item in node.subtract for entity in values[item]),
+                    values[node.base],
+                    tuple((item, values[item]) for item in node.subtract),
                 )
-                output = tuple(cad.cut(base, tools).of_dimension(2))
                 sources = lineage[node.base].union(
                     *(lineage[item] for item in node.subtract)
                 )
@@ -360,6 +541,37 @@ def _evaluate(
 
 def _copies(cad: Any, surfaces: tuple[Any, ...]) -> tuple[Any, ...]:
     return tuple(cad.copy(surfaces))
+
+
+def _difference(
+    cad: Any,
+    base: tuple[Any, ...],
+    subtract_groups: tuple[tuple[str, tuple[Any, ...]], ...],
+) -> tuple[Any, ...]:
+    """Cut every declared tool and reject instances that remove no material."""
+
+    result = _copies(cad, base)
+    for operand_id, tools in subtract_groups:
+        for instance_index, tool in enumerate(tools):
+            before_area = sum(cad.area(surface) for surface in result)
+            result = tuple(cad.cut(result, _copies(cad, (tool,))).of_dimension(2))
+            after_area = sum(cad.area(surface) for surface in result)
+            tolerance = max(
+                MODELING_TOLERANCE * MODELING_TOLERANCE,
+                1.0e-12 * max(before_area, 1.0),
+            )
+            if before_area - after_area <= tolerance:
+                _fail(
+                    "planar-ir.subtract-no-effect",
+                    (
+                        f"Subtraction operand {operand_id} instance "
+                        f"{instance_index + 1} removed no material. Check the "
+                        "primitive coordinates and rectangle lower-left anchor."
+                    ),
+                    node_id=operand_id,
+                    allowed_fields=("nodes",),
+                )
+    return result
 
 
 def _union(cad: Any, groups: tuple[tuple[Any, ...], ...]) -> tuple[Any, ...]:
@@ -885,4 +1097,5 @@ __all__ = [
     "PlanarConstructionProof",
     "PlanarCurveLineage",
     "compile_planar_construction",
+    "compile_planar_feature_recipe",
 ]

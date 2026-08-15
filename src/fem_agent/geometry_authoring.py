@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Mapping, Sequence
 
+from fem import geometry as geometry_runtime
+from fem.application import prepare_planar_boolean
 from fem.geometry import (
     BooleanBodyContext,
     BooleanGeometry,
@@ -62,10 +64,18 @@ from fem.geometry import (
     planar_geometry_normal,
     sketch_constraint_entity_ids,
     solve_sketch_constraints,
+    resolve_extrusion_source_faces,
 )
 from fem.application.feature_history import derive_feature_history
-from fem.application.planar_construction import CompiledPlanarConstruction
-from fem.geometry.construction_ir import PlanarConstructionIR
+from fem.application.planar_construction import (
+    CompiledPlanarConstruction,
+    PlanarConstructionCompileError,
+    compile_planar_construction,
+)
+from fem.geometry.construction_ir import (
+    PlanarConstructionIR,
+    PlanarIRValidationError,
+)
 from fem.geometry.recipe_topology import (
     describe_recipe_topology,
     topology_fingerprint_for_recipe,
@@ -86,9 +96,9 @@ from .naming import NameAllocator
 _PREVIEW_SEGMENTS = 24
 _MAX_PREVIEW_POINTS = 128
 _RECIPE_SCHEMA_VERSION = 1
-_MAX_RECIPE_BYTES = 65536
+_MAX_RECIPE_BYTES = 524_288
 _MAX_RECIPE_NODES = 128
-_MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 512
+_MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 4_096
 _MAX_RECIPE_DEPTH = 16
 _SKETCH_AUTHORING_TOLERANCE = 1.0e-9
 GEOMETRY_FEATURE_CATALOG_TOOL_NAME = "read_geometry_feature_catalog"
@@ -134,8 +144,7 @@ class PlanarEditValidationError(AuthoringContractError):
         self.diagnostics = records
         codes = tuple(
             dict.fromkeys(
-                str(item.get("code", "sketch.topology-unproven"))
-                for item in records
+                str(item.get("code", "sketch.topology-unproven")) for item in records
             )
         )
         affected = tuple(
@@ -731,11 +740,7 @@ def create_geometry_proposal(
         )
         operation_label = "加入部件"
         target_model = context.model_name
-    proposal_summary = (
-        operation_label
-        if summary is None
-        else str(summary).strip()
-    )
+    proposal_summary = operation_label if summary is None else str(summary).strip()
     if not proposal_summary:
         raise AuthoringContractError("geometry proposal summary is blank")
     if len(proposal_summary.encode("utf-8")) > 2048:
@@ -907,9 +912,7 @@ def create_geometry_edit_proposal(
         or context.binding.source_kind != "native"
         or target is None
     ):
-        raise AuthoringContractError(
-            "geometry edit requires one editable native Part"
-        )
+        raise AuthoringContractError("geometry edit requires one editable native Part")
     return AgentProposal.create(
         proposal_id=proposal_id,
         proposal_kind=ProposalKind.GEOMETRY,
@@ -969,9 +972,7 @@ def create_geometry_edit_proposal(
             "summary": str(summary).strip(),
             "expected_new_objects": [],
             "invalidated_objects": (
-                []
-                if edit_mode == "branch"
-                else ["mesh", "definitions", "results"]
+                [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
             ),
             "source_state": (
                 {
@@ -1042,9 +1043,12 @@ def create_profile_extrusion_proposal(
         raise AuthoringContractError(
             "Profile extrusion requires one editable native Part"
         )
-    if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+    if (
+        not isinstance(base_recipe, NATIVE_GEOMETRY_TYPES)
+        or geometry_dimension(base_recipe) != 2
+    ):
         raise AuthoringContractError(
-            "Profile extrusion requires one strict planar sketch recipe"
+            "Profile extrusion requires one exact planar feature recipe"
         )
     requested = tuple(source_face_ids)
     if not requested:
@@ -1124,9 +1128,7 @@ def create_profile_extrusion_proposal(
             "direction": "positive_sketch_normal",
             "expected_entity_count": len(canonical_ids),
             "expected_part_count": len(canonical_ids),
-            "expected_new_objects": [
-                f"{len(canonical_ids)} independent solid Part(s)"
-            ],
+            "expected_new_objects": [f"{len(canonical_ids)} independent solid Part(s)"],
             "invalidated_objects": (
                 [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
             ),
@@ -1271,9 +1273,12 @@ def _create_single_profile_derived_proposal(
         raise AuthoringContractError(
             "derived Profile feature requires one editable native Part"
         )
-    if type(base_recipe) is not SketchGeometry or not base_recipe.is_strict:
+    if (
+        not isinstance(base_recipe, NATIVE_GEOMETRY_TYPES)
+        or geometry_dimension(base_recipe) != 2
+    ):
         raise AuthoringContractError(
-            "derived Profile feature requires one strict planar sketch recipe"
+            "derived Profile feature requires one exact planar feature recipe"
         )
     if len(recipe.source_face_ids) != 1:
         raise AuthoringContractError(
@@ -1337,9 +1342,7 @@ def _create_single_profile_derived_proposal(
             "source": [source_face_id],
             "key_dimensions": dict(draft.key_dimensions),
             "frame_strategy": (
-                recipe.frame_strategy
-                if isinstance(recipe, PathSweptGeometry)
-                else None
+                recipe.frame_strategy if isinstance(recipe, PathSweptGeometry) else None
             ),
             "expected_entity_count": 1,
             "expected_part_count": 1,
@@ -1497,7 +1500,11 @@ def _update_planar_line_sketch(
         raise ValueError("update_planar_line requires start or end")
     sketch = _as_strict_planar_sketch(recipe)
     target = next(
-        (item for item in sketch.curves if type(item) is SketchLine and item.id == line_id),
+        (
+            item
+            for item in sketch.curves
+            if type(item) is SketchLine and item.id == line_id
+        ),
         None,
     )
     if target is None:
@@ -1560,7 +1567,11 @@ def _update_planar_arc_sketch(
         raise ValueError("update_planar_arc requires one changed field")
     sketch = _as_strict_planar_sketch(recipe)
     target = next(
-        (item for item in sketch.curves if type(item) is SketchArc and item.id == arc_id),
+        (
+            item
+            for item in sketch.curves
+            if type(item) is SketchArc and item.id == arc_id
+        ),
         None,
     )
     if target is None:
@@ -1603,9 +1614,7 @@ def delete_planar_curves(
     *,
     curve_ids: Sequence[str],
 ) -> GeometryDraft:
-    return _planar_edit_draft(
-        _delete_planar_curves_sketch(recipe, curve_ids=curve_ids)
-    )
+    return _planar_edit_draft(_delete_planar_curves_sketch(recipe, curve_ids=curve_ids))
 
 
 def _delete_planar_curves_sketch(
@@ -1743,9 +1752,7 @@ def add_planar_rectangle(
     height: Real,
 ) -> GeometryDraft:
     return _planar_edit_draft(
-        _add_planar_rectangle_sketch(
-            recipe, x=x, y=y, width=width, height=height
-        )
+        _add_planar_rectangle_sketch(recipe, x=x, y=y, width=width, height=height)
     )
 
 
@@ -1799,9 +1806,7 @@ def add_planar_polygon(
     *,
     vertices: Sequence[Sequence[Real]],
 ) -> GeometryDraft:
-    return _planar_edit_draft(
-        _add_planar_polygon_sketch(recipe, vertices=vertices)
-    )
+    return _planar_edit_draft(_add_planar_polygon_sketch(recipe, vertices=vertices))
 
 
 def _add_planar_polygon_sketch(
@@ -1850,6 +1855,157 @@ def _add_planar_polygon_sketch(
         sketch.constraints,
     )
     return updated
+
+
+def add_planar_path_slot(
+    recipe: object,
+    *,
+    points: Sequence[Sequence[Real]],
+    width: Real,
+    cap: str,
+    join: str,
+) -> GeometryDraft:
+    """Add one exact, connected constant-width cutout from an open centerline."""
+
+    if not isinstance(recipe, NATIVE_GEOMETRY_TYPES) or geometry_dimension(recipe) != 2:
+        raise TypeError("path slots require an existing native planar Part")
+    coordinates: list[list[float]] = []
+    for index, point in enumerate(tuple(points)):
+        if isinstance(point, (str, bytes, bytearray)):
+            raise TypeError("path slot points must contain coordinate pairs")
+        components = tuple(point)
+        if len(components) != 2:
+            raise ValueError("path slot points must contain coordinate pairs")
+        coordinates.append(
+            [
+                _finite(components[0], f"points[{index}].x"),
+                _finite(components[1], f"points[{index}].y"),
+            ]
+        )
+    try:
+        construction = PlanarConstructionIR.from_dict(
+            {
+                "schema_version": 1,
+                "name": "incremental-path-slot",
+                "plane": "XY",
+                "nodes": [
+                    {
+                        "id": "path-slot",
+                        "kind": "path_stroke",
+                        "points": coordinates,
+                        "width": _finite(width, "width"),
+                        "cap": cap,
+                        "join": join,
+                    }
+                ],
+                "result_node_id": "path-slot",
+            }
+        )
+        compiled = compile_planar_construction(construction)
+    except (PlanarIRValidationError, PlanarConstructionCompileError) as error:
+        diagnostic = error.diagnostic
+        raise PlanarEditValidationError(
+            (
+                {
+                    "code": diagnostic.code,
+                    "message": diagnostic.message,
+                    "affected_logical_ids": (
+                        [] if diagnostic.node_id is None else [diagnostic.node_id]
+                    ),
+                    "severity": "error",
+                },
+            )
+        ) from error
+
+    try:
+        target_faces = resolve_extrusion_source_faces(recipe).face_ids
+        tool_faces = resolve_extrusion_source_faces(compiled.recipe).face_ids
+        if len(target_faces) != 1:
+            raise ValueError("a path-slot feature requires one material target Profile")
+        with geometry_runtime.model(
+            f"{getattr(recipe, 'name', 'planar')}-path-slot-cut",
+            dimension=2,
+        ) as cad:
+            prepared = prepare_planar_boolean(
+                cad,
+                recipe,
+                target_faces[0],
+                compiled.recipe,
+                tool_faces,
+                "cut",
+            )
+    except (TypeError, ValueError) as error:
+        raise PlanarEditValidationError(
+            (
+                {
+                    "code": "sketch.path-slot-postcondition",
+                    "message": (
+                        "A path slot must be a proven planar cut feature on one "
+                        f"material Profile: {error}"
+                    ),
+                    "affected_logical_ids": ["path-slot"],
+                    "severity": "error",
+                },
+            )
+        ) from error
+    return geometry_draft(prepared.geometry)
+
+
+def _merge_planar_profile_sketch(
+    sketch: SketchGeometry,
+    addition: SketchGeometry,
+) -> tuple[SketchGeometry, tuple[str, ...]]:
+    """Copy one compiled closed Profile into an existing strict sketch."""
+
+    point_ids = _next_sketch_ids(sketch, "P", len(addition.points))
+    curve_ids = _next_sketch_ids(sketch, "E", len(addition.curves))
+    point_map = {
+        source.id: target
+        for source, target in zip(addition.points, point_ids, strict=True)
+    }
+    copied_points = tuple(
+        SketchPoint(point_map[point.id], point.u, point.v) for point in addition.points
+    )
+    copied_curves: list[SketchLine | SketchArc | SketchCircle] = []
+    for curve, curve_id in zip(addition.curves, curve_ids, strict=True):
+        if isinstance(curve, SketchLine):
+            copied_curves.append(
+                SketchLine(
+                    curve_id,
+                    point_map[curve.start_point_id],
+                    point_map[curve.end_point_id],
+                )
+            )
+        elif isinstance(curve, SketchArc):
+            copied_curves.append(
+                SketchArc(
+                    curve_id,
+                    point_map[curve.start_point_id],
+                    point_map[curve.center_point_id],
+                    point_map[curve.end_point_id],
+                    curve.orientation,
+                )
+            )
+        else:
+            assert isinstance(curve, SketchCircle)
+            assert curve.center_point_id is not None
+            copied_curves.append(
+                SketchCircle(
+                    curve_id,
+                    point_map[curve.center_point_id],
+                    curve.radius,
+                )
+            )
+    return (
+        SketchGeometry(
+            sketch.name,
+            sketch.plane,
+            (*sketch.points, *copied_points),
+            (*sketch.curves, *copied_curves),
+            sketch.constraints,
+        ),
+        curve_ids,
+    )
 
 
 def update_planar_point(
@@ -2008,7 +2164,6 @@ def _delete_planar_circles_sketch(
     *,
     circle_ids: Sequence[str],
 ) -> SketchGeometry:
-
     sketch = _as_strict_planar_sketch(recipe)
     target_ids = _exact_circle_ids(circle_ids, "circle_ids")
     circle_by_id = {
@@ -2033,17 +2188,13 @@ def _delete_planar_circles_sketch(
         curve for curve in sketch.curves if curve.id not in set(target_ids)
     )
     remaining_point_references = {
-        entity_id
-        for curve in remaining_curves
-        for entity_id in _curve_point_ids(curve)
+        entity_id for curve in remaining_curves for entity_id in _curve_point_ids(curve)
     }
     removable_centers = removed_centers - remaining_point_references
     updated = SketchGeometry(
         sketch.name,
         sketch.plane,
-        tuple(
-            point for point in sketch.points if point.id not in removable_centers
-        ),
+        tuple(point for point in sketch.points if point.id not in removable_centers),
         remaining_curves,
         sketch.constraints,
     )
@@ -2088,7 +2239,6 @@ def _replace_planar_circle_pattern_sketch(
     spacing_y: Real,
     radius: Real,
 ) -> SketchGeometry:
-
     sketch = _as_strict_planar_sketch(recipe)
     target_ids = _exact_circle_ids(target_circle_ids, "target_circle_ids")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 32:
@@ -2101,7 +2251,9 @@ def _replace_planar_circle_pattern_sketch(
     if radius_value <= 0.0:
         raise ValueError("radius must be positive")
     if count > 1 and delta_x == 0.0 and delta_y == 0.0:
-        raise ValueError("spacing vector must be non-zero when count is greater than one")
+        raise ValueError(
+            "spacing vector must be non-zero when count is greater than one"
+        )
 
     circle_by_id = {
         curve.id: curve
@@ -2128,9 +2280,7 @@ def _replace_planar_circle_pattern_sketch(
         curve for curve in sketch.curves if curve.id not in set(target_ids)
     )
     remaining_point_references = {
-        entity_id
-        for curve in remaining_curves
-        for entity_id in _curve_point_ids(curve)
+        entity_id for curve in remaining_curves for entity_id in _curve_point_ids(curve)
     }
     removable_centers = removed_centers - remaining_point_references
     new_points = tuple(
@@ -2224,9 +2374,7 @@ def apply_planar_edit_batch(
 
 
 def _batch_add_polygon(recipe: object, *, vertices: object) -> GeometryDraft:
-    return _planar_edit_draft(
-        _batch_add_polygon_sketch(recipe, vertices=vertices)
-    )
+    return _planar_edit_draft(_batch_add_polygon_sketch(recipe, vertices=vertices))
 
 
 def _batch_add_polygon_sketch(
@@ -2305,15 +2453,30 @@ def _constraint_from_agent_spec(
     if type(enabled) is not bool:
         raise TypeError("constraint enabled must be a bool")
     simple: dict[str, tuple[type, tuple[str, ...]]] = {
-        "coincident": (SketchCoincidentConstraint, ("first_point_id", "second_point_id")),
+        "coincident": (
+            SketchCoincidentConstraint,
+            ("first_point_id", "second_point_id"),
+        ),
         "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id")),
         "horizontal": (SketchHorizontalConstraint, ("line_id",)),
         "vertical": (SketchVerticalConstraint, ("line_id",)),
         "parallel": (SketchParallelConstraint, ("first_line_id", "second_line_id")),
-        "perpendicular": (SketchPerpendicularConstraint, ("first_line_id", "second_line_id")),
-        "equal_length": (SketchEqualLengthConstraint, ("first_line_id", "second_line_id")),
-        "equal_radius": (SketchEqualRadiusConstraint, ("first_curve_id", "second_curve_id")),
-        "concentric": (SketchConcentricConstraint, ("first_curve_id", "second_curve_id")),
+        "perpendicular": (
+            SketchPerpendicularConstraint,
+            ("first_line_id", "second_line_id"),
+        ),
+        "equal_length": (
+            SketchEqualLengthConstraint,
+            ("first_line_id", "second_line_id"),
+        ),
+        "equal_radius": (
+            SketchEqualRadiusConstraint,
+            ("first_curve_id", "second_curve_id"),
+        ),
+        "concentric": (
+            SketchConcentricConstraint,
+            ("first_curve_id", "second_curve_id"),
+        ),
     }
     if kind in simple:
         constraint_type, fields = simple[str(kind)]
@@ -2487,18 +2650,14 @@ def _planar_edit_draft(sketch: SketchGeometry) -> GeometryDraft:
         if not diagnostics:
             diagnostics = [
                 {
-                    "code": str(
-                        item.get("diagnostic_id", "sketch.topology-unproven")
-                    ),
+                    "code": str(item.get("diagnostic_id", "sketch.topology-unproven")),
                     "message": str(
                         item.get(
                             "message",
                             "Planar Profile topology could not be proven",
                         )
                     ),
-                    "affected_logical_ids": list(
-                        item.get("affected_logical_ids", [])
-                    ),
+                    "affected_logical_ids": list(item.get("affected_logical_ids", [])),
                     "severity": "error",
                 }
                 for item in draft.proof.diagnostics[:16]
@@ -2553,8 +2712,7 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
         "curve_count": len(sketch.curves),
         "constraint_summary": _sketch_constraint_summary(sketch),
         "constraints": [
-            _sketch_constraint_catalog_item(item)
-            for item in sketch.constraints
+            _sketch_constraint_catalog_item(item) for item in sketch.constraints
         ],
         "solve": {
             "status": solved.status,
@@ -2564,8 +2722,7 @@ def planar_geometry_catalog(recipe: object) -> dict[str, object]:
             "conflicting_constraint_ids": list(solved.conflicting_constraint_ids),
         },
         "points": [
-            {"id": point.id, "x": point.u, "y": point.v}
-            for point in sketch.points
+            {"id": point.id, "x": point.u, "y": point.v} for point in sketch.points
         ],
         "curves": curves,
     }
@@ -2623,7 +2780,7 @@ def profile_transform_context(
     material_profiles: list[dict[str, object]] = []
     material_profile_total = 0
     hole_count = 0
-    strict_planar = (
+    strict_sketch = (
         type(analysis_recipe) is SketchGeometry and analysis_recipe.is_strict
     )
 
@@ -2641,9 +2798,10 @@ def profile_transform_context(
             }
             for item in topology.diagnostics[:16]
         )
+    strict_planar = dimension == 2 and topology is not None and topology.exact
 
     analysis = None
-    if strict_planar:
+    if strict_sketch:
         try:
             analysis = analyze_sketch_profiles(analysis_recipe)
         except (TypeError, ValueError):
@@ -2652,13 +2810,9 @@ def profile_transform_context(
             hole_count = sum(
                 1 for profile in analysis.profiles if profile.role == "hole"
             )
-            if not any(
-                diagnostic.blocking for diagnostic in analysis.diagnostics
-            ):
+            if not any(diagnostic.blocking for diagnostic in analysis.diagnostics):
                 material = tuple(
-                    profile
-                    for profile in analysis.profiles
-                    if profile.role == "outer"
+                    profile for profile in analysis.profiles if profile.role == "outer"
                 )
                 material_profile_total = len(material)
                 for profile in material[:PROFILE_TRANSFORM_MAX_PROFILES]:
@@ -2675,8 +2829,7 @@ def profile_transform_context(
                             "profile_id": profile.id,
                             "semantic_role": "sketch.profile",
                             "semantic_summary": (
-                                f"material Profile {profile.id}; "
-                                f"holes={direct_holes}"
+                                f"material Profile {profile.id}; holes={direct_holes}"
                             ),
                             "curve_count": len(profile.curve_ids),
                             "hole_count": direct_holes,
@@ -2685,6 +2838,33 @@ def profile_transform_context(
                             "bounding_box": list(profile.bounding_box),
                         }
                     )
+    elif strict_planar:
+        try:
+            selection = resolve_extrusion_source_faces(analysis_recipe)
+        except (TypeError, ValueError):
+            selection = None
+        if selection is not None:
+            material_profile_total = len(selection.face_ids)
+            for face_id in selection.face_ids[:PROFILE_TRANSFORM_MAX_PROFILES]:
+                entity = topology.entity(face_id)
+                material_profiles.append(
+                    {
+                        "face_id": face_id,
+                        "canonical_face_id": face_id,
+                        "profile_id": face_id.split(":", 1)[1],
+                        "semantic_role": entity.semantic_role,
+                        "semantic_summary": "material Profile from feature history",
+                        "curve_count": len(
+                            tuple(
+                                item
+                                for item in entity.topology_links
+                                if item.startswith("edge:")
+                            )
+                        ),
+                        "hole_count": 0,
+                        "nesting_depth": 0,
+                    }
+                )
 
     blocking_reason: str | None = None
     blocking_code: str | None = None
@@ -2694,14 +2874,15 @@ def profile_transform_context(
     elif not strict_planar:
         blocking_code = "profile-transform.source-not-strict"
         blocking_reason = "Profile transform requires a strict planar sketch"
-    elif analysis is None or any(
-        diagnostic.blocking for diagnostic in analysis.diagnostics
+    elif strict_sketch and (
+        analysis is None
+        or any(diagnostic.blocking for diagnostic in analysis.diagnostics)
     ):
         blocking_code = "profile-transform.topology-unproven"
         if analysis is not None and analysis.blocking_diagnostics:
-            blocking_reason = str(
-                analysis.blocking_diagnostics[0].message
-            ).strip()[:512]
+            blocking_reason = str(analysis.blocking_diagnostics[0].message).strip()[
+                :512
+            ]
         else:
             blocking_reason = "Planar Profile topology could not be proven"
     elif not topology_exact:
@@ -2816,10 +2997,7 @@ def feature_topology_catalog(
         raise TypeError("recipe must be native geometry")
     topology = describe_recipe_topology(recipe)
     features = derive_feature_history(recipe)
-    if (
-        len(features) > _MAX_RECIPE_NODES
-        or len(topology.entities) > _MAX_RECIPE_NODES
-    ):
+    if len(features) > _MAX_RECIPE_NODES or len(topology.entities) > _MAX_RECIPE_NODES:
         raise ValueError("feature/topology catalog exceeds the bounded contract")
     catalog = {
         "kind": "native_feature_topology_catalog",
@@ -2857,8 +3035,7 @@ def feature_topology_catalog(
     }
     if isinstance(recipe, MultiBodyGeometry):
         catalog["canonical_part_ownership"] = [
-            {"body_id": body.id, "part_id": f"P{body.id[1:]}"}
-            for body in recipe.bodies
+            {"body_id": body.id, "part_id": f"P{body.id[1:]}"} for body in recipe.bodies
         ]
     if any(record.kind.startswith("face_sketch_boolean_") for record in features):
         catalog["face_sketch_boolean_capability"] = {
@@ -2891,7 +3068,7 @@ def geometry_feature_catalog_tool_schema() -> dict[str, object]:
 def geometry_contract_proof(recipe: object) -> GeometryContractProof:
     """Perform one detached, bounded recipe/topology preflight."""
 
-    catalog = feature_topology_catalog(recipe)
+    topology = describe_recipe_topology(recipe)
     fingerprint = topology_fingerprint_for_recipe(recipe)
     fingerprint_payload = {
         "contract": fingerprint.contract,
@@ -2909,14 +3086,20 @@ def geometry_contract_proof(recipe: object) -> GeometryContractProof:
         ],
     }
     bodies = sum(
-        item["kind"] == "body" and item["selectable"]
-        for item in catalog["entities"]
+        entity.kind == "body" and entity.selectable for entity in topology.entities
     )
     return GeometryContractProof(
-        exact=bool(catalog["exact"]),
+        exact=topology.exact,
         topology_fingerprint=fingerprint_payload,
         expected_body_count=bodies,
-        diagnostics=tuple(catalog["diagnostics"]),
+        diagnostics=tuple(
+            {
+                "diagnostic_id": item.code,
+                "message": item.message,
+                "affected_logical_ids": list(item.affected_logical_ids),
+            }
+            for item in topology.diagnostics[:32]
+        ),
     )
 
 
@@ -3072,9 +3255,7 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 for body in recipe.bodies
             ],
             "retired_body_ids": list(recipe.retired_body_ids),
-            "retired_boolean_feature_ids": list(
-                recipe.retired_boolean_feature_ids
-            ),
+            "retired_boolean_feature_ids": list(recipe.retired_boolean_feature_ids),
         }
     if type(recipe) is SketchGeometry and recipe.is_strict:
         if len(recipe.constraints) > 128:
@@ -3088,13 +3269,9 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 "y_direction": list(recipe.plane.y_direction),
             },
             "points": [
-                {"id": point.id, "u": point.u, "v": point.v}
-                for point in recipe.points
+                {"id": point.id, "u": point.u, "v": point.v} for point in recipe.points
             ],
-            "curves": [
-                _sketch_curve_to_payload(curve)
-                for curve in recipe.curves
-            ],
+            "curves": [_sketch_curve_to_payload(curve) for curve in recipe.curves],
             "constraints": [
                 _sketch_constraint_to_payload(constraint)
                 for constraint in recipe.constraints
@@ -3127,9 +3304,7 @@ def _geometry_recipe_from_payload(value: object) -> object:
         raise TypeError("geometry recipe payload must be an object")
     kind = value.get("kind")
     if kind == "face_sketch_boolean":
-        raise ValueError(
-            "Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。"
-        )
+        raise ValueError("Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。")
     fields: dict[str, set[str]] = {
         "rectangle": {"kind", "name", "width", "height"},
         "disk": {"kind", "name", "radius"},
@@ -3147,22 +3322,32 @@ def _geometry_recipe_from_payload(value: object) -> object:
         "translated": {"kind", "base", "dx", "dy", "dz"},
         "rotated": {"kind", "base", "axis", "angle_degrees"},
         "planar_sketch": {
-            "kind", "name", "plane", "points", "curves", "constraints",
+            "kind",
+            "name",
+            "plane",
+            "points",
+            "curves",
+            "constraints",
         },
         "wire": {"kind", "name", "points", "members"},
         "extruded": {"kind", "base", "height", "source_face_ids"},
-        "revolved": {
-            "kind", "base", "axis", "angle_degrees", "source_face_ids"
-        },
-        "path_swept": {
-            "kind", "base", "path", "source_face_ids", "frame_strategy"
-        },
+        "revolved": {"kind", "base", "axis", "angle_degrees", "source_face_ids"},
+        "path_swept": {"kind", "base", "path", "source_face_ids", "frame_strategy"},
         "boolean": {
-            "kind", "name", "operation", "object", "tool",
-            "body_context", "planar_context", "part_context",
+            "kind",
+            "name",
+            "operation",
+            "object",
+            "tool",
+            "body_context",
+            "planar_context",
+            "part_context",
         },
         "multi_body": {
-            "kind", "name", "bodies", "retired_body_ids",
+            "kind",
+            "name",
+            "bodies",
+            "retired_body_ids",
             "retired_boolean_feature_ids",
         },
     }
@@ -3179,14 +3364,12 @@ def _geometry_recipe_from_payload(value: object) -> object:
         ):
             raise ValueError("wire entities exceed the bounded schema")
         if any(
-            not isinstance(item, Mapping)
-            or set(item) != {"name", "x", "y", "z"}
+            not isinstance(item, Mapping) or set(item) != {"name", "x", "y", "z"}
             for item in points
         ):
             raise ValueError("wire point fields do not match")
         if any(
-            not isinstance(item, Mapping)
-            or set(item) != {"name", "start", "end"}
+            not isinstance(item, Mapping) or set(item) != {"name", "start", "end"}
             for item in members
         ):
             raise ValueError("wire member fields do not match")
@@ -3197,8 +3380,7 @@ def _geometry_recipe_from_payload(value: object) -> object:
                 for item in points
             ),
             tuple(
-                WireMember(item["name"], item["start"], item["end"])
-                for item in members
+                WireMember(item["name"], item["start"], item["end"]) for item in members
             ),
         )
     if kind == "rectangle":
@@ -3265,8 +3447,7 @@ def _geometry_recipe_from_payload(value: object) -> object:
         if not isinstance(bodies, list) or not 1 <= len(bodies) <= _MAX_RECIPE_NODES:
             raise ValueError("multi_body bodies exceed the bounded schema")
         if any(
-            not isinstance(item, Mapping)
-            or set(item) != {"id", "name", "recipe"}
+            not isinstance(item, Mapping) or set(item) != {"id", "name", "recipe"}
             for item in bodies
         ):
             raise ValueError("multi_body Body fields do not match")
@@ -3314,8 +3495,7 @@ def _geometry_recipe_from_payload(value: object) -> object:
         ):
             raise ValueError("planar sketch entities exceed the bounded schema")
         if any(
-            not isinstance(item, Mapping)
-            or set(item) != {"id", "u", "v"}
+            not isinstance(item, Mapping) or set(item) != {"id", "u", "v"}
             for item in points
         ):
             raise ValueError("planar sketch point fields do not match")
@@ -3326,15 +3506,9 @@ def _geometry_recipe_from_payload(value: object) -> object:
                 tuple(plane["x_direction"]),
                 tuple(plane["y_direction"]),
             ),
-            tuple(
-                SketchPoint(item["id"], item["u"], item["v"])
-                for item in points
-            ),
+            tuple(SketchPoint(item["id"], item["u"], item["v"]) for item in points),
             tuple(_sketch_curve_from_payload(item) for item in curves),
-            tuple(
-                _sketch_constraint_from_payload(item)
-                for item in constraints
-            ),
+            tuple(_sketch_constraint_from_payload(item) for item in constraints),
         )
     return RotatedGeometry(
         _geometry_recipe_from_payload(value["base"]),
@@ -3358,10 +3532,19 @@ def _validate_recipe_payload_budget(value: object) -> None:
     if size > _MAX_RECIPE_BYTES:
         raise ValueError("geometry recipe payload exceeds the byte budget")
     nodes = 0
-    root_kind = value.get("kind") if isinstance(value, Mapping) else None
+
+    def contains_feature_payload(item: object) -> bool:
+        if isinstance(item, Mapping):
+            if item.get("kind") in {"boolean", "multi_body"}:
+                return True
+            return any(contains_feature_payload(child) for child in item.values())
+        if isinstance(item, list):
+            return any(contains_feature_payload(child) for child in item)
+        return False
+
     node_budget = (
         _MAX_BOOLEAN_RECIPE_PAYLOAD_NODES
-        if root_kind in {"boolean", "multi_body"}
+        if contains_feature_payload(value)
         else _MAX_RECIPE_NODES
     )
 
@@ -3487,9 +3670,7 @@ def _boolean_context_from_payload(value: object, kind: str) -> object:
         raise ValueError("Boolean lineage entity fields do not match")
     if any(
         not isinstance(item, Mapping)
-        or set(item) != {
-            "source", "source_logical_id", "target_logical_id", "relation"
-        }
+        or set(item) != {"source", "source_logical_id", "target_logical_id", "relation"}
         for item in raw_mappings
     ):
         raise ValueError("Boolean lineage mapping fields do not match")
@@ -3513,18 +3694,28 @@ def _boolean_context_from_payload(value: object, kind: str) -> object:
     )
     if kind == "body":
         return BooleanBodyContext(
-            value["feature_id"], value["target_body_id"],
-            value["tool_body_id"], value["tool_body_name"], entities, mappings,
+            value["feature_id"],
+            value["target_body_id"],
+            value["tool_body_id"],
+            value["tool_body_name"],
+            entities,
+            mappings,
         )
     if kind == "planar":
         return PlanarBooleanContext(
-            value["feature_id"], value["target_face_id"],
+            value["feature_id"],
+            value["target_face_id"],
             _string_list(value["tool_face_ids"], "tool_face_ids"),
-            entities, mappings,
+            entities,
+            mappings,
         )
     return PartBooleanContext(
-        value["feature_id"], value["target_part_id"], value["tool_part_id"],
-        value["result_part_id"], entities, mappings,
+        value["feature_id"],
+        value["target_part_id"],
+        value["tool_part_id"],
+        value["result_part_id"],
+        entities,
+        mappings,
     )
 
 
@@ -3653,18 +3844,18 @@ def _preview(
             )
             for x, y, z in base.points
         )
-        lines = base.lines + tuple(
-            tuple(index + count for index in line) for line in base.lines
-        ) + tuple((index, index + count) for index in range(count))
+        lines = (
+            base.lines
+            + tuple(tuple(index + count for index in line) for line in base.lines)
+            + tuple((index, index + count) for index in range(count))
+        )
         return _make_preview(3, points, lines)
     if type(recipe) is RevolvedGeometry:
         base = _preview(recipe.base)
         samples = min(4, max(2, _MAX_PREVIEW_POINTS // len(base.points)))
         previews = []
         for index in range(samples):
-            angle = math.radians(
-                recipe.angle_degrees * index / (samples - 1)
-            )
+            angle = math.radians(recipe.angle_degrees * index / (samples - 1))
             cosine, sine = math.cos(angle), math.sin(angle)
 
             def rotate(point: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -3686,19 +3877,25 @@ def _preview(
     if type(recipe) is PathSweptGeometry:
         return _combine_previews((_preview(recipe.base), _preview(recipe.path)), 3)
     if type(recipe) is BooleanGeometry:
-        return _combine_previews(
-            (_preview(recipe.object_geometry), _preview(recipe.tool_geometry)),
-            3,
-        )
+        object_budget = max(1, point_budget * 3 // 4)
+        tool_budget = max(1, point_budget - object_budget)
+        try:
+            return _combine_previews(
+                (
+                    _preview(recipe.object_geometry, point_budget=object_budget),
+                    _preview(recipe.tool_geometry, point_budget=tool_budget),
+                ),
+                geometry_dimension(recipe),
+            )
+        except ValueError:
+            return _preview(recipe.tool_geometry, point_budget=point_budget)
     if type(recipe) is MultiBodyGeometry:
         return _combine_previews(
             tuple(_preview(body.recipe) for body in recipe.bodies),
             3,
         )
     if type(recipe) is WireGeometry:
-        point_indexes = {
-            point.name: index for index, point in enumerate(recipe.points)
-        }
+        point_indexes = {point.name: index for index, point in enumerate(recipe.points)}
         return _make_preview(
             1,
             tuple((point.x, point.y, point.z) for point in recipe.points),
@@ -3745,20 +3942,16 @@ def _preview(
         sketch = recipe if recipe.is_strict else legacy_sketch_to_strict(recipe)
         assert sketch.plane is not None
         points = tuple(
-            sketch.plane.to_global(point.u, point.v)
-            for point in sketch.points
+            sketch.plane.to_global(point.u, point.v) for point in sketch.points
         )
         if len(points) > point_budget:
             raise ValueError("sketch preview exceeds the point budget")
-        point_indexes = {
-            point.id: index for index, point in enumerate(sketch.points)
-        }
+        point_indexes = {point.id: index for index, point in enumerate(sketch.points)}
         preview_points = list(points)
         lines: list[tuple[int, ...]] = []
         point_by_id = {point.id: point for point in sketch.points}
         curved_count = sum(
-            isinstance(curve, (SketchCircle, SketchArc))
-            for curve in sketch.curves
+            isinstance(curve, (SketchCircle, SketchArc)) for curve in sketch.curves
         )
         curved_samples = (
             0
@@ -3767,8 +3960,7 @@ def _preview(
                 _PREVIEW_SEGMENTS,
                 max(
                     0,
-                    (point_budget - len(preview_points))
-                    // curved_count,
+                    (point_budget - len(preview_points)) // curved_count,
                 ),
             )
         )
@@ -3797,9 +3989,7 @@ def _preview(
                 )
                 start = len(preview_points)
                 preview_points.extend(circle)
-                lines.append(
-                    tuple(range(start, start + len(circle))) + (start,)
-                )
+                lines.append(tuple(range(start, start + len(circle))) + (start,))
             elif isinstance(curve, SketchArc):
                 if curved_samples < 2:
                     continue
@@ -3827,16 +4017,10 @@ def _preview(
                     sketch.plane.to_global(
                         center.u
                         + radius
-                        * math.cos(
-                            start_angle
-                            + sweep * index / (curved_samples - 1)
-                        ),
+                        * math.cos(start_angle + sweep * index / (curved_samples - 1)),
                         center.v
                         + radius
-                        * math.sin(
-                            start_angle
-                            + sweep * index / (curved_samples - 1)
-                        ),
+                        * math.sin(start_angle + sweep * index / (curved_samples - 1)),
                     )
                     for index in range(curved_samples)
                 )
@@ -3913,10 +4097,7 @@ def _combine_previews(
             raise ValueError("combined preview exceeds the point budget")
         offset = len(points)
         points.extend(preview.points)
-        lines.extend(
-            tuple(index + offset for index in line)
-            for line in preview.lines
-        )
+        lines.extend(tuple(index + offset for index in line) for line in preview.lines)
     return _make_preview(dimension, tuple(points), tuple(lines))
 
 
@@ -3981,9 +4162,7 @@ def _as_strict_planar_sketch(recipe: object) -> SketchGeometry:
                 ),
             ),
         ).recipe
-    raise TypeError(
-        "incremental planar edits require a planar primitive or sketch"
-    )
+    raise TypeError("incremental planar edits require a planar primitive or sketch")
 
 
 def _next_sketch_ids(
@@ -4067,20 +4246,52 @@ def _sketch_constraint_to_payload(
         "enabled": constraint.enabled,
     }
     cases: tuple[tuple[type, str, tuple[str, ...]], ...] = (
-        (SketchCoincidentConstraint, "coincident", ("first_point_id", "second_point_id")),
+        (
+            SketchCoincidentConstraint,
+            "coincident",
+            ("first_point_id", "second_point_id"),
+        ),
         (SketchPointOnCurveConstraint, "point_on_curve", ("point_id", "curve_id")),
         (SketchHorizontalConstraint, "horizontal", ("line_id",)),
         (SketchVerticalConstraint, "vertical", ("line_id",)),
         (SketchParallelConstraint, "parallel", ("first_line_id", "second_line_id")),
-        (SketchPerpendicularConstraint, "perpendicular", ("first_line_id", "second_line_id")),
-        (SketchTangentConstraint, "tangent", ("first_curve_id", "second_curve_id", "branch_hint")),
-        (SketchEqualLengthConstraint, "equal_length", ("first_line_id", "second_line_id")),
-        (SketchEqualRadiusConstraint, "equal_radius", ("first_curve_id", "second_curve_id")),
-        (SketchConcentricConstraint, "concentric", ("first_curve_id", "second_curve_id")),
+        (
+            SketchPerpendicularConstraint,
+            "perpendicular",
+            ("first_line_id", "second_line_id"),
+        ),
+        (
+            SketchTangentConstraint,
+            "tangent",
+            ("first_curve_id", "second_curve_id", "branch_hint"),
+        ),
+        (
+            SketchEqualLengthConstraint,
+            "equal_length",
+            ("first_line_id", "second_line_id"),
+        ),
+        (
+            SketchEqualRadiusConstraint,
+            "equal_radius",
+            ("first_curve_id", "second_curve_id"),
+        ),
+        (
+            SketchConcentricConstraint,
+            "concentric",
+            ("first_curve_id", "second_curve_id"),
+        ),
         (SketchFixedConstraint, "fixed", ("point_id", "u", "v")),
-        (SketchDistanceDimension, "distance", ("first_point_id", "second_point_id", "value", "driving")),
+        (
+            SketchDistanceDimension,
+            "distance",
+            ("first_point_id", "second_point_id", "value", "driving"),
+        ),
         (SketchRadiusDimension, "radius", ("curve_id", "value", "driving")),
-        (SketchAngleDimension, "angle", ("first_line_id", "second_line_id", "value", "driving")),
+        (
+            SketchAngleDimension,
+            "angle",
+            ("first_line_id", "second_line_id", "value", "driving"),
+        ),
     )
     for expected, kind, fields in cases:
         if type(constraint) is expected:
@@ -4099,20 +4310,44 @@ def _sketch_constraint_from_payload(value: object) -> SketchConstraint:
     kind = data.get("kind")
     common = {"kind", "id", "source", "enabled"}
     fields: dict[str, tuple[type, tuple[str, ...]]] = {
-        "coincident": (SketchCoincidentConstraint, ("first_point_id", "second_point_id")),
+        "coincident": (
+            SketchCoincidentConstraint,
+            ("first_point_id", "second_point_id"),
+        ),
         "point_on_curve": (SketchPointOnCurveConstraint, ("point_id", "curve_id")),
         "horizontal": (SketchHorizontalConstraint, ("line_id",)),
         "vertical": (SketchVerticalConstraint, ("line_id",)),
         "parallel": (SketchParallelConstraint, ("first_line_id", "second_line_id")),
-        "perpendicular": (SketchPerpendicularConstraint, ("first_line_id", "second_line_id")),
-        "tangent": (SketchTangentConstraint, ("first_curve_id", "second_curve_id", "branch_hint")),
-        "equal_length": (SketchEqualLengthConstraint, ("first_line_id", "second_line_id")),
-        "equal_radius": (SketchEqualRadiusConstraint, ("first_curve_id", "second_curve_id")),
-        "concentric": (SketchConcentricConstraint, ("first_curve_id", "second_curve_id")),
+        "perpendicular": (
+            SketchPerpendicularConstraint,
+            ("first_line_id", "second_line_id"),
+        ),
+        "tangent": (
+            SketchTangentConstraint,
+            ("first_curve_id", "second_curve_id", "branch_hint"),
+        ),
+        "equal_length": (
+            SketchEqualLengthConstraint,
+            ("first_line_id", "second_line_id"),
+        ),
+        "equal_radius": (
+            SketchEqualRadiusConstraint,
+            ("first_curve_id", "second_curve_id"),
+        ),
+        "concentric": (
+            SketchConcentricConstraint,
+            ("first_curve_id", "second_curve_id"),
+        ),
         "fixed": (SketchFixedConstraint, ("point_id", "u", "v")),
-        "distance": (SketchDistanceDimension, ("first_point_id", "second_point_id", "value", "driving")),
+        "distance": (
+            SketchDistanceDimension,
+            ("first_point_id", "second_point_id", "value", "driving"),
+        ),
         "radius": (SketchRadiusDimension, ("curve_id", "value", "driving")),
-        "angle": (SketchAngleDimension, ("first_line_id", "second_line_id", "value", "driving")),
+        "angle": (
+            SketchAngleDimension,
+            ("first_line_id", "second_line_id", "value", "driving"),
+        ),
     }
     if kind not in fields:
         raise ValueError("sketch constraint kind is unsupported")
@@ -4185,6 +4420,7 @@ __all__ = [
     "add_planar_circle",
     "add_planar_constraint",
     "add_planar_line",
+    "add_planar_path_slot",
     "add_planar_polygon",
     "add_planar_rectangle",
     "create_geometry_edit_proposal",

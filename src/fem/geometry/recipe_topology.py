@@ -1520,6 +1520,9 @@ def _extrusion_hole_edges_by_face(
     base: object,
     face_ids: tuple[str, ...],
 ) -> dict[str, frozenset[str]]:
+    feature_cut_edges = _planar_cut_boundary_edges(base)
+    if feature_cut_edges:
+        return {face_id: feature_cut_edges for face_id in face_ids}
     strict_base = base
     while isinstance(strict_base, (MovedGeometry, RotatedGeometry)):
         strict_base = strict_base.base
@@ -1536,6 +1539,39 @@ def _extrusion_hole_edges_by_face(
         )
         for face_id in face_ids
     }
+
+
+def _planar_cut_boundary_edges(base: object) -> frozenset[str]:
+    if isinstance(base, (MovedGeometry, RotatedGeometry)):
+        return _planar_cut_boundary_edges(base.base)
+    if type(base) is SketchGeometry and base.is_strict:
+        analysis = analyze_sketch_profiles(base)
+        return frozenset(
+            f"edge:{curve_id.lstrip('-')}"
+            for profile in analysis.profiles
+            if profile.is_hole
+            for curve_id in profile.curve_ids
+        )
+    if not isinstance(base, BooleanGeometry) or base.planar_context is None:
+        return frozenset()
+
+    object_edges = _planar_cut_boundary_edges(base.object_geometry)
+    tool_edges = _planar_cut_boundary_edges(base.tool_geometry)
+    result_edges: set[str] = set()
+    for mapping in base.planar_context.topology_mappings:
+        if not mapping.target_logical_id.startswith("edge:"):
+            continue
+        if mapping.source == "target" and mapping.source_logical_id in object_edges:
+            result_edges.add(mapping.target_logical_id)
+        elif mapping.source == "tool" and (
+            mapping.source_logical_id in tool_edges
+            or (
+                base.operation == "cut"
+                and mapping.source_logical_id.startswith("edge:")
+            )
+        ):
+            result_edges.add(mapping.target_logical_id)
+    return frozenset(result_edges)
 
 
 def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:

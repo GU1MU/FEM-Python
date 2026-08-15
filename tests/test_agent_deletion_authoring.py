@@ -25,7 +25,12 @@ from fem.core.model import (
     MaterialDefinition,
     OutputRequest,
 )
-from fem.geometry import RectangleGeometry
+from fem.geometry import (
+    BooleanGeometry,
+    DiskGeometry,
+    MovedGeometry,
+    RectangleGeometry,
+)
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import (
     AuthoringAuthorizationError,
@@ -242,6 +247,57 @@ def test_deletable_catalog_is_bounded_stable_and_provider_safe() -> None:
     assert "source_path" not in encoded
     assert "project_path" not in encoded
     assert len(deletable_object_catalog(snapshot, limit=3)) == 3
+
+
+def test_catalog_exposes_and_deletes_only_the_terminal_native_feature() -> None:
+    session = ModelSession()
+    base = RectangleGeometry("Plate", 10.0, 4.0)
+    first_cut = BooleanGeometry(
+        "Cut-H",
+        "cut",
+        base,
+        MovedGeometry(DiskGeometry("Hole", 0.5), 5.0, 2.0),
+    )
+    second_cut = BooleanGeometry(
+        "Cut-S",
+        "cut",
+        first_cut,
+        MovedGeometry(DiskGeometry("Hole-2", 0.4), 7.0, 2.0),
+    )
+    session.create_native_project_with_first_part(
+        "模型-特征删除",
+        UnitContext("mm", "N", "MPa"),
+        second_cut,
+        part_name="部件-板",
+    )
+    catalog = deletable_object_catalog(session.snapshot())
+    feature = next(item for item in catalog if item.object_type == "feature")
+
+    assert feature.target_id == "P1::Cut-2"
+    proposal = _proposal(session, "feature", feature.target_id)
+    delta = apply_delete_operation(
+        session,
+        proposal.operations[0],
+        base_session_revision=proposal.base_session_revision,
+    )
+
+    assert delta.accepted
+    assert session.snapshot().parts[0].geometry_recipe == first_cut
+    remaining = next(
+        item
+        for item in deletable_object_catalog(session.snapshot())
+        if item.object_type == "feature"
+    )
+    assert remaining.target_id == "P1::Cut-1"
+
+    final_proposal = _proposal(session, "feature", remaining.target_id)
+    apply_delete_operation(
+        session,
+        final_proposal.operations[0],
+        base_session_revision=final_proposal.base_session_revision,
+    )
+
+    assert session.snapshot().parts[0].geometry_recipe == base
 
 
 def test_delete_proposal_is_path_free_and_requires_unique_gui_authorization() -> None:

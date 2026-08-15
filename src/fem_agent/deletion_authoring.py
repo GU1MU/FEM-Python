@@ -9,6 +9,10 @@ from typing import Protocol
 
 from fem.application import ModelSession, ScopedDefinitionBatch
 from fem.application.changes import SessionDelta
+from fem.application.feature_history import (
+    derive_feature_history,
+    remove_terminal_feature,
+)
 
 from .authoring import (
     AgentProposal,
@@ -33,6 +37,7 @@ _STEP_CHILD_TYPES = frozenset(
 _DELETE_TYPES = frozenset(
     {
         "part",
+        "feature",
         "generated_mesh",
         "named_region",
         "analysis_step",
@@ -41,6 +46,7 @@ _DELETE_TYPES = frozenset(
 )
 _TYPE_LABELS = {
     "part": "部件",
+    "feature": "特征",
     "generated_mesh": "已生成网格",
     "named_region": "作用域",
     "analysis_step": "分析步",
@@ -141,6 +147,27 @@ def deletable_object_catalog(
                     ),
                 )
             )
+            recipe = getattr(part, "geometry_recipe", None)
+            try:
+                remove_terminal_feature(recipe)
+                terminal = derive_feature_history(recipe)[-1]
+            except (IndexError, TypeError, ValueError):
+                pass
+            else:
+                feature_target = _feature_target_id(part_id, terminal.name)
+                feature_display = f"{terminal.name}（{name}）"
+                if len(feature_target) <= 160 and len(feature_display) <= 160:
+                    items.append(
+                        DeletableObject(
+                            "feature",
+                            feature_target,
+                            feature_display,
+                            impact=(
+                                "删除该部件当前最后创建的特征",
+                                "当前网格、相关预检、作业和结果将失效",
+                            ),
+                        )
+                    )
 
     artifact = getattr(snapshot, "artifact", None)
     if artifact is not None:
@@ -338,6 +365,15 @@ def apply_delete_operation(
             expected_part_revision=snapshot.part_revision(target.target_id),
             expected_session_revision=base_session_revision,
         )
+    if target.object_type == "feature":
+        part = _part_for_feature_target(snapshot, target.target_id)
+        part_id = str(part.id)
+        return session.replace_part_geometry(
+            part_id,
+            remove_terminal_feature(part.geometry_recipe),
+            expected_part_revision=snapshot.part_revision(part_id),
+            expected_session_revision=base_session_revision,
+        )
     if target.object_type == "generated_mesh":
         return session.clear_generated_model(
             expected_session_revision=base_session_revision,
@@ -385,6 +421,30 @@ def apply_delete_operation(
             steps,
         )
     )
+
+
+def _feature_target_id(part_id: str, feature_name: str) -> str:
+    return f"{part_id}::{feature_name}"
+
+
+def _part_for_feature_target(snapshot: _Snapshot, target_id: str) -> object:
+    matches: list[object] = []
+    for part in tuple(getattr(snapshot, "parts", ())):
+        recipe = getattr(part, "geometry_recipe", None)
+        try:
+            remove_terminal_feature(recipe)
+            terminal = derive_feature_history(recipe)[-1]
+        except (IndexError, TypeError, ValueError):
+            continue
+        identity = _feature_target_id(
+            str(getattr(part, "id", "")),
+            terminal.name,
+        )
+        if identity == target_id:
+            matches.append(part)
+    if len(matches) != 1:
+        raise ValueError("feature delete target is unavailable or ambiguous")
+    return matches[0]
 
 
 def _step_child_catalog(

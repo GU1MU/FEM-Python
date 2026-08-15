@@ -8,7 +8,8 @@ import os
 import re
 import threading
 import uuid
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -204,11 +205,15 @@ Before every planar geometry modification, call read_geometry_edit_context and
 use the latest exact point, curve, constraint, and Profile summary from that
 read. In a two-dimensional sketch, material removal is represented by a closed
 inner Profile contained by a material Profile; do not claim that a Part Boolean
-is required. For an arbitrary non-convex silhouette, trace the complete boundary
-in order and prefer one non-self-intersecting add_polygon edit unless exact arcs
-are important. Use one batch for an ordered line/arc boundary and include every
-member needed to close it. Never submit a placeholder shape, an open centerline,
-or geometry unrelated to the requested final contour. Never use a user-visible
+is required. For a constant-width S-, U-, or serpentine-shaped slot in an existing
+sketch, use one add_path_slot edit with its ordered open centerline and width. The
+local compiler turns that centerline into one closed cutout and enforces exactly one
+new hole Profile. Never approximate one requested shaped slot with disconnected
+rectangles. For an arbitrary non-convex silhouette, trace the complete boundary in
+order and prefer one non-self-intersecting add_polygon edit unless exact arcs are
+important. Use one batch for an ordered line/arc boundary and include every member
+needed to close it. Never submit a placeholder shape, a standalone open-centerline
+Part, or geometry unrelated to the requested final contour. Never use a user-visible
 geometry confirmation proposal as a diagnostic probe, and never deliberately
 omit a requested slot, cutout, or hole from that proposal. When the requested hole
 count, direction, spacing, center, and radius are already sufficient, use one
@@ -228,6 +233,15 @@ Boolean operations, transforms, and patterns. Express a constant-width cutout
 with path_stroke and its ordered open centerline; never calculate the final
 offset polygon or submit that centerline as a wire Part. The same tool wraps a
 new planar construction in a direct extrusion, revolution, or path sweep.
+In Planar Construction IR, rectangle x/y are always the lower-left corner, not
+the center; center a rectangle by subtracting half its width and height from the
+desired center. Circle radius is never diameter: when the user gives a diameter
+(including Chinese 孔径 or 直径), submit half that value as radius. Every declared
+subtraction operand must actually remove material.
+Keep semantically distinct cut groups, such as one shaped slot and one hole
+pattern, as separate subtraction operands so each becomes its own native Cut
+feature. Connected primitives that form one letter-shaped slot remain united as
+one operand.
 
 Geometry transforms happen before mesh generation. A mesh is never a
 prerequisite for profile extrusion, profile revolution, or path sweep, and a
@@ -287,6 +301,11 @@ already synchronized to the GUI, so report it briefly and continue from the
 updated context. Do not combine unrelated definitions into one generated
 project bundle. Before creating a scope, read the current model topology and
 reuse one returned Part ID, logical ID, mesh kind, and matched count exactly.
+Immediately before apply_model_definition or edit_model_object, describe the
+user-visible change in concise natural language. Do not expose the tool name,
+action code, object ID, patch ID, raw parameter mapping, or JSON. This preview
+is shown in full in the chat, so include the engineering values needed to
+understand the change and omit implementation metadata.
 Boundary conditions, loads, and result requests require the user's explicit
 unit, direction, distribution, target, and confirmation fields; ask only for
 missing fields of that requested object. Material, section, assignment,
@@ -431,9 +450,7 @@ class EngineConfig:
         ):
             if getattr(self, name) < 1024:
                 raise ValueError(f"{name} must be at least 1024 bytes")
-        minimum_tool_turn_messages = (
-            self.max_cloud_turns + self.max_tool_calls
-        )
+        minimum_tool_turn_messages = self.max_cloud_turns + self.max_tool_calls
         if self.max_conversation_messages < minimum_tool_turn_messages:
             raise ValueError(
                 "max_conversation_messages must be at least "
@@ -491,9 +508,7 @@ class AgentSessionEngine:
         self._continuations: dict[str, ContinuationCheckpoint] = {}
         self._pending_round_audit: list[dict[str, Any]] | None = None
         self._defer_audit_persistence = bool(defer_audit_persistence)
-        self._deferred_round_audit_batches: list[
-            tuple[dict[str, Any], ...]
-        ] = []
+        self._deferred_round_audit_batches: list[tuple[dict[str, Any], ...]] = []
         self._audit_write_lock = threading.Lock()
         self.session_id = self.artifacts.create_session(session_id)
         self.revisions.create_session(self.session_id)
@@ -589,7 +604,10 @@ class AgentSessionEngine:
             raise ValueError(
                 "the session already has an input; explicit replacement is required"
             )
-        if current is not None and current.spec.source_artifact_id == artifact.artifact_id:
+        if (
+            current is not None
+            and current.spec.source_artifact_id == artifact.artifact_id
+        ):
             return (self._state_event(),)
 
         next_revision = 1 if current is None else current.revision + 1
@@ -603,9 +621,7 @@ class AgentSessionEngine:
             requested_queries=(),
             export_formats=(),
             resource_limits=(
-                ResourceLimits()
-                if current is None
-                else current.spec.resource_limits
+                ResourceLimits() if current is None else current.spec.resource_limits
             ),
         )
         try:
@@ -619,8 +635,7 @@ class AgentSessionEngine:
             analysis_step = (
                 None
                 if inspection.summary.analysis_step is None
-                else str(inspection.summary.analysis_step.get("name") or "")
-                or None
+                else str(inspection.summary.analysis_step.get("name") or "") or None
             )
             import_diagnostics = tuple(
                 item
@@ -802,15 +817,15 @@ class AgentSessionEngine:
         events: list[EngineEvent] = []
         tool_calls_used = 0
         available_tools = (
-            self.registry.available_definitions(self.session_id)
-            if allow_tools
-            else ()
+            self.registry.available_definitions(self.session_id) if allow_tools else ()
         )
         initial = self.revisions.latest(self.session_id)
         turn_revision = 0 if initial is None else initial.revision
         turn_nonce = uuid.uuid4().hex
         refusal_retry_used = False
         route_probe_called = False
+        route_probe_failed = False
+        route_progress_retries: set[str] = set()
         route_correction: str | None = None
         unit_clarification_retry_used = False
         unit_correction: str | None = None
@@ -819,11 +834,14 @@ class AgentSessionEngine:
         new_model_follow_up_pending = False
         new_model_follow_up_retry_used = False
         new_model_follow_up_correction: str | None = None
+        language_retry_used = False
+        language_correction: str | None = None
+        previous_tool_failed = False
         latest_user_request = self._latest_user_request()
-        default_native_units_apply = (
-            getattr(self.registry, "_dynamic_tools", None) is not None
-            and _default_native_geometry_units_apply(latest_user_request)
-        )
+        requested_response_language = _requested_response_language(latest_user_request)
+        default_native_units_apply = getattr(
+            self.registry, "_dynamic_tools", None
+        ) is not None and _default_native_geometry_units_apply(latest_user_request)
 
         def local_assistant_recovery(
             recovery: str,
@@ -886,8 +904,7 @@ class AgentSessionEngine:
                 if isinstance(getattr(item, "name", None), str)
             }
             chinese = isinstance(latest_user_request, str) and any(
-                "\u4e00" <= character <= "\u9fff"
-                for character in latest_user_request
+                "\u4e00" <= character <= "\u9fff" for character in latest_user_request
             )
             if chinese:
                 recovery = "本次未指定单位，已采用默认单位制 mm-N-MPa。"
@@ -928,10 +945,7 @@ class AgentSessionEngine:
 
         def local_prerequisite_recovery() -> tuple[EngineEvent, ...]:
             return local_assistant_recovery(
-                (
-                    "删除操作已完成，但用户要求的新增模型尚未创建。"
-                    "请重试该建模请求。"
-                ),
+                ("删除操作已完成，但用户要求的新增模型尚未创建。请重试该建模请求。"),
                 storage_error=(
                     "The local prerequisite-continuation message could not fit "
                     "in the bounded conversation store."
@@ -946,6 +960,25 @@ class AgentSessionEngine:
                 ),
                 storage_error=(
                     "The local new-model follow-up message could not fit in "
+                    "the bounded conversation store."
+                ),
+            )
+
+        def local_planar_retry_recovery() -> tuple[EngineEvent, ...]:
+            recovery = (
+                "二维构造连续三次未通过本地验证，本轮已停止继续提交。"
+                "请在下一条消息中调整参数或重新发起建模。"
+                if requested_response_language == "zh-CN"
+                else (
+                    "The planar construction failed local validation three "
+                    "times, so further submissions have stopped for this turn. "
+                    "Adjust the parameters or retry in a new message."
+                )
+            )
+            return local_assistant_recovery(
+                recovery,
+                storage_error=(
+                    "The local planar retry-limit message could not fit in "
                     "the bounded conversation store."
                 ),
             )
@@ -968,23 +1001,31 @@ class AgentSessionEngine:
                         or unit_correction
                         or prerequisite_correction
                         or new_model_follow_up_correction
+                        or language_correction
                     )
                     route_correction = None
                     unit_correction = None
                     prerequisite_correction = None
                     new_model_follow_up_correction = None
+                    language_correction = None
                     streamed_text_parts: list[str] = []
                     streamed_events: list[
                         tuple[EngineEventType, Mapping[str, Any]]
                     ] = []
                     stream_started = False
                     hold_stream = (
-                        route_hint is not None and route_hint.is_transform
-                    ) or (
-                        trusted_terminal is not None
-                        and trusted_terminal[0] == "succeeded"
-                    ) or default_native_units_apply
+                        (
+                            route_hint is not None
+                            and (route_hint.is_transform or route_hint.is_edit)
+                        )
+                        or (
+                            trusted_terminal is not None
+                            and trusted_terminal[0] == "succeeded"
+                        )
+                        or default_native_units_apply
+                    )
                     hold_stream = hold_stream or new_model_follow_up_pending
+                    hold_stream = hold_stream or requested_response_language == "zh-CN"
 
                     def receive_text_delta(delta: str) -> None:
                         nonlocal stream_started
@@ -1075,9 +1116,7 @@ class AgentSessionEngine:
                 return tuple(events)
             response_error = self._provider_response_error(
                 response.message,
-                remaining_tool_calls=(
-                    self.config.max_tool_calls - tool_calls_used
-                ),
+                remaining_tool_calls=(self.config.max_tool_calls - tool_calls_used),
             )
             if response_error is not None:
                 events.append(self._diagnostic_event(response_error))
@@ -1088,10 +1127,8 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            if (
-                stream_started
-                and "".join(streamed_text_parts)
-                != (response.message.content or "")
+            if stream_started and "".join(streamed_text_parts) != (
+                response.message.content or ""
             ):
                 diagnostic = make_diagnostic(
                     DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
@@ -1116,9 +1153,38 @@ class AgentSessionEngine:
                 response.message.tool_calls,
             )
 
-            if (
-                default_native_units_apply
-                and _asks_for_unit_clarification(response.message)
+            if not _response_matches_requested_language(
+                latest_user_request,
+                response.message,
+            ):
+                if response.message.tool_calls:
+                    response = replace(
+                        response,
+                        message=AssistantMessage(
+                            "assistant",
+                            tool_calls=response.message.tool_calls,
+                        ),
+                    )
+                    streamed_text_parts.clear()
+                    streamed_events.clear()
+                    stream_started = False
+                elif not language_retry_used:
+                    language_retry_used = True
+                    language_correction = _response_language_correction(
+                        requested_response_language
+                    )
+                    continue
+                else:
+                    return local_assistant_recovery(
+                        "当前回复未满足中文输出约束，请重试。",
+                        storage_error=(
+                            "The local language recovery message could not fit in "
+                            "the bounded conversation store."
+                        ),
+                    )
+
+            if default_native_units_apply and _asks_for_unit_clarification(
+                response.message
             ):
                 if not unit_clarification_retry_used:
                     unit_clarification_retry_used = True
@@ -1147,6 +1213,29 @@ class AgentSessionEngine:
                     )
                     continue
                 return local_new_model_follow_up_recovery()
+
+            required_edit_tool = (
+                None
+                if trusted_terminal is not None
+                else _required_edit_route_progress_tool(
+                    route_hint,
+                    available_tools,
+                    route_probe_called=route_probe_called,
+                    route_probe_failed=route_probe_failed,
+                )
+            )
+            if required_edit_tool is not None and tuple(
+                call.name for call in response.message.tool_calls
+            ) != (required_edit_tool,):
+                assert route_hint is not None
+                if required_edit_tool not in route_progress_retries:
+                    route_progress_retries.add(required_edit_tool)
+                    route_correction = _geometry_edit_route_progress_correction(
+                        route_hint,
+                        required_edit_tool,
+                    )
+                    continue
+                return local_geometry_recovery()
 
             if (
                 refusal_retry_used
@@ -1200,6 +1289,30 @@ class AgentSessionEngine:
             ):
                 return tuple(events)
 
+            if _message_calls_proposal_prepare_tool(response.message):
+                response = replace(
+                    response,
+                    message=AssistantMessage(
+                        "assistant",
+                        tool_calls=response.message.tool_calls,
+                    ),
+                )
+                streamed_text_parts.clear()
+                streamed_events.clear()
+                stream_started = False
+
+            if _message_calls_automatic_model_patch_tool(response.message):
+                response = replace(
+                    response,
+                    message=AssistantMessage(
+                        "assistant",
+                        tool_calls=response.message.tool_calls,
+                    ),
+                )
+                streamed_text_parts.clear()
+                streamed_events.clear()
+                stream_started = False
+
             try:
                 self._append_message(response.message)
             except _ConversationStorageLimit:
@@ -1220,15 +1333,34 @@ class AgentSessionEngine:
                 )
                 return tuple(events)
             if streamed_events:
+                presentation_kind = _assistant_message_presentation_kind(
+                    response.message,
+                    trusted_terminal,
+                )
                 events.extend(
-                    self._event(event, data)
+                    self._event(
+                        event,
+                        (
+                            {**data, "presentation_kind": presentation_kind}
+                            if event is EngineEventType.MESSAGE_STARTED
+                            else data
+                        ),
+                    )
                     for event, data in streamed_events
                 )
             if not stream_started:
                 events.append(
                     self._event(
                         EngineEventType.MESSAGE_STARTED,
-                        {"role": "assistant"},
+                        {
+                            "role": "assistant",
+                            "presentation_kind": (
+                                _assistant_message_presentation_kind(
+                                    response.message,
+                                    trusted_terminal,
+                                )
+                            ),
+                        },
                     )
                 )
                 if response.message.content:
@@ -1262,11 +1394,6 @@ class AgentSessionEngine:
                     )
                     events.append(self._diagnostic_event(diagnostic))
                     return tuple(events)
-                if (
-                    route_hint is not None
-                    and call.name == route_hint.required_probe_tool
-                ):
-                    route_probe_called = True
                 current = self.revisions.latest(self.session_id)
                 active_run = self._matching_active_run(current)
                 context = ToolExecutionContext(
@@ -1280,6 +1407,48 @@ class AgentSessionEngine:
                     completed_run=active_run,
                     turn_id=str(turn_nonce),
                 )
+                if call.name in _AUTOMATIC_MODEL_PATCH_TOOL_NAMES:
+                    patch_preview = _model_patch_preview_message(
+                        call.name,
+                        call.arguments,
+                        latest_user_request,
+                    )
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_STARTED,
+                            {
+                                "role": "assistant",
+                                "presentation_kind": "patch_preview",
+                            },
+                        )
+                    )
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_DELTA,
+                            {"text": patch_preview},
+                        )
+                    )
+                elif not (response.message.content or "").strip():
+                    stage_narration = _tool_stage_narration(
+                        call.name,
+                        latest_user_request,
+                        retrying=previous_tool_failed,
+                    )
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_STARTED,
+                            {
+                                "role": "assistant",
+                                "presentation_kind": "process",
+                            },
+                        )
+                    )
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_DELTA,
+                            {"text": stage_narration},
+                        )
+                    )
                 events.append(
                     self._event(
                         EngineEventType.TOOL_STARTED,
@@ -1292,6 +1461,15 @@ class AgentSessionEngine:
                 )
                 result = self._tool_result_cache.get(context.idempotency_key)
                 if result is None:
+                    output_dimension_error = (
+                        _invalid_explicit_2d_output_result(
+                            context,
+                            latest_user_request,
+                            call.arguments,
+                        )
+                        if call.name == "prepare_planar_construction_proposal"
+                        else None
+                    )
                     missing_features = (
                         _missing_requested_geometry_features(
                             latest_user_request,
@@ -1300,19 +1478,38 @@ class AgentSessionEngine:
                         if call.name == "prepare_geometry_proposal"
                         else ()
                     )
-                    result = (
-                        _incomplete_geometry_proposal_result(
+                    shaped_slot_error = (
+                        _invalid_shaped_slot_edit_result(
+                            context,
+                            latest_user_request,
+                            call.arguments,
+                        )
+                        if call.name == "prepare_geometry_edit"
+                        else None
+                    )
+                    if output_dimension_error is not None:
+                        result = output_dimension_error
+                    elif missing_features:
+                        result = _incomplete_geometry_proposal_result(
                             context,
                             missing_features,
                         )
-                        if missing_features
-                        else self.registry.dispatch(
+                    elif shaped_slot_error is not None:
+                        result = shaped_slot_error
+                    else:
+                        result = self.registry.dispatch(
                             call.name,
                             call.arguments,
                             context,
                         )
-                    )
                     self._tool_result_cache[context.idempotency_key] = result
+                if (
+                    route_hint is not None
+                    and call.name == route_hint.required_probe_tool
+                ):
+                    route_probe_called = True
+                    route_probe_failed = not result.ok
+                previous_tool_failed = not result.ok
                 self._register_continuation_from_result(result)
                 if result.ok and isinstance(result.data, Mapping):
                     if result.data.get("next_action") == (
@@ -1324,52 +1521,6 @@ class AgentSessionEngine:
                         "prepare_planar_construction_proposal",
                     }:
                         new_model_follow_up_pending = False
-                events.append(
-                    self._event(
-                        EngineEventType.TOOL_COMPLETED,
-                        {
-                            "tool": call.name,
-                            "call_id": call.call_id,
-                            "result": result.to_dict(),
-                        },
-                    )
-                )
-                for diagnostic in result.diagnostics:
-                    events.append(self._diagnostic_event(diagnostic))
-                if call.name in {
-                    "inspect_abaqus",
-                    "get_analysis_summary",
-                    "validate_analysis",
-                } and any(
-                    item.code
-                    in {
-                        DiagnosticCode.WORKER_CRASH.value,
-                        DiagnosticCode.WORKER_TIMEOUT.value,
-                    }
-                    for item in result.diagnostics
-                ):
-                    available_tools = ()
-                presented_summary = self._summary_from_tool_result(result)
-                if presented_summary is not None:
-                    if not self._mark_summary_shown(presented_summary):
-                        events.extend(
-                            self._cancelled_operation_events("inspection")
-                        )
-                        return tuple(events)
-                    events.append(
-                        self._event(
-                            EngineEventType.ANALYSIS_SUMMARY,
-                            {"analysis_summary": presented_summary.to_dict()},
-                        )
-                    )
-                if result.output_revision is not None:
-                    self._active_run = None
-                    if (
-                        presented_summary is None
-                        or presented_summary.revision != result.output_revision
-                    ):
-                        self._summary_shown_revision = None
-                    events.append(self._state_event())
                 payload = result.to_json()
                 if len(payload.encode("utf-8")) > self.config.max_tool_payload_bytes:
                     payload = _payload_limit_result(context).to_json()
@@ -1398,7 +1549,99 @@ class AgentSessionEngine:
                         )
                     )
                     return tuple(events)
-                if _tool_result_waits_for_confirmation(result):
+                waits_for_confirmation = _tool_result_waits_for_confirmation(result)
+                if waits_for_confirmation:
+                    preview = _proposal_preview_message(
+                        call.name,
+                        call.arguments,
+                        result,
+                        latest_user_request,
+                    )
+                    if preview is not None:
+                        try:
+                            self._append_message(AssistantMessage("assistant", preview))
+                        except _ConversationStorageLimit:
+                            diagnostic = make_diagnostic(
+                                DiagnosticCode.RESOURCE_LIMIT,
+                                (
+                                    "The proposal preview could not fit in the "
+                                    "bounded conversation store."
+                                ),
+                                source="agent.engine",
+                            )
+                            events.append(self._diagnostic_event(diagnostic))
+                            events.append(
+                                self._event(
+                                    EngineEventType.ERROR,
+                                    {"diagnostic": diagnostic.to_dict()},
+                                )
+                            )
+                            return tuple(events)
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_STARTED,
+                                {
+                                    "role": "assistant",
+                                    "presentation_kind": "proposal_preview",
+                                },
+                            )
+                        )
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": preview},
+                            )
+                        )
+                events.append(
+                    self._event(
+                        EngineEventType.TOOL_COMPLETED,
+                        {
+                            "tool": call.name,
+                            "call_id": call.call_id,
+                            "result": result.to_dict(),
+                        },
+                    )
+                )
+                for diagnostic in result.diagnostics:
+                    events.append(self._diagnostic_event(diagnostic))
+                if (
+                    call.name == "prepare_planar_construction_proposal"
+                    and _planar_retry_limit_reached(result)
+                ):
+                    return local_planar_retry_recovery()
+                if call.name in {
+                    "inspect_abaqus",
+                    "get_analysis_summary",
+                    "validate_analysis",
+                } and any(
+                    item.code
+                    in {
+                        DiagnosticCode.WORKER_CRASH.value,
+                        DiagnosticCode.WORKER_TIMEOUT.value,
+                    }
+                    for item in result.diagnostics
+                ):
+                    available_tools = ()
+                presented_summary = self._summary_from_tool_result(result)
+                if presented_summary is not None:
+                    if not self._mark_summary_shown(presented_summary):
+                        events.extend(self._cancelled_operation_events("inspection"))
+                        return tuple(events)
+                    events.append(
+                        self._event(
+                            EngineEventType.ANALYSIS_SUMMARY,
+                            {"analysis_summary": presented_summary.to_dict()},
+                        )
+                    )
+                if result.output_revision is not None:
+                    self._active_run = None
+                    if (
+                        presented_summary is None
+                        or presented_summary.revision != result.output_revision
+                    ):
+                        self._summary_shown_revision = None
+                    events.append(self._state_event())
+                if waits_for_confirmation:
                     return tuple(events)
                 if available_tools:
                     available_tools = self.registry.available_definitions(
@@ -1472,7 +1715,9 @@ class AgentSessionEngine:
                         separators=(",", ":"),
                     )
                     + ". Treat this terminal status as authoritative. Do not "
-                    "repeat an earlier pending-confirmation instruction or "
+                    "repeat the plan preview that was displayed immediately "
+                    "before the proposal card, or repeat an earlier "
+                    "pending-confirmation instruction or "
                     "ask the user to click, confirm, or accept this proposal "
                     "again. The local proposal card already presents the "
                     "terminal state, so do not add a standalone completion "
@@ -1750,9 +1995,7 @@ class AgentSessionEngine:
                         if response.result_summary is None
                         else response.result_summary.to_dict()
                     ),
-                    "artifacts": [
-                        item.to_dict() for item in response.artifacts
-                    ],
+                    "artifacts": [item.to_dict() for item in response.artifacts],
                 },
             )
         )
@@ -1803,9 +2046,7 @@ class AgentSessionEngine:
             revision=0 if current is None else current.revision,
             revision_hash=None if current is None else current.revision_hash,
             confirmed=confirmed,
-            active_run_id=(
-                None if active_run is None else active_run.run_id
-            ),
+            active_run_id=(None if active_run is None else active_run.run_id),
             provider=self.provider.provider_name,
             model=self.provider.model_name,
             cloud_enabled=self.provider.provider_name != "fake",
@@ -1891,6 +2132,9 @@ class AgentSessionEngine:
                 "apply_when_omitted": True,
                 "clarification_required": False,
             }
+        context["required_response_language"] = _requested_response_language(
+            self._latest_user_request()
+        )
         authoring_snapshot = self.registry.provider_snapshot
         projected = _provider_snapshot_dict(authoring_snapshot)
         if projected is not None:
@@ -2177,16 +2421,12 @@ class AgentSessionEngine:
         prior_history = self._history
         self._history = [*prior_history, message]
         try:
-            while (
-                len(self._history)
-                > self.config.max_conversation_messages * 2
-            ):
+            while len(self._history) > self.config.max_conversation_messages * 2:
                 if not self._drop_oldest_conversation_turn():
                     break
             payload = self._conversation_payload()
             while (
-                _json_size_bytes(payload)
-                > self.config.max_conversation_storage_bytes
+                _json_size_bytes(payload) > self.config.max_conversation_storage_bytes
             ):
                 if not self._drop_oldest_conversation_turn():
                     raise _ConversationStorageLimit(
@@ -2270,9 +2510,7 @@ class AgentSessionEngine:
     ) -> None:
         """Collect one bounded, privacy-safe record for a provider round."""
 
-        snapshot_dict = _provider_snapshot_dict(
-            self.registry.provider_snapshot
-        ) or {}
+        snapshot_dict = _provider_snapshot_dict(self.registry.provider_snapshot) or {}
         stage = snapshot_dict.get("workflow_stage")
         revision = snapshot_dict.get("session_revision")
         if type(revision) is not int:
@@ -2295,11 +2533,7 @@ class AgentSessionEngine:
         }
         called_names = tuple(
             sorted(
-                {
-                    str(item.name)
-                    for item in tool_calls
-                    if isinstance(item, ToolCall)
-                }
+                {str(item.name) for item in tool_calls if isinstance(item, ToolCall)}
             )
         )
         route_hint = self._route_hint_for_current_turn()
@@ -2395,11 +2629,10 @@ class AgentSessionEngine:
                 path,
                 max_bytes=self.config.max_tool_audit_storage_bytes,
             )
-            if (
-                payload.get("schema_version")
-                not in {_CONVERSATION_SCHEMA_VERSION, _TOOL_AUDIT_SCHEMA_VERSION}
-                or not isinstance(payload.get("entries"), list)
-            ):
+            if payload.get("schema_version") not in {
+                _CONVERSATION_SCHEMA_VERSION,
+                _TOOL_AUDIT_SCHEMA_VERSION,
+            } or not isinstance(payload.get("entries"), list):
                 raise ValueError("tool audit storage is invalid")
             if payload.get("schema_version") == _TOOL_AUDIT_SCHEMA_VERSION:
                 entries = [
@@ -2415,8 +2648,7 @@ class AgentSessionEngine:
         }
         while (
             len(entries) > 1
-            and _json_size_bytes(payload)
-            > self.config.max_tool_audit_storage_bytes
+            and _json_size_bytes(payload) > self.config.max_tool_audit_storage_bytes
         ):
             entries.pop(0)
             payload = {
@@ -2432,8 +2664,7 @@ class AgentSessionEngine:
             hashes = dict(entry.get("schema_hashes", {}))
             while (
                 names
-                and _json_size_bytes(payload)
-                > self.config.max_tool_audit_storage_bytes
+                and _json_size_bytes(payload) > self.config.max_tool_audit_storage_bytes
             ):
                 removed = names.pop()
                 hashes.pop(removed, None)
@@ -2734,6 +2965,33 @@ _PROPOSAL_RECONFIRMATION_PATTERNS = tuple(
         r"(?:create|submit|complete|apply|proceed)",
     )
 )
+_PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
+    {
+        "prepare_delete_proposal",
+        "prepare_geometry_edit",
+        "prepare_geometry_proposal",
+        "prepare_mesh_proposal",
+        "prepare_planar_construction_proposal",
+        "prepare_profile_extrusion",
+        "prepare_profile_path_sweep",
+        "prepare_profile_revolution",
+        "prepare_solve_proposal",
+        "request_project_save",
+    }
+)
+_AUTOMATIC_MODEL_PATCH_TOOL_NAMES = frozenset(
+    {"apply_model_definition", "edit_model_object"}
+)
+_PROPOSAL_RESTATEMENT_MARKERS = (
+    "已生成设计方案",
+    "已生成建模方案",
+    "方案已就绪",
+    "几何提案",
+    "设计提案",
+    "generated design proposal",
+    "proposal is ready",
+    "design proposal",
+)
 _ADDITIONAL_MODEL_REQUEST_MARKERS = (
     "另建立",
     "另建",
@@ -2764,6 +3022,117 @@ _HOLE_REQUEST_MARKERS = (
     "hole",
     "perforat",
 )
+_SHAPED_PATH_SLOT_MARKERS = (
+    "字母s",
+    "s字母",
+    "s形",
+    "s型",
+    "s状",
+    "s槽",
+    "字母u",
+    "u字母",
+    "u形",
+    "u型",
+    "u状",
+    "u槽",
+    "蛇形",
+    "曲折槽",
+    "serpentine",
+    "s-shaped",
+    "u-shaped",
+)
+_EXPLICIT_2D_MARKERS = (
+    "2d",
+    "2-d",
+    "二维",
+    "平面草图",
+    "平面模型",
+)
+_DERIVED_3D_REQUEST_MARKERS = (
+    "3d",
+    "3-d",
+    "三维",
+    "实体",
+    "拉伸",
+    "挤出",
+    "扫掠",
+    "旋转体",
+    "extrud",
+    "sweep",
+    "revol",
+)
+
+
+def _invalid_explicit_2d_output_result(
+    context: ToolExecutionContext,
+    user_request: str | None,
+    arguments: Mapping[str, Any],
+) -> ToolResult | None:
+    """Keep an explicitly planar request from silently becoming derived 3D."""
+
+    if not isinstance(user_request, str) or not isinstance(arguments, Mapping):
+        return None
+    part_function = arguments.get("part_function")
+    request = "\n".join(
+        item.casefold()
+        for item in (user_request, part_function)
+        if isinstance(item, str)
+    )
+    if not any(marker in request for marker in _EXPLICIT_2D_MARKERS):
+        return None
+    if any(marker in request for marker in _DERIVED_3D_REQUEST_MARKERS):
+        return None
+    output = arguments.get("output")
+    if output == "planar" or (
+        isinstance(output, Mapping) and output.get("kind") == "planar"
+    ):
+        return None
+    message = (
+        "The user explicitly requested a 2D planar model. Keep output planar; "
+        "do not replace it with extrusion, revolution, or path sweep unless "
+        "the user requests that 3D operation. Use output='planar' or "
+        "output={'kind':'planar'}."
+    )
+    return ToolResult(
+        ok=False,
+        session_id=context.session_id,
+        input_revision=max(context.expected_revision, 0),
+        idempotency_key=context.idempotency_key,
+        summary=message,
+        data={
+            "retryable": True,
+            "required_output": "planar",
+            "required_action": "retry_same_construction_with_planar_output",
+        },
+        diagnostics=(
+            make_diagnostic(
+                DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                message,
+                source="agent.engine",
+            ),
+        ),
+    )
+
+
+def _planar_retry_limit_reached(result: ToolResult) -> bool:
+    data = result.data
+    if result.ok or not isinstance(data, Mapping):
+        return False
+    retry = data.get("retry")
+    if not isinstance(retry, Mapping):
+        return False
+    attempt = retry.get("attempt")
+    limit = retry.get("limit")
+    return (
+        isinstance(attempt, int)
+        and not isinstance(attempt, bool)
+        and isinstance(limit, int)
+        and not isinstance(limit, bool)
+        and attempt >= limit
+        and retry.get("retryable") is False
+        and isinstance(retry.get("blocker"), str)
+        and bool(str(retry["blocker"]).strip())
+    )
 
 
 def _missing_requested_geometry_features(
@@ -2792,8 +3161,10 @@ def _missing_requested_geometry_features(
     has_holes = False
     if kind in {"planar_profiles", "extruded_profiles"}:
         profiles = geometry.get("profiles")
-        if not isinstance(profiles, list) or not profiles or any(
-            not isinstance(item, Mapping) for item in profiles
+        if (
+            not isinstance(profiles, list)
+            or not profiles
+            or any(not isinstance(item, Mapping) for item in profiles)
         ):
             return ()
         inner_profiles = [
@@ -2802,15 +3173,12 @@ def _missing_requested_geometry_features(
             if item.get("role") == "hole"
             or item.get("operation") == "cut"
             or (
-                index > 0
-                and item.get("role") is None
-                and item.get("operation") is None
+                index > 0 and item.get("role") is None and item.get("operation") is None
             )
         ]
         has_holes = any(item.get("kind") == "circle" for item in inner_profiles)
         has_slot = has_slot or any(
-            item.get("kind") in {"polygon", "rectangle"}
-            for item in inner_profiles
+            item.get("kind") in {"polygon", "rectangle"} for item in inner_profiles
         )
     missing: list[str] = []
     if wants_slot and not has_slot:
@@ -2841,6 +3209,52 @@ def _incomplete_geometry_proposal_result(
             "retryable": True,
             "missing_requested_features": list(missing),
             "required_action": "prepare_complete_requested_geometry",
+        },
+        diagnostics=(
+            make_diagnostic(
+                DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                message,
+                source="agent.engine",
+            ),
+        ),
+    )
+
+
+def _invalid_shaped_slot_edit_result(
+    context: ToolExecutionContext,
+    user_request: str | None,
+    arguments: Mapping[str, Any],
+) -> ToolResult | None:
+    """Require the semantic path-slot operation for one shaped slot request."""
+
+    if not isinstance(user_request, str) or not isinstance(arguments, Mapping):
+        return None
+    compact = re.sub(r"\s+", "", user_request.casefold())
+    if not any(marker in compact for marker in _SHAPED_PATH_SLOT_MARKERS):
+        return None
+    edit = arguments.get("edit")
+    operation = edit.get("operation") if isinstance(edit, Mapping) else None
+    if operation == "add_path_slot":
+        return None
+    message = (
+        "This request requires one connected constant-width shaped slot. Use "
+        "prepare_geometry_edit with edit.operation=add_path_slot, ordered open "
+        "centerline points, and one width. Disconnected rectangles or separate "
+        "cutout Profiles cannot satisfy the request."
+    )
+    return ToolResult(
+        ok=False,
+        session_id=context.session_id,
+        input_revision=max(context.expected_revision, 0),
+        idempotency_key=context.idempotency_key,
+        summary=message,
+        data={
+            "retryable": True,
+            "required_operation": "add_path_slot",
+            "required_postcondition": (
+                "material_profile_count unchanged; hole_count increases by 1"
+            ),
+            "required_action": "retry_same_edit_with_connected_path_slot",
         },
         diagnostics=(
             make_diagnostic(
@@ -2915,15 +3329,24 @@ def _is_redundant_proposal_completion(
     trusted_terminal: tuple[str, str, str] | None,
     message: AssistantMessage,
 ) -> bool:
-    """Hide a bare completion echo already represented by the proposal card."""
+    """Hide completion or plan echoes already represented before the card."""
 
-    return (
-        trusted_terminal is not None
-        and trusted_terminal[0] == "succeeded"
-        and not message.tool_calls
-        and isinstance(message.content, str)
-        and _BARE_COMPLETION_PATTERN.fullmatch(message.content) is not None
-    )
+    if (
+        trusted_terminal is None
+        or trusted_terminal[0] != "succeeded"
+        or message.tool_calls
+        or not isinstance(message.content, str)
+    ):
+        return False
+    content = message.content.strip()
+    if _BARE_COMPLETION_PATTERN.fullmatch(content) is not None:
+        return True
+    lowered = content.casefold()
+    if any(marker in lowered for marker in _TYPED_DIAGNOSTIC_MARKERS):
+        return False
+    if "?" in content or "？" in content:
+        return False
+    return any(marker in lowered for marker in _PROPOSAL_RESTATEMENT_MARKERS)
 
 
 def _destructive_success_left_additional_model_pending(
@@ -2976,10 +3399,795 @@ def _tool_result_waits_for_confirmation(result: ToolResult) -> bool:
 
     if not result.ok or not isinstance(result.data, Mapping):
         return False
-    return (
-        result.data.get("state") == "pending_confirmation"
-        and isinstance(result.data.get("continuation_checkpoint"), Mapping)
+    return result.data.get("state") == "pending_confirmation" and isinstance(
+        result.data.get("continuation_checkpoint"), Mapping
     )
+
+
+def _message_calls_proposal_prepare_tool(message: AssistantMessage) -> bool:
+    return any(call.name in _PROPOSAL_PREPARE_TOOL_NAMES for call in message.tool_calls)
+
+
+def _message_calls_automatic_model_patch_tool(
+    message: AssistantMessage,
+) -> bool:
+    return any(
+        call.name in _AUTOMATIC_MODEL_PATCH_TOOL_NAMES for call in message.tool_calls
+    )
+
+
+def _tool_stage_narration(
+    tool_name: str,
+    user_request: str | None,
+    *,
+    retrying: bool,
+) -> str:
+    """Describe a tool-only round without exposing provider metadata."""
+
+    chinese = _uses_chinese(user_request)
+    if retrying and tool_name in _PROPOSAL_PREPARE_TOOL_NAMES:
+        return (
+            "上一版方案未通过校验，正在根据诊断调整并重新验证。"
+            if chinese
+            else (
+                "The previous plan did not pass validation. Revising it from "
+                "the diagnostics and validating again."
+            )
+        )
+    messages = {
+        "read_authoring_context": (
+            "正在读取当前模型状态和建模约束。",
+            "Reading the current model state and modeling constraints.",
+        ),
+        "read_geometry_edit_context": (
+            "正在读取当前草图的轮廓、尺寸和拓扑关系。",
+            "Reading the current sketch profiles, dimensions, and topology.",
+        ),
+        "read_profile_transform_context": (
+            "正在读取可用于三维变换的草图轮廓。",
+            "Reading the sketch profiles available for the 3D transform.",
+        ),
+        "read_mesh_refinement_context": (
+            "正在读取当前网格及可加密区域。",
+            "Reading the current mesh and available refinement regions.",
+        ),
+        "read_editable_model_objects": (
+            "正在读取当前可修改的模型定义。",
+            "Reading the model definitions that can be edited.",
+        ),
+        "read_deletable_objects": (
+            "正在读取当前可删除的模型对象。",
+            "Reading the model objects that can be removed.",
+        ),
+        "read_geometry_feature_catalog": (
+            "正在读取当前几何特征。",
+            "Reading the current geometry features.",
+        ),
+        "read_workspace_documents": (
+            "正在读取本次请求引用的工作区内容。",
+            "Reading the workspace content referenced by this request.",
+        ),
+        "show_capabilities": (
+            "正在读取当前可用能力。",
+            "Reading the currently available capabilities.",
+        ),
+        "prepare_planar_construction_proposal": (
+            "正在构造二维轮廓，并校验槽、孔洞和材料区域的拓扑关系。",
+            (
+                "Building the 2D profiles and validating the topology of "
+                "slots, holes, and material regions."
+            ),
+        ),
+        "prepare_geometry_edit": (
+            "正在生成草图修改方案，并校验修改后的轮廓拓扑。",
+            "Preparing the sketch edit and validating the resulting topology.",
+        ),
+        "prepare_geometry_proposal": (
+            "正在生成并校验几何方案。",
+            "Preparing and validating the geometry plan.",
+        ),
+        "prepare_mesh_proposal": (
+            "正在生成并校验网格方案。",
+            "Preparing and validating the mesh plan.",
+        ),
+        "prepare_profile_extrusion": (
+            "正在生成拉伸方案，并校验最终三维几何。",
+            "Preparing the extrusion and validating the resulting 3D geometry.",
+        ),
+        "prepare_profile_revolution": (
+            "正在生成旋转方案，并校验最终三维几何。",
+            "Preparing the revolution and validating the resulting 3D geometry.",
+        ),
+        "prepare_profile_path_sweep": (
+            "正在生成路径扫掠方案，并校验最终三维几何。",
+            "Preparing the path sweep and validating the resulting 3D geometry.",
+        ),
+        "prepare_solve_proposal": (
+            "正在检查当前分析状态并生成求解方案。",
+            "Checking the analysis state and preparing the solve plan.",
+        ),
+        "create_native_model_document": (
+            "正在创建新的模型文档。",
+            "Creating a new model document.",
+        ),
+        "inspect_abaqus": (
+            "正在检查当前有限元模型。",
+            "Inspecting the current finite-element model.",
+        ),
+        "get_analysis_summary": (
+            "正在整理当前分析设置。",
+            "Reading the current analysis setup.",
+        ),
+        "validate_analysis": (
+            "正在校验当前分析设置。",
+            "Validating the current analysis setup.",
+        ),
+        "query_results": (
+            "正在读取并整理所请求的计算结果。",
+            "Reading and organizing the requested analysis results.",
+        ),
+    }
+    pair = messages.get(
+        tool_name,
+        (
+            "正在处理当前建模步骤。",
+            "Processing the current modeling step.",
+        ),
+    )
+    return pair[0] if chinese else pair[1]
+
+
+def _assistant_message_presentation_kind(
+    message: AssistantMessage,
+    trusted_terminal: tuple[str, str, str] | None,
+) -> str:
+    if trusted_terminal is not None:
+        return "result_summary"
+    if message.tool_calls:
+        return "process"
+    content = message.content or ""
+    if "?" in content or "？" in content:
+        return "decision_request"
+    return "result_summary"
+
+
+def _proposal_preview_message(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    result: ToolResult,
+    user_request: str | None,
+) -> str | None:
+    """Build one validated plan preview for display before its proposal card."""
+
+    if not result.ok or not isinstance(result.data, Mapping):
+        return None
+    proposal_view = result.data.get("proposal_view")
+    if not isinstance(proposal_view, Mapping):
+        return None
+    chinese = _uses_chinese(user_request)
+    summary = str(proposal_view.get("summary", result.summary)).strip()
+    impact = str(proposal_view.get("impact", "")).strip()
+    lines = ["**方案预览**" if chinese else "**Plan preview**"]
+
+    if tool_name == "prepare_planar_construction_proposal":
+        lines.extend(_planar_construction_preview(arguments, result.data, chinese))
+        unit_summary = _proposal_unit_summary(summary)
+        if unit_summary:
+            lines.append(
+                f"- 单位制：{unit_summary}"
+                if chinese
+                else f"- Unit system: {unit_summary}"
+            )
+    elif tool_name == "prepare_geometry_edit":
+        lines.extend(_geometry_edit_preview(arguments, user_request, chinese))
+    elif summary:
+        lines.append(f"- 方案：{summary}" if chinese else f"- Plan: {summary}")
+    if impact:
+        lines.append(f"- 执行影响：{impact}" if chinese else f"- Effect: {impact}")
+    return "\n".join(lines)[:4_000]
+
+
+def _planar_construction_preview(
+    arguments: Mapping[str, Any],
+    data: Mapping[str, Any],
+    chinese: bool,
+) -> list[str]:
+    lines: list[str] = []
+    part_function = arguments.get("part_function")
+    if isinstance(part_function, str) and part_function.strip():
+        lines.append(
+            f"- 建模目标：{part_function.strip()}"
+            if chinese
+            else f"- Modeling goal: {part_function.strip()}"
+        )
+    output = arguments.get("output")
+    output_description = _planar_output_description(output, chinese)
+    if output_description:
+        lines.append(
+            f"- 输出形式：{output_description}"
+            if chinese
+            else f"- Output: {output_description}"
+        )
+    construction = arguments.get("construction")
+    nodes = construction.get("nodes") if isinstance(construction, Mapping) else None
+    if isinstance(nodes, list):
+        lines.extend(_planar_geometry_description(nodes, chinese))
+    proof = data.get("proof_summary")
+    if isinstance(proof, Mapping):
+        material_count = proof.get("material_profile_count")
+        hole_count = proof.get("hole_count")
+        component_count = proof.get("component_count")
+        if chinese:
+            lines.append(
+                "- 本地几何校验：形成 "
+                f"{material_count} 个材料区域和 {hole_count} 个切除区域；"
+                f"材料由 {component_count} 个连通部分组成"
+            )
+        else:
+            lines.append(
+                "- Local geometry check: "
+                f"{material_count} material region(s), {hole_count} cutout(s), "
+                f"and {component_count} connected component(s)"
+            )
+        bounding_box = proof.get("bounding_box")
+        if isinstance(bounding_box, list) and len(bounding_box) == 4:
+            width = _numeric_difference(bounding_box[2], bounding_box[0])
+            height = _numeric_difference(bounding_box[3], bounding_box[1])
+            if width is not None and height is not None:
+                lines.append(
+                    f"- 外包尺寸：{width} × {height}"
+                    if chinese
+                    else f"- Overall bounds: {width} × {height}"
+                )
+    return lines
+
+
+def _planar_geometry_description(
+    nodes: Sequence[object],
+    chinese: bool,
+) -> list[str]:
+    usable = [node for node in nodes if isinstance(node, Mapping)]
+    rectangles = [node for node in usable if node.get("kind") == "rectangle"]
+    circles = [node for node in usable if node.get("kind") == "circle"]
+    polygons = [node for node in usable if node.get("kind") == "polygon"]
+    paths = [node for node in usable if node.get("kind") == "path_stroke"]
+    patterns = [
+        node
+        for node in usable
+        if node.get("kind")
+        in {"linear_pattern", "rectangular_pattern", "circular_pattern"}
+    ]
+    lines = ["- 几何组成：" if chinese else "- Geometry:"]
+    if rectangles:
+        descriptions = [
+            (
+                f"左下角 ({_preview_number(node.get('x'))}, "
+                f"{_preview_number(node.get('y'))})，尺寸 "
+                f"{_preview_number(node.get('width'))} × "
+                f"{_preview_number(node.get('height'))}"
+            )
+            for node in rectangles[:8]
+        ]
+        lines.append(
+            "  - 矩形轮廓：" + "；".join(descriptions)
+            if chinese
+            else "  - Rectangles: " + "; ".join(descriptions)
+        )
+    if circles:
+        descriptions = [
+            (
+                f"圆心 ({_preview_number(node.get('center_x'))}, "
+                f"{_preview_number(node.get('center_y'))})，半径 "
+                f"{_preview_number(node.get('radius'))}"
+            )
+            for node in circles[:8]
+        ]
+        lines.append(
+            "  - 圆形轮廓：" + "；".join(descriptions)
+            if chinese
+            else "  - Circles: " + "; ".join(descriptions)
+        )
+    if polygons:
+        counts = [
+            len(node.get("vertices", ()))
+            if isinstance(node.get("vertices"), list)
+            else "?"
+            for node in polygons
+        ]
+        text = "、".join(str(count) for count in counts[:8])
+        lines.append(
+            f"  - 闭合多边形：{len(polygons)} 个，顶点数依次为 {text}"
+            if chinese
+            else (
+                f"  - Closed polygons: {len(polygons)}, with vertex counts "
+                f"{', '.join(str(count) for count in counts[:8])}"
+            )
+        )
+    for path in paths[:6]:
+        points = _point_chain(path.get("points"))
+        width = _preview_number(path.get("width"))
+        if chinese:
+            lines.append(f"  - 连续定宽槽：中心路径 {points}，槽宽 {width}")
+        else:
+            lines.append(f"  - Continuous slot: centerline {points}, width {width}")
+    for pattern in patterns[:6]:
+        lines.append("  - " + _pattern_description(pattern, chinese))
+    represented = len(rectangles) + len(circles) + len(polygons) + len(paths)
+    if represented == 0 and not patterns:
+        lines.append(
+            "  - 由基础轮廓和几何变换构成"
+            if chinese
+            else "  - Built from basic profiles and geometric transforms"
+        )
+    boolean_kinds = {
+        str(node.get("kind"))
+        for node in usable
+        if node.get("kind") in {"union", "difference", "intersection"}
+    }
+    if boolean_kinds:
+        if chinese:
+            relation = (
+                "合并相接轮廓，并从主体中切除槽或孔"
+                if "difference" in boolean_kinds
+                else "合并相接轮廓"
+            )
+            lines.append(f"- 组合关系：{relation}")
+        else:
+            relation = (
+                "join connected profiles and subtract slots or holes from the body"
+                if "difference" in boolean_kinds
+                else "join connected profiles"
+            )
+            lines.append(f"- Combination: {relation}")
+    return lines
+
+
+def _planar_output_description(output: object, chinese: bool) -> str:
+    if output == "planar":
+        return "二维平面草图" if chinese else "2D planar sketch"
+    if not isinstance(output, Mapping):
+        return ""
+    kind = output.get("kind")
+    if kind == "extrusion":
+        height = _preview_number(output.get("height"))
+        return (
+            f"沿法向拉伸 {height} 的三维实体"
+            if chinese
+            else f"3D extrusion, height {height}"
+        )
+    if kind == "revolution":
+        axis = str(output.get("axis", "?"))
+        angle = _preview_number(output.get("angle_degrees"))
+        return (
+            f"绕 {axis.upper()} 轴旋转 {angle}° 的三维实体"
+            if chinese
+            else f"3D revolution about the {axis.upper()} axis through {angle}°"
+        )
+    if kind == "path_sweep":
+        path = output.get("path")
+        points = path.get("points") if isinstance(path, Mapping) else None
+        count = len(points) if isinstance(points, list) else "?"
+        return (
+            f"沿含 {count} 个控制点的路径扫掠为三维实体"
+            if chinese
+            else f"3D path sweep along a path with {count} control points"
+        )
+    return ""
+
+
+def _pattern_description(pattern: Mapping[str, Any], chinese: bool) -> str:
+    kind = pattern.get("kind")
+    if kind == "linear_pattern":
+        count = pattern.get("count")
+        dx = _preview_number(pattern.get("step_x"))
+        dy = _preview_number(pattern.get("step_y"))
+        return (
+            f"线性阵列 {count} 个，间距向量 ({dx}, {dy})"
+            if chinese
+            else f"Linear pattern of {count}, spacing vector ({dx}, {dy})"
+        )
+    if kind == "rectangular_pattern":
+        count_x = pattern.get("count_x")
+        count_y = pattern.get("count_y")
+        dx = _preview_number(pattern.get("spacing_x"))
+        dy = _preview_number(pattern.get("spacing_y"))
+        return (
+            f"矩形阵列 {count_x} × {count_y}，横向间距 {dx}，纵向间距 {dy}"
+            if chinese
+            else f"Rectangular pattern {count_x} × {count_y}, spacing {dx} × {dy}"
+        )
+    count = pattern.get("count")
+    center_x = _preview_number(pattern.get("center_x"))
+    center_y = _preview_number(pattern.get("center_y"))
+    angle = _preview_number(pattern.get("total_angle_degrees"))
+    return (
+        f"环形阵列 {count} 个，中心 ({center_x}, {center_y})，总角度 {angle}°"
+        if chinese
+        else f"Circular pattern of {count}, center ({center_x}, {center_y}), total angle {angle}°"
+    )
+
+
+def _geometry_edit_preview(
+    arguments: Mapping[str, Any],
+    user_request: str | None,
+    chinese: bool,
+) -> list[str]:
+    lines = ["- 修改对象：当前部件" if chinese else "- Target: current part"]
+    edit = arguments.get("edit")
+    if isinstance(edit, Mapping):
+        lines.extend(_geometry_edit_description(edit, user_request, chinese))
+    return lines
+
+
+def _geometry_edit_description(
+    edit: Mapping[str, Any],
+    user_request: str | None,
+    chinese: bool,
+) -> list[str]:
+    operation = str(edit.get("operation", ""))
+    if operation == "batch":
+        edits = edit.get("edits")
+        if not isinstance(edits, list):
+            return []
+        counts = Counter(
+            str(item.get("operation")) for item in edits if isinstance(item, Mapping)
+        )
+        labels = []
+        for item_operation, count in counts.items():
+            label = _edit_operation_label(item_operation, chinese)
+            labels.append(f"{label} {count} 项" if chinese else f"{count} {label}")
+        lines = [
+            f"- 修改内容：一次完成 {len(edits)} 项草图修改（{'、'.join(labels)}）"
+            if chinese
+            else f"- Changes: apply {len(edits)} sketch edits ({', '.join(labels)})"
+        ]
+        for index, item in enumerate(edits[:8], start=1):
+            if isinstance(item, Mapping):
+                detail = _single_edit_description(item, user_request, chinese)
+                if detail:
+                    lines.append(f"  {index}. {detail}")
+        return lines
+    detail = _single_edit_description(edit, user_request, chinese)
+    return (
+        [f"- 修改内容：{detail}" if chinese else f"- Change: {detail}"]
+        if detail
+        else []
+    )
+
+
+def _single_edit_description(
+    edit: Mapping[str, Any],
+    user_request: str | None,
+    chinese: bool,
+) -> str:
+    operation = str(edit.get("operation", ""))
+    if operation == "add_circle":
+        center = (
+            f"({_preview_number(edit.get('center_x'))}, "
+            f"{_preview_number(edit.get('center_y'))})"
+        )
+        radius = _preview_number(edit.get("radius"))
+        return (
+            f"增加圆形轮廓，圆心 {center}，半径 {radius}"
+            if chinese
+            else f"Add a circular profile centered at {center} with radius {radius}"
+        )
+    if operation == "add_rectangle":
+        origin = f"({_preview_number(edit.get('x'))}, {_preview_number(edit.get('y'))})"
+        size = f"{_preview_number(edit.get('width'))} × {_preview_number(edit.get('height'))}"
+        return (
+            f"增加矩形轮廓，左下角 {origin}，尺寸 {size}"
+            if chinese
+            else f"Add a rectangle at lower-left {origin}, size {size}"
+        )
+    if operation == "add_polygon":
+        vertices = edit.get("vertices")
+        count = len(vertices) if isinstance(vertices, list) else "?"
+        return (
+            f"增加一个由 {count} 个顶点定义的闭合轮廓"
+            if chinese
+            else f"Add one closed profile defined by {count} vertices"
+        )
+    if operation == "add_path_slot":
+        width = _preview_number(edit.get("width"))
+        points = _point_chain(edit.get("points"))
+        shape = _slot_shape_label(user_request, chinese)
+        return (
+            f"切除一条连续的{shape}定宽槽，中心路径 {points}，槽宽 {width}"
+            if chinese
+            else f"Cut one continuous {shape}constant-width slot, centerline {points}, width {width}"
+        )
+    if operation == "planar_boolean":
+        boolean_operation = str(edit.get("boolean_operation", ""))
+        tool = edit.get("tool")
+        tool_kind = (
+            str(tool.get("kind", "轮廓")) if isinstance(tool, Mapping) else "轮廓"
+        )
+        if chinese:
+            action = "切除" if boolean_operation == "cut" else "合并"
+            return f"追加二维{action}特征，工具轮廓为 {tool_kind}"
+        action = "cut" if boolean_operation == "cut" else "fuse"
+        return f"Append one planar {action} feature using a {tool_kind} profile"
+    if operation == "translate":
+        dx = _preview_number(edit.get("dx"))
+        dy = _preview_number(edit.get("dy"))
+        dz = edit.get("dz")
+        suffix = f"，Z 方向 {_preview_number(dz)}" if chinese and dz is not None else ""
+        return (
+            f"整体平移：X 方向 {dx}，Y 方向 {dy}{suffix}"
+            if chinese
+            else f"Translate by ({dx}, {dy}{', ' + _preview_number(dz) if dz is not None else ''})"
+        )
+    if operation == "rotate":
+        axis = str(edit.get("axis", "?")).upper()
+        angle = _preview_number(edit.get("angle_degrees"))
+        return (
+            f"绕 {axis} 轴旋转 {angle}°"
+            if chinese
+            else f"Rotate {angle}° about the {axis} axis"
+        )
+    if operation == "delete_circles":
+        circle_ids = edit.get("circle_ids")
+        count = len(circle_ids) if isinstance(circle_ids, list) else "?"
+        return (
+            f"删除 {count} 个圆形轮廓"
+            if chinese
+            else f"Delete {count} circular profiles"
+        )
+    if operation == "replace_circle_pattern":
+        count = edit.get("count")
+        start = (
+            f"({_preview_number(edit.get('start_center_x'))}, "
+            f"{_preview_number(edit.get('start_center_y'))})"
+        )
+        spacing = (
+            f"({_preview_number(edit.get('spacing_x'))}, "
+            f"{_preview_number(edit.get('spacing_y'))})"
+        )
+        radius = _preview_number(edit.get("radius"))
+        return (
+            f"重排为 {count} 个圆孔，从 {start} 开始，间距向量 {spacing}，半径 {radius}"
+            if chinese
+            else f"Replace with {count} circles from {start}, spacing {spacing}, radius {radius}"
+        )
+    label = _edit_operation_label(operation, chinese)
+    return label
+
+
+def _edit_operation_label(operation: str, chinese: bool) -> str:
+    labels = {
+        "add_circle": ("增加圆形轮廓", "circle addition"),
+        "add_rectangle": ("增加矩形轮廓", "rectangle addition"),
+        "add_polygon": ("增加闭合轮廓", "closed-profile addition"),
+        "add_path_slot": ("增加连续定宽槽", "continuous-slot addition"),
+        "planar_boolean": ("二维布尔特征", "planar Boolean feature"),
+        "update_point": ("调整草图点", "point update"),
+        "update_circle": ("调整圆形轮廓", "circle update"),
+        "delete_circles": ("删除圆形轮廓", "circle deletion"),
+        "replace_circle_pattern": ("重排圆孔", "circle-pattern replacement"),
+        "add_line": ("增加直线", "line addition"),
+        "add_arc": ("增加圆弧", "arc addition"),
+        "update_line": ("调整直线", "line update"),
+        "update_arc": ("调整圆弧", "arc update"),
+        "delete_curves": ("删除曲线", "curve deletion"),
+        "add_constraint": ("增加约束", "constraint addition"),
+        "replace_constraint": ("调整约束", "constraint update"),
+        "delete_constraints": ("删除约束", "constraint deletion"),
+        "extrude_profiles": ("拉伸草图", "profile extrusion"),
+        "revolve_profile": ("旋转草图", "profile revolution"),
+        "path_sweep_profile": ("扫掠草图", "profile path sweep"),
+        "part_boolean": ("部件布尔运算", "part Boolean operation"),
+        "body_boolean": ("实体布尔运算", "body Boolean operation"),
+        "translate": ("整体平移", "translation"),
+        "rotate": ("整体旋转", "rotation"),
+    }
+    pair = labels.get(operation, ("修改草图", "sketch edit"))
+    return pair[0] if chinese else pair[1]
+
+
+def _model_patch_preview_message(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    user_request: str | None,
+) -> str:
+    chinese = _uses_chinese(user_request)
+    lines = ["**修改预览**" if chinese else "**Change preview**"]
+    if tool_name == "apply_model_definition":
+        action = str(arguments.get("action", ""))
+        parameters = arguments.get("parameters")
+        parameter_map = parameters if isinstance(parameters, Mapping) else {}
+        action_label = _definition_action_description(action, parameter_map, chinese)
+        lines.append(
+            f"- 修改内容：{action_label}" if chinese else f"- Change: {action_label}"
+        )
+        details = _natural_parameter_details(parameter_map, chinese)
+    else:
+        object_type = str(arguments.get("object_type", ""))
+        object_label = _definition_object_label(object_type, chinese)
+        lines.append(
+            f"- 修改内容：更新当前{object_label}"
+            if chinese
+            else f"- Change: update the current {object_label}"
+        )
+        changes = arguments.get("changes")
+        details = _natural_parameter_details(
+            changes if isinstance(changes, Mapping) else {},
+            chinese,
+        )
+    if details:
+        lines.append(
+            f"- 主要参数：{details}" if chinese else f"- Main values: {details}"
+        )
+    lines.append(
+        "- 执行影响：应用后立即同步到当前模型；该修改可撤销"
+        if chinese
+        else "- Effect: apply immediately to the current model; the change is undoable"
+    )
+    return "\n".join(lines)[:4_000]
+
+
+def _definition_action_description(
+    action: str,
+    parameters: Mapping[str, Any],
+    chinese: bool,
+) -> str:
+    labels = {
+        "create_named_region": ("创建命名区域", "create a named region"),
+        "create_material": ("创建材料", "create a material"),
+        "create_section": ("创建截面", "create a section"),
+        "assign_section": ("分配截面", "assign a section"),
+        "create_static_step": ("创建静力分析步", "create a static analysis step"),
+        "create_boundary_condition": ("创建边界条件", "create a boundary condition"),
+        "create_load": ("创建载荷", "create a load"),
+        "create_result_request": ("创建结果请求", "create a result request"),
+    }
+    pair = labels.get(action, ("更新模型定义", "update the model definition"))
+    label = pair[0] if chinese else pair[1]
+    name = parameters.get("name")
+    if isinstance(name, str) and name.strip():
+        return f"{label}“{name.strip()}”" if chinese else f'{label} "{name.strip()}"'
+    return label
+
+
+def _definition_object_label(object_type: str, chinese: bool) -> str:
+    labels = {
+        "named_region": ("命名区域", "named region"),
+        "material": ("材料", "material"),
+        "section": ("截面", "section"),
+        "section_assignment": ("截面分配", "section assignment"),
+        "analysis_step": ("分析步", "analysis step"),
+        "boundary_condition": ("边界条件", "boundary condition"),
+        "load": ("载荷", "load"),
+        "result_request": ("结果请求", "result request"),
+    }
+    pair = labels.get(object_type, ("模型定义", "model definition"))
+    return pair[0] if chinese else pair[1]
+
+
+def _natural_parameter_details(
+    parameters: Mapping[str, Any],
+    chinese: bool,
+) -> str:
+    labels = {
+        "new_name": ("新名称", "new name"),
+        "material": ("材料", "material"),
+        "section_name": ("截面", "section"),
+        "region_name": ("区域", "region"),
+        "step_name": ("分析步", "analysis step"),
+        "target_scope": ("作用区域", "target region"),
+        "mesh_kind": ("实体类型", "entity type"),
+        "expected_count": ("实体数量", "entity count"),
+        "E": ("弹性模量", "elastic modulus"),
+        "nu": ("泊松比", "Poisson ratio"),
+        "density": ("密度", "density"),
+        "thickness": ("厚度", "thickness"),
+        "area": ("面积", "area"),
+        "height": ("高度", "height"),
+        "width": ("宽度", "width"),
+        "radius": ("半径", "radius"),
+        "outer_radius": ("外半径", "outer radius"),
+        "inner_radius": ("内半径", "inner radius"),
+        "vector": ("向量", "vector"),
+        "magnitude": ("大小", "magnitude"),
+        "acceleration": ("加速度", "acceleration"),
+        "direction": ("方向", "direction"),
+        "coordinate_system": ("坐标系", "coordinate system"),
+        "variables": ("结果变量", "result variables"),
+        "unit": ("单位", "unit"),
+        "plane_type": ("平面假设", "plane assumption"),
+        "section_type": ("截面类型", "section type"),
+        "properties": ("属性", "properties"),
+    }
+    ignored = {
+        "name",
+        "confirmed",
+        "distribution",
+        "logical_ids",
+        "target_id",
+        "part_id",
+        "object_id",
+    }
+    fragments: list[str] = []
+    for key, value in parameters.items():
+        if key in ignored or key.endswith("_id") or key.endswith("_ids"):
+            continue
+        if isinstance(value, Mapping):
+            nested = _natural_parameter_details(value, chinese)
+            if not nested:
+                continue
+            value_text = nested
+        else:
+            value_text = _natural_value(value, chinese)
+        pair = labels.get(str(key))
+        if pair is None:
+            continue
+        label = pair[0] if chinese else pair[1]
+        fragments.append(f"{label} {value_text}")
+        if len(fragments) >= 10:
+            break
+    return ("；" if chinese else "; ").join(fragments)
+
+
+def _natural_value(value: object, chinese: bool) -> str:
+    if isinstance(value, bool):
+        return ("是" if value else "否") if chinese else ("yes" if value else "no")
+    if isinstance(value, list):
+        return "、".join(_natural_value(item, chinese) for item in value)
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _slot_shape_label(user_request: str | None, chinese: bool) -> str:
+    request = user_request or ""
+    if re.search(r"(?:S\s*形|字母\s*S|S[- ]?shaped)", request, re.IGNORECASE):
+        return "S 形" if chinese else "S-shaped "
+    if re.search(r"(?:U\s*形|字母\s*U|U[- ]?shaped)", request, re.IGNORECASE):
+        return "U 形" if chinese else "U-shaped "
+    if "蛇形" in request or "serpentine" in request.lower():
+        return "蛇形" if chinese else "serpentine "
+    return ""
+
+
+def _point_chain(value: object) -> str:
+    if not isinstance(value, list):
+        return "?"
+    rendered: list[str] = []
+    for point in value[:12]:
+        if not isinstance(point, Mapping):
+            continue
+        rendered.append(
+            f"({_preview_number(point.get('x'))}, {_preview_number(point.get('y'))})"
+        )
+    suffix = " → …" if len(value) > 12 else ""
+    return " → ".join(rendered) + suffix
+
+
+def _proposal_unit_summary(summary: str) -> str | None:
+    match = re.search(r"单位制\s+([^；\n]+)", summary)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def _uses_chinese(value: str | None) -> bool:
+    return isinstance(value, str) and any(
+        "\u4e00" <= character <= "\u9fff" for character in value
+    )
+
+
+def _numeric_difference(end: object, start: object) -> str | None:
+    if not isinstance(end, (int, float)) or isinstance(end, bool):
+        return None
+    if not isinstance(start, (int, float)) or isinstance(start, bool):
+        return None
+    return _preview_number(end - start)
+
+
+def _preview_number(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
 
 
 def _should_guard_geometry_refusal(
@@ -3029,6 +4237,70 @@ def _should_guard_geometry_refusal(
     return not _snapshot_proves_transform_unsupported(snapshot)
 
 
+def _required_edit_route_progress_tool(
+    route_hint: GeometryRouteHint | None,
+    available_tools: Sequence[object],
+    *,
+    route_probe_called: bool,
+    route_probe_failed: bool,
+) -> str | None:
+    """Return the one valid next tool for an explicit planar edit route."""
+
+    if route_hint is None or not route_hint.is_edit or route_probe_failed:
+        return None
+    published = {
+        str(getattr(item, "name", ""))
+        for item in available_tools
+        if isinstance(getattr(item, "name", None), str)
+    }
+    if not route_probe_called:
+        if route_hint.required_probe_tool in published:
+            return route_hint.required_probe_tool
+        if "read_authoring_context" in published:
+            return "read_authoring_context"
+        return None
+    if route_hint.required_prepare_tool in published:
+        return route_hint.required_prepare_tool
+    return None
+
+
+def _geometry_edit_route_progress_correction(
+    route_hint: GeometryRouteHint,
+    required_tool: str,
+) -> str:
+    hint = json.dumps(
+        route_hint.to_provider_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if required_tool == "read_authoring_context":
+        instruction = (
+            "The authoring stage needs deterministic resynchronization. Call "
+            "read_authoring_context as the only tool in this response."
+        )
+    elif required_tool == route_hint.required_probe_tool:
+        instruction = (
+            f"Call {required_tool} as the only tool in this response before "
+            "constructing edit arguments."
+        )
+    else:
+        instruction = (
+            f"Use the exact IDs and editable geometry returned by the probe, "
+            f"then call {required_tool} as the only tool in this response."
+        )
+    return (
+        "Local planar-edit progress correction (deterministic, "
+        "non-authorizing): the explicit request matches this route hint: "
+        + hint
+        + ". "
+        + instruction
+        + " Do not describe, promise, or claim submission without that tool "
+        "call. If the typed context reports a blocker, report that exact "
+        "blocker after the read."
+    )
+
+
 def _snapshot_proves_transform_unsupported(snapshot: object | None) -> bool:
     projected = _provider_snapshot_dict(snapshot)
     if not projected or not projected.get("available", False):
@@ -3036,7 +4308,11 @@ def _snapshot_proves_transform_unsupported(snapshot: object | None) -> bool:
     if projected.get("source_kind") not in {None, "native"}:
         return True
     dimension = projected.get("active_part_dimension")
-    if isinstance(dimension, int) and not isinstance(dimension, bool) and dimension != 2:
+    if (
+        isinstance(dimension, int)
+        and not isinstance(dimension, bool)
+        and dimension != 2
+    ):
         return True
     if projected.get("active_part_suppressed") is True:
         return True
@@ -3090,6 +4366,41 @@ def _geometry_route_recovery(user_request: str | None) -> str:
     ):
         return "当前几何能力检查未完成，请重试。"
     return "The current geometry capability check was not completed; please retry."
+
+
+def _requested_response_language(user_request: str | None) -> str:
+    if isinstance(user_request, str) and any(
+        "\u4e00" <= character <= "\u9fff" for character in user_request
+    ):
+        return "zh-CN"
+    return "match-user"
+
+
+def _response_matches_requested_language(
+    user_request: str | None,
+    message: AssistantMessage,
+) -> bool:
+    """Keep predominantly non-Chinese prose out of a Chinese user turn."""
+
+    if _requested_response_language(user_request) != "zh-CN":
+        return True
+    content = message.content or ""
+    if not content.strip():
+        return True
+    if any(marker in content.casefold() for marker in _TYPED_DIAGNOSTIC_MARKERS):
+        return True
+    chinese_count = sum("\u4e00" <= character <= "\u9fff" for character in content)
+    latin_count = sum("a" <= character.casefold() <= "z" for character in content)
+    return chinese_count > 0 and chinese_count * 4 >= latin_count
+
+
+def _response_language_correction(language: str) -> str:
+    return (
+        "Local response-language correction: the latest user request is in "
+        f"{language}. Rewrite the entire assistant response in Simplified "
+        "Chinese. Keep necessary identifiers and engineering symbols unchanged, "
+        "but do not include English planning, reasoning, headings, or narration."
+    )
 
 
 def _payload_limit_result(context: ToolExecutionContext) -> ToolResult:

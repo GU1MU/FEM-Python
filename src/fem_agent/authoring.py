@@ -1191,6 +1191,7 @@ _OPERATION_PARAMETER_FIELDS: dict[
 _DELETE_MODEL_OBJECT_TYPES = frozenset(
     {
         "part",
+        "feature",
         "generated_mesh",
         "named_region",
         "analysis_step",

@@ -724,6 +724,69 @@ def test_runtime_flushes_whitespace_only_stream_delta(tmp_path) -> None:
         runtime.shutdown()
 
 
+def test_runtime_marks_text_before_automatic_patch_as_full_preview(
+    tmp_path,
+) -> None:
+    runtime = QtAgentRuntime(tmp_path / "agent-private-patch-preview")
+    try:
+        context, _reset = runtime._start_turn(1, "agent-session-patch-preview")
+        with runtime._lock:
+            mapped = runtime._map_engine_event_locked(
+                context,
+                EngineEvent(
+                    EngineEventType.MESSAGE_STARTED,
+                    context.session_id,
+                    {"role": "assistant"},
+                    "2026-08-15T08:00:00Z",
+                ),
+            )
+            mapped.extend(
+                runtime._map_engine_event_locked(
+                    context,
+                    EngineEvent(
+                        EngineEventType.MESSAGE_DELTA,
+                        context.session_id,
+                        {"text": "即将更新当前材料。"},
+                        "2026-08-15T08:00:01Z",
+                    ),
+                )
+            )
+            mapped.extend(runtime._flush_pending_delta_locked(context))
+            mapped.extend(
+                runtime._map_engine_event_locked(
+                    context,
+                    EngineEvent(
+                        EngineEventType.TOOL_STARTED,
+                        context.session_id,
+                        {
+                            "tool": "edit_model_object",
+                            "call_id": "edit-material",
+                            "arguments": {},
+                        },
+                        "2026-08-15T08:00:02Z",
+                    ),
+                )
+            )
+
+        message_start = next(
+            event
+            for event in mapped
+            if event.event_type is EventType.MESSAGE_START
+        )
+        message_complete = next(
+            event
+            for event in mapped
+            if event.event_type is EventType.MESSAGE_COMPLETE
+        )
+
+        assert message_start.payload["presentation_kind"] == "process"
+        assert message_complete.payload["presentation_kind"] == (
+            "patch_preview"
+        )
+    finally:
+        runtime.shutdown()
+
+
 def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
     _application()
     events = _Events()

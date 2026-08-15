@@ -92,6 +92,14 @@ class MessageStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class MessagePresentationKind(str, Enum):
+    PROCESS = "process"
+    PROPOSAL_PREVIEW = "proposal_preview"
+    PATCH_PREVIEW = "patch_preview"
+    DECISION_REQUEST = "decision_request"
+    RESULT_SUMMARY = "result_summary"
+
+
 class ToolStatus(str, Enum):
     REQUESTED = "requested"
     RUNNING = "running"
@@ -213,9 +221,9 @@ _REQUIRED_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
 _OPTIONAL_PAYLOAD_FIELDS: dict[EventType, frozenset[str]] = {
     EventType.TURN_STARTED: frozenset(),
     EventType.CONTINUATION_STARTED: frozenset(),
-    EventType.MESSAGE_START: frozenset(),
+    EventType.MESSAGE_START: frozenset({"presentation_kind"}),
     EventType.MESSAGE_DELTA: frozenset(),
-    EventType.MESSAGE_COMPLETE: frozenset(),
+    EventType.MESSAGE_COMPLETE: frozenset({"presentation_kind"}),
     EventType.TOOL_REQUESTED: frozenset(),
     EventType.TOOL_STARTED: frozenset(),
     EventType.TOOL_RESULT: frozenset(),
@@ -370,6 +378,15 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             raise AgentEventError("阶段 3 消息 role 只允许 assistant")
         if payload["format"] != "restricted_markdown":
             raise AgentEventError("消息 format 必须是 restricted_markdown")
+        try:
+            MessagePresentationKind(
+                payload.get(
+                    "presentation_kind",
+                    MessagePresentationKind.PROCESS.value,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise AgentEventError("消息 presentation_kind 无效") from error
         return
     if event_type is EventType.MESSAGE_DELTA:
         _require_identifier(payload["message_id"], "message_id")
@@ -381,6 +398,15 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
         return
     if event_type is EventType.MESSAGE_COMPLETE:
         _require_identifier(payload["message_id"], "message_id")
+        try:
+            MessagePresentationKind(
+                payload.get(
+                    "presentation_kind",
+                    MessagePresentationKind.PROCESS.value,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise AgentEventError("消息 presentation_kind 无效") from error
         return
     if event_type is EventType.TOOL_REQUESTED:
         _require_identifier(payload["call_id"], "call_id")
@@ -698,6 +724,7 @@ class MessageView:
     message_id: str
     role: str
     format: str
+    presentation_kind: MessagePresentationKind = MessagePresentationKind.PROCESS
     text: str = ""
     status: MessageStatus = MessageStatus.STREAMING
     _text_chunks: list[str] = field(
@@ -1031,6 +1058,12 @@ class AgentEventProjector:
             message_id=message_id,
             role=event.payload["role"],
             format=event.payload["format"],
+            presentation_kind=MessagePresentationKind(
+                event.payload.get(
+                    "presentation_kind",
+                    MessagePresentationKind.PROCESS.value,
+                )
+            ),
         )
         turn.messages.append(message)
         turn.timeline.append(
@@ -1050,6 +1083,10 @@ class AgentEventProjector:
         if message.status is not MessageStatus.STREAMING:
             raise AgentEventError("消息已经结束")
         message.materialize_text()
+        if "presentation_kind" in event.payload:
+            message.presentation_kind = MessagePresentationKind(
+                event.payload["presentation_kind"]
+            )
         message.status = MessageStatus.COMPLETED
         self._last_timeline_kind = TimelineKind.MESSAGE
 

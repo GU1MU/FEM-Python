@@ -28,6 +28,7 @@ from fem_gui.agent_events import (
     DiagnosticSeverity,
     EventType,
     FakeAgentEventStream,
+    MessagePresentationKind,
     MessageStatus,
     ToolStatus,
     TurnStatus,
@@ -35,8 +36,11 @@ from fem_gui.agent_events import (
 )
 from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
+    AgentNarrativeSection,
     ToolActivityPreview,
     _AGENT_CHAT_STYLESHEET,
+    _restricted_markdown_html,
+    _streaming_plaintext_html,
 )
 
 
@@ -87,15 +91,19 @@ def _message_events(
     turn_id: str = "turn-1",
     message_id: str = "message-1",
     deltas: tuple[str, ...] = ("第一段", "第二段"),
+    presentation_kind: str | None = None,
 ) -> list[AgentEvent]:
+    start_payload = {
+        "message_id": message_id,
+        "role": "assistant",
+        "format": "restricted_markdown",
+    }
+    if presentation_kind is not None:
+        start_payload["presentation_kind"] = presentation_kind
     result = [
         events.make(
             EventType.MESSAGE_START,
-            {
-                "message_id": message_id,
-                "role": "assistant",
-                "format": "restricted_markdown",
-            },
+            start_payload,
             turn_id=turn_id,
         )
     ]
@@ -356,6 +364,57 @@ def test_message_deltas_join_and_single_chunk_uses_the_same_interface():
         whole_log
     ).presentation.turns[0].messages[0]
     assert whole_message.text == "整段回复"
+
+
+def test_message_presentation_kind_replays_and_can_be_finalized():
+    events = _Events(session_id="presentation-kind-session")
+    log = [
+        _turn_start(events),
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "patch-preview-message",
+                "role": "assistant",
+                "format": "restricted_markdown",
+            },
+        ),
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "patch-preview-message",
+                "delta": "即将更新当前材料。",
+            },
+        ),
+    ]
+    log.append(
+        events.make(
+            EventType.MESSAGE_COMPLETE,
+            {
+                "message_id": "patch-preview-message",
+                "presentation_kind": "patch_preview",
+            },
+        )
+    )
+    log.append(events.make(EventType.TURN_COMPLETE, {}))
+
+    message = (
+        AgentEventProjector.replay(log)
+        .presentation.turns[0]
+        .messages[0]
+    )
+
+    assert message.presentation_kind is MessagePresentationKind.PATCH_PREVIEW
+    with pytest.raises(AgentEventError, match="presentation_kind"):
+        events.make(
+            EventType.MESSAGE_START,
+            {
+                "message_id": "invalid-presentation",
+                "role": "assistant",
+                "format": "restricted_markdown",
+                "presentation_kind": "raw_internal_trace",
+            },
+            turn_id="turn-2",
+        )
 
 
 def test_consecutive_tools_group_and_message_breaks_the_next_group():
@@ -931,6 +990,141 @@ def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
     drawer.close()
 
 
+def test_tool_lifecycle_events_coalesce_and_update_the_card_in_place():
+    application = _application()
+    events = _Events(session_id="incremental-tool-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events((_turn_start(events),))
+    drawer.show()
+    application.processEvents()
+    render_calls = 0
+    original_render = drawer._render_event_presentation
+
+    def counted_render(*args, **kwargs):
+        nonlocal render_calls
+        render_calls += 1
+        return original_render(*args, **kwargs)
+
+    drawer._render_event_presentation = counted_render
+    lifecycle = _tool_events(events, "incremental-tool", duration_ms=250)
+    drawer.apply_agent_event(lifecycle[0])
+    drawer.apply_agent_event(lifecycle[1])
+    application.processEvents()
+
+    tool_widget = drawer._tool_group_widgets["turn-1:tools:1"]
+    assert render_calls == 1
+    assert tool_widget.group.calls[0].status is ToolStatus.RUNNING
+
+    drawer.apply_agent_event(lifecycle[2])
+    application.processEvents()
+
+    assert render_calls == 1
+    assert drawer._tool_group_widgets["turn-1:tools:1"] is tool_widget
+    assert tool_widget.group.calls[0].status is ToolStatus.COMPLETED
+    assert tool_widget.summary_button.text().startswith("已完成 ·")
+    drawer.close()
+
+
+def test_long_process_message_collapses_and_expands_while_streaming():
+    application = _application()
+    events = _Events(session_id="narrative-collapse-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "long-process-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": "process",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "long-process-message",
+                    "delta": "过程说明。" * 50,
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert section.collapsible
+    assert section.primary_label.isHidden()
+    assert section.summary_row.isVisible()
+    assert section.summary_label.text().endswith("…")
+    assert section.details.isHidden()
+    assert section.toggle_button.arrowType() is Qt.ArrowType.DownArrow
+
+    section.toggle_button.click()
+    application.processEvents()
+
+    assert section.details.isVisible()
+    assert section.toggle_button.arrowType() is Qt.ArrowType.UpArrow
+    assert "过程说明。" * 50 in section.details_label.text()
+
+    drawer.apply_agent_event(
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "long-process-message",
+                "delta": "继续流式输出。",
+            },
+        )
+    )
+    drawer._flush_streaming_message_updates()
+    application.processEvents()
+
+    assert section.details.isVisible()
+    assert "继续流式输出。" in section.details_label.text()
+    drawer.close()
+
+
+def test_proposal_preview_never_collapses_when_long():
+    application = _application()
+    events = _Events(session_id="proposal-preview-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "proposal-preview-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": "proposal_preview",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "proposal-preview-message",
+                    "delta": "完整方案内容。" * 50,
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert not section.collapsible
+    assert section.primary_label.isVisible()
+    assert section.summary_row.isHidden()
+    assert section.primary_label.property("presentationKind") == (
+        "proposal_preview"
+    )
+    drawer.close()
+
+
 def test_live_activity_shows_analysis_and_current_tool_progress():
     application = _application()
     events = _Events(session_id="live-activity-session")
@@ -1038,6 +1232,22 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists():
     drawer.close()
 
 
+def test_message_paragraphs_have_more_space_than_wrapped_lines():
+    markdown = _restricted_markdown_html(
+        "第一段内容会在标签宽度不足时自动换行。\n\n"
+        "第二段第一行。\n第二段内的显式换行。"
+    )
+
+    assert "<p style='margin:0px 0 0 0;'>第一段内容" in markdown
+    assert "<p style='margin:7px 0 0 0;'>第二段第一行。<br>" in markdown
+    assert "第二段内的显式换行。</p>" in markdown
+    assert "<br><br>" not in markdown
+
+    streaming = _streaming_plaintext_html("第一段。\n\n第二段。")
+    assert "<p style='margin:0px 0 0 0;'>第一段。</p>" in streaming
+    assert "<p style='margin:7px 0 0 0;'>第二段。 ▌</p>" in streaming
+
+
 def test_restricted_markdown_renders_safe_aligned_tables():
     application = _application()
     events = _Events(session_id="markdown-table-session")
@@ -1084,7 +1294,7 @@ def test_restricted_markdown_renders_safe_aligned_tables():
     assert label is not None
     rendered = label.text()
     assert "<table " in rendered
-    assert "操作摘要：<table " in rendered
+    assert "操作摘要：</p><table " in rendered
     assert "<br><table " not in rendered
     assert "<br><br>" not in rendered
     assert rendered.count("<th ") == 3
@@ -1110,6 +1320,7 @@ def test_conversation_follows_stream_until_user_scrolls_up():
             "message_id": "scrolling-message",
             "role": "assistant",
             "format": "restricted_markdown",
+            "presentation_kind": "result_summary",
         },
     )
     first_delta = events.make(
@@ -1180,6 +1391,7 @@ def test_wheel_over_agent_text_scrolls_the_conversation():
                     "message_id": "wheel-target-message",
                     "role": "assistant",
                     "format": "restricted_markdown",
+                    "presentation_kind": "result_summary",
                 },
             ),
             events.make(

@@ -22,6 +22,8 @@ _PREPARE_TOOLS = {
 }
 _PLANAR_CONSTRUCTION_PREPARE_TOOL = "prepare_planar_construction_proposal"
 _AUTHORING_CONTEXT_TOOL = "read_authoring_context"
+_GEOMETRY_EDIT_PROBE_TOOL = "read_geometry_edit_context"
+_GEOMETRY_EDIT_PREPARE_TOOL = "prepare_geometry_edit"
 _TRANSFORM_DIMENSION = 2
 
 _CREATE_MARKERS = (
@@ -93,6 +95,61 @@ _MESH_MARKERS = (
     "hexes",
     "mesh",
     "meshing",
+)
+_GEOMETRY_EDIT_ACTION_MARKERS = (
+    "添加",
+    "加入",
+    "加上",
+    "增加",
+    "追加",
+    "切除",
+    "去除",
+    "删除",
+    "修改",
+    "调整",
+    "移动",
+    "扩大",
+    "缩小",
+    "改成",
+    "变成",
+    "add",
+    "append",
+    "cut",
+    "remove",
+    "delete",
+    "modify",
+    "change",
+    "move",
+    "resize",
+)
+_GEOMETRY_EDIT_FEATURE_MARKERS = (
+    "槽",
+    "孔",
+    "轮廓",
+    "边界",
+    "圆",
+    "矩形",
+    "多边形",
+    "形状",
+    "字母",
+    "slot",
+    "hole",
+    "cutout",
+    "profile",
+    "boundary",
+    "circle",
+    "rectangle",
+    "polygon",
+    "shape",
+    "glyph",
+)
+_CAPABILITY_QUESTION_MARKERS = (
+    "能做到吗",
+    "能实现吗",
+    "可以做到吗",
+    "是否支持",
+    "can you",
+    "is it possible",
 )
 _ARBITRARY_MARKERS = (
     "尺寸任意",
@@ -186,6 +243,10 @@ class GeometryRouteHint:
     @property
     def is_construction(self) -> bool:
         return self.intent_kind == "construction"
+
+    @property
+    def is_edit(self) -> bool:
+        return self.intent_kind == "edit"
 
     @property
     def is_ambiguous(self) -> bool:
@@ -344,6 +405,27 @@ def geometry_route_hint(text: str) -> GeometryRouteHint | None:
             mesh_prerequisite=False,
             missing_fields=("sweep_type",),
             intent_kind="ambiguous",
+        )
+
+    has_edit_action = any(
+        marker in normalized or marker in compact
+        for marker in _GEOMETRY_EDIT_ACTION_MARKERS
+    )
+    has_edit_feature = any(
+        marker in normalized or marker in compact
+        for marker in _GEOMETRY_EDIT_FEATURE_MARKERS
+    )
+    asks_capability = any(
+        marker in normalized or marker in compact
+        for marker in _CAPABILITY_QUESTION_MARKERS
+    )
+    if has_edit_action and has_edit_feature and not asks_capability:
+        return GeometryRouteHint(
+            "planar_geometry_edit",
+            target_part_dimension=2,
+            required_probe_tool=_GEOMETRY_EDIT_PROBE_TOOL,
+            required_prepare_tool=_GEOMETRY_EDIT_PREPARE_TOOL,
+            intent_kind="edit",
         )
 
     return None

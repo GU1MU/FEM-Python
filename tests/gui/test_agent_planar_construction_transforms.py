@@ -3,10 +3,15 @@ from __future__ import annotations
 from copy import deepcopy
 
 from fem import geometry as geometry_runtime
-from fem.application import ModelSession, compile_planar_construction
+from fem.application import (
+    ModelSession,
+    compile_planar_construction,
+    derive_feature_history,
+)
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
+    BooleanGeometry,
     ExtrudedGeometry,
     LogicalEntityRef,
     PathSweptGeometry,
@@ -183,13 +188,19 @@ def test_phase4_direct_h_plate_extrusion_is_one_atomic_3d_proposal() -> None:
     assert len(snapshot.parts) == 1
     recipe = snapshot.parts[0].geometry_recipe
     assert type(recipe) is ExtrudedGeometry
-    assert recipe.base.is_strict
+    assert type(recipe.base) is BooleanGeometry
+    assert [feature.kind for feature in derive_feature_history(recipe)] == [
+        "sketch",
+        "cut",
+        "cut",
+        "extrude",
+    ]
     topology = describe_recipe_topology(recipe)
     assert topology.exact
     assert topology.entities_of("body", selectable_only=True)
     roles = {entity.semantic_role for entity in topology.entities_of("face")}
-    assert "copy.bottom.sketch.profile" in roles
-    assert "copy.top.sketch.profile" in roles
+    assert any(role.startswith("copy.bottom.") for role in roles)
+    assert any(role.startswith("copy.top.") for role in roles)
     assert "sweep.boundary.outer" in roles
     assert "sweep.boundary.hole" in roles
     with geometry_runtime.model("phase4-ir-h-lineage", dimension=3) as cad:
@@ -253,6 +264,11 @@ def test_phase4_direct_hole_path_sweep_preserves_channel_and_tet_chain() -> None
     bridge.accept_from_gui_control(result.data["proposal_id"])
     recipe = session.snapshot().parts[0].geometry_recipe
     assert type(recipe) is PathSweptGeometry
+    assert [feature.kind for feature in derive_feature_history(recipe)] == [
+        "sketch",
+        "cut",
+        "pathsweep",
+    ]
     topology = describe_recipe_topology(recipe)
     assert topology.exact
     assert any(

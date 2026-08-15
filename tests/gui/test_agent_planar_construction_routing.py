@@ -256,6 +256,19 @@ def test_phase6_existing_profile_transform_route_remains_dedicated() -> None:
     assert hint.required_prepare_tool == "prepare_profile_extrusion"
 
 
+def test_phase6_follow_up_planar_cut_routes_through_geometry_edit_tools() -> None:
+    hint = geometry_route_hint("当然，切除出S形状的槽即可")
+
+    assert hint is not None and hint.is_edit
+    assert hint.requested_operation == "planar_geometry_edit"
+    assert hint.target_part_dimension == 2
+    assert hint.required_probe_tool == "read_geometry_edit_context"
+    assert hint.required_prepare_tool == "prepare_geometry_edit"
+    assert geometry_route_hint("如果在H左边加上S字母，能做到吗？") is None
+    direct = geometry_route_hint("请在H字母的左边加入一个字母S")
+    assert direct is not None and direct.is_edit
+
+
 def test_phase6_legacy_decoder_is_deprecated_and_project_stores_only_recipe() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)

@@ -500,6 +500,64 @@ def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> No
     assert "three attempts" in exhausted.data["retry"]["blocker"]
 
 
+def test_phase5_invalid_output_is_rejected_before_cad_compilation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_compile(_construction):
+        raise AssertionError("CAD compilation must not start for invalid output")
+
+    monkeypatch.setattr(
+        "fem_gui.agent_authoring.compile_planar_construction",
+        unexpected_compile,
+    )
+    bridge, controller = _controller(ModelSession())
+    arguments = _arguments()
+    arguments["output"] = {"kind": "planar", "height": 10.0}
+
+    result = _dispatch(controller, arguments, "invalid-output")
+
+    assert not result.ok
+    assert result.data["diagnostic"]["code"] == "planar-ir.transform-invalid"
+    assert "only kind='planar'" in result.data["diagnostic"]["message"]
+    assert not bridge._records
+
+
+def test_phase5_fourth_planar_attempt_is_blocked_before_compilation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compile_calls = 0
+
+    def fail_compile(_construction):
+        nonlocal compile_calls
+        compile_calls += 1
+        raise PlanarConstructionCompileError(
+            PlanarConstructionDiagnostic(
+                "planar-ir.invalid-primitive",
+                "injected primitive failure",
+                "plate",
+                True,
+                ("width",),
+            )
+        )
+
+    monkeypatch.setattr(
+        "fem_gui.agent_authoring.compile_planar_construction",
+        fail_compile,
+    )
+    _bridge, controller = _controller(ModelSession())
+    results = []
+    for index in range(4):
+        arguments = _arguments()
+        arguments["construction"]["nodes"][0]["width"] = 100.0 + index
+        results.append(_dispatch(controller, arguments, f"attempt-{index}"))
+
+    assert compile_calls == 3
+    assert results[-1].data["required_action"] == (
+        "restart_planar_construction_in_new_turn"
+    )
+    assert results[-1].data["retry"]["retryable"] is False
+
+
 def test_phase5_retry_accepts_allowed_top_level_result_change() -> None:
     _bridge, controller = _controller(ModelSession())
     request = _missing_reference()

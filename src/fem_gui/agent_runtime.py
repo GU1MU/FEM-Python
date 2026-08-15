@@ -53,6 +53,7 @@ from .agent_context import (
 from .agent_events import (
     AgentEvent,
     EventType,
+    MessagePresentationKind,
     redact_absolute_paths,
     safe_tool_summary,
 )
@@ -135,6 +136,9 @@ _TOOL_DISPLAY_NAMES = {
     "list_artifacts": "列出 Agent 工件",
     "create_native_model_document": "新建模型文档",
 }
+_AUTOMATIC_MODEL_PATCH_TOOLS = frozenset(
+    {"apply_model_definition", "edit_model_object"}
+)
 
 
 def _diagnostic_identity(
@@ -167,6 +171,7 @@ class _TurnContext:
     turn_id: str
     message_counter: int = 0
     active_message_id: str | None = None
+    next_message_presentation_kind: str = MessagePresentationKind.PROCESS.value
     pending_confirmation: dict[str, object] | None = None
     terminal: bool = False
     failure_reason: str | None = None
@@ -1724,8 +1729,8 @@ class QtAgentRuntime(QObject):
             if context is not None:
                 self._fail_turn(
                     context,
-                    title="Agent 续跑失败",
-                    message="Agent 未能处理本地任务终态。",
+                    title="处理失败",
+                    message="未能继续处理，请重试。",
                     code="GUI-CONTINUATION-ERROR",
                 )
         finally:
@@ -1980,16 +1985,21 @@ class QtAgentRuntime(QObject):
     def _complete_active_message_locked(
         self,
         context: _TurnContext,
+        *,
+        presentation_kind: str | None = None,
     ) -> list[AgentEvent]:
         message_id = context.active_message_id
         if message_id is None:
             return []
         context.active_message_id = None
+        payload = {"message_id": message_id}
+        if presentation_kind is not None:
+            payload["presentation_kind"] = presentation_kind
         return [
             self._new_event_locked(
                 context,
                 EventType.MESSAGE_COMPLETE,
-                {"message_id": message_id},
+                payload,
             )
         ]
 
@@ -2018,6 +2028,18 @@ class QtAgentRuntime(QObject):
             context.embedded_tool_diagnostics.clear()
         if event.event is EngineEventType.MESSAGE_STARTED:
             events = self._complete_active_message_locked(context)
+            raw_kind = event.data.get(
+                "presentation_kind",
+                MessagePresentationKind.PROCESS.value,
+            )
+            try:
+                context.next_message_presentation_kind = (
+                    MessagePresentationKind(raw_kind).value
+                )
+            except (TypeError, ValueError):
+                context.next_message_presentation_kind = (
+                    MessagePresentationKind.PROCESS.value
+                )
             # Provider tool loops often emit an empty assistant envelope before
             # tool calls.  Wait for text before creating a visible message.
             return events
@@ -2037,8 +2059,14 @@ class QtAgentRuntime(QObject):
                             "message_id": context.active_message_id,
                             "role": "assistant",
                             "format": "restricted_markdown",
+                            "presentation_kind": (
+                                context.next_message_presentation_kind
+                            ),
                         },
                     )
+                )
+                context.next_message_presentation_kind = (
+                    MessagePresentationKind.PROCESS.value
                 )
             text = event.data.get("text")
             if isinstance(text, str) and text:
@@ -2119,7 +2147,14 @@ class QtAgentRuntime(QObject):
         if call_id in context.tools:
             self.eventRejected.emit("已拒绝重复的工具调用标识")
             return []
-        events = self._complete_active_message_locked(context)
+        events = self._complete_active_message_locked(
+            context,
+            presentation_kind=(
+                MessagePresentationKind.PATCH_PREVIEW.value
+                if tool_name in _AUTOMATIC_MODEL_PATCH_TOOLS
+                else None
+            ),
+        )
         context.tools[call_id] = _ToolActivity(
             tool_name,
             time.monotonic(),

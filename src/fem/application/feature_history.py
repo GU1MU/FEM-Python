@@ -123,6 +123,32 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
     return tuple(records)
 
 
+def remove_terminal_feature(recipe: NativeGeometry) -> NativeGeometry:
+    """Return the recipe that remains after removing one outer feature.
+
+    This mirrors the native GUI feature manager: only the terminal feature in
+    a single-body recipe chain is removable, so no descendant dependency can
+    be orphaned.
+    """
+
+    _require_native_recipe(recipe)
+    if isinstance(
+        recipe,
+        (
+            MovedGeometry,
+            RotatedGeometry,
+            ExtrudedGeometry,
+            RevolvedGeometry,
+            PathSweptGeometry,
+            FaceSketchBooleanGeometry,
+        ),
+    ):
+        return recipe.base
+    if isinstance(recipe, BooleanGeometry):
+        return recipe.object_geometry
+    raise ValueError("geometry recipe has no removable terminal feature")
+
+
 def derive_geometry_feature_rows(
     recipe: NativeGeometry,
 ) -> tuple[str, ...]:
@@ -249,4 +275,8 @@ def _require_native_recipe(recipe: Any) -> None:
         raise TypeError(f"unsupported native geometry recipe: {type(recipe).__name__}")
 
 
-__all__ = ["derive_feature_history", "derive_geometry_feature_rows"]
+__all__ = [
+    "derive_feature_history",
+    "derive_geometry_feature_rows",
+    "remove_terminal_feature",
+]

@@ -408,6 +408,11 @@ def resolve_planar_boolean_lineage(
             )
             or bool(target_ids and tool_ids)
             or bool(adjacent_target_sources and adjacent_tool_sources)
+            or (
+                not target_ids
+                and not tool_ids
+                and bool(adjacent_target_sources or adjacent_tool_sources)
+            )
         )
         if len(exact_target) == 1 and not tool_ids and not intersection:
             logical_id = exact_target[0]

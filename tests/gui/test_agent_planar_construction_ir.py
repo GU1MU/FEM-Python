@@ -6,10 +6,13 @@ import json
 import pytest
 
 from fem import geometry as geometry_runtime
-from fem.application import ModelSession
-from fem.geometry import SketchGeometry
+from fem.application import ModelSession, derive_feature_history
+from fem.geometry import BooleanGeometry, SketchGeometry
 from fem_agent.authoring import AgentProposal, ProposalState
-from fem_agent.authoring_runtime import AuthoringTurnSnapshot
+from fem_agent.authoring_runtime import (
+    AuthoringTurnSnapshot,
+    AuthoringWorkflowStage,
+)
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolCall
 from fem_agent.providers.fake import FakeProvider
@@ -88,12 +91,7 @@ def _controller(session: ModelSession):
 
 
 def _h_plate_construction() -> dict[str, object]:
-    construction = deepcopy(EXPECTED_H_CONSTRUCTION)
-    construction["nodes"] = [
-        node for node in construction["nodes"] if node["id"] != "all_cuts"
-    ]
-    construction["nodes"][-1]["subtract"] = ["h_slot", "holes"]
-    return construction
+    return deepcopy(EXPECTED_H_CONSTRUCTION)
 
 
 def _arguments() -> dict[str, object]:
@@ -122,10 +120,18 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     outputs = definition.parameters["properties"]["output"]["oneOf"]
     assert outputs[0] == {"const": "planar"}
     assert {item["properties"]["kind"]["const"] for item in outputs[1:]} == {
+        "planar",
         "extrusion",
         "revolution",
         "path_sweep",
     }
+    planar_object = next(
+        item
+        for item in outputs[1:]
+        if item["properties"]["kind"]["const"] == "planar"
+    )
+    assert planar_object["required"] == ["kind"]
+    assert planar_object["additionalProperties"] is False
     construction = definition.parameters["properties"]["construction"]
     variants = construction["properties"]["nodes"]["items"]["oneOf"]
     assert {item["properties"]["kind"]["const"] for item in variants} == {
@@ -144,6 +150,15 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
         "circular_pattern",
     }
     assert all(item["additionalProperties"] is False for item in variants)
+    rectangle = next(
+        item for item in variants if item["properties"]["kind"]["const"] == "rectangle"
+    )
+    circle = next(
+        item for item in variants if item["properties"]["kind"]["const"] == "circle"
+    )
+    assert "lower-left" in rectangle["properties"]["x"]["description"]
+    assert "not the center" in rectangle["properties"]["y"]["description"]
+    assert "never diameter" in circle["properties"]["radius"]["description"]
 
     context = controller.dispatch(
         "read_authoring_context",
@@ -155,9 +170,79 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     assert capability["plane"] == "XY"
     assert capability["budgets"]["max_node_count"] == 64
     assert capability["budgets"]["max_pattern_instances"] == 256
+    assert capability["coordinate_conventions"] == {
+        "rectangle_anchor": "lower_left",
+        "rectangle_extent": "x..x+width, y..y+height",
+        "circle_position": "center_x, center_y",
+        "circle_size": "radius; use diameter/2 when the request gives a diameter",
+        "pattern_seed": "included_as_instance_zero",
+    }
     serialized = json.dumps(capability).casefold()
     assert "gmsh" not in serialized
     assert "occ" not in serialized
+
+
+def test_phase3_rejects_misanchored_cutters_before_presenting_a_card() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    before = session.snapshot()
+    construction = {
+        "schema_version": 1,
+        "name": "misanchored_plate",
+        "plane": "XY",
+        "nodes": [
+            {
+                "id": "plate",
+                "kind": "rectangle",
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 300,
+            },
+            {
+                "id": "centered_as_if_x_y_were_centers",
+                "kind": "rectangle",
+                "x": -20,
+                "y": -40,
+                "width": 40,
+                "height": 80,
+            },
+            {
+                "id": "outside_hole",
+                "kind": "circle",
+                "center_x": -35,
+                "center_y": -135,
+                "radius": 3,
+            },
+            {
+                "id": "result",
+                "kind": "difference",
+                "base": "plate",
+                "subtract": ["centered_as_if_x_y_were_centers", "outside_hole"],
+            },
+        ],
+        "result_node_id": "result",
+    }
+
+    result = controller.dispatch(
+        "prepare_planar_construction_proposal",
+        {
+            "part_function": "错误锚点回归样例",
+            "construction": construction,
+            "output": "planar",
+        },
+        ToolExecutionContext("phase3-planar", 0, "misanchored"),
+    )
+
+    assert result.ok is False
+    assert result.data["diagnostic"]["code"] == "planar-ir.subtract-no-effect"
+    assert result.data["diagnostic"]["node_id"] in {
+        "centered_as_if_x_y_were_centers",
+        "outside_hole",
+    }
+    assert result.data["diagnostic"]["model_unchanged"] is True
+    assert bridge._records == {}
+    assert session.snapshot() == before
 
 
 def test_phase3_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None:
@@ -177,7 +262,7 @@ def test_phase3_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() 
         "difference": 1,
         "rectangle": 4,
         "rectangular_pattern": 1,
-        "union": 1,
+        "union": 2,
     }
     assert result.data["proof_summary"]["equivalent"] is True
     assert result.data["proof_summary"]["material_profile_count"] == 1
@@ -236,12 +321,134 @@ def test_phase3_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() 
     assert accepted.session_revision == before.session_revision + 1
     assert len(accepted.parts) == 1
     recipe = accepted.parts[0].geometry_recipe
-    assert type(recipe) is SketchGeometry
-    assert recipe.is_strict
-    analysis = geometry_runtime.analyze_sketch_profiles(recipe)
-    assert analysis.valid
-    assert sum(profile.is_material for profile in analysis.profiles) == 1
-    assert sum(profile.is_hole for profile in analysis.profiles) == 5
+    assert type(recipe) is BooleanGeometry
+    assert recipe.planar_context is not None and recipe.planar_context.proven
+    assert [feature.kind for feature in derive_feature_history(recipe)] == [
+        "sketch",
+        "cut",
+        "cut",
+    ]
+    assert type(recipe.object_geometry) is BooleanGeometry
+    assert type(recipe.object_geometry.object_geometry) is SketchGeometry
+    h_tool = recipe.object_geometry.tool_geometry
+    hole_tool = recipe.tool_geometry
+    assert type(h_tool) is SketchGeometry
+    assert type(hole_tool) is SketchGeometry
+    assert (
+        sum(
+            profile.is_material
+            for profile in geometry_runtime.analyze_sketch_profiles(h_tool).profiles
+        )
+        == 1
+    )
+    assert (
+        sum(
+            profile.is_material
+            for profile in geometry_runtime.analyze_sketch_profiles(hole_tool).profiles
+        )
+        == 4
+    )
+
+
+def test_phase3_planar_object_output_normalizes_to_the_same_2d_recipe() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    arguments = _arguments()
+    arguments["output"] = {"kind": "planar"}
+
+    result = controller.dispatch(
+        "prepare_planar_construction_proposal",
+        arguments,
+        ToolExecutionContext("phase3-planar", 0, "object-planar"),
+    )
+
+    assert result.ok, result.summary
+    proposal = bridge._records[result.data["proposal_id"]].proposal
+    assert proposal.preconditions["local_evidence"]["output_kind"] == "planar"
+    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
+    assert receipt.state is ProposalState.SUCCEEDED
+    assert session.snapshot().parts[0].dimension == 2
+
+
+def test_agent_appends_a_second_round_path_slot_as_a_new_cut_feature() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    initial = _dispatch(controller, key="feature-history-initial")
+    assert initial.ok, initial.summary
+    initial_receipt = bridge.accept_from_gui_control(str(initial.data["proposal_id"]))
+    assert initial_receipt.state is ProposalState.SUCCEEDED
+    controller.record_proposal_state(
+        "geometry", initial_receipt.state, initial_receipt.message
+    )
+
+    edited = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "add_path_slot",
+                "points": [
+                    {"x": 75.0, "y": 82.0},
+                    {"x": 40.0, "y": 82.0},
+                    {"x": 40.0, "y": 50.0},
+                    {"x": 75.0, "y": 50.0},
+                    {"x": 75.0, "y": 18.0},
+                    {"x": 40.0, "y": 18.0},
+                ],
+                "width": 6.0,
+                "cap": "round",
+                "join": "round",
+            },
+        },
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "feature-history-second-cut",
+        ),
+    )
+    assert edited.ok, edited.summary
+    assert (
+        bridge.accept_from_gui_control(str(edited.data["proposal_id"])).state
+        is ProposalState.SUCCEEDED
+    )
+
+    recipe = session.snapshot().parts[0].geometry_recipe
+    assert type(recipe) is BooleanGeometry
+    assert recipe.operation == "cut"
+    history = derive_feature_history(recipe)
+    assert [feature.kind for feature in history] == [
+        "sketch",
+        "cut",
+        "cut",
+        "cut",
+    ]
+    assert [feature.name for feature in history] == [
+        "Sketch-1",
+        "Cut-1",
+        "Cut-2",
+        "Cut-3",
+    ]
+
+
+def test_phase3_accept_refreshes_revision_before_clearing_pending_operation() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    result = _dispatch(controller, key="accept-refresh-order")
+    bridge.set_lifecycle_listener(
+        lambda proposal, state, message: controller.record_proposal_state(
+            proposal.proposal_kind.value,
+            state,
+            message,
+        )
+    )
+
+    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
+
+    assert receipt.state is ProposalState.SUCCEEDED
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+    assert {item.name for item in controller.definitions}.issuperset(
+        {"read_geometry_edit_context", "prepare_geometry_edit"}
+    )
 
 
 def test_phase3_fake_provider_uses_one_card_and_continues_from_new_snapshot(

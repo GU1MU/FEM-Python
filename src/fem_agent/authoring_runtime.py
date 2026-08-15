@@ -145,9 +145,11 @@ class AuthoringTurnSnapshot:
             raise TypeError("snapshot available must be boolean")
         if self.schema_version != AUTHORING_TURN_SNAPSHOT_SCHEMA_VERSION:
             raise ValueError("unsupported authoring turn snapshot schema")
-        if isinstance(self.snapshot_generation, bool) or not isinstance(
-            self.snapshot_generation, int
-        ) or self.snapshot_generation < 0:
+        if (
+            isinstance(self.snapshot_generation, bool)
+            or not isinstance(self.snapshot_generation, int)
+            or self.snapshot_generation < 0
+        ):
             raise ValueError("snapshot_generation must be a non-negative integer")
         if self.session_revision is not None and (
             isinstance(self.session_revision, bool)
@@ -155,11 +157,15 @@ class AuthoringTurnSnapshot:
             or self.session_revision < 0
         ):
             raise ValueError("session_revision must be a non-negative integer")
-        if self.active_part_dimension is not None and self.active_part_dimension not in {
-            1,
-            2,
-            3,
-        }:
+        if (
+            self.active_part_dimension is not None
+            and self.active_part_dimension
+            not in {
+                1,
+                2,
+                3,
+            }
+        ):
             raise ValueError("active_part_dimension must be 1, 2, or 3")
         if type(self.mesh_present) is not bool or type(self.mesh_current) is not bool:
             raise TypeError("snapshot mesh flags must be boolean")
@@ -177,9 +183,10 @@ class AuthoringTurnSnapshot:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _snapshot_text(value, name))
-        if self.active_part_suppressed is not None and type(
-            self.active_part_suppressed
-        ) is not bool:
+        if (
+            self.active_part_suppressed is not None
+            and type(self.active_part_suppressed) is not bool
+        ):
             raise TypeError("active_part_suppressed must be boolean or null")
         object.__setattr__(
             self,
@@ -196,10 +203,7 @@ class AuthoringTurnSnapshot:
         # tail trim is used only for non-preferred names; core read/prepare
         # capabilities are retained whenever they are present.
         payload = self._to_dict_unbounded()
-        budget = (
-            AUTHORING_TURN_SNAPSHOT_MAX_BYTES
-            - _SNAPSHOT_BUDGET_MARGIN_BYTES
-        )
+        budget = AUTHORING_TURN_SNAPSHOT_MAX_BYTES - _SNAPSHOT_BUDGET_MARGIN_BYTES
         if _json_size_bytes(payload) > budget:
             payload["truncated"] = True
             capabilities = list(self.enabled_capabilities)
@@ -249,17 +253,11 @@ class AuthoringTurnSnapshot:
         if context is None:
             return cls.unavailable(generation=generation)
         active = next(
-            (
-                item
-                for item in context.parts
-                if item.part_id == context.active_part_id
-            ),
+            (item for item in context.parts if item.part_id == context.active_part_id),
             None,
         )
         callable_names = {
-            str(name).strip()
-            for name in published_tool_names
-            if str(name).strip()
+            str(name).strip() for name in published_tool_names if str(name).strip()
         }
         return cls(
             available=True,
@@ -274,12 +272,8 @@ class AuthoringTurnSnapshot:
             session_revision=context.binding.session_revision,
             active_part_id=context.active_part_id,
             active_part_dimension=(None if active is None else active.dimension),
-            active_part_recipe_kind=(
-                None if active is None else active.recipe_kind
-            ),
-            active_part_suppressed=(
-                None if active is None else active.suppressed
-            ),
+            active_part_recipe_kind=(None if active is None else active.recipe_kind),
+            active_part_suppressed=(None if active is None else active.suppressed),
             mesh_present=context.mesh.present,
             mesh_current=context.mesh.current,
             enabled_capabilities=tuple(
@@ -462,6 +456,7 @@ _MAX_PROVIDER_PAYLOAD_BYTES = 32_768
 _MAX_PROVIDER_COLLECTION_ITEMS = 128
 _MAX_PROVIDER_DEPTH = 12
 
+
 def _snapshot_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-blank string")
@@ -482,22 +477,23 @@ def _snapshot_names(values: Sequence[str]) -> tuple[str, ...]:
         if isinstance(value, str) and value.strip()
     }
     ordered = sorted(normalized)
-    preferred = [
-        item for item in _SNAPSHOT_PREFERRED_NAMES if item in normalized
-    ]
+    preferred = [item for item in _SNAPSHOT_PREFERRED_NAMES if item in normalized]
     remainder = [item for item in ordered if item not in preferred]
     return tuple((preferred + remainder)[:AUTHORING_TURN_SNAPSHOT_MAX_ITEMS])
 
 
 def _json_size_bytes(payload: Mapping[str, object]) -> int:
-    return len(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ) + 1
+    return (
+        len(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        + 1
+    )
 
 
 _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
@@ -1114,8 +1110,10 @@ _PREPARE_GEOMETRY_EDIT = _tool(
         "canonical Profile; path sweep also requires an ordered open polyline and "
         "a fixed or transport frame. Exact Part/Body Boolean requires explicit "
         "target, tool, fuse/cut operation, result name, and the sole supported "
-        "tool-consumption policy. The edit runs only after the local GUI control "
-        "is clicked."
+        "tool-consumption policy. A two-dimensional fuse or cut uses planar_boolean "
+        "with one detached rectangle, circle, polygon, or path-stroke tool and is "
+        "appended to native feature history. The edit runs only after the local "
+        "GUI control is clicked."
     ),
     {
         "type": "object",
@@ -1147,9 +1145,7 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "exclusiveMinimum": 0,
                             },
                         },
-                        "required": [
-                            "operation", "source_face_ids", "height"
-                        ],
+                        "required": ["operation", "source_face_ids", "height"],
                         "additionalProperties": False,
                     },
                     {
@@ -1172,7 +1168,10 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                             },
                         },
                         "required": [
-                            "operation", "source_face_id", "axis", "angle_degrees"
+                            "operation",
+                            "source_face_id",
+                            "axis",
+                            "angle_degrees",
                         ],
                         "additionalProperties": False,
                     },
@@ -1195,7 +1194,11 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                         "items": {
                                             "type": "object",
                                             "properties": {
-                                                "name": {"type": "string", "minLength": 1, "maxLength": 64},
+                                                "name": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 64,
+                                                },
                                                 "x": {"type": "number"},
                                                 "y": {"type": "number"},
                                                 "z": {"type": "number"},
@@ -1214,9 +1217,21 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                         "items": {
                                             "type": "object",
                                             "properties": {
-                                                "name": {"type": "string", "minLength": 1, "maxLength": 64},
-                                                "start": {"type": "string", "minLength": 1, "maxLength": 64},
-                                                "end": {"type": "string", "minLength": 1, "maxLength": 64},
+                                                "name": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 64,
+                                                },
+                                                "start": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 64,
+                                                },
+                                                "end": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 64,
+                                                },
                                             },
                                             "required": ["name", "start", "end"],
                                             "additionalProperties": False,
@@ -1232,8 +1247,132 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                             },
                         },
                         "required": [
-                            "operation", "source_face_id", "path", "frame_strategy"
+                            "operation",
+                            "source_face_id",
+                            "path",
+                            "frame_strategy",
                         ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operation": {"const": "planar_boolean"},
+                            "boolean_operation": {
+                                "type": "string",
+                                "enum": ["fuse", "cut"],
+                            },
+                            "tool": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {"const": "rectangle"},
+                                            "x": {"type": "number"},
+                                            "y": {"type": "number"},
+                                            "width": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0,
+                                            },
+                                            "height": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0,
+                                            },
+                                        },
+                                        "required": [
+                                            "kind",
+                                            "x",
+                                            "y",
+                                            "width",
+                                            "height",
+                                        ],
+                                        "additionalProperties": False,
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {"const": "circle"},
+                                            "center_x": {"type": "number"},
+                                            "center_y": {"type": "number"},
+                                            "radius": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0,
+                                            },
+                                        },
+                                        "required": [
+                                            "kind",
+                                            "center_x",
+                                            "center_y",
+                                            "radius",
+                                        ],
+                                        "additionalProperties": False,
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {"const": "polygon"},
+                                            "vertices": {
+                                                "type": "array",
+                                                "minItems": 3,
+                                                "maxItems": 64,
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "x": {"type": "number"},
+                                                        "y": {"type": "number"},
+                                                    },
+                                                    "required": ["x", "y"],
+                                                    "additionalProperties": False,
+                                                },
+                                            },
+                                        },
+                                        "required": ["kind", "vertices"],
+                                        "additionalProperties": False,
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": {"const": "path_stroke"},
+                                            "points": {
+                                                "type": "array",
+                                                "minItems": 2,
+                                                "maxItems": 64,
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "x": {"type": "number"},
+                                                        "y": {"type": "number"},
+                                                    },
+                                                    "required": ["x", "y"],
+                                                    "additionalProperties": False,
+                                                },
+                                            },
+                                            "width": {
+                                                "type": "number",
+                                                "exclusiveMinimum": 0,
+                                            },
+                                            "cap": {
+                                                "type": "string",
+                                                "enum": ["butt", "square", "round"],
+                                            },
+                                            "join": {
+                                                "type": "string",
+                                                "enum": ["miter", "bevel", "round"],
+                                            },
+                                        },
+                                        "required": [
+                                            "kind",
+                                            "points",
+                                            "width",
+                                            "cap",
+                                            "join",
+                                        ],
+                                        "additionalProperties": False,
+                                    },
+                                ]
+                            },
+                        },
+                        "required": ["operation", "boolean_operation", "tool"],
                         "additionalProperties": False,
                     },
                     {
@@ -1374,6 +1513,47 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                     {
                         "type": "object",
                         "properties": {
+                            "operation": {"const": "add_path_slot"},
+                            "points": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 64,
+                                "description": (
+                                    "Ordered open centerline of one connected, "
+                                    "constant-width slot. Use this for S-, U-, "
+                                    "or serpentine-shaped cutouts; do not submit "
+                                    "offset boundary vertices or disconnected rectangles."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "x": {"type": "number"},
+                                        "y": {"type": "number"},
+                                    },
+                                    "required": ["x", "y"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "width": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "description": "Full slot width.",
+                            },
+                            "cap": {
+                                "type": "string",
+                                "enum": ["butt", "square", "round"],
+                            },
+                            "join": {
+                                "type": "string",
+                                "enum": ["miter", "bevel", "round"],
+                            },
+                        },
+                        "required": ["operation", "points", "width", "cap", "join"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
                             "operation": {"const": "update_point"},
                             "point_id": {
                                 "type": "string",
@@ -1449,9 +1629,7 @@ _PROFILE_TRANSFORM_OPERATION_CONSTS = frozenset(
 _legacy_edit["oneOf"] = [
     branch
     for branch in _legacy_edit["oneOf"]
-    if branch.get("properties", {})
-    .get("operation", {})
-    .get("const")
+    if branch.get("properties", {}).get("operation", {}).get("const")
     not in _PROFILE_TRANSFORM_OPERATION_CONSTS
 ]
 _DELETE_CIRCLES_EDIT_SCHEMA = {
@@ -1547,8 +1725,12 @@ _PLANAR_CONSTRAINT_SCHEMA = {
             {"point_id": _SKETCH_ID_SCHEMA, "curve_id": _SKETCH_ID_SCHEMA},
             ["point_id", "curve_id"],
         ),
-        _constraint_edit_schema("horizontal", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]),
-        _constraint_edit_schema("vertical", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]),
+        _constraint_edit_schema(
+            "horizontal", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]
+        ),
+        _constraint_edit_schema(
+            "vertical", {"line_id": _SKETCH_ID_SCHEMA}, ["line_id"]
+        ),
         _constraint_edit_schema(
             "parallel",
             {"first_line_id": _SKETCH_ID_SCHEMA, "second_line_id": _SKETCH_ID_SCHEMA},
@@ -1668,8 +1850,11 @@ _DELETE_CURVES_EDIT_SCHEMA = {
     "properties": {
         "operation": {"const": "delete_curves"},
         "curve_ids": {
-            "type": "array", "minItems": 1, "maxItems": 32,
-            "uniqueItems": True, "items": _SKETCH_ID_SCHEMA,
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": _SKETCH_ID_SCHEMA,
         },
     },
     "required": ["operation", "curve_ids"],
@@ -1677,7 +1862,10 @@ _DELETE_CURVES_EDIT_SCHEMA = {
 }
 _ADD_CONSTRAINT_EDIT_SCHEMA = {
     "type": "object",
-    "properties": {"operation": {"const": "add_constraint"}, "constraint": _PLANAR_CONSTRAINT_SCHEMA},
+    "properties": {
+        "operation": {"const": "add_constraint"},
+        "constraint": _PLANAR_CONSTRAINT_SCHEMA,
+    },
     "required": ["operation", "constraint"],
     "additionalProperties": False,
 }
@@ -1696,8 +1884,11 @@ _DELETE_CONSTRAINTS_EDIT_SCHEMA = {
     "properties": {
         "operation": {"const": "delete_constraints"},
         "constraint_ids": {
-            "type": "array", "minItems": 1, "maxItems": 32,
-            "uniqueItems": True, "items": _SKETCH_ID_SCHEMA,
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": _SKETCH_ID_SCHEMA,
         },
     },
     "required": ["operation", "constraint_ids"],
@@ -1769,8 +1960,9 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
         "transforms use the dedicated prepare_profile_* tools; this compatibility "
         "tool retains sketch, rigid, and exact Boolean edits. A planar cutout is "
         "one contained closed inner Profile, so it does not require Part Boolean. "
-        "Freeform silhouettes should use one ordered add_polygon when possible, "
-        "or one complete line/arc batch. Invalid Profiles return exact topology "
+        "Constant-width S-, U-, and serpentine-shaped slots must use add_path_slot "
+        "with one ordered open centerline; arbitrary silhouettes should use one "
+        "ordered add_polygon or one complete line/arc batch. Invalid Profiles return exact topology "
         "diagnostics and must be revised before presenting a confirmation."
     ),
     _legacy_geometry_edit_parameters,
@@ -1856,6 +2048,8 @@ _READ_MODEL_TOPOLOGY_CONTEXT = _tool(
     ),
     _NO_ARGUMENTS,
 )
+
+
 def _exact_schema(
     properties: Mapping[str, object],
     *,
@@ -2424,7 +2618,7 @@ _APPLY_DEFINITION = _tool(
                     ]
                 ),
             ),
-        ]
+        ],
     },
 )
 _RUN_PREFLIGHT = _tool(
@@ -2505,6 +2699,13 @@ def _planar_construction_context_capability() -> dict[str, object]:
     return {
         "schema_version": PLANAR_CONSTRUCTION_SCHEMA_VERSION,
         "plane": "XY",
+        "coordinate_conventions": {
+            "rectangle_anchor": "lower_left",
+            "rectangle_extent": "x..x+width, y..y+height",
+            "circle_position": "center_x, center_y",
+            "circle_size": "radius; use diameter/2 when the request gives a diameter",
+            "pattern_seed": "included_as_instance_zero",
+        },
         "node_kinds": {
             "primitive": ["rectangle", "circle", "polygon", "path_stroke"],
             "boolean": ["union", "difference", "intersection"],
@@ -2532,19 +2733,56 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
     _planar_node_schema(
         "rectangle",
         {
-            "x": {"type": "number"},
-            "y": {"type": "number"},
-            "width": {"type": "number", "exclusiveMinimum": 0},
-            "height": {"type": "number", "exclusiveMinimum": 0},
+            "x": {
+                "type": "number",
+                "description": (
+                    "X coordinate of the lower-left corner, not the center. "
+                    "The rectangle spans x through x + width."
+                ),
+            },
+            "y": {
+                "type": "number",
+                "description": (
+                    "Y coordinate of the lower-left corner, not the center. "
+                    "The rectangle spans y through y + height."
+                ),
+            },
+            "width": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": (
+                    "Positive X extent. To center width w at cx, set x = cx - w/2."
+                ),
+            },
+            "height": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": (
+                    "Positive Y extent. To center height h at cy, set y = cy - h/2."
+                ),
+            },
         },
         ("x", "y", "width", "height"),
     ),
     _planar_node_schema(
         "circle",
         {
-            "center_x": {"type": "number"},
-            "center_y": {"type": "number"},
-            "radius": {"type": "number", "exclusiveMinimum": 0},
+            "center_x": {
+                "type": "number",
+                "description": "X coordinate of the circle center.",
+            },
+            "center_y": {
+                "type": "number",
+                "description": "Y coordinate of the circle center.",
+            },
+            "radius": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": (
+                    "Circle radius, never diameter. If the request gives hole "
+                    "diameter d (including Chinese 孔径/直径), use radius = d/2."
+                ),
+            },
         },
         ("center_x", "center_y", "radius"),
     ),
@@ -2727,6 +2965,14 @@ _PLANAR_CONSTRUCTION_OUTPUT_SCHEMA = {
         {
             "type": "object",
             "properties": {
+                "kind": {"const": "planar"},
+            },
+            "required": ["kind"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
                 "kind": {"const": "extrusion"},
                 "profile_selection": _PLANAR_CONSTRUCTION_PROFILE_SELECTION_SCHEMA,
                 "height": {"type": "number", "exclusiveMinimum": 0},
@@ -2784,6 +3030,11 @@ _PREPARE_PLANAR_CONSTRUCTION = _tool(
         "sketch locally, then present one revision-bound planar or derived 3D "
         "Part proposal. "
         "Use general primitives, Boolean operations, transforms, and patterns; "
+        "rectangle x/y are the lower-left corner, circle radius is not diameter, "
+        "semantically distinct slots and hole patterns use separate subtraction "
+        "operands so they remain separate native Cut features, "
+        "and 2D output accepts either the literal string 'planar' or the "
+        "equivalent object {'kind': 'planar'}; both normalize to planar. "
         "do not calculate final Boolean boundary vertices or submit CAD code. "
         "The model changes only after the local GUI control is clicked."
     ),
@@ -2871,6 +3122,7 @@ _PREPARE_DELETE = _tool(
                 "type": "string",
                 "enum": [
                     "part",
+                    "feature",
                     "generated_mesh",
                     "named_region",
                     "analysis_step",
@@ -3140,12 +3392,8 @@ _EDIT_MODEL_OBJECT = _tool(
 _RESULT_CATALOG = _result_tool_definition(result_catalog_tool_schema())
 _RESULT_QUERY = _result_tool_definition(result_query_tool_schema())
 _RESULT_COMPARISON = _result_tool_definition(result_comparison_tool_schema())
-_ANALYSIS_RUN_CATALOG = _result_tool_definition(
-    analysis_run_catalog_tool_schema()
-)
-_WORKSPACE_DOCUMENTS = _result_tool_definition(
-    workspace_documents_tool_schema()
-)
+_ANALYSIS_RUN_CATALOG = _result_tool_definition(analysis_run_catalog_tool_schema())
+_WORKSPACE_DOCUMENTS = _result_tool_definition(workspace_documents_tool_schema())
 _GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
     geometry_feature_catalog_tool_schema()
 )
@@ -3415,9 +3663,7 @@ _DESTRUCTIVE_EDIT_READY_STAGES = _PROJECT_SAVE_READY_STAGES
 _DESTRUCTIVE_EDIT_TOOLS = frozenset(
     {_READ_DELETABLE_OBJECTS.name, _PREPARE_DELETE.name}
 )
-_MODEL_EDIT_TOOLS = frozenset(
-    {_READ_EDITABLE_OBJECTS.name, _EDIT_MODEL_OBJECT.name}
-)
+_MODEL_EDIT_TOOLS = frozenset({_READ_EDITABLE_OBJECTS.name, _EDIT_MODEL_OBJECT.name})
 _GEOMETRY_EDIT_TOOLS = frozenset(
     {
         _READ_GEOMETRY_EDIT_CONTEXT.name,
@@ -3627,9 +3873,7 @@ def _stage_requirement_tool(
                 "turn_id": {"type": "string"},
                 "requirements": {
                     "type": "object",
-                    "properties": {
-                        key: specs[key] for key in keys
-                    },
+                    "properties": {key: specs[key] for key in keys},
                     "additionalProperties": False,
                     "minProperties": 1,
                 },
@@ -3761,9 +4005,7 @@ class AuthoringWorkflowController:
         ).hexdigest()
         active = self._active_tool_context
         turn_id = (
-            "local"
-            if active is None
-            else str(active.turn_id or active.idempotency_key)
+            "local" if active is None else str(active.turn_id or active.idempotency_key)
         )
         with self._lock:
             prior = self._planar_retry_state
@@ -3776,7 +4018,9 @@ class AuthoringWorkflowController:
             if prior is not None and not changed:
                 blocker = "Retry must modify the failed node or allowed field."
             elif retryable and attempt >= 3:
-                blocker = "Planar construction retry limit reached after three attempts."
+                blocker = (
+                    "Planar construction retry limit reached after three attempts."
+                )
             self._planar_retry_state = _PlanarConstructionRetryState(
                 turn_id,
                 digest,
@@ -3789,7 +4033,9 @@ class AuthoringWorkflowController:
             self._append_planar_audit(
                 PlanarConstructionAuditRecord(
                     digest,
-                    "validation" if code in {
+                    "validation"
+                    if code
+                    in {
                         "planar-ir.schema-invalid",
                         "planar-ir.budget-exceeded",
                         "planar-ir.duplicate-node-id",
@@ -3798,7 +4044,8 @@ class AuthoringWorkflowController:
                         "planar-ir.unreachable-node",
                         "planar-ir.invalid-primitive",
                         "planar-ir.invalid-path-stroke",
-                    } else "compile",
+                    }
+                    else "compile",
                     str(code),
                     None,
                     "failed",
@@ -3810,6 +4057,31 @@ class AuthoringWorkflowController:
                 "limit": 3,
                 "retryable": may_retry,
                 "blocker": blocker,
+            }
+
+    def planar_construction_retry_blocker(self) -> dict[str, object] | None:
+        """Reject further planar submissions after this provider turn is exhausted."""
+
+        active = self._active_tool_context
+        if active is None:
+            return None
+        turn_id = str(active.turn_id or active.idempotency_key)
+        with self._lock:
+            prior = self._planar_retry_state
+            if (
+                prior is None
+                or prior.turn_id != turn_id
+                or prior.attempt < 3
+            ):
+                return None
+            return {
+                "construction_digest": prior.construction_digest,
+                "attempt": prior.attempt,
+                "limit": 3,
+                "retryable": False,
+                "blocker": (
+                    "Planar construction retry limit reached after three attempts."
+                ),
             }
 
     def record_planar_construction_proposal(
@@ -3965,11 +4237,7 @@ class AuthoringWorkflowController:
                         else ()
                     ),
                     *((_ANALYSIS_RUN_CATALOG,) if run_count > 0 else ()),
-                    *(
-                        (_RESULT_CATALOG, _RESULT_QUERY)
-                        if result_count > 0
-                        else ()
-                    ),
+                    *((_RESULT_CATALOG, _RESULT_QUERY) if result_count > 0 else ()),
                     *((_RESULT_COMPARISON,) if result_count >= 2 else ()),
                 )
                 return tuple(
@@ -3986,26 +4254,25 @@ class AuthoringWorkflowController:
             run_count = (
                 self._observed_context.run_count
                 if inventory is None and self._observed_context is not None
-                else 0 if inventory is None else inventory[0]
+                else 0
+                if inventory is None
+                else inventory[0]
             )
             result_count = (
                 self._observed_context.result_count
                 if inventory is None and self._observed_context is not None
-                else 0 if inventory is None else inventory[1]
+                else 0
+                if inventory is None
+                else inventory[1]
             )
             if self._stage in _PROJECT_SAVE_READY_STAGES and run_count > 0:
                 historical_definitions = [_ANALYSIS_RUN_CATALOG]
                 if result_count > 0:
-                    historical_definitions.extend(
-                        (_RESULT_CATALOG, _RESULT_QUERY)
-                    )
+                    historical_definitions.extend((_RESULT_CATALOG, _RESULT_QUERY))
                 if result_count >= 2:
                     historical_definitions.append(_RESULT_COMPARISON)
                 for result_definition in historical_definitions:
-                    if all(
-                        item.name != result_definition.name
-                        for item in definitions
-                    ):
+                    if all(item.name != result_definition.name for item in definitions):
                         definitions.append(result_definition)
             requirement_group = self._current_requirement_group()
             requirements_complete = (
@@ -4018,10 +4285,7 @@ class AuthoringWorkflowController:
             )
             visible: list[ToolDefinition] = []
             for item in definitions:
-                if (
-                    item.name in gated_operations
-                    and not requirements_complete
-                ):
+                if item.name in gated_operations and not requirements_complete:
                     continue
                 if (
                     item.name == _APPLY_DEFINITION.name
@@ -4042,10 +4306,7 @@ class AuthoringWorkflowController:
                     item = _stage_requirement_tool(
                         requirement_group,
                         keys,
-                        {
-                            key: self._requirement_spec(key)
-                            for key in keys
-                        },
+                        {key: self._requirement_spec(key) for key in keys},
                     )
                 visible.append(item)
             return tuple(
@@ -4060,12 +4321,7 @@ class AuthoringWorkflowController:
                         }
                         or item.name in self._handlers
                     )
-                    and (
-                        item.name != _ANALYSIS_RUN_CATALOG.name
-                        or (
-                            run_count > 0
-                        )
-                    )
+                    and (item.name != _ANALYSIS_RUN_CATALOG.name or (run_count > 0))
                     and (
                         item.name
                         not in {
@@ -4075,11 +4331,7 @@ class AuthoringWorkflowController:
                         }
                         or (
                             result_count
-                            >= (
-                                2
-                                if item.name == _RESULT_COMPARISON.name
-                                else 1
-                            )
+                            >= (2 if item.name == _RESULT_COMPARISON.name else 1)
                         )
                     )
                     and (
@@ -4197,11 +4449,14 @@ class AuthoringWorkflowController:
                     ),
                 )
             except Exception as error:
-                error_type = re.sub(
-                    r"[^A-Za-z0-9_]",
-                    "",
-                    type(error).__name__,
-                )[:64] or "LocalAuthoringError"
+                error_type = (
+                    re.sub(
+                        r"[^A-Za-z0-9_]",
+                        "",
+                        type(error).__name__,
+                    )[:64]
+                    or "LocalAuthoringError"
+                )
                 return ToolResult(
                     ok=False,
                     session_id=context.session_id,
@@ -4359,10 +4614,7 @@ class AuthoringWorkflowController:
                         )
                     )
                     or first_native_project_transition
-                    or (
-                        same_session
-                        and saved_state_transition
-                    )
+                    or (same_session and saved_state_transition)
                     or (
                         same_session
                         and project_save_terminal_transition
@@ -4439,10 +4691,7 @@ class AuthoringWorkflowController:
                 self._stage = (
                     AuthoringWorkflowStage.DEFINITIONS_READY
                     if normalized_state is ProposalState.SUCCEEDED
-                    else (
-                        self._mesh_resume_stage
-                        or AuthoringWorkflowStage.MESH_READY
-                    )
+                    else (self._mesh_resume_stage or AuthoringWorkflowStage.MESH_READY)
                 )
                 self._mesh_resume_stage = None
             elif normalized_operation == "solve":
@@ -4458,18 +4707,17 @@ class AuthoringWorkflowController:
                     raise ValueError("destructive edit has no pending target")
                 if normalized_state is ProposalState.SUCCEEDED:
                     if (
-                        object_type in {"part", "generated_mesh"}
+                        object_type in {"part", "feature", "generated_mesh"}
                         and self._observed_context is not None
                     ):
                         self._stage = _restored_stage_for_context(
                             self._observed_context
                         )
-                        self._seed_default_geometry_requirements(
-                            self._observed_context
-                        )
+                        self._seed_default_geometry_requirements(self._observed_context)
                     else:
                         self._stage = {
                             "part": AuthoringWorkflowStage.GEOMETRY_READY,
+                            "feature": AuthoringWorkflowStage.GEOMETRY_READY,
                             "generated_mesh": AuthoringWorkflowStage.MESH_READY,
                             "named_region": AuthoringWorkflowStage.DEFINITIONS_READY,
                             "analysis_step": (
@@ -4478,9 +4726,7 @@ class AuthoringWorkflowController:
                             "boundary_condition": (
                                 AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
                             ),
-                            "load": (
-                                AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                            ),
+                            "load": (AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY),
                             "result_request": (
                                 AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
                             ),
@@ -4630,14 +4876,10 @@ class AuthoringWorkflowController:
             if not self._project_save_available(context):
                 raise ValueError("current native project is not ready to save")
             active = self._project_save_record
-            if (
-                active is not None
-                and active.state
-                in {
-                    ProposalState.PENDING_CONFIRMATION,
-                    ProposalState.RUNNING,
-                }
-            ):
+            if active is not None and active.state in {
+                ProposalState.PENDING_CONFIRMATION,
+                ProposalState.RUNNING,
+            }:
                 raise ValueError("a project save proposal is already active")
             binding = context.binding
             identity = {
@@ -4786,9 +5028,7 @@ class AuthoringWorkflowController:
         }
         missing = [key for key in keys if key not in values]
         if missing:
-            raise ValueError(
-                "clarification_required: " + ", ".join(missing)
-            )
+            raise ValueError("clarification_required: " + ", ".join(missing))
         return {key: values[key] for key in keys}
 
     def defaulted_requirement_keys(
@@ -4811,8 +5051,7 @@ class AuthoringWorkflowController:
             key
             for key in keys
             if key in entries
-            and entries[key].source_turn_id
-            == _DEFAULT_REQUIREMENT_SOURCE_TURN_ID
+            and entries[key].source_turn_id == _DEFAULT_REQUIREMENT_SOURCE_TURN_ID
         )
 
     def _current_requirement_group(self) -> str | None:
@@ -4921,10 +5160,7 @@ class AuthoringWorkflowController:
         self,
         context: AuthoringContext,
     ) -> None:
-        if (
-            context.binding.source_kind not in {"blank", "native"}
-            or context.parts
-        ):
+        if context.binding.source_kind not in {"blank", "native"} or context.parts:
             return
         recorded = {
             item.key
@@ -5002,28 +5238,19 @@ class AuthoringWorkflowController:
             else None
         )
         if data is None:
-            raise TypeError(
-                "context_reader must return AuthoringContext or an object"
-            )
-        published_authoring_tools = tuple(
-            item.name for item in self.definitions
-        )
+            raise TypeError("context_reader must return AuthoringContext or an object")
+        published_authoring_tools = tuple(item.name for item in self.definitions)
         published_set = set(published_authoring_tools)
         raw_capabilities = data.get("capabilities")
         if isinstance(raw_capabilities, list):
             data["capabilities"] = [
                 dict(item)
                 for item in raw_capabilities
-                if isinstance(item, Mapping)
-                and item.get("operation") in published_set
+                if isinstance(item, Mapping) and item.get("operation") in published_set
             ]
-        data["published_authoring_tool_names"] = list(
-            published_authoring_tools
-        )
+        data["published_authoring_tool_names"] = list(published_authoring_tools)
         if _PREPARE_PLANAR_CONSTRUCTION.name in published_set:
-            data["planar_construction_ir"] = (
-                _planar_construction_context_capability()
-            )
+            data["planar_construction_ir"] = _planar_construction_context_capability()
         requirement_group = self._current_requirement_group()
         required = (
             ()
@@ -5046,9 +5273,7 @@ class AuthoringWorkflowController:
                 "requirement_stage": requirement_group,
                 "context": data,
                 "missing_requirements": [
-                    key
-                    for key in required
-                    if key not in recorded
+                    key for key in required if key not in recorded
                 ],
                 "defaulted_requirements": list(
                     self.defaulted_requirement_keys(requirement_group)
@@ -5082,8 +5307,7 @@ class AuthoringWorkflowController:
         out_of_stage = set(raw_requirements) - allowed
         if out_of_stage:
             raise ValueError(
-                "out-of-stage requirement fields: "
-                + ", ".join(sorted(out_of_stage))
+                "out-of-stage requirement fields: " + ", ".join(sorted(out_of_stage))
             )
         for key, value in raw_requirements.items():
             _validate_requirement_value(
@@ -5139,15 +5363,9 @@ class AuthoringWorkflowController:
                 RequirementStatus.CONFIRMED,
             }
         }
-        missing = [
-            key
-            for key in required
-            if key not in recorded
-        ]
+        missing = [key for key in required if key not in recorded]
         if missing:
-            raise ValueError(
-                "clarification_required: " + ", ".join(missing)
-            )
+            raise ValueError("clarification_required: " + ", ".join(missing))
         values = {item.key: item.value for item in self._ledger.entries}
         if requirement_group == "analysis":
             _validate_supported_requirement_combination(
@@ -5294,9 +5512,7 @@ class AuthoringWorkflowController:
                 "load",
                 "result_request",
             }:
-                raise ValueError(
-                    "edit handler registered no exact edited object type"
-                )
+                raise ValueError("edit handler registered no exact edited object type")
             if "proposal_id" in outcome.data:
                 self._destructive_resume_stage = self._stage
                 self._pending_destructive_object_type = object_type
@@ -5332,22 +5548,17 @@ class AuthoringWorkflowController:
             self._pending_operation = "project_save"
         elif name == _PREPARE_DELETE.name:
             object_type = outcome.data.get("delete_object_type")
-            if (
-                type(object_type) is not str
-                or object_type
-                not in {
-                    "part",
-                    "generated_mesh",
-                    "named_region",
-                    "analysis_step",
-                    "boundary_condition",
-                    "load",
-                    "result_request",
-                }
-            ):
-                raise ValueError(
-                    "destructive handler registered no exact target type"
-                )
+            if type(object_type) is not str or object_type not in {
+                "part",
+                "feature",
+                "generated_mesh",
+                "named_region",
+                "analysis_step",
+                "boundary_condition",
+                "load",
+                "result_request",
+            }:
+                raise ValueError("destructive handler registered no exact target type")
             self._destructive_resume_stage = self._stage
             self._pending_destructive_object_type = object_type
             self._stage = AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING
@@ -5764,9 +5975,7 @@ def _validate_supported_requirement_combination(
             )
         return
     if load_type.endswith("traction"):
-        if direction not in (
-            {"x", "y", "z"} if active_dimension == 3 else {"x", "y"}
-        ):
+        if direction not in ({"x", "y", "z"} if active_dimension == 3 else {"x", "y"}):
             raise ValueError(
                 "clarification_required: traction requires an explicit global "
                 "translation direction"
@@ -5776,15 +5985,9 @@ def _validate_supported_requirement_combination(
         "inward_normal",
         "outward_normal",
     }:
-        raise ValueError(
-            "clarification_required: pressure requires a normal direction"
-        )
-    if (
-        direction == "inward_normal"
-        and magnitude <= 0.0
-    ) or (
-        direction == "outward_normal"
-        and magnitude >= 0.0
+        raise ValueError("clarification_required: pressure requires a normal direction")
+    if (direction == "inward_normal" and magnitude <= 0.0) or (
+        direction == "outward_normal" and magnitude >= 0.0
     ):
         raise ValueError(
             "clarification_required: pressure sign must match its normal direction"
@@ -5805,8 +6008,7 @@ def _capability_enabled(
     operation: str,
 ) -> bool:
     return any(
-        item.operation == operation and item.enabled
-        for item in context.capabilities
+        item.operation == operation and item.enabled for item in context.capabilities
     )
 
 

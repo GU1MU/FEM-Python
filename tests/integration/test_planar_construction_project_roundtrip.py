@@ -3,14 +3,19 @@ from __future__ import annotations
 import pytest
 
 from fem import geometry as geometry_runtime
-from fem.application import ModelSession, compile_planar_construction
+from fem.application import (
+    ModelSession,
+    compile_planar_construction,
+    compile_planar_feature_recipe,
+    derive_feature_history,
+)
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
+    BooleanGeometry,
     ExtrudedGeometry,
     LogicalEntityRef,
     PlanarConstructionIR,
-    SketchGeometry,
 )
 from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
@@ -151,10 +156,12 @@ def test_phase7_h_plate_preview_mesh_disk_roundtrip_and_edit(
     receipt = bridge.accept_from_gui_control(proposal_id)
     assert receipt.state is ProposalState.SUCCEEDED
     recipe = session.snapshot().parts[0].geometry_recipe
-    assert type(recipe) is SketchGeometry
-    analysis = geometry_runtime.analyze_sketch_profiles(recipe)
-    assert sum(profile.is_material for profile in analysis.profiles) == 1
-    assert sum(profile.is_hole for profile in analysis.profiles) == 5
+    assert type(recipe) is BooleanGeometry
+    assert [feature.kind for feature in derive_feature_history(recipe)] == [
+        "sketch",
+        "cut",
+        "cut",
+    ]
 
     mesh = generate_fem_model(
         recipe,
@@ -170,9 +177,12 @@ def test_phase7_h_plate_preview_mesh_disk_roundtrip_and_edit(
     edited_construction = _h_plate()
     edited_construction["nodes"][0]["width"] = 32.0
     edited_construction["nodes"][6]["spacing_x"] = 30.0
-    edited = compile_planar_construction(
-        PlanarConstructionIR.from_dict(edited_construction)
-    ).recipe
+    edited_ir = PlanarConstructionIR.from_dict(edited_construction)
+    edited_flattened = compile_planar_construction(edited_ir)
+    edited = compile_planar_feature_recipe(
+        edited_ir,
+        compiled=edited_flattened,
+    )
     current = reopened_session.snapshot()
     reopened_session.replace_part_geometry(
         current.parts[0].id,

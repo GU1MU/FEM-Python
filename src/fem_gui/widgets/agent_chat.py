@@ -66,6 +66,7 @@ from ..agent_events import (
     ConfirmationView,
     DiagnosticView,
     EventType,
+    MessagePresentationKind,
     MessageStatus,
     MessageView,
     ProposalView,
@@ -131,6 +132,8 @@ _AGENT_CHAT_SCROLL_UP_ARROW = (
 _AGENT_CHAT_SCROLL_DOWN_ARROW = (
     _AGENT_CHAT_ICON_ROOT / "agent_chat_scroll_down.svg"
 ).as_posix()
+_PROCESS_MESSAGE_COLLAPSE_CHARACTERS = 240
+_PROCESS_MESSAGE_EXCERPT_CHARACTERS = 120
 
 
 _AGENT_CHAT_STYLESHEET = """
@@ -241,6 +244,39 @@ QLabel#agentChatSpeaker {
 QLabel#agentChatAgentMessage {
     color: #28313a;
     font-size: 9.5pt;
+}
+QWidget#agentChatNarrativeSection,
+QWidget#agentChatNarrativeSummaryRow {
+    background: transparent;
+}
+QLabel#agentChatNarrativeSummary {
+    color: #4d5963;
+    font-size: 9.5pt;
+}
+QToolButton#agentChatNarrativeToggle {
+    color: #66727c;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    min-width: 22px;
+    max-width: 22px;
+    min-height: 22px;
+    max-height: 22px;
+    padding: 0;
+}
+QToolButton#agentChatNarrativeToggle:hover {
+    background: #edf1f3;
+    border-color: #dce2e6;
+}
+QFrame#agentChatNarrativeDetails {
+    background: #f8f9fa;
+    border: none;
+    border-left: 2px solid #d9dee3;
+    border-radius: 2px;
+}
+QLabel#agentChatNarrativeDetailsText {
+    color: #6f7c8c;
+    font-size: 8.5pt;
 }
 QLabel#agentChatLiveActivity {
     color: #6f7f8b;
@@ -426,7 +462,8 @@ QLabel#agentChatAppliedPatchText {
     font-size: 9pt;
     font-weight: 600;
 }
-QToolButton#agentChatPatchUndoButton {
+QToolButton#agentChatPatchUndoButton,
+QToolButton#agentChatProposalUndoButton {
     color: #315d7c;
     background: #ffffff;
     border: 1px solid #8faec2;
@@ -435,15 +472,18 @@ QToolButton#agentChatPatchUndoButton {
     font-size: 8.5pt;
     font-weight: 600;
 }
-QToolButton#agentChatPatchUndoButton:hover {
+QToolButton#agentChatPatchUndoButton:hover,
+QToolButton#agentChatProposalUndoButton:hover {
     color: #244f6d;
     background: #e8f0f6;
     border-color: #6f98b2;
 }
-QToolButton#agentChatPatchUndoButton:pressed {
+QToolButton#agentChatPatchUndoButton:pressed,
+QToolButton#agentChatProposalUndoButton:pressed {
     background: #d9e7f0;
 }
-QToolButton#agentChatPatchUndoButton:disabled {
+QToolButton#agentChatPatchUndoButton:disabled,
+QToolButton#agentChatProposalUndoButton:disabled {
     color: #8a949c;
     background: #eceff1;
     border-color: #d4dadd;
@@ -934,6 +974,8 @@ def _restricted_table_html(
     header: tuple[str, ...],
     alignments: tuple[str, ...],
     rows: list[tuple[str, ...]],
+    *,
+    margin_top: int = 2,
 ) -> str:
     cell_style = (
         "border:1px solid #d6dce3;"
@@ -943,7 +985,7 @@ def _restricted_table_html(
     rendered = [
         "<table width='100%' border='1' bordercolor='#d6dce3' "
         "cellspacing='0' cellpadding='0' "
-        "style='border-collapse:collapse; margin-top:2px; "
+        f"style='border-collapse:collapse; margin-top:{margin_top}px; "
         "margin-bottom:2px;'>",
         "<tr>",
     ]
@@ -970,6 +1012,8 @@ def _restricted_markdown_html(markdown: str) -> str:
     """把受限 Markdown 转成不含链接、图片或原始 HTML 的 Qt 富文本。"""
     rendered: list[str] = []
     active_list: str | None = None
+    paragraph_lines: list[str] = []
+    paragraph_gap_pending = False
     lines = markdown.split("\n")
 
     def close_list() -> None:
@@ -978,9 +1022,20 @@ def _restricted_markdown_html(markdown: str) -> str:
             rendered.append(f"</{active_list}>")
             active_list = None
 
-    def drop_break_before_block() -> None:
-        if rendered and rendered[-1] == "<br>":
-            rendered.pop()
+    def flush_paragraph() -> None:
+        nonlocal paragraph_gap_pending
+        if not paragraph_lines:
+            return
+        margin_top = 7 if paragraph_gap_pending and rendered else 0
+        content = "<br>".join(
+            _restricted_inline_markdown_html(item)
+            for item in paragraph_lines
+        )
+        rendered.append(
+            f"<p style='margin:{margin_top}px 0 0 0;'>{content}</p>"
+        )
+        paragraph_lines.clear()
+        paragraph_gap_pending = False
 
     index = 0
     while index < len(lines):
@@ -997,8 +1052,8 @@ def _restricted_markdown_html(markdown: str) -> str:
             else None
         )
         if header is not None and alignments is not None:
+            flush_paragraph()
             close_list()
-            drop_break_before_block()
             rows: list[tuple[str, ...]] = []
             index += 2
             while index < len(lines):
@@ -1008,8 +1063,16 @@ def _restricted_markdown_html(markdown: str) -> str:
                 rows.append(row)
                 index += 1
             rendered.append(
-                _restricted_table_html(header, alignments, rows)
+                _restricted_table_html(
+                    header,
+                    alignments,
+                    rows,
+                    margin_top=(
+                        7 if paragraph_gap_pending and rendered else 2
+                    ),
+                )
             )
+            paragraph_gap_pending = False
             continue
 
         unordered = _UNORDERED_LIST_PATTERN.match(line)
@@ -1018,14 +1081,18 @@ def _restricted_markdown_html(markdown: str) -> str:
             "ol" if ordered is not None else None
         )
         if list_type is not None:
+            flush_paragraph()
             if active_list != list_type:
                 close_list()
-                drop_break_before_block()
+                margin_top = (
+                    7 if paragraph_gap_pending and rendered else 2
+                )
                 rendered.append(
-                    f"<{list_type} style='margin-top:2px; "
+                    f"<{list_type} style='margin-top:{margin_top}px; "
                     "margin-bottom:2px;'>"
                 )
                 active_list = list_type
+                paragraph_gap_pending = False
             content = (
                 unordered.group(1)
                 if unordered is not None
@@ -1039,15 +1106,45 @@ def _restricted_markdown_html(markdown: str) -> str:
             index += 1
             continue
 
+        if not line.strip():
+            flush_paragraph()
+            close_list()
+            if rendered:
+                paragraph_gap_pending = True
+            index += 1
+            continue
+
         close_list()
-        if line.strip():
-            rendered.append(_restricted_inline_markdown_html(line))
-            rendered.append("<br>")
+        paragraph_lines.append(line)
         index += 1
 
+    flush_paragraph()
     close_list()
-    if rendered and rendered[-1] == "<br>":
-        rendered.pop()
+    return "".join(rendered)
+
+
+def _streaming_plaintext_html(text: str) -> str:
+    paragraphs = [
+        paragraph
+        for paragraph in re.split(r"\n[ \t]*\n", text)
+        if paragraph
+    ]
+    if not paragraphs:
+        return " ▌"
+    if len(paragraphs) == 1:
+        return (
+            html.escape(paragraphs[0], quote=True).replace("\n", "<br>")
+            + " ▌"
+        )
+    rendered: list[str] = []
+    for index, paragraph in enumerate(paragraphs):
+        margin_top = 7 if index else 0
+        content = html.escape(paragraph, quote=True).replace("\n", "<br>")
+        if index == len(paragraphs) - 1:
+            content += " ▌"
+        rendered.append(
+            f"<p style='margin:{margin_top}px 0 0 0;'>{content}</p>"
+        )
     return "".join(rendered)
 
 
@@ -1056,6 +1153,145 @@ def _plain_label(text: str, parent: QWidget) -> QLabel:
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setText(text)
     return label
+
+
+def _visible_markdown_text(markdown: str) -> str:
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", markdown)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[`*_>#~]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _message_excerpt(markdown: str) -> str:
+    visible = _visible_markdown_text(markdown)
+    limit = _PROCESS_MESSAGE_EXCERPT_CHARACTERS
+    if len(visible) <= limit:
+        return visible
+    candidate = visible[:limit]
+    lower_bound = max(0, limit * 2 // 3)
+    boundary = max(
+        (candidate.rfind(mark) for mark in "。！？；.!?"),
+        default=-1,
+    )
+    if boundary >= lower_bound:
+        candidate = candidate[: boundary + 1]
+    return candidate.rstrip() + "…"
+
+
+class AgentNarrativeSection(QWidget):
+    expansionChanged = Signal(str, bool)
+
+    def __init__(
+        self,
+        parent: QWidget,
+        *,
+        message: MessageView,
+        expanded: bool,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("agentChatNarrativeSection")
+        self.message_id = message.message_id
+        self._collapsible = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        self.primary_label = QLabel(self)
+        self.primary_label.setObjectName("agentChatAgentMessage")
+        self.primary_label.setProperty("messageId", message.message_id)
+        self.primary_label.setTextFormat(Qt.TextFormat.RichText)
+        self.primary_label.setOpenExternalLinks(False)
+        self.primary_label.setWordWrap(True)
+        self.primary_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.primary_label)
+
+        self.summary_row = QWidget(self)
+        self.summary_row.setObjectName("agentChatNarrativeSummaryRow")
+        summary_layout = QHBoxLayout(self.summary_row)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(4)
+        self.summary_label = _plain_label("", self.summary_row)
+        self.summary_label.setObjectName("agentChatNarrativeSummary")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        summary_layout.addWidget(self.summary_label, 1)
+        self.toggle_button = QToolButton(self.summary_row)
+        self.toggle_button.setObjectName("agentChatNarrativeToggle")
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setToolTip("展开完整过程")
+        self.toggle_button.clicked.connect(self._toggle_expansion)
+        summary_layout.addWidget(self.toggle_button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.summary_row)
+
+        self.details = QFrame(self)
+        self.details.setObjectName("agentChatNarrativeDetails")
+        details_layout = QVBoxLayout(self.details)
+        details_layout.setContentsMargins(9, 7, 9, 7)
+        details_layout.setSpacing(0)
+        self.details_label = QLabel(self.details)
+        self.details_label.setObjectName("agentChatNarrativeDetailsText")
+        self.details_label.setTextFormat(Qt.TextFormat.RichText)
+        self.details_label.setOpenExternalLinks(False)
+        self.details_label.setWordWrap(True)
+        self.details_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        details_layout.addWidget(self.details_label)
+        layout.addWidget(self.details)
+
+        self.set_expanded(expanded, emit=False)
+        self.update_message(message)
+
+    @property
+    def collapsible(self) -> bool:
+        return self._collapsible
+
+    def set_expanded(self, expanded: bool, *, emit: bool = True) -> None:
+        checked = bool(expanded)
+        self.toggle_button.setChecked(checked)
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.UpArrow if checked else Qt.ArrowType.DownArrow
+        )
+        self.toggle_button.setToolTip(
+            "收起完整过程" if checked else "展开完整过程"
+        )
+        self.details.setVisible(self._collapsible and checked)
+        if emit:
+            self.expansionChanged.emit(self.message_id, checked)
+
+    def update_message(self, message: MessageView) -> None:
+        text = message.materialize_text()
+        visible = _visible_markdown_text(text)
+        self._collapsible = (
+            message.presentation_kind is MessagePresentationKind.PROCESS
+            and len(visible) > _PROCESS_MESSAGE_COLLAPSE_CHARACTERS
+        )
+        rendered = (
+            _streaming_plaintext_html(text)
+            if message.status is MessageStatus.STREAMING
+            else _restricted_markdown_html(text)
+        )
+        self.primary_label.setProperty("messageStatus", message.status.value)
+        self.primary_label.setProperty(
+            "presentationKind", message.presentation_kind.value
+        )
+        self.primary_label.setText(rendered)
+        self.details_label.setText(rendered)
+        self.summary_label.setText(_message_excerpt(text))
+        self.primary_label.setVisible(not self._collapsible)
+        self.summary_row.setVisible(self._collapsible)
+        self.details.setVisible(
+            self._collapsible and self.toggle_button.isChecked()
+        )
+
+    def _toggle_expansion(self, checked: bool) -> None:
+        self.set_expanded(checked)
 
 
 def _tool_summary_text(group: ToolGroupView) -> str:
@@ -1154,6 +1390,14 @@ class ToolActivityPreview(_BoundaryFrame):
     @property
     def group(self) -> ToolGroupView:
         return self._group
+
+    def update_group(self, group: ToolGroupView) -> None:
+        """Refresh tool status in place without rebuilding the conversation."""
+
+        expanded = self.summary_button.isChecked()
+        self._group = group
+        self._populate_details()
+        self._set_expanded(expanded)
 
     def _populate_details(self) -> None:
         while self.details_layout.count():
@@ -1271,11 +1515,13 @@ class AgentChatDrawer(_BoundaryFrame):
         self._composer_task_was_visible = False
         self._rendering_event_presentation = False
         self._expanded_tool_group_ids: set[str] = set()
+        self._expanded_message_section_ids: set[str] = set()
         self._pending_solve_confirmations: set[tuple[int, str]] = set()
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
         self._applied_patch_records: dict[str, object] = {}
         self.event_projector = AgentEventProjector()
         self._message_widgets: dict[str, QLabel] = {}
+        self._message_section_widgets: dict[str, AgentNarrativeSection] = {}
         self._tool_group_widgets: dict[str, ToolActivityPreview] = {}
         self._diagnostic_widgets: dict[str, QWidget] = {}
         self._pending_message_refreshes: set[str] = set()
@@ -1284,6 +1530,13 @@ class AgentChatDrawer(_BoundaryFrame):
         self._stream_refresh_timer.setInterval(30)
         self._stream_refresh_timer.timeout.connect(
             self._flush_streaming_message_updates
+        )
+        self._pending_tool_refresh_call_ids: set[str] = set()
+        self._tool_refresh_timer = QTimer(self)
+        self._tool_refresh_timer.setSingleShot(True)
+        self._tool_refresh_timer.setInterval(0)
+        self._tool_refresh_timer.timeout.connect(
+            self._flush_tool_group_updates
         )
         self.authoring_bridge = authoring_bridge
         self._project_save_handler: (
@@ -1591,6 +1844,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self.event_projector.presentation_view
         )
         self._expanded_tool_group_ids.clear()
+        self._expanded_message_section_ids.clear()
         self._conversation_auto_follow = True
         latest = self._latest_projected_proposal()
         self._continuation_active = bool(
@@ -1642,7 +1896,22 @@ class AgentChatDrawer(_BoundaryFrame):
                 str(event.payload["message_id"])
             )
             self._flush_streaming_message_updates()
+        elif event.event_type in {
+            EventType.TOOL_REQUESTED,
+            EventType.TOOL_STARTED,
+            EventType.TOOL_RESULT,
+            EventType.TOOL_WARNING,
+            EventType.TOOL_FAILED,
+        }:
+            self._flush_streaming_message_updates()
+            self._pending_tool_refresh_call_ids.add(
+                str(event.payload["call_id"])
+            )
+            if not self._tool_refresh_timer.isActive():
+                self._tool_refresh_timer.start()
         else:
+            self._tool_refresh_timer.stop()
+            self._pending_tool_refresh_call_ids.clear()
             self._flush_streaming_message_updates()
             self._render_event_presentation()
         self.agentEventApplied.emit(event)
@@ -1657,11 +1926,38 @@ class AgentChatDrawer(_BoundaryFrame):
         message_ids = tuple(self._pending_message_refreshes)
         self._pending_message_refreshes.clear()
         for message_id in message_ids:
-            label = self._message_widgets.get(message_id)
-            if label is None:
+            section = self._message_section_widgets.get(message_id)
+            if section is None:
                 continue
             message = self.event_projector.message_view(message_id)
-            self._update_agent_message_widget(label, message)
+            section.update_message(message)
+        self._queue_conversation_scroll(
+            None if follow_latest else previous_scroll_value
+        )
+
+    def _flush_tool_group_updates(self) -> None:
+        self._tool_refresh_timer.stop()
+        if not self._pending_tool_refresh_call_ids:
+            return
+        call_ids = tuple(self._pending_tool_refresh_call_ids)
+        self._pending_tool_refresh_call_ids.clear()
+        groups = {
+            group.group_id: group
+            for turn in reversed(self.event_projector.presentation_view.turns)
+            for group in reversed(turn.tool_groups)
+            if any(call.call_id in call_ids for call in group.calls)
+        }
+        if len(groups) == 0 or any(
+            group_id not in self._tool_group_widgets
+            for group_id in groups
+        ):
+            self._render_event_presentation()
+            return
+        scroll_bar = self.conversation_scroll.verticalScrollBar()
+        previous_scroll_value = scroll_bar.value()
+        follow_latest = self._conversation_auto_follow
+        for group_id, group in groups.items():
+            self._tool_group_widgets[group_id].update_group(group)
         self._queue_conversation_scroll(
             None if follow_latest else previous_scroll_value
         )
@@ -1673,6 +1969,7 @@ class AgentChatDrawer(_BoundaryFrame):
     ) -> None:
         self._live_activity_label = None
         self._message_widgets.clear()
+        self._message_section_widgets.clear()
         self._tool_group_widgets.clear()
         self._diagnostic_widgets.clear()
         if preserve_tool_expansion:
@@ -1682,6 +1979,8 @@ class AgentChatDrawer(_BoundaryFrame):
                     self._expanded_tool_group_ids.add(group_id)
                 else:
                     self._expanded_tool_group_ids.discard(group_id)
+        else:
+            self._expanded_message_section_ids.clear()
         while self.event_feed_layout.count():
             item = self.event_feed_layout.takeAt(0)
             widget = item.widget()
@@ -1974,18 +2273,19 @@ class AgentChatDrawer(_BoundaryFrame):
         self.event_feed_layout.addWidget(user_row)
 
     def _add_agent_message(self, message: MessageView) -> None:
-        label = QLabel(self.event_feed)
-        label.setObjectName("agentChatAgentMessage")
-        label.setProperty("messageId", message.message_id)
-        label.setTextFormat(Qt.TextFormat.RichText)
-        label.setOpenExternalLinks(False)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        section = AgentNarrativeSection(
+            self.event_feed,
+            message=message,
+            expanded=(
+                message.message_id in self._expanded_message_section_ids
+            ),
         )
-        self._update_agent_message_widget(label, message)
-        self._message_widgets[message.message_id] = label
-        self.event_feed_layout.addWidget(label)
+        section.expansionChanged.connect(
+            self._record_message_section_expansion
+        )
+        self._message_section_widgets[message.message_id] = section
+        self._message_widgets[message.message_id] = section.primary_label
+        self.event_feed_layout.addWidget(section)
         if message.status in {
             MessageStatus.CANCELLED,
             MessageStatus.INTERRUPTED,
@@ -2007,14 +2307,21 @@ class AgentChatDrawer(_BoundaryFrame):
         message: MessageView,
     ) -> None:
         if message.status is MessageStatus.STREAMING:
-            rendered_text = html.escape(
-                message.text,
-                quote=True,
-            ).replace("\n", "<br>") + " ▌"
+            rendered_text = _streaming_plaintext_html(message.text)
         else:
             rendered_text = _restricted_markdown_html(message.text)
         label.setProperty("messageStatus", message.status.value)
         label.setText(rendered_text)
+
+    def _record_message_section_expansion(
+        self,
+        message_id: str,
+        expanded: bool,
+    ) -> None:
+        if expanded:
+            self._expanded_message_section_ids.add(message_id)
+        else:
+            self._expanded_message_section_ids.discard(message_id)
 
     def _add_diagnostic_card(self, diagnostic: DiagnosticView) -> None:
         card = _BoundaryFrame(self.event_feed)
@@ -2125,6 +2432,17 @@ class AgentChatDrawer(_BoundaryFrame):
         title.setObjectName("agentChatProposalTitle")
         layout.addWidget(title)
         status = proposal.status
+        bridge = self.authoring_bridge
+        undo_record_getter = getattr(bridge, "feature_proposal_record", None)
+        undo_record = (
+            None
+            if status is not ProposalViewStatus.SUCCEEDED
+            or not callable(undo_record_getter)
+            else undo_record_getter(proposal.proposal_id)
+        )
+        undo_state = str(
+            getattr(getattr(undo_record, "state", None), "value", "")
+        )
         status_labels = {
             ProposalViewStatus.PENDING_CONFIRMATION: "等待 GUI 确认",
             ProposalViewStatus.ACCEPTED: "已接受",
@@ -2136,6 +2454,10 @@ class AgentChatDrawer(_BoundaryFrame):
             ProposalViewStatus.CANCELLED: "已取消",
         }
         status_text = status_labels[status]
+        if undo_state == "undone":
+            status_text = "已撤销"
+        elif undo_state == "stale":
+            status_text = "已无法撤销"
         if (
             status is not ProposalViewStatus.SUCCEEDED
             and proposal.status_message
@@ -2169,6 +2491,7 @@ class AgentChatDrawer(_BoundaryFrame):
             proposal.base_session_revision,
         )
         accept.setEnabled(False)
+        accept.hide()
         actions_layout.addWidget(accept)
 
         reject = _BoundaryToolButton(actions)
@@ -2190,11 +2513,48 @@ class AgentChatDrawer(_BoundaryFrame):
             proposal.base_session_revision,
         )
         reject.setEnabled(False)
+        reject.hide()
         actions_layout.addWidget(reject)
+        if undo_record is not None:
+            undo_check = getattr(bridge, "can_undo_proposal", None)
+            undo_enabled = bool(
+                undo_state == "applied"
+                and not self._runtime_busy
+                and callable(undo_check)
+                and undo_check(proposal.proposal_id)
+            )
+            undo = _BoundaryToolButton(actions)
+            undo.setObjectName("agentChatProposalUndoButton")
+            undo.setProperty("proposalId", proposal.proposal_id)
+            undo.setText("已撤销" if undo_state == "undone" else "撤销")
+            undo.setToolTip(
+                "删除本次方案创建的末端特征"
+                if undo_enabled
+                else "已有后续修改，或本次创建的特征已经撤销"
+            )
+            undo.setEnabled(undo_enabled)
+            undo.clicked.connect(
+                lambda _checked=False, value=proposal.proposal_id: (
+                    self._undo_feature_proposal(value)
+                )
+            )
+            actions_layout.addWidget(undo)
         actions_layout.addStretch(1)
         layout.addWidget(actions)
-        actions.hide()
+        actions.setVisible(undo_record is not None)
         self.event_feed_layout.addWidget(card)
+
+    def _undo_feature_proposal(self, proposal_id: str) -> None:
+        bridge = self.authoring_bridge
+        if bridge is None:
+            return
+        try:
+            record = bridge.undo_proposal_from_gui_control(proposal_id)
+        except Exception as error:
+            self._show_runtime_notice(str(error))
+        else:
+            self._show_preview_notice(f"已删除特征 {record.feature_name}")
+        self._render_event_presentation()
 
     def _build_composer(self, parent: QWidget) -> QWidget:
         composer = _BoundaryFrame(parent)
@@ -2512,14 +2872,12 @@ class AgentChatDrawer(_BoundaryFrame):
             )
             return
 
-        self.composer_task_title.setText("FEM Agent 正在续跑")
-        self.composer_task_summary.setText(
-            "本地任务已进入终态，Agent 正在继续下一阶段。"
-        )
+        self.composer_task_title.setText("正在处理…")
+        self.composer_task_summary.clear()
+        self.composer_task_summary.hide()
         self.composer_progress.setRange(0, 0)
-        self.composer_task_status.setText(
-            "可等待下一项确认，或在需要时停止 Agent。"
-        )
+        self.composer_task_status.clear()
+        self.composer_task_status.hide()
 
     def _accept_composer_proposal(self) -> None:
         if self._composer_proposal is None:
@@ -3427,6 +3785,17 @@ class AgentChatDrawer(_BoundaryFrame):
                 not self._runtime_busy
                 and bridge is not None
                 and bridge.can_undo_patch(str(button.property("patchId")))
+            )
+        for button in self.findChildren(
+            QToolButton,
+            "agentChatProposalUndoButton",
+        ):
+            bridge = self.authoring_bridge
+            undo_check = getattr(bridge, "can_undo_proposal", None)
+            button.setEnabled(
+                not self._runtime_busy
+                and callable(undo_check)
+                and undo_check(str(button.property("proposalId")))
             )
         self._sync_composer_state()
 

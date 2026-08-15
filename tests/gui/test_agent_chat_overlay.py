@@ -343,7 +343,9 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states():
             {**identity, "summary": "网格生成完成"},
         )
     )
-    assert drawer.composer_task_title.text() == "FEM Agent 正在续跑"
+    assert drawer.composer_task_title.text() == "正在处理…"
+    assert drawer.composer_task_summary.isHidden()
+    assert drawer.composer_task_status.isHidden()
     drawer.set_runtime_busy(False)
     application.processEvents()
     assert drawer.composer_stack.currentWidget() is drawer.composer_surface
