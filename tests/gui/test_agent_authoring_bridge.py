@@ -33,6 +33,7 @@ from fem_agent.authoring import (
     ProposalState,
     RequirementLedger,
 )
+from fem_agent.engine import EngineEvent, EngineEventType
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     authoring_context_from_snapshot,
@@ -696,6 +697,33 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
     runtime.shutdown()
 
 
+def test_runtime_flushes_whitespace_only_stream_delta(tmp_path) -> None:
+    runtime = QtAgentRuntime(tmp_path / "agent-private-whitespace")
+    try:
+        context, _reset = runtime._start_turn(1, "agent-session-whitespace")
+        with runtime._lock:
+            started = runtime._map_engine_event_locked(
+                context,
+                EngineEvent(
+                    EngineEventType.MESSAGE_DELTA,
+                    context.session_id,
+                    {"text": "\n  "},
+                    "2026-08-15T08:00:00Z",
+                ),
+            )
+            runtime._cancel_delta_timer_locked(context)
+            delta = runtime._flush_one_pending_delta_locked(context)
+
+        assert [event.event_type for event in started] == [
+            EventType.MESSAGE_START
+        ]
+        assert delta is not None
+        assert delta.event_type is EventType.MESSAGE_DELTA
+        assert delta.payload["delta"] == "\n  "
+    finally:
+        runtime.shutdown()
+
+
 def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
     _application()
     events = _Events()
@@ -831,7 +859,9 @@ def test_succeeded_proposal_hides_terminal_detail_and_empty_continuation_user(
 
     user_labels = drawer.findChildren(QLabel, "agentChatUserLabel")
     proposal_status = drawer.findChild(QLabel, "agentChatProposalStatus")
+    proposal_summary = drawer.findChild(QLabel, "agentChatProposalSummary")
     assert [label.text() for label in user_labels] == ["建立偏心孔板"]
     assert proposal_status is not None
     assert proposal_status.text() == "已完成"
+    assert proposal_summary is None
     drawer.close()

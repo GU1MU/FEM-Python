@@ -512,5 +512,5 @@ def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
         == "PlateSurface"
     )
     assert bar.isHidden()
-    window._confirm_discard_changes = lambda: True
+    window._confirm_workspace_context_close = lambda *_args, **_kwargs: True
     window.close()

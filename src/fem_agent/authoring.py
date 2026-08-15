@@ -1836,6 +1836,8 @@ class AuthoringPort(Protocol):
 
     def reject(self, proposal_id: str) -> ProposalPortRecord: ...
 
+    def cancel(self, proposal_id: str, reason: str) -> ProposalPortRecord: ...
+
     def stale(self, proposal_id: str, reason: str) -> ProposalPortRecord: ...
 
 
@@ -1890,6 +1892,17 @@ class FakeAuthoringPort:
         self._records[proposal_id] = rejected
         self.calls.append(("reject", proposal_id))
         return rejected
+
+    def cancel(self, proposal_id: str, reason: str) -> ProposalPortRecord:
+        record = self._pending(proposal_id)
+        cancelled = replace(
+            record,
+            state=ProposalState.CANCELLED,
+            message=_require_text(reason, "reason"),
+        )
+        self._records[proposal_id] = cancelled
+        self.calls.append(("cancel", proposal_id))
+        return cancelled
 
     def stale(self, proposal_id: str, reason: str) -> ProposalPortRecord:
         record = self._pending(proposal_id)

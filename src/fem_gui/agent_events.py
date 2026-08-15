@@ -373,7 +373,11 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
         return
     if event_type is EventType.MESSAGE_DELTA:
         _require_identifier(payload["message_id"], "message_id")
-        _require_string(payload["delta"], "delta", allow_empty=False)
+        delta = payload["delta"]
+        if not isinstance(delta, str):
+            raise AgentEventError("delta 必须是字符串")
+        if delta == "":
+            raise AgentEventError("delta 不能为空")
         return
     if event_type is EventType.MESSAGE_COMPLETE:
         _require_identifier(payload["message_id"], "message_id")

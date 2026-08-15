@@ -208,7 +208,9 @@ is required. For an arbitrary non-convex silhouette, trace the complete boundary
 in order and prefer one non-self-intersecting add_polygon edit unless exact arcs
 are important. Use one batch for an ordered line/arc boundary and include every
 member needed to close it. Never submit a placeholder shape, an open centerline,
-or geometry unrelated to the requested final contour. When the requested hole
+or geometry unrelated to the requested final contour. Never use a user-visible
+geometry confirmation proposal as a diagnostic probe, and never deliberately
+omit a requested slot, cutout, or hole from that proposal. When the requested hole
 count, direction, spacing, center, and radius are already sufficient, use one
 replace_circle_pattern or batch edit in the same turn. Do not repeatedly ask for
 circle IDs that the geometry context already provides. If exact planar
@@ -219,6 +221,13 @@ the authoring context first when it is the only published read, then read the
 geometry edit context and verify the intended Profile or hole-count change
 before continuing; never reuse IDs or a revision from an earlier successful
 edit.
+
+For a new planar region, use prepare_planar_construction_proposal as the sole
+planar creation path. Express composite regions with general primitives,
+Boolean operations, transforms, and patterns. Express a constant-width cutout
+with path_stroke and its ordered open centerline; never calculate the final
+offset polygon or submit that centerline as a wire Part. The same tool wraps a
+new planar construction in a direct extrusion, revolution, or path sweep.
 
 Geometry transforms happen before mesh generation. A mesh is never a
 prerequisite for profile extrusion, profile revolution, or path sweep, and a
@@ -255,6 +264,11 @@ Ask a clarification only when the request is contradictory, cannot be mapped to
 one supported geometry, or contains a consequential choice that cannot be
 safely represented by a reversible confirmation proposal. A non-blocking
 question must not delay the proposal.
+When the user asks for another, additional, or separate model document, preserve
+the current document and call create_native_model_document. That tool activates
+the new blank document. In the same provider turn, call read_authoring_context
+and prepare the requested geometry there. Never delete the current Part merely
+to make another model document.
 If the user requests local mesh refinement, first read the current refinement
 context and use one of its exact stable logical IDs; never infer a target from a
 legacy recipe name or hard-code a hole-specific reference.
@@ -379,6 +393,7 @@ class ContinuationCheckpoint:
     proposal_id: str
     proposal_hash: str
     model_revision: int
+    proposal_kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -752,6 +767,7 @@ class AgentSessionEngine:
         *,
         request_context: str | None,
         allow_tools: bool,
+        trusted_terminal: tuple[str, str, str] | None = None,
     ) -> tuple[EngineEvent, ...]:
         """Run one provider user-turn and flush its round audit once."""
 
@@ -764,6 +780,7 @@ class AgentSessionEngine:
             return self._run_provider_loop_body(
                 request_context=request_context,
                 allow_tools=allow_tools,
+                trusted_terminal=trusted_terminal,
             )
         finally:
             with self._state_lock:
@@ -779,6 +796,7 @@ class AgentSessionEngine:
         *,
         request_context: str | None,
         allow_tools: bool,
+        trusted_terminal: tuple[str, str, str] | None,
     ) -> tuple[EngineEvent, ...]:
         self._reset_provider_cancellation()
         events: list[EngineEvent] = []
@@ -794,18 +812,30 @@ class AgentSessionEngine:
         refusal_retry_used = False
         route_probe_called = False
         route_correction: str | None = None
+        unit_clarification_retry_used = False
+        unit_correction: str | None = None
+        prerequisite_retry_used = False
+        prerequisite_correction: str | None = None
+        new_model_follow_up_pending = False
+        new_model_follow_up_retry_used = False
+        new_model_follow_up_correction: str | None = None
+        latest_user_request = self._latest_user_request()
+        default_native_units_apply = (
+            getattr(self.registry, "_dynamic_tools", None) is not None
+            and _default_native_geometry_units_apply(latest_user_request)
+        )
 
-        def local_geometry_recovery() -> tuple[EngineEvent, ...]:
-            recovery = _geometry_route_recovery(self._latest_user_request())
+        def local_assistant_recovery(
+            recovery: str,
+            *,
+            storage_error: str,
+        ) -> tuple[EngineEvent, ...]:
             try:
                 self._append_message(AssistantMessage("assistant", recovery))
             except _ConversationStorageLimit:
                 diagnostic = make_diagnostic(
                     DiagnosticCode.RESOURCE_LIMIT,
-                    (
-                        "The local geometry recovery message could not fit "
-                        "in the bounded conversation store."
-                    ),
+                    storage_error,
                     source="agent.engine",
                 )
                 events.append(self._diagnostic_event(diagnostic))
@@ -830,6 +860,96 @@ class AgentSessionEngine:
             )
             return tuple(events)
 
+        def local_geometry_recovery() -> tuple[EngineEvent, ...]:
+            return local_assistant_recovery(
+                _geometry_route_recovery(latest_user_request),
+                storage_error=(
+                    "The local geometry recovery message could not fit in "
+                    "the bounded conversation store."
+                ),
+            )
+
+        def local_terminal_success_recovery() -> tuple[EngineEvent, ...]:
+            summary = "" if trusted_terminal is None else trusted_terminal[1]
+            return local_assistant_recovery(
+                summary.strip() or "已完成。",
+                storage_error=(
+                    "The local proposal completion message could not fit in "
+                    "the bounded conversation store."
+                ),
+            )
+
+        def local_default_unit_recovery() -> tuple[EngineEvent, ...]:
+            published = {
+                str(getattr(item, "name", ""))
+                for item in available_tools
+                if isinstance(getattr(item, "name", None), str)
+            }
+            chinese = isinstance(latest_user_request, str) and any(
+                "\u4e00" <= character <= "\u9fff"
+                for character in latest_user_request
+            )
+            if chinese:
+                recovery = "本次未指定单位，已采用默认单位制 mm-N-MPa。"
+                recovery += (
+                    "当前会话未发布几何建模工具，请先打开或新建可编辑模型后重试。"
+                    if published.isdisjoint(
+                        {
+                            "prepare_geometry_proposal",
+                            "prepare_planar_construction_proposal",
+                        }
+                    )
+                    else "单位无需另行确认，请重试当前建模请求。"
+                )
+            else:
+                recovery = (
+                    "No units were specified, so the default mm-N-MPa "
+                    "system is active. "
+                )
+                recovery += (
+                    "No geometry-authoring tool is published in the current "
+                    "session; open or create an editable model and retry."
+                    if published.isdisjoint(
+                        {
+                            "prepare_geometry_proposal",
+                            "prepare_planar_construction_proposal",
+                        }
+                    )
+                    else "No separate unit confirmation is required; retry "
+                    "the current modeling request."
+                )
+            return local_assistant_recovery(
+                recovery,
+                storage_error=(
+                    "The local default-unit message could not fit in the "
+                    "bounded conversation store."
+                ),
+            )
+
+        def local_prerequisite_recovery() -> tuple[EngineEvent, ...]:
+            return local_assistant_recovery(
+                (
+                    "删除操作已完成，但用户要求的新增模型尚未创建。"
+                    "请重试该建模请求。"
+                ),
+                storage_error=(
+                    "The local prerequisite-continuation message could not fit "
+                    "in the bounded conversation store."
+                ),
+            )
+
+        def local_new_model_follow_up_recovery() -> tuple[EngineEvent, ...]:
+            return local_assistant_recovery(
+                (
+                    "新的模型文档已创建并激活，但所需几何提案尚未生成。"
+                    "请重试该建模请求。"
+                ),
+                storage_error=(
+                    "The local new-model follow-up message could not fit in "
+                    "the bounded conversation store."
+                ),
+            )
+
         for _ in range(self.config.max_cloud_turns):
             if self._cancel_event.is_set():
                 events.append(
@@ -843,13 +963,28 @@ class AgentSessionEngine:
                 self._provider_active = True
                 try:
                     route_hint = self._route_hint_for_current_turn()
-                    correction_for_round = route_correction
+                    correction_for_round = (
+                        route_correction
+                        or unit_correction
+                        or prerequisite_correction
+                        or new_model_follow_up_correction
+                    )
                     route_correction = None
+                    unit_correction = None
+                    prerequisite_correction = None
+                    new_model_follow_up_correction = None
                     streamed_text_parts: list[str] = []
                     streamed_events: list[
                         tuple[EngineEventType, Mapping[str, Any]]
                     ] = []
                     stream_started = False
+                    hold_stream = (
+                        route_hint is not None and route_hint.is_transform
+                    ) or (
+                        trusted_terminal is not None
+                        and trusted_terminal[0] == "succeeded"
+                    ) or default_native_units_apply
+                    hold_stream = hold_stream or new_model_follow_up_pending
 
                     def receive_text_delta(delta: str) -> None:
                         nonlocal stream_started
@@ -858,7 +993,7 @@ class AgentSessionEngine:
                                 "provider stream emitted an invalid text delta"
                             )
                         if not stream_started:
-                            if route_hint is not None and route_hint.is_transform:
+                            if hold_stream:
                                 streamed_events.append(
                                     (
                                         EngineEventType.MESSAGE_STARTED,
@@ -874,7 +1009,7 @@ class AgentSessionEngine:
                                 )
                             stream_started = True
                         streamed_text_parts.append(delta)
-                        if route_hint is not None and route_hint.is_transform:
+                        if hold_stream:
                             streamed_events.append(
                                 (EngineEventType.MESSAGE_DELTA, {"text": delta})
                             )
@@ -982,6 +1117,38 @@ class AgentSessionEngine:
             )
 
             if (
+                default_native_units_apply
+                and _asks_for_unit_clarification(response.message)
+            ):
+                if not unit_clarification_retry_used:
+                    unit_clarification_retry_used = True
+                    unit_correction = _default_native_unit_correction()
+                    continue
+                return local_default_unit_recovery()
+
+            if _destructive_success_left_additional_model_pending(
+                trusted_terminal,
+                latest_user_request,
+                response.message,
+            ):
+                if not prerequisite_retry_used:
+                    prerequisite_retry_used = True
+                    prerequisite_correction = (
+                        _additional_model_continuation_correction()
+                    )
+                    continue
+                return local_prerequisite_recovery()
+
+            if new_model_follow_up_pending and not response.message.tool_calls:
+                if not new_model_follow_up_retry_used:
+                    new_model_follow_up_retry_used = True
+                    new_model_follow_up_correction = (
+                        _new_model_geometry_follow_up_correction()
+                    )
+                    continue
+                return local_new_model_follow_up_recovery()
+
+            if (
                 refusal_retry_used
                 and not route_probe_called
                 and route_hint is not None
@@ -1016,6 +1183,22 @@ class AgentSessionEngine:
                     continue
 
                 return local_geometry_recovery()
+
+            if (
+                trusted_terminal is not None
+                and trusted_terminal[0] == "succeeded"
+                and _proposal_success_response_conflicts(
+                    response.message,
+                    available_tools,
+                )
+            ):
+                return local_terminal_success_recovery()
+
+            if _is_redundant_proposal_completion(
+                trusted_terminal,
+                response.message,
+            ):
+                return tuple(events)
 
             try:
                 self._append_message(response.message)
@@ -1095,6 +1278,7 @@ class AgentSessionEngine:
                         turn_nonce=turn_nonce,
                     ),
                     completed_run=active_run,
+                    turn_id=str(turn_nonce),
                 )
                 events.append(
                     self._event(
@@ -1108,13 +1292,38 @@ class AgentSessionEngine:
                 )
                 result = self._tool_result_cache.get(context.idempotency_key)
                 if result is None:
-                    result = self.registry.dispatch(
-                        call.name,
-                        call.arguments,
-                        context,
+                    missing_features = (
+                        _missing_requested_geometry_features(
+                            latest_user_request,
+                            call.arguments,
+                        )
+                        if call.name == "prepare_geometry_proposal"
+                        else ()
+                    )
+                    result = (
+                        _incomplete_geometry_proposal_result(
+                            context,
+                            missing_features,
+                        )
+                        if missing_features
+                        else self.registry.dispatch(
+                            call.name,
+                            call.arguments,
+                            context,
+                        )
                     )
                     self._tool_result_cache[context.idempotency_key] = result
                 self._register_continuation_from_result(result)
+                if result.ok and isinstance(result.data, Mapping):
+                    if result.data.get("next_action") == (
+                        "read_authoring_context_then_prepare_requested_geometry"
+                    ):
+                        new_model_follow_up_pending = True
+                    if call.name in {
+                        "prepare_geometry_proposal",
+                        "prepare_planar_construction_proposal",
+                    }:
+                        new_model_follow_up_pending = False
                 events.append(
                     self._event(
                         EngineEventType.TOOL_COMPLETED,
@@ -1189,6 +1398,8 @@ class AgentSessionEngine:
                         )
                     )
                     return tuple(events)
+                if _tool_result_waits_for_confirmation(result):
+                    return tuple(events)
                 if available_tools:
                     available_tools = self.registry.available_definitions(
                         self.session_id
@@ -1248,6 +1459,7 @@ class AgentSessionEngine:
                 "model_revision": checkpoint.model_revision,
                 "status": normalized_status,
                 "summary": bounded_summary,
+                "proposal_kind": checkpoint.proposal_kind,
             }
             self._append_message(
                 AssistantMessage(
@@ -1262,9 +1474,12 @@ class AgentSessionEngine:
                     + ". Treat this terminal status as authoritative. Do not "
                     "repeat an earlier pending-confirmation instruction or "
                     "ask the user to click, confirm, or accept this proposal "
-                    "again. For a succeeded proposal, acknowledge completion "
-                    "briefly before continuing only with the next requested "
-                    "stage.",
+                    "again. The local proposal card already presents the "
+                    "terminal state, so do not add a standalone completion "
+                    "acknowledgement. Evaluate the latest user request and "
+                    "prior plan. A successful prerequisite does not complete "
+                    "the overall request; continue only with the remaining "
+                    "requested stage using current tools.",
                 )
             )
             if normalized_status == "cancelled":
@@ -1272,6 +1487,11 @@ class AgentSessionEngine:
             return self._run_provider_loop(
                 request_context=None,
                 allow_tools=normalized_status == "succeeded",
+                trusted_terminal=(
+                    normalized_status,
+                    bounded_summary,
+                    checkpoint.proposal_kind,
+                ),
             )
         finally:
             self._operation_lock.release()
@@ -1301,6 +1521,7 @@ class AgentSessionEngine:
                 proposal_id=str(raw["proposal_id"]),
                 proposal_hash=str(raw["proposal_hash"]),
                 model_revision=int(raw["model_revision"]),
+                proposal_kind=str(raw.get("proposal_kind", "")),
             )
         except (KeyError, TypeError, ValueError):
             return
@@ -1662,6 +1883,14 @@ class AgentSessionEngine:
             "confirmed": state.confirmed,
             "active_run_id": state.active_run_id,
         }
+        if getattr(self.registry, "_dynamic_tools", None) is not None:
+            context["blank_native_geometry_unit_policy"] = {
+                "length": "mm",
+                "force": "N",
+                "stress": "MPa",
+                "apply_when_omitted": True,
+                "clarification_required": False,
+            }
         authoring_snapshot = self.registry.provider_snapshot
         projected = _provider_snapshot_dict(authoring_snapshot)
         if projected is not None:
@@ -2410,6 +2639,347 @@ _TYPED_DIAGNOSTIC_MARKERS = (
     "profile-transform.",
     "profile_transform.",
 )
+_NATIVE_GEOMETRY_CREATION_ACTIONS = (
+    "创建",
+    "建立",
+    "新建",
+    "生成",
+    "构建",
+    "建模",
+    "绘制",
+    "画一个",
+    "做一个",
+    "做个",
+    "create",
+    "build",
+    "construct",
+    "generate",
+    "draw",
+    "model a",
+    "make a",
+)
+_NATIVE_GEOMETRY_OBJECTS = (
+    "几何",
+    "模型",
+    "部件",
+    "板",
+    "平板",
+    "薄板",
+    "实体",
+    "圆柱",
+    "立方体",
+    "槽",
+    "孔",
+    "梁",
+    "桁架",
+    "框架",
+    "plate",
+    "sheet",
+    "solid",
+    "part",
+    "geometry",
+    "cylinder",
+    "box",
+    "slot",
+    "hole",
+    "beam",
+    "truss",
+    "frame",
+)
+_EXPLICIT_UNIT_PATTERN = re.compile(
+    r"(?<![a-z])(?:mm|cm|m|in|inch|ft|n|kn|mn|pa|kpa|mpa|gpa|psi|ksi)"
+    r"(?![a-z])",
+    re.IGNORECASE,
+)
+_EXPLICIT_UNIT_MARKERS = (
+    "毫米",
+    "厘米",
+    "米制",
+    "英寸",
+    "英尺",
+    "牛顿",
+    "千牛",
+    "帕斯卡",
+    "兆帕",
+    "吉帕",
+    "国际单位制",
+    "si单位",
+    "si 单位",
+    "不用默认单位",
+    "不要默认单位",
+    "not use the default unit",
+    "do not use the default unit",
+)
+_UNIT_CLARIFICATION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"(?:什么|哪种|哪个).{0,16}(?:单位|单位制)",
+        r"(?:请|需要|先|能否).{0,48}(?:告诉|提供|确认|选择).{0,24}(?:单位|单位制)",
+        r"(?:单位|单位制).{0,24}(?:是什么|选择|希望使用|请确认|请提供)",
+        r"(?:what|which).{0,16}(?:unit|unit system)",
+        r"(?:please|need to|must).{0,48}(?:specify|provide|confirm|choose)"
+        r".{0,24}(?:unit|unit system)",
+        r"(?:unit|unit system).{0,24}(?:should I use|do you want|would you like)",
+    )
+)
+_PROPOSAL_RECONFIRMATION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"(?:请|需要|还需|必须).{0,40}(?:确认|点击|接受|批准)",
+        r"(?:等待|待).{0,16}(?:确认|接受|批准)",
+        r"(?:无法|不能|未能|做不到).{0,48}(?:创建|提交|完成|建立|应用|执行)",
+        r"(?:please|need to|must).{0,48}(?:confirm|click|accept|approve)",
+        r"(?:waiting|pending).{0,24}(?:confirmation|approval|acceptance)",
+        r"(?:cannot|can't|unable to|not able to).{0,64}"
+        r"(?:create|submit|complete|apply|proceed)",
+    )
+)
+_ADDITIONAL_MODEL_REQUEST_MARKERS = (
+    "另建立",
+    "另建",
+    "另外建立",
+    "另外创建",
+    "另一个模型",
+    "新模型文档",
+    "another model",
+    "additional model",
+    "separate model",
+    "new model document",
+)
+_BARE_COMPLETION_PATTERN = re.compile(
+    r"^\s*(?:已)?(?:删除)?完成(?:了)?[。.!！]?\s*$|^\s*done[.!]?\s*$",
+    re.IGNORECASE,
+)
+_SLOT_REQUEST_MARKERS = (
+    "槽",
+    "slot",
+    "cutout",
+    "cut-out",
+    "notch",
+)
+_HOLE_REQUEST_MARKERS = (
+    "开孔",
+    "圆孔",
+    "孔洞",
+    "hole",
+    "perforat",
+)
+
+
+def _missing_requested_geometry_features(
+    user_request: str | None,
+    arguments: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Reject a confirmation card that deliberately drops requested cuts."""
+
+    if not isinstance(user_request, str) or not isinstance(arguments, Mapping):
+        return ()
+    part_function = arguments.get("part_function")
+    request = "\n".join(
+        item.casefold()
+        for item in (user_request, part_function)
+        if isinstance(item, str)
+    )
+    wants_slot = any(marker in request for marker in _SLOT_REQUEST_MARKERS)
+    wants_holes = any(marker in request for marker in _HOLE_REQUEST_MARKERS)
+    if not wants_slot and not wants_holes:
+        return ()
+    geometry = arguments.get("geometry")
+    if not isinstance(geometry, Mapping):
+        return ()
+    kind = geometry.get("kind")
+    has_slot = kind == "extruded_path_slot_plate"
+    has_holes = False
+    if kind in {"planar_profiles", "extruded_profiles"}:
+        profiles = geometry.get("profiles")
+        if not isinstance(profiles, list) or not profiles or any(
+            not isinstance(item, Mapping) for item in profiles
+        ):
+            return ()
+        inner_profiles = [
+            item
+            for index, item in enumerate(profiles)
+            if item.get("role") == "hole"
+            or item.get("operation") == "cut"
+            or (
+                index > 0
+                and item.get("role") is None
+                and item.get("operation") is None
+            )
+        ]
+        has_holes = any(item.get("kind") == "circle" for item in inner_profiles)
+        has_slot = has_slot or any(
+            item.get("kind") in {"polygon", "rectangle"}
+            for item in inner_profiles
+        )
+    missing: list[str] = []
+    if wants_slot and not has_slot:
+        missing.append("slot_or_cutout")
+    if wants_holes and not has_holes:
+        missing.append("holes")
+    return tuple(missing)
+
+
+def _incomplete_geometry_proposal_result(
+    context: ToolExecutionContext,
+    missing_features: Sequence[str],
+) -> ToolResult:
+    missing = tuple(str(item) for item in missing_features)
+    message = (
+        "The geometry proposal omitted requested final features: "
+        + ", ".join(missing)
+        + ". Revise the same proposal to include them; do not use a "
+        "user-visible confirmation proposal as a diagnostic probe."
+    )
+    return ToolResult(
+        ok=False,
+        session_id=context.session_id,
+        input_revision=max(context.expected_revision, 0),
+        idempotency_key=context.idempotency_key,
+        summary=message,
+        data={
+            "retryable": True,
+            "missing_requested_features": list(missing),
+            "required_action": "prepare_complete_requested_geometry",
+        },
+        diagnostics=(
+            make_diagnostic(
+                DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                message,
+                source="agent.engine",
+            ),
+        ),
+    )
+
+
+def _default_native_geometry_units_apply(user_request: str | None) -> bool:
+    """Return true when omitted units deterministically mean mm-N-MPa."""
+
+    if not isinstance(user_request, str) or not user_request.strip():
+        return False
+    content = user_request.casefold()
+    if _EXPLICIT_UNIT_PATTERN.search(content) is not None or any(
+        marker in content for marker in _EXPLICIT_UNIT_MARKERS
+    ):
+        return False
+    return any(
+        marker in content for marker in _NATIVE_GEOMETRY_CREATION_ACTIONS
+    ) and any(marker in content for marker in _NATIVE_GEOMETRY_OBJECTS)
+
+
+def _asks_for_unit_clarification(message: AssistantMessage) -> bool:
+    if message.tool_calls or not isinstance(message.content, str):
+        return False
+    return any(
+        pattern.search(message.content) is not None
+        for pattern in _UNIT_CLARIFICATION_PATTERNS
+    )
+
+
+def _default_native_unit_correction() -> str:
+    return (
+        "Local default-unit correction (deterministic): the user requested "
+        "new native geometry and did not explicitly override units. Apply "
+        "length=mm, force=N, and stress=MPa immediately. Do not ask a unit "
+        "question, create a unit-selection turn, or call "
+        "set_authoring_requirements for these defaults. Continue the request "
+        "with the currently published tools. If geometry tools are unavailable, "
+        "state that exact local tool or workspace limitation without asking "
+        "about units."
+    )
+
+
+def _proposal_success_response_conflicts(
+    message: AssistantMessage,
+    available_tools: Sequence[object],
+) -> bool:
+    """Reject one provider response that contradicts a trusted GUI success."""
+
+    published = {
+        str(getattr(item, "name", ""))
+        for item in available_tools
+        if isinstance(getattr(item, "name", None), str)
+    }
+    if any(call.name not in published for call in message.tool_calls):
+        return True
+    content = message.content
+    if not isinstance(content, str) or not content.strip():
+        return False
+    return any(
+        pattern.search(content) is not None
+        for pattern in _PROPOSAL_RECONFIRMATION_PATTERNS
+    )
+
+
+def _is_redundant_proposal_completion(
+    trusted_terminal: tuple[str, str, str] | None,
+    message: AssistantMessage,
+) -> bool:
+    """Hide a bare completion echo already represented by the proposal card."""
+
+    return (
+        trusted_terminal is not None
+        and trusted_terminal[0] == "succeeded"
+        and not message.tool_calls
+        and isinstance(message.content, str)
+        and _BARE_COMPLETION_PATTERN.fullmatch(message.content) is not None
+    )
+
+
+def _destructive_success_left_additional_model_pending(
+    trusted_terminal: tuple[str, str, str] | None,
+    user_request: str | None,
+    message: AssistantMessage,
+) -> bool:
+    if (
+        trusted_terminal is None
+        or trusted_terminal[0] != "succeeded"
+        or trusted_terminal[2] != "destructive_edit"
+        or not isinstance(user_request, str)
+        or not any(
+            marker in user_request.casefold()
+            for marker in _ADDITIONAL_MODEL_REQUEST_MARKERS
+        )
+        or message.tool_calls
+        or not isinstance(message.content, str)
+    ):
+        return False
+    return _BARE_COMPLETION_PATTERN.fullmatch(message.content) is not None
+
+
+def _additional_model_continuation_correction() -> str:
+    return (
+        "Local prerequisite-continuation correction (deterministic): the "
+        "trusted destructive proposal succeeded, while the latest request "
+        "still requires an additional model document. Do not reply only that "
+        "the deletion completed. Preserve all remaining documents, call "
+        "create_native_model_document, then read_authoring_context and prepare "
+        "the requested geometry. If a required tool is unavailable, report "
+        "that exact typed blocker."
+    )
+
+
+def _new_model_geometry_follow_up_correction() -> str:
+    return (
+        "Local new-model follow-up correction (deterministic): the additional "
+        "native model document was created and activated successfully, but "
+        "that tool result requires the requested geometry to be prepared in "
+        "this same turn. Do not stop after reporting document creation. Call "
+        "read_authoring_context, then call the single matching published "
+        "prepare tool for the user's requested Part. Planar regions and their "
+        "direct derived 3D outputs use prepare_planar_construction_proposal."
+    )
+
+
+def _tool_result_waits_for_confirmation(result: ToolResult) -> bool:
+    """Return true when a local proposal card is now the attention boundary."""
+
+    if not result.ok or not isinstance(result.data, Mapping):
+        return False
+    return (
+        result.data.get("state") == "pending_confirmation"
+        and isinstance(result.data.get("continuation_checkpoint"), Mapping)
+    )
 
 
 def _should_guard_geometry_refusal(
@@ -2470,20 +3040,25 @@ def _snapshot_proves_transform_unsupported(snapshot: object | None) -> bool:
         return True
     if projected.get("active_part_suppressed") is True:
         return True
-    capabilities = projected.get("enabled_capabilities")
-    if isinstance(capabilities, (list, tuple, set)) and capabilities:
-        capability_names = {str(item) for item in capabilities}
-        if not capability_names.intersection(
-            {
-                "edit_native_geometry",
-                "prepare_geometry_edit",
-                "read_profile_transform_context",
-                "prepare_profile_extrusion",
-                "prepare_profile_revolution",
-                "prepare_profile_path_sweep",
-            }
-        ):
+    transform_tools = {
+        "edit_native_geometry",
+        "prepare_geometry_edit",
+        "read_profile_transform_context",
+        "prepare_profile_extrusion",
+        "prepare_profile_revolution",
+        "prepare_profile_path_sweep",
+    }
+    published_tools = projected.get("published_tool_names")
+    if isinstance(published_tools, (list, tuple, set)) and published_tools:
+        if not {str(item) for item in published_tools}.intersection(transform_tools):
             return True
+    else:
+        # Compatibility for snapshots produced before published tool names
+        # became the authoritative provider-facing capability surface.
+        capabilities = projected.get("enabled_capabilities")
+        if isinstance(capabilities, (list, tuple, set)) and capabilities:
+            if not {str(item) for item in capabilities}.intersection(transform_tools):
+                return True
     return False
 
 

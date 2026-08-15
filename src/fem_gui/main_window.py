@@ -186,6 +186,7 @@ from .agent_authoring import (
     AgentAuthoringBridge,
     AgentGeometryMutation,
     AgentMeshTaskRequest,
+    AgentProposalPreview,
     AgentPreflightState,
     AgentPreflightTaskRequest,
     AgentResultQueryBridge,
@@ -651,6 +652,7 @@ class FEMMainWindow(QMainWindow):
 
     resultQueryCompleted = Signal(object)
     faceSketchBooleanFeatureRequested = Signal(object)
+    agentProposalPreviewChanged = Signal(str, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -709,6 +711,7 @@ class FEMMainWindow(QMainWindow):
                 workspace_catalog_bridge=create_workspace_catalog_bridge(
                     self.workspace
                 ),
+                create_model_document=self._create_agent_native_model_document,
             )
         )
         self._applied_session_revision = self.document.session_revision
@@ -866,6 +869,7 @@ class FEMMainWindow(QMainWindow):
             tuple[object, str, str, float, float] | None
         ) = None
         self._step_combos: list[QComboBox] = []
+        self._agent_proposal_preview_id: str | None = None
         self._closing = False
         self._exit_pending = False
         self._shared_resources_shutdown = False
@@ -935,15 +939,30 @@ class FEMMainWindow(QMainWindow):
         if self._task_context_is_active(context):
             self._task_cancelling_changed(cancelling)
 
-    def _bind_agent_document(self, context: WorkspaceDocument) -> None:
+    def _bind_agent_document(
+        self,
+        context: WorkspaceDocument,
+        *,
+        from_agent_tool: bool = False,
+    ) -> None:
         """Rebind the one Agent bridge/port pair to an idle target document."""
 
         panel = getattr(self, "viewport_panel", None)
         drawer = None if panel is None else getattr(panel, "agent_chat_drawer", None)
         runtime = None if drawer is None else getattr(drawer, "agent_runtime", None)
         if runtime is not None:
-            runtime.bind_target(context.document_id, context.session.session_id)
-        idle = None if runtime is None else (lambda: not runtime.busy)
+            if from_agent_tool:
+                runtime.bind_target_from_authoring_tool(
+                    context.document_id,
+                    context.session.session_id,
+                )
+            else:
+                runtime.bind_target(context.document_id, context.session.session_id)
+        idle = (
+            None
+            if runtime is None or from_agent_tool
+            else (lambda: not runtime.busy)
+        )
         for bridge in (
             self.agent_authoring_bridge,
             self.agent_result_query_bridge,
@@ -995,6 +1014,8 @@ class FEMMainWindow(QMainWindow):
     def _activate_workspace_context(
         self,
         context: WorkspaceDocument,
+        *,
+        from_agent_tool: bool = False,
     ) -> bool:
         """Activate one context while reusing its presentation adapters.
 
@@ -1023,11 +1044,17 @@ class FEMMainWindow(QMainWindow):
         if self._active_editor():
             return False
         try:
-            self._bind_agent_document(context)
+            self._bind_agent_document(
+                context,
+                from_agent_tool=from_agent_tool,
+            )
         except (RuntimeError, TypeError, ValueError):
             if previous_context is not None:
                 try:
-                    self._bind_agent_document(previous_context)
+                    self._bind_agent_document(
+                        previous_context,
+                        from_agent_tool=from_agent_tool,
+                    )
                 except (RuntimeError, TypeError, ValueError):
                     logging.exception(
                         "failed to restore Agent binding after partial bind"
@@ -4779,6 +4806,19 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel.agent_chat_drawer.set_project_save_handler(
             self._start_agent_project_save
         )
+        self.agentProposalPreviewChanged.connect(
+            self._agent_proposal_preview_changed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self.agent_authoring_bridge.set_preview_listener(
+            lambda proposal_id, preview: self.agentProposalPreviewChanged.emit(
+                proposal_id,
+                preview,
+            )
+        )
+        self.viewport_panel.overlay_host.drawerOpenChanged.connect(
+            lambda opened: None if opened else self._close_agent_proposal_preview()
+        )
         self.viewport_panel.scope_creation_bar.createRequested.connect(
             self._complete_scope_creation_from_bar
         )
@@ -5161,6 +5201,41 @@ class FEMMainWindow(QMainWindow):
         )
         self.viewport.set_geometry_ghost_preview(ghost_preview)
         return preview
+
+    def _agent_proposal_preview_changed(
+        self,
+        proposal_id: str,
+        preview: AgentProposalPreview | None,
+    ) -> None:
+        if preview is None:
+            if self._agent_proposal_preview_id == proposal_id:
+                self._agent_proposal_preview_id = None
+                self._restore_after_agent_proposal_preview()
+            return
+        self._agent_proposal_preview_id = proposal_id
+        self.viewport.show_geometry_preview(
+            GeometryPreview(
+                preview.points,
+                preview.faces,
+                preview.edges,
+                topological_dimension=preview.dimension,
+            )
+        )
+
+    def _close_agent_proposal_preview(self) -> None:
+        if self._agent_proposal_preview_id is not None:
+            self._agent_proposal_preview_id = None
+            self._restore_after_agent_proposal_preview()
+        self.agent_authoring_bridge.clear_proposal_previews()
+
+    def _restore_after_agent_proposal_preview(self) -> None:
+        committed = self._current_native_geometry_preview()
+        self.viewport.show_geometry_preview(
+            committed
+            if committed is not None
+            else GeometryPreview((), (), (), topological_dimension=2),
+            reset_camera=committed is not None,
+        )
 
     def _step_combo_changed(self, combo: QComboBox) -> None:
         step_name = combo.currentData()
@@ -10422,19 +10497,27 @@ class FEMMainWindow(QMainWindow):
             self.result_tree.remove_archive(context.document_id)
             self.workspace.remove(context)
 
-    def _create_native_model(self, model_name: str) -> None:
+    def _create_native_model(
+        self,
+        model_name: str,
+        *,
+        from_agent_tool: bool = False,
+    ) -> bool:
         """Create a native project after its model name has been collected."""
 
         if self.busy:
-            return
+            return False
         previous_context = self._active_context
         # New model commands append a fresh Session/context.  The existing
         # active model remains in the workspace and is only switched away
         # after the new context has been installed.
         context = self.workspace.add_model(display_name=model_name)
-        if not self._activate_workspace_context(context):
+        if not self._activate_workspace_context(
+            context,
+            from_agent_tool=from_agent_tool,
+        ):
             self.workspace.remove(context)
-            return
+            return False
         receipt = self.new_native_project(
             NewNativeProjectCommand(model_name)
         )
@@ -10442,17 +10525,53 @@ class FEMMainWindow(QMainWindow):
             self.model_tree.remove_document(context.document_id)
             self.workspace.remove(context)
             if previous_context is not None:
-                self._activate_workspace_context(previous_context)
+                self._activate_workspace_context(
+                    previous_context,
+                    from_agent_tool=from_agent_tool,
+                )
             else:
                 self._active_context = None
-            self._show_command_rejection("新建自主项目", receipt)
-            return
+            if not from_agent_tool:
+                self._show_command_rejection("新建自主项目", receipt)
+            return False
+        # ``new_native_project`` assigns the fresh Session identity after the
+        # workspace context was first activated. Rebind once more so Agent
+        # proposal identities target the accepted project Session.
+        self._bind_agent_document(
+            context,
+            from_agent_tool=from_agent_tool,
+        )
         self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state(
             "模型已创建，请新建部件",
             5000,
         )
         self.ribbon.set_current("几何")
+        return True
+
+    def _create_agent_native_model_document(
+        self,
+        requested_name: str | None,
+    ) -> str:
+        """Create one additional model from an owner-thread Agent tool call."""
+
+        if requested_name is not None and type(requested_name) is not str:
+            raise TypeError("model name must be a string or None")
+        model_name = (
+            f"模型-{self.workspace.next_model_number}"
+            if requested_name is None
+            else requested_name.strip()
+        )
+        if not model_name or len(model_name) > 160:
+            raise ValueError("model name must contain 1 to 160 characters")
+        if self.workspace.model_name_exists(model_name):
+            raise ValueError(f"model name already exists: {model_name}")
+        if not self._create_native_model(
+            model_name,
+            from_agent_tool=True,
+        ):
+            raise RuntimeError("the additional model document could not be created")
+        return model_name
 
     def open_native_project(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(

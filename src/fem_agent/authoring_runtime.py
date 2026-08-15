@@ -13,6 +13,19 @@ import threading
 from typing import TYPE_CHECKING, Any
 import uuid
 
+from fem.geometry.construction_ir import (
+    MAX_BOOLEAN_OPERANDS,
+    MAX_CANONICAL_PAYLOAD_BYTES,
+    MAX_DAG_DEPTH,
+    MAX_NAME_LENGTH,
+    MAX_NODES,
+    MAX_NODE_ID_LENGTH,
+    MAX_PATH_POINTS,
+    MAX_PATTERN_INSTANCES,
+    MAX_POLYGON_VERTICES,
+    SCHEMA_VERSION as PLANAR_CONSTRUCTION_SCHEMA_VERSION,
+)
+
 from .authoring import (
     AuthoringContext,
     ProposalState,
@@ -243,6 +256,11 @@ class AuthoringTurnSnapshot:
             ),
             None,
         )
+        callable_names = {
+            str(name).strip()
+            for name in published_tool_names
+            if str(name).strip()
+        }
         return cls(
             available=True,
             source_kind=context.binding.source_kind,
@@ -265,7 +283,9 @@ class AuthoringTurnSnapshot:
             mesh_present=context.mesh.present,
             mesh_current=context.mesh.current,
             enabled_capabilities=tuple(
-                item.operation for item in context.capabilities if item.enabled
+                item.operation
+                for item in context.capabilities
+                if item.enabled and item.operation in callable_names
             ),
             published_tool_names=published_tool_names,
             snapshot_generation=generation,
@@ -316,6 +336,26 @@ class AuthoringTerminalRecord:
     operation: str
     state: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarConstructionAuditRecord:
+    construction_digest: str
+    stage: str
+    diagnostic_code: str | None
+    proposal_id: str | None
+    terminal_state: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanarConstructionRetryState:
+    turn_id: str
+    construction_digest: str
+    recovery_digest: str
+    diagnostic_code: str
+    node_id: str | None
+    allowed_fields: tuple[str, ...]
+    attempt: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,15 +638,21 @@ _REQUIREMENT_GATE_BY_STAGE = {
     AuthoringWorkflowStage.SOLVE_READY: "mesh",
     AuthoringWorkflowStage.RESULTS_READY: "mesh",
 }
-_GATED_OPERATION_BY_STAGE = {
-    AuthoringWorkflowStage.REQUIREMENTS: "prepare_geometry_proposal",
-    AuthoringWorkflowStage.GEOMETRY_READY: "prepare_geometry_proposal",
-    AuthoringWorkflowStage.MESH_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.DEFINITIONS_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.PREFLIGHT_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.SOLVE_READY: "prepare_mesh_proposal",
-    AuthoringWorkflowStage.RESULTS_READY: "prepare_mesh_proposal",
+_GATED_OPERATIONS_BY_STAGE = {
+    AuthoringWorkflowStage.REQUIREMENTS: frozenset(
+        {"prepare_geometry_proposal", "prepare_planar_construction_proposal"}
+    ),
+    AuthoringWorkflowStage.GEOMETRY_READY: frozenset(
+        {"prepare_geometry_proposal", "prepare_planar_construction_proposal"}
+    ),
+    AuthoringWorkflowStage.MESH_READY: frozenset({"prepare_mesh_proposal"}),
+    AuthoringWorkflowStage.DEFINITIONS_READY: frozenset({"prepare_mesh_proposal"}),
+    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: frozenset(
+        {"prepare_mesh_proposal"}
+    ),
+    AuthoringWorkflowStage.PREFLIGHT_READY: frozenset({"prepare_mesh_proposal"}),
+    AuthoringWorkflowStage.SOLVE_READY: frozenset({"prepare_mesh_proposal"}),
+    AuthoringWorkflowStage.RESULTS_READY: frozenset({"prepare_mesh_proposal"}),
 }
 
 
@@ -737,6 +783,14 @@ _COMPOSITE_PROFILE_ARRAY_SCHEMA = {
     "type": "array",
     "minItems": 1,
     "maxItems": 32,
+    "description": (
+        "Closed boundaries of the final Part. The first planar boundary is "
+        "the outer material profile; contained boundaries are cuts. Encode a "
+        "non-convex or letter-shaped cutout, including an H-shaped slot, as "
+        "one ordered, closed, non-self-intersecting polygon with role=hole "
+        "and operation=cut. Never represent an H-shaped slot as its bounding "
+        "rectangle plus a material island."
+    ),
     "items": _COMPOSITE_PROFILE_ITEM_SCHEMA,
 }
 _COMPOSITE_PATH_SCHEMA = {
@@ -781,8 +835,10 @@ _PREPARE_GEOMETRY = _tool(
     "prepare_geometry_proposal",
     (
         "Build and present a revision-bound geometry proposal from general "
-        "planar profiles, a named spatial wire, or a supported solid primitive. "
-        "Record the project "
+        "planar profiles, a constant-width path slot cut through a plate, a "
+        "named spatial wire, or a supported solid primitive. Use wire only for "
+        "a final 1D beam, truss, or frame Part; never use it as a centerline "
+        "placeholder for a planar or solid Part. Record the project "
         "unit context first. The geometry is not added until the local GUI "
         "control is clicked."
     ),
@@ -855,86 +911,7 @@ _PREPARE_GEOMETRY = _tool(
                         "type": "object",
                         "properties": {
                             "kind": {"const": "planar_profiles"},
-                            "profiles": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": 32,
-                                "items": {
-                                    "oneOf": [
-                                        {
-                                            "type": "object",
-                                            "properties": {
-                                                "kind": {"const": "rectangle"},
-                                                "x": {"type": "number"},
-                                                "y": {"type": "number"},
-                                                "width": {
-                                                    "type": "number",
-                                                    "exclusiveMinimum": 0,
-                                                },
-                                                "height": {
-                                                    "type": "number",
-                                                    "exclusiveMinimum": 0,
-                                                },
-                                            },
-                                            "required": [
-                                                "kind",
-                                                "x",
-                                                "y",
-                                                "width",
-                                                "height",
-                                            ],
-                                            "additionalProperties": False,
-                                        },
-                                        {
-                                            "type": "object",
-                                            "properties": {
-                                                "kind": {"const": "circle"},
-                                                "center_x": {"type": "number"},
-                                                "center_y": {"type": "number"},
-                                                "radius": {
-                                                    "type": "number",
-                                                    "exclusiveMinimum": 0,
-                                                },
-                                            },
-                                            "required": [
-                                                "kind",
-                                                "center_x",
-                                                "center_y",
-                                                "radius",
-                                            ],
-                                            "additionalProperties": False,
-                                        },
-                                        {
-                                            "type": "object",
-                                            "properties": {
-                                                "kind": {"const": "polygon"},
-                                                "vertices": {
-                                                    "type": "array",
-                                                    "minItems": 3,
-                                                    "maxItems": 64,
-                                                    "items": {
-                                                        "type": "object",
-                                                        "properties": {
-                                                            "x": {
-                                                                "type": "number"
-                                                            },
-                                                            "y": {
-                                                                "type": "number"
-                                                            },
-                                                        },
-                                                        "required": ["x", "y"],
-                                                        "additionalProperties": (
-                                                            False
-                                                        ),
-                                                    },
-                                                },
-                                            },
-                                            "required": ["kind", "vertices"],
-                                            "additionalProperties": False,
-                                        },
-                                    ]
-                                },
-                            },
+                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
                         },
                         "required": ["kind", "profiles"],
                         "additionalProperties": False,
@@ -992,6 +969,65 @@ _PREPARE_GEOMETRY = _tool(
                     {
                         "type": "object",
                         "properties": {
+                            "kind": {"const": "extruded_path_slot_plate"},
+                            "plate": {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type": "number"},
+                                    "y": {"type": "number"},
+                                    "width": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                    },
+                                    "height": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                    },
+                                },
+                                "required": ["x", "y", "width", "height"],
+                                "additionalProperties": False,
+                            },
+                            "slot_path": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 32,
+                                "description": (
+                                    "Ordered open XY centerline for a constant-width "
+                                    "slot. Use this for S-shaped, U-shaped, or "
+                                    "serpentine cutouts instead of a wire Part."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "x": {"type": "number"},
+                                        "y": {"type": "number"},
+                                    },
+                                    "required": ["x", "y"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "slot_width": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "height": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                            },
+                            "provisional": {"type": "boolean"},
+                        },
+                        "required": [
+                            "kind",
+                            "plate",
+                            "slot_path",
+                            "slot_width",
+                            "height",
+                        ],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
                             "kind": {"const": "path_swept_profile"},
                             "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
                             "path": _COMPOSITE_PATH_SCHEMA,
@@ -1015,6 +1051,41 @@ _PREPARE_GEOMETRY = _tool(
         "required": ["part_function", "geometry"],
         "additionalProperties": False,
     },
+)
+
+# Keep the legacy composite decoder callable for one migration cycle while the
+# provider sees one planar-construction path.  The remaining general branches
+# are deliberately disjoint from Planar Construction IR.
+_LEGACY_PREPARE_GEOMETRY = _PREPARE_GEOMETRY
+_LEGACY_COMPOSITE_GEOMETRY_KINDS = frozenset(
+    {
+        "planar_profiles",
+        "extruded_profiles",
+        "extruded_path_slot_plate",
+        "path_swept_profile",
+    }
+)
+_prepare_geometry_parameters = dict(_PREPARE_GEOMETRY.parameters)
+_prepare_geometry_properties = dict(_prepare_geometry_parameters["properties"])
+_provider_geometry_schema = dict(_prepare_geometry_properties["geometry"])
+_provider_geometry_schema["oneOf"] = [
+    branch
+    for branch in _provider_geometry_schema["oneOf"]
+    if branch.get("properties", {}).get("kind", {}).get("const")
+    not in _LEGACY_COMPOSITE_GEOMETRY_KINDS
+]
+_prepare_geometry_properties["geometry"] = _provider_geometry_schema
+_prepare_geometry_parameters["properties"] = _prepare_geometry_properties
+_PREPARE_GEOMETRY = ToolDefinition(
+    _PREPARE_GEOMETRY.name,
+    (
+        "Prepare one revision-bound general geometry proposal for a named "
+        "spatial wire or a supported simple solid primitive. Planar regions "
+        "and any planar-derived 3D output use "
+        "prepare_planar_construction_proposal. The model changes only after "
+        "the local GUI control is clicked."
+    ),
+    _prepare_geometry_parameters,
 )
 _READ_GEOMETRY_EDIT_CONTEXT = _tool(
     "read_geometry_edit_context",
@@ -2398,6 +2469,386 @@ _REQUEST_PROJECT_SAVE = _tool(
     ),
     _NO_ARGUMENTS,
 )
+
+_PLANAR_NODE_ID_SCHEMA = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": MAX_NODE_ID_LENGTH,
+    "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+}
+_PLANAR_POINT_SCHEMA = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 2,
+    "maxItems": 2,
+}
+
+
+def _planar_node_schema(
+    kind: str,
+    properties: Mapping[str, object],
+    required: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {
+            "id": _PLANAR_NODE_ID_SCHEMA,
+            "kind": {"const": kind},
+            **dict(properties),
+        },
+        "required": ["id", "kind", *required],
+        "additionalProperties": False,
+    }
+
+
+def _planar_construction_context_capability() -> dict[str, object]:
+    return {
+        "schema_version": PLANAR_CONSTRUCTION_SCHEMA_VERSION,
+        "plane": "XY",
+        "node_kinds": {
+            "primitive": ["rectangle", "circle", "polygon", "path_stroke"],
+            "boolean": ["union", "difference", "intersection"],
+            "transform": ["translate", "rotate", "mirror"],
+            "pattern": [
+                "linear_pattern",
+                "rectangular_pattern",
+                "circular_pattern",
+            ],
+        },
+        "budgets": {
+            "max_node_count": MAX_NODES,
+            "max_boolean_operands": MAX_BOOLEAN_OPERANDS,
+            "max_polygon_vertices": MAX_POLYGON_VERTICES,
+            "max_path_points": MAX_PATH_POINTS,
+            "max_pattern_instances": MAX_PATTERN_INSTANCES,
+            "max_dag_depth": MAX_DAG_DEPTH,
+            "max_canonical_payload_bytes": MAX_CANONICAL_PAYLOAD_BYTES,
+        },
+        "output_kinds": ["planar", "extrusion", "revolution", "path_sweep"],
+    }
+
+
+_PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
+    _planar_node_schema(
+        "rectangle",
+        {
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+            "width": {"type": "number", "exclusiveMinimum": 0},
+            "height": {"type": "number", "exclusiveMinimum": 0},
+        },
+        ("x", "y", "width", "height"),
+    ),
+    _planar_node_schema(
+        "circle",
+        {
+            "center_x": {"type": "number"},
+            "center_y": {"type": "number"},
+            "radius": {"type": "number", "exclusiveMinimum": 0},
+        },
+        ("center_x", "center_y", "radius"),
+    ),
+    _planar_node_schema(
+        "polygon",
+        {
+            "vertices": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": MAX_POLYGON_VERTICES,
+                "items": _PLANAR_POINT_SCHEMA,
+            }
+        },
+        ("vertices",),
+    ),
+    _planar_node_schema(
+        "path_stroke",
+        {
+            "points": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": MAX_PATH_POINTS,
+                "items": _PLANAR_POINT_SCHEMA,
+            },
+            "width": {"type": "number", "exclusiveMinimum": 0},
+            "cap": {"type": "string", "enum": ["butt", "square", "round"]},
+            "join": {"type": "string", "enum": ["miter", "bevel", "round"]},
+        },
+        ("points", "width", "cap", "join"),
+    ),
+    _planar_node_schema(
+        "union",
+        {
+            "operands": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_BOOLEAN_OPERANDS,
+                "uniqueItems": True,
+                "items": _PLANAR_NODE_ID_SCHEMA,
+            }
+        },
+        ("operands",),
+    ),
+    _planar_node_schema(
+        "difference",
+        {
+            "base": _PLANAR_NODE_ID_SCHEMA,
+            "subtract": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_BOOLEAN_OPERANDS,
+                "uniqueItems": True,
+                "items": _PLANAR_NODE_ID_SCHEMA,
+            },
+        },
+        ("base", "subtract"),
+    ),
+    _planar_node_schema(
+        "intersection",
+        {
+            "operands": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": MAX_BOOLEAN_OPERANDS,
+                "uniqueItems": True,
+                "items": _PLANAR_NODE_ID_SCHEMA,
+            }
+        },
+        ("operands",),
+    ),
+    _planar_node_schema(
+        "translate",
+        {
+            "source": _PLANAR_NODE_ID_SCHEMA,
+            "dx": {"type": "number"},
+            "dy": {"type": "number"},
+        },
+        ("source", "dx", "dy"),
+    ),
+    _planar_node_schema(
+        "rotate",
+        {
+            "source": _PLANAR_NODE_ID_SCHEMA,
+            "center_x": {"type": "number"},
+            "center_y": {"type": "number"},
+            "angle_degrees": {"type": "number"},
+        },
+        ("source", "center_x", "center_y", "angle_degrees"),
+    ),
+    _planar_node_schema(
+        "mirror",
+        {
+            "source": _PLANAR_NODE_ID_SCHEMA,
+            "line_point_x": {"type": "number"},
+            "line_point_y": {"type": "number"},
+            "line_direction_x": {"type": "number"},
+            "line_direction_y": {"type": "number"},
+        },
+        (
+            "source",
+            "line_point_x",
+            "line_point_y",
+            "line_direction_x",
+            "line_direction_y",
+        ),
+    ),
+    _planar_node_schema(
+        "linear_pattern",
+        {
+            "seed": _PLANAR_NODE_ID_SCHEMA,
+            "count": {"type": "integer", "minimum": 1},
+            "step_x": {"type": "number"},
+            "step_y": {"type": "number"},
+        },
+        ("seed", "count", "step_x", "step_y"),
+    ),
+    _planar_node_schema(
+        "rectangular_pattern",
+        {
+            "seed": _PLANAR_NODE_ID_SCHEMA,
+            "count_x": {"type": "integer", "minimum": 1},
+            "count_y": {"type": "integer", "minimum": 1},
+            "spacing_x": {"type": "number"},
+            "spacing_y": {"type": "number"},
+        },
+        ("seed", "count_x", "count_y", "spacing_x", "spacing_y"),
+    ),
+    _planar_node_schema(
+        "circular_pattern",
+        {
+            "seed": _PLANAR_NODE_ID_SCHEMA,
+            "count": {"type": "integer", "minimum": 1},
+            "center_x": {"type": "number"},
+            "center_y": {"type": "number"},
+            "total_angle_degrees": {"type": "number"},
+        },
+        ("seed", "count", "center_x", "center_y", "total_angle_degrees"),
+    ),
+)
+
+_PLANAR_CONSTRUCTION_PROFILE_SELECTION_SCHEMA = {
+    "oneOf": [
+        {"const": "unique_material_profile"},
+        {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "pattern": r"^face:[^\s]+$",
+                "minLength": 6,
+                "maxLength": 192,
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "source_face_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": True,
+                    "items": {
+                        "type": "string",
+                        "pattern": r"^face:[^\s]+$",
+                        "minLength": 6,
+                        "maxLength": 192,
+                    },
+                },
+            },
+            "required": ["source_face_ids"],
+            "additionalProperties": False,
+        },
+    ]
+}
+_PLANAR_CONSTRUCTION_OUTPUT_SCHEMA = {
+    "oneOf": [
+        {"const": "planar"},
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "extrusion"},
+                "profile_selection": _PLANAR_CONSTRUCTION_PROFILE_SELECTION_SCHEMA,
+                "height": {"type": "number", "exclusiveMinimum": 0},
+            },
+            "required": ["kind", "profile_selection", "height"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "revolution"},
+                "profile_selection": _PLANAR_CONSTRUCTION_PROFILE_SELECTION_SCHEMA,
+                "axis": {"type": "string", "enum": ["x", "y", "z"]},
+                "angle_degrees": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 360,
+                },
+            },
+            "required": [
+                "kind",
+                "profile_selection",
+                "axis",
+                "angle_degrees",
+            ],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"const": "path_sweep"},
+                "profile_selection": _PLANAR_CONSTRUCTION_PROFILE_SELECTION_SCHEMA,
+                "path": _COMPOSITE_PATH_SCHEMA,
+                "frame_strategy": {
+                    "type": "string",
+                    "enum": ["fixed", "transport"],
+                },
+            },
+            "required": [
+                "kind",
+                "profile_selection",
+                "path",
+                "frame_strategy",
+            ],
+            "additionalProperties": False,
+        },
+    ]
+}
+
+_PREPARE_PLANAR_CONSTRUCTION = _tool(
+    "prepare_planar_construction_proposal",
+    (
+        "Compile one bounded declarative Planar Construction IR v1 graph on "
+        "the global XY plane, prove its exact Profiles and materialized strict "
+        "sketch locally, then present one revision-bound planar or derived 3D "
+        "Part proposal. "
+        "Use general primitives, Boolean operations, transforms, and patterns; "
+        "do not calculate final Boolean boundary vertices or submit CAD code. "
+        "The model changes only after the local GUI control is clicked."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "part_function": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 96,
+            },
+            "construction": {
+                "type": "object",
+                "properties": {
+                    "schema_version": {"const": PLANAR_CONSTRUCTION_SCHEMA_VERSION},
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_NAME_LENGTH,
+                    },
+                    "plane": {"const": "XY"},
+                    "nodes": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_NODES,
+                        "items": {"oneOf": list(_PLANAR_CONSTRUCTION_NODE_SCHEMAS)},
+                    },
+                    "result_node_id": _PLANAR_NODE_ID_SCHEMA,
+                },
+                "required": [
+                    "schema_version",
+                    "name",
+                    "plane",
+                    "nodes",
+                    "result_node_id",
+                ],
+                "additionalProperties": False,
+            },
+            "output": _PLANAR_CONSTRUCTION_OUTPUT_SCHEMA,
+        },
+        "required": ["part_function", "construction", "output"],
+        "additionalProperties": False,
+    },
+)
+_CREATE_NATIVE_MODEL_DOCUMENT = _tool(
+    "create_native_model_document",
+    (
+        "Create and activate an additional blank native model document while "
+        "preserving every existing workspace document. Use this only when the "
+        "user asks for another or separate model document, not for a new Part "
+        "inside the current model. After success, read the new authoring context "
+        "and prepare the requested geometry in the same turn."
+    ),
+    {
+        "type": "object",
+        "properties": {
+            "model_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+            }
+        },
+        "additionalProperties": False,
+    },
+)
 _READ_DELETABLE_OBJECTS = _tool(
     "read_deletable_objects",
     (
@@ -2990,6 +3441,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
+        _PREPARE_PLANAR_CONSTRUCTION,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
@@ -3005,6 +3457,7 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _GEOMETRY_FEATURE_CATALOG,
         _SET_REQUIREMENTS,
         _PREPARE_GEOMETRY,
+        _PREPARE_PLANAR_CONSTRUCTION,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
@@ -3231,6 +3684,9 @@ class AuthoringWorkflowController:
         self._destructive_resume_stage: AuthoringWorkflowStage | None = None
         self._pending_destructive_object_type: str | None = None
         self._terminals: list[AuthoringTerminalRecord] = []
+        self._planar_retry_state: _PlanarConstructionRetryState | None = None
+        self._planar_audit: list[PlanarConstructionAuditRecord] = []
+        self._pending_planar_proposal_id: str | None = None
         self._active_tool_context: ToolExecutionContext | None = None
         self._binding_identity: tuple[str, str, int] | None = None
         self._observed_context: AuthoringContext | None = None
@@ -3242,6 +3698,141 @@ class AuthoringWorkflowController:
     def stage(self) -> AuthoringWorkflowStage:
         with self._lock:
             return self._stage
+
+    @property
+    def planar_construction_audit(self) -> tuple[PlanarConstructionAuditRecord, ...]:
+        with self._lock:
+            return tuple(self._planar_audit)
+
+    def assess_planar_construction_failure(
+        self,
+        request: Mapping[str, object],
+        *,
+        code: str,
+        node_id: str | None,
+        retryable: bool,
+        allowed_fields: Sequence[str],
+    ) -> dict[str, object]:
+        """Bound retries and require a changed failing node or top-level payload."""
+
+        raw_construction = request.get("construction")
+        construction = (
+            raw_construction if isinstance(raw_construction, Mapping) else request
+        )
+        payload = json.dumps(
+            construction,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=True,
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        fields = tuple(str(field) for field in allowed_fields)
+        node_payload = next(
+            (
+                item
+                for item in construction.get("nodes", [])
+                if isinstance(item, Mapping) and item.get("id") == node_id
+            ),
+            None,
+        )
+        recovery_payload = {
+            field: (
+                node_payload
+                if field == "nodes" and node_payload is not None
+                else construction.get("nodes")
+                if field == "nodes"
+                else node_payload.get(field)
+                if node_payload is not None and field in node_payload
+                else construction
+                if field == "construction"
+                else request.get(field)
+                if field in request
+                else construction.get(field)
+            )
+            for field in fields
+        }
+        recovery_digest = hashlib.sha256(
+            json.dumps(
+                recovery_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        active = self._active_tool_context
+        turn_id = (
+            "local"
+            if active is None
+            else str(active.turn_id or active.idempotency_key)
+        )
+        with self._lock:
+            prior = self._planar_retry_state
+            if prior is not None and prior.turn_id != turn_id:
+                prior = None
+            attempt = 1 if prior is None else prior.attempt + 1
+            changed = prior is None or recovery_digest != prior.recovery_digest
+            may_retry = bool(retryable and changed and attempt < 3)
+            blocker = None
+            if prior is not None and not changed:
+                blocker = "Retry must modify the failed node or allowed field."
+            elif retryable and attempt >= 3:
+                blocker = "Planar construction retry limit reached after three attempts."
+            self._planar_retry_state = _PlanarConstructionRetryState(
+                turn_id,
+                digest,
+                recovery_digest,
+                str(code),
+                node_id,
+                fields,
+                attempt,
+            )
+            self._append_planar_audit(
+                PlanarConstructionAuditRecord(
+                    digest,
+                    "validation" if code in {
+                        "planar-ir.schema-invalid",
+                        "planar-ir.budget-exceeded",
+                        "planar-ir.duplicate-node-id",
+                        "planar-ir.reference-missing",
+                        "planar-ir.cycle-detected",
+                        "planar-ir.unreachable-node",
+                        "planar-ir.invalid-primitive",
+                        "planar-ir.invalid-path-stroke",
+                    } else "compile",
+                    str(code),
+                    None,
+                    "failed",
+                )
+            )
+            return {
+                "construction_digest": digest,
+                "attempt": attempt,
+                "limit": 3,
+                "retryable": may_retry,
+                "blocker": blocker,
+            }
+
+    def record_planar_construction_proposal(
+        self,
+        construction_digest: str,
+        proposal_id: str,
+    ) -> None:
+        with self._lock:
+            self._planar_retry_state = None
+            self._pending_planar_proposal_id = str(proposal_id)
+            self._append_planar_audit(
+                PlanarConstructionAuditRecord(
+                    str(construction_digest),
+                    "proposal",
+                    None,
+                    str(proposal_id),
+                    ProposalState.PENDING_CONFIRMATION.value,
+                )
+            )
+
+    def _append_planar_audit(self, record: PlanarConstructionAuditRecord) -> None:
+        self._planar_audit.append(record)
+        del self._planar_audit[:-64]
 
     @property
     def ledger(self) -> RequirementLedger:
@@ -3385,6 +3976,11 @@ class AuthoringWorkflowController:
                     item for item in global_reads if item.name in self._handlers
                 )
             definitions = list(_STAGE_TOOLS[self._stage])
+            if (
+                self._stage in _PROJECT_SAVE_READY_STAGES
+                and _CREATE_NATIVE_MODEL_DOCUMENT.name in self._handlers
+            ):
+                definitions.insert(1, _CREATE_NATIVE_MODEL_DOCUMENT)
             if _WORKSPACE_DOCUMENTS.name in self._handlers:
                 definitions.append(_WORKSPACE_DOCUMENTS)
             run_count = (
@@ -3416,12 +4012,14 @@ class AuthoringWorkflowController:
                 requirement_group is not None
                 and self._requirement_group_complete(requirement_group)
             )
-            gated_operation = _GATED_OPERATION_BY_STAGE.get(self._stage)
+            gated_operations = _GATED_OPERATIONS_BY_STAGE.get(
+                self._stage,
+                frozenset(),
+            )
             visible: list[ToolDefinition] = []
             for item in definitions:
                 if (
-                    gated_operation is not None
-                    and item.name == gated_operation
+                    item.name in gated_operations
                     and not requirements_complete
                 ):
                     continue
@@ -3558,7 +4156,9 @@ class AuthoringWorkflowController:
                         _RUN_PREFLIGHT.name,
                         _PREPARE_SOLVE.name,
                         _PREPARE_DELETE.name,
+                        _CREATE_NATIVE_MODEL_DOCUMENT.name,
                         _PREPARE_GEOMETRY.name,
+                        _PREPARE_PLANAR_CONSTRUCTION.name,
                         _READ_GEOMETRY_EDIT_CONTEXT.name,
                         _PREPARE_GEOMETRY_EDIT.name,
                         *_PROFILE_TRANSFORM_TOOLS,
@@ -3857,28 +4457,57 @@ class AuthoringWorkflowController:
                 if resume_stage is None or object_type is None:
                     raise ValueError("destructive edit has no pending target")
                 if normalized_state is ProposalState.SUCCEEDED:
-                    self._stage = {
-                        "part": AuthoringWorkflowStage.GEOMETRY_READY,
-                        "generated_mesh": AuthoringWorkflowStage.MESH_READY,
-                        "named_region": AuthoringWorkflowStage.DEFINITIONS_READY,
-                        "analysis_step": (
-                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                        ),
-                        "boundary_condition": (
-                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                        ),
-                        "load": (
-                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                        ),
-                        "result_request": (
-                            AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
-                        ),
-                    }[object_type]
+                    if (
+                        object_type in {"part", "generated_mesh"}
+                        and self._observed_context is not None
+                    ):
+                        self._stage = _restored_stage_for_context(
+                            self._observed_context
+                        )
+                        self._seed_default_geometry_requirements(
+                            self._observed_context
+                        )
+                    else:
+                        self._stage = {
+                            "part": AuthoringWorkflowStage.GEOMETRY_READY,
+                            "generated_mesh": AuthoringWorkflowStage.MESH_READY,
+                            "named_region": AuthoringWorkflowStage.DEFINITIONS_READY,
+                            "analysis_step": (
+                                AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                            ),
+                            "boundary_condition": (
+                                AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                            ),
+                            "load": (
+                                AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                            ),
+                            "result_request": (
+                                AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY
+                            ),
+                        }[object_type]
                 else:
                     self._stage = resume_stage
                 self._clear_destructive_pending()
             else:
                 raise ValueError("unknown pending proposal operation")
+            if (
+                normalized_operation == "geometry"
+                and self._pending_planar_proposal_id is not None
+            ):
+                pending_id = self._pending_planar_proposal_id
+                pending = next(
+                    (
+                        item
+                        for item in reversed(self._planar_audit)
+                        if item.proposal_id == pending_id
+                    ),
+                    None,
+                )
+                if pending is not None:
+                    self._append_planar_audit(
+                        replace(pending, terminal_state=normalized_state.value)
+                    )
+                self._pending_planar_proposal_id = None
             self._pending_operation = None
             self._record_terminal(
                 normalized_operation,
@@ -3967,6 +4596,8 @@ class AuthoringWorkflowController:
             self._project_save_record = None
             self._geometry_resume_stage = None
             self._mesh_resume_stage = None
+            self._planar_retry_state = None
+            self._pending_planar_proposal_id = None
             self._clear_destructive_pending()
             self._binding_identity = None
             self._observed_context = None
@@ -4291,8 +4922,7 @@ class AuthoringWorkflowController:
         context: AuthoringContext,
     ) -> None:
         if (
-            context.binding.source_kind != "blank"
-            or context.unit_context is not None
+            context.binding.source_kind not in {"blank", "native"}
             or context.parts
         ):
             return
@@ -4305,7 +4935,24 @@ class AuthoringWorkflowController:
                 RequirementStatus.CONFIRMED,
             }
         }
-        for key, value in _DEFAULT_GEOMETRY_REQUIREMENTS.items():
+        accepted_units = (
+            {}
+            if context.unit_context is None
+            else {
+                "length_unit": context.unit_context.length,
+                "force_unit": context.unit_context.force,
+                "stress_unit": context.unit_context.stress,
+            }
+        )
+        values = accepted_units or _DEFAULT_GEOMETRY_REQUIREMENTS
+        source_turn_id = (
+            "accepted-unit-context"
+            if accepted_units
+            else _DEFAULT_REQUIREMENT_SOURCE_TURN_ID
+        )
+        for key, value in values.items():
+            if value is None:
+                continue
             if key in recorded:
                 continue
             self._ledger.record(
@@ -4313,7 +4960,7 @@ class AuthoringWorkflowController:
                 field_type=str(_REQUIREMENT_SPECS[key]["type"]),
                 stage=_requirement_stage(key),
                 value=value,
-                source_turn_id=_DEFAULT_REQUIREMENT_SOURCE_TURN_ID,
+                source_turn_id=source_turn_id,
                 status=RequirementStatus.PROPOSED,
             )
 
@@ -4357,6 +5004,25 @@ class AuthoringWorkflowController:
         if data is None:
             raise TypeError(
                 "context_reader must return AuthoringContext or an object"
+            )
+        published_authoring_tools = tuple(
+            item.name for item in self.definitions
+        )
+        published_set = set(published_authoring_tools)
+        raw_capabilities = data.get("capabilities")
+        if isinstance(raw_capabilities, list):
+            data["capabilities"] = [
+                dict(item)
+                for item in raw_capabilities
+                if isinstance(item, Mapping)
+                and item.get("operation") in published_set
+            ]
+        data["published_authoring_tool_names"] = list(
+            published_authoring_tools
+        )
+        if _PREPARE_PLANAR_CONSTRUCTION.name in published_set:
+            data["planar_construction_ir"] = (
+                _planar_construction_context_capability()
             )
         requirement_group = self._current_requirement_group()
         required = (
@@ -4569,6 +5235,9 @@ class AuthoringWorkflowController:
         if not outcome.ok:
             return
         if name == _PREPARE_GEOMETRY.name:
+            self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
+            self._pending_operation = "geometry"
+        elif name == _PREPARE_PLANAR_CONSTRUCTION.name:
             self._stage = AuthoringWorkflowStage.GEOMETRY_PENDING
             self._pending_operation = "geometry"
         elif name == _PREPARE_GEOMETRY_EDIT.name:

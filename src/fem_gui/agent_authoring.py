@@ -20,7 +20,9 @@ from typing import Callable, Protocol
 from fem import geometry as geometry_runtime
 from fem.application import (
     ModelSession,
+    PlanarConstructionCompileError,
     UnitContext,
+    compile_planar_construction,
     prepare_part_boolean,
     prepare_solid_body_boolean,
 )
@@ -119,7 +121,9 @@ from fem_agent.geometry_authoring import (
     geometry_draft,
     feature_topology_catalog,
     geometry_recipe_from_payload,
+    planar_construction_proposal_evidence,
     planar_geometry_catalog,
+    planar_path_slot_vertices,
     planar_polygon_geometry,
     planar_sketch_geometry,
     PlanarEditValidationError,
@@ -175,11 +179,14 @@ from fem.geometry import (
     LogicalEntityRef,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
+    PlanarConstructionIR,
+    PlanarIRValidationError,
     PathSweptGeometry,
     RevolvedGeometry,
     SketchGeometry,
     SketchCircle,
     SketchRectangle,
+    SolidBody,
     WireMember,
     WireGeometry,
     WirePoint,
@@ -215,6 +222,25 @@ class _SessionSnapshot(Protocol):
     displayed_result: object | None
     mesh_current: bool
     unit_context: object | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProposalPreview:
+    """GUI-only detached tessellation bound to one proven proposal Recipe."""
+
+    dimension: int
+    points: tuple[tuple[float, float, float], ...]
+    faces: tuple[tuple[int, ...], ...]
+    edges: tuple[tuple[int, ...], ...]
+    recipe_digest: str
+    proof_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DetachedRecipeMesh:
+    points: tuple[tuple[float, float, float], ...]
+    faces: tuple[tuple[int, ...], ...]
+    edges: tuple[tuple[int, ...], ...]
 
 
 def _normalize_profile_preflight_error(error: BaseException) -> AuthoringContractError:
@@ -289,9 +315,11 @@ def _preflight_derived_geometry(
 
 
 def _preflight_composite_geometry(
-    recipe: ExtrudedGeometry | PathSweptGeometry,
-) -> None:
-    """Prove one exact, positive-volume Body before a blank proposal is shown."""
+    recipe: object,
+    *,
+    include_preview: bool = False,
+) -> _DetachedRecipeMesh | None:
+    """Prove exact, positive-volume Bodies before a blank proposal is shown."""
 
     try:
         topology = describe_recipe_topology(recipe)
@@ -301,34 +329,45 @@ def _preflight_composite_geometry(
                 "could not be proven exactly"
             )
         expected_bodies = len(topology.entities_of("body", selectable_only=True))
-        if expected_bodies != 1:
+        if expected_bodies < 1:
             raise AuthoringContractError(
                 "profile-transform.unexpected-body-count: composite recipe must "
-                "describe exactly one selectable Body"
+                "describe at least one selectable Body"
             )
 
-        def compile_one() -> None:
+        def compile_one() -> _DetachedRecipeMesh | None:
             with geometry_runtime.model(
                 f"agent-composite-{type(recipe).__name__}-preflight",
                 dimension=3,
             ) as cad:
                 compiled = compile_recipe(cad, recipe)
-                if len(compiled.domain) != 1:
+                if len(compiled.domain) != expected_bodies:
                     raise AuthoringContractError(
                         "profile-transform.unexpected-body-count: composite "
-                        "preflight did not prove one solid domain"
+                        "preflight domain count does not match the exact topology"
                     )
-                if cad.volume(compiled.domain[0]) <= 0.0:
+                if any(cad.volume(item) <= 0.0 for item in compiled.domain):
                     raise AuthoringContractError(
                         "profile-transform.topology-unproven: composite preflight "
-                        "did not prove a positive volume"
+                        "did not prove positive volume"
                     )
+                if not include_preview:
+                    return None
+                faces = tuple(compiled.boundary)
+                edges = tuple(cad.boundary(faces, combined=False))
+                points = tuple(cad.boundary(edges, combined=False))
+                tessellation = cad.tessellate_surfaces(faces, edges, points)
+                return _DetachedRecipeMesh(
+                    tessellation.points,
+                    tessellation.faces,
+                    tessellation.edges,
+                )
 
         with ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="agent-composite-preflight",
         ) as executor:
-            executor.submit(compile_one).result()
+            return executor.submit(compile_one).result()
     except Exception as error:
         raise _normalize_profile_preflight_error(error) from error
 
@@ -466,6 +505,59 @@ def _bounded_geometry_design_summary(
     return f"{prefix}：" + "；".join(kept)
 
 
+class _GeometryIntentMismatchError(AuthoringContractError):
+    """A syntactically valid recipe conflicts with its declared Part function."""
+
+    def __init__(self, submitted_kind: str, expected_kinds: tuple[str, ...]) -> None:
+        self.submitted_kind = submitted_kind
+        self.expected_kinds = expected_kinds
+        super().__init__(
+            "geometry.intent-dimension-mismatch: a 1D wire cannot represent "
+            "a plate, sheet, solid, hole, slot, or cutout. Submit the final "
+            "planar or extruded geometry instead of a centerline placeholder."
+        )
+
+
+_WIRE_INCOMPATIBLE_PART_MARKERS = (
+    "板",
+    "薄片",
+    "片材",
+    "孔",
+    "槽",
+    "切口",
+    "切除",
+    "实体",
+    "plate",
+    "sheet",
+    "panel",
+    "slab",
+    "solid",
+    "hole",
+    "slot",
+    "cutout",
+    "cut-out",
+    "notch",
+)
+
+
+def _require_geometry_intent_compatibility(
+    part_function: str,
+    geometry_kind: str,
+) -> None:
+    if geometry_kind != "wire":
+        return
+    normalized = part_function.casefold()
+    if any(marker in normalized for marker in _WIRE_INCOMPATIBLE_PART_MARKERS):
+        raise _GeometryIntentMismatchError(
+            geometry_kind,
+            (
+                "planar_profiles",
+                "extruded_profiles",
+                "extruded_path_slot_plate",
+            ),
+        )
+
+
 def _geometry_unit_summary(
     requirements: Mapping[str, object],
     defaulted_keys: tuple[str, ...],
@@ -575,6 +667,21 @@ def _composite_profile_order_key(value: object) -> tuple[str, str]:
     return (kind, repr(tuple(value.get(field) for field in fields)))
 
 
+def _pop_profile_annotations(item: dict[str, object]) -> None:
+    """Validate optional provider hints while leaving topology authoritative."""
+
+    role = item.pop("role", None)
+    operation = item.pop("operation", None)
+    if role is not None and role not in {"material", "hole"}:
+        raise ValueError("composite profile role must be material or hole")
+    if operation is not None and operation not in {"material", "cut"}:
+        raise ValueError("composite profile operation must be material or cut")
+    if role is not None and operation is not None:
+        expected_role = "material" if operation == "material" else "hole"
+        if role != expected_role:
+            raise ValueError("composite profile role and operation disagree")
+
+
 def _composite_profile_contours(
     value: object,
     *,
@@ -594,23 +701,10 @@ def _composite_profile_contours(
             raise TypeError("each composite profile must be an object")
         item = dict(raw)
         kind = str(item.pop("kind", ""))
-        role_value = item.pop("role", None)
-        operation_value = item.pop("operation", None)
-        if role_value is not None and role_value not in {"material", "hole"}:
-            raise ValueError("composite profile role must be material or hole")
-        if operation_value is not None and operation_value not in {
-            "material",
-            "cut",
-        }:
-            raise ValueError("composite profile operation must be material or cut")
+        _pop_profile_annotations(item)
         # ``role``/``operation`` are annotations only.  The strict sketch
         # analyser below determines material versus hole from containment, so
         # contour order cannot change the selected Profile.
-        role = str(role_value) if role_value is not None else None
-        if operation_value is not None and role_value is not None:
-            expected = "material" if operation_value == "material" else "hole"
-            if role != expected:
-                raise ValueError("composite profile role and operation disagree")
         try:
             if kind == "rectangle":
                 if set(item) != {"x", "y", "width", "height"}:
@@ -3125,6 +3219,16 @@ class SessionGeometryAuthoringPort:
         self._records[proposal_id] = rejected
         return rejected
 
+    def cancel(self, proposal_id: str, reason: str) -> ProposalPortRecord:
+        record = self._pending(proposal_id)
+        cancelled = replace(
+            record,
+            state=ProposalState.CANCELLED,
+            message=str(reason).strip(),
+        )
+        self._records[proposal_id] = cancelled
+        return cancelled
+
     def stale(self, proposal_id: str, reason: str) -> ProposalPortRecord:
         record = self._pending(proposal_id)
         stale = replace(
@@ -3207,6 +3311,10 @@ class AgentAuthoringBridge:
         self._lifecycle_listener: (
             Callable[[AgentProposal, ProposalState, str], None] | None
         ) = None
+        self._preview_listener: (
+            Callable[[str, AgentProposalPreview | None], None] | None
+        ) = None
+        self._proposal_previews: dict[str, AgentProposalPreview] = {}
         self._last_lifecycle_notice: dict[str, tuple[ProposalState, str]] = {}
         listener = getattr(port, "set_record_listener", None)
         if callable(listener):
@@ -3236,6 +3344,14 @@ class AgentAuthoringBridge:
             raise TypeError("lifecycle listener must be callable")
         self._lifecycle_listener = callback
 
+    def set_preview_listener(
+        self,
+        callback: Callable[[str, AgentProposalPreview | None], None],
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("preview listener must be callable")
+        self._preview_listener = callback
+
     def set_result_invalidation_confirmation(
         self,
         callback: Callable[[], bool],
@@ -3249,8 +3365,10 @@ class AgentAuthoringBridge:
     def detach_gui_callbacks(self) -> None:
         """Break GUI-owned callback cycles when the window closes."""
 
+        self.clear_proposal_previews()
         self._patch_listener = None
         self._lifecycle_listener = None
+        self._preview_listener = None
         self._result_invalidation_confirmation = None
         detach_port = getattr(self._port, "detach_gui_callbacks", None)
         if callable(detach_port):
@@ -3324,7 +3442,29 @@ class AgentAuthoringBridge:
             stale_ids.append(proposal_id)
         return tuple(stale_ids)
 
-    def register_proposal(self, proposal: AgentProposal) -> BridgeReceipt:
+    def cancel_pending_proposals_from_gui(
+        self,
+        reason: str,
+    ) -> tuple[str, ...]:
+        self._require_gui_thread()
+        message = str(reason).strip()
+        if not message:
+            raise ValueError("cancel reason must be non-blank")
+        cancelled_ids: list[str] = []
+        for proposal_id, record in tuple(self._records.items()):
+            if record.state is not ProposalState.PENDING_CONFIRMATION:
+                continue
+            cancelled = self._port.cancel(proposal_id, message)
+            self._records[proposal_id] = cancelled
+            self._notify_lifecycle(cancelled)
+            cancelled_ids.append(proposal_id)
+        return tuple(cancelled_ids)
+
+    def register_proposal(
+        self,
+        proposal: AgentProposal,
+        detached_preview: AgentProposalPreview | None = None,
+    ) -> BridgeReceipt:
         if type(proposal) is not AgentProposal:
             raise AuthoringContractError("proposal must be AgentProposal")
         current = self._records.get(proposal.proposal_id)
@@ -3337,11 +3477,33 @@ class AgentAuthoringBridge:
         replay_id = self._idempotency.get(proposal.idempotency_key)
         if replay_id is not None:
             return self._receipt(self._records[replay_id], replayed=True)
+        if detached_preview is not None:
+            evidence = proposal.preconditions.get("local_evidence")
+            if not isinstance(evidence, Mapping) or (
+                evidence.get("output_recipe_digest") != detached_preview.recipe_digest
+                or evidence.get("output_proof_digest") != detached_preview.proof_digest
+            ):
+                raise AuthoringContractError(
+                    "detached preview does not match the proposal Recipe proof"
+                )
         self._require_live_target(proposal)
         record = self._port.present(proposal)
         self._records[proposal.proposal_id] = record
         self._idempotency[proposal.idempotency_key] = proposal.proposal_id
+        if detached_preview is not None:
+            self._proposal_previews[proposal.proposal_id] = detached_preview
+            if self._preview_listener is not None:
+                self._preview_listener(proposal.proposal_id, detached_preview)
         return self._receipt(record)
+
+    def clear_proposal_previews(self) -> None:
+        for proposal_id in tuple(self._proposal_previews):
+            self._clear_proposal_preview(proposal_id)
+
+    def _clear_proposal_preview(self, proposal_id: str) -> None:
+        if self._proposal_previews.pop(proposal_id, None) is not None:
+            if self._preview_listener is not None:
+                self._preview_listener(proposal_id, None)
 
     def apply_automatic_patch(
         self,
@@ -3660,6 +3822,14 @@ class AgentAuthoringBridge:
         if self._last_lifecycle_notice.get(proposal_id) == notice:
             return
         self._last_lifecycle_notice[proposal_id] = notice
+        if record.state in {
+            ProposalState.SUCCEEDED,
+            ProposalState.FAILED,
+            ProposalState.CANCELLED,
+            ProposalState.STALE,
+            ProposalState.REJECTED,
+        }:
+            self._clear_proposal_preview(proposal_id)
         if self._lifecycle_listener is not None:
             self._lifecycle_listener(
                 record.proposal,
@@ -3688,6 +3858,7 @@ def create_session_authoring_workflow_controller(
     *,
     next_job_name: Callable[[], str] | None = None,
     workspace_catalog_bridge: WorkspaceCatalogBridge | None = None,
+    create_model_document: Callable[[str | None], str] | None = None,
 ) -> AuthoringWorkflowController:
     """Wire A1-A7 handlers to one GUI-owner A8 controller."""
 
@@ -3699,6 +3870,8 @@ def create_session_authoring_workflow_controller(
         raise TypeError("result_bridge must be AgentResultQueryBridge")
     if next_job_name is not None and not callable(next_job_name):
         raise TypeError("next_job_name must be callable or None")
+    if create_model_document is not None and not callable(create_model_document):
+        raise TypeError("create_model_document must be callable or None")
     if (
         workspace_catalog_bridge is not None
         and type(workspace_catalog_bridge) is not WorkspaceCatalogBridge
@@ -3776,6 +3949,7 @@ def create_session_authoring_workflow_controller(
         impact: str,
         confirm_label: str,
         extra_data: Mapping[str, object] | None = None,
+        detached_preview: AgentProposalPreview | None = None,
     ) -> AuthoringToolOutcome:
         data = {
             "proposal_id": proposal.proposal_id,
@@ -3799,13 +3973,17 @@ def create_session_authoring_workflow_controller(
                 "proposal_id": proposal.proposal_id,
                 "proposal_hash": proposal.proposal_hash,
                 "model_revision": proposal.base_session_revision,
+                "proposal_kind": proposal.proposal_kind.value,
             },
         }
         if extra_data is not None:
             data.update(dict(extra_data))
         provisional = AuthoringToolOutcome(summary, data)
         provider_safe_authoring_payload(provisional.data)
-        receipt = authoring_bridge.register_proposal(proposal)
+        receipt = authoring_bridge.register_proposal(
+            proposal,
+            detached_preview=detached_preview,
+        )
         if receipt.state is ProposalState.PENDING_CONFIRMATION:
             return provisional
         final = AuthoringToolOutcome(
@@ -3831,6 +4009,7 @@ def create_session_authoring_workflow_controller(
             )
         geometry = dict(raw_geometry)
         kind = str(geometry.get("kind", ""))
+        _require_geometry_intent_compatibility(part_function, kind)
         recipe_name = (
             f"草图-{part_function}"
             if kind == "planar_profiles"
@@ -3854,6 +4033,7 @@ def create_session_authoring_workflow_controller(
             profile_summaries: list[str] = []
             first = profiles[0]
             first_kind = str(first.pop("kind", ""))
+            _pop_profile_annotations(first)
             if first_kind == "rectangle":
                 if set(first) != {"x", "y", "width", "height"}:
                     raise ValueError("rectangle profile fields do not match")
@@ -3916,6 +4096,7 @@ def create_session_authoring_workflow_controller(
                 raise ValueError("unsupported planar profile kind")
             for index, profile in enumerate(profiles[1:], start=2):
                 profile_kind = str(profile.pop("kind", ""))
+                _pop_profile_annotations(profile)
                 if profile_kind == "rectangle":
                     if set(profile) != {"x", "y", "width", "height"}:
                         raise ValueError(
@@ -3960,6 +4141,117 @@ def create_session_authoring_workflow_controller(
             geometry_summary = _bounded_geometry_design_summary(
                 "2D 平面轮廓",
                 profile_summaries,
+            )
+        elif kind == "extruded_path_slot_plate":
+            allowed = {
+                "kind",
+                "plate",
+                "slot_path",
+                "slot_width",
+                "height",
+                "provisional",
+            }
+            required = allowed - {"provisional"}
+            if set(geometry) - allowed or not required <= set(geometry):
+                raise ValueError(
+                    "extruded_path_slot_plate fields do not match"
+                )
+            if "provisional" in geometry and type(geometry["provisional"]) is not bool:
+                raise TypeError("path slot provisional must be a boolean")
+            raw_plate = geometry["plate"]
+            if not isinstance(raw_plate, Mapping) or set(raw_plate) != {
+                "x",
+                "y",
+                "width",
+                "height",
+            }:
+                raise ValueError("path slot plate fields do not match")
+            raw_path = geometry["slot_path"]
+            if (
+                not isinstance(raw_path, list)
+                or not 2 <= len(raw_path) <= 32
+                or any(
+                    not isinstance(item, Mapping) or set(item) != {"x", "y"}
+                    for item in raw_path
+                )
+            ):
+                raise ValueError(
+                    "slot_path must contain 2 to 32 ordered x/y objects"
+                )
+            path_points = tuple(
+                (item["x"], item["y"])
+                for item in raw_path
+            )
+            slot_vertices = planar_path_slot_vertices(
+                path_points,
+                geometry["slot_width"],
+            )
+            profiles = [
+                {
+                    "kind": "rectangle",
+                    "x": raw_plate["x"],
+                    "y": raw_plate["y"],
+                    "width": raw_plate["width"],
+                    "height": raw_plate["height"],
+                    "role": "material",
+                },
+                {
+                    "kind": "polygon",
+                    "vertices": [
+                        {"x": x, "y": y} for x, y in slot_vertices
+                    ],
+                    "role": "hole",
+                },
+            ]
+            sketch, profile_context, source_face_ids = _composite_profile_contours(
+                profiles,
+                recipe_name=recipe_name,
+            )
+            height = float(geometry["height"])
+            if not math.isfinite(height) or height <= 0.0:
+                raise ValueError("path slot extrusion height must be positive")
+            recipe = ExtrudedGeometry(
+                sketch,
+                height,
+                tuple(source_face_ids),
+            )
+            _run_profile_transform_preflight(
+                _preflight_composite_geometry,
+                recipe,
+            )
+            draft = geometry_draft(recipe)
+            length_unit = str(
+                controller.collected_requirements("geometry").get(
+                    "length_unit",
+                    "mm",
+                )
+            )
+            shown_path = ", ".join(
+                f"({_display_number(x)}, {_display_number(y)})"
+                for x, y in path_points[:8]
+            )
+            if len(path_points) > 8:
+                shown_path += f", …共{len(path_points)}点"
+            provisional = bool(geometry.get("provisional", False))
+            path_slot_details = [
+                _planar_profile_design_summary(
+                    "rectangle",
+                    raw_plate,
+                    1,
+                ),
+                f"槽中心路径={shown_path}",
+                (
+                    f"槽宽={_display_number(geometry['slot_width'])} "
+                    f"{length_unit}"
+                ),
+                f"拉伸高={_display_number(height)} {length_unit}",
+                "holes=1",
+            ]
+            if provisional:
+                path_slot_details.append("尺寸标记为 provisional 提案值")
+            geometry_summary = _bounded_geometry_design_summary(
+                "3D 路径槽平板",
+                path_slot_details,
             )
         elif kind in {"extruded_profiles", "path_swept_profile"}:
             allowed = {
@@ -4167,12 +4459,401 @@ def create_session_authoring_workflow_controller(
             ),
             **metadata,
         )
+        legacy_composite = kind in {
+            "planar_profiles",
+            "extruded_profiles",
+            "extruded_path_slot_plate",
+            "path_swept_profile",
+        }
         return proposal_outcome(
             proposal,
             summary=proposal_summary,
             impact="确认后创建该几何并刷新 GUI",
             confirm_label="加入部件",
+            extra_data={
+                "authoring_path": (
+                    "legacy_planar_profiles"
+                    if kind == "planar_profiles"
+                    else "legacy_geometry"
+                ),
+                **(
+                    {
+                        "compatibility_status": "deprecated",
+                        "replacement_tool": "prepare_planar_construction_proposal",
+                    }
+                    if legacy_composite
+                    else {}
+                ),
+            },
         )
+
+    _PLANAR_DIAGNOSTIC_MESSAGES = {
+        "planar-ir.schema-invalid": "二维构造字段或版本无效，请修正标记字段。",
+        "planar-ir.budget-exceeded": "二维构造超过本地预算，请简化构造图。",
+        "planar-ir.duplicate-node-id": "二维构造包含重复节点 ID，请重命名冲突节点。",
+        "planar-ir.reference-missing": "二维构造引用了不存在的节点，请修正失败引用。",
+        "planar-ir.cycle-detected": "二维构造节点形成循环，请断开诊断指出的依赖。",
+        "planar-ir.unreachable-node": "二维构造包含未参与结果的节点，请删除或连接该节点。",
+        "planar-ir.invalid-primitive": "二维基础区域参数无效，请修正诊断指出的节点。",
+        "planar-ir.invalid-path-stroke": "定宽路径无效，请修正失败线段、宽度或连接方式。",
+        "planar-ir.boolean-empty": "二维布尔运算结果为空，请调整 operand 或尺寸。",
+        "planar-ir.degenerate-result": "二维构造产生退化边或区域，请调整尺寸关系。",
+        "planar-ir.unsupported-boundary": "结果包含当前版本不支持的边界曲线。",
+        "planar-ir.materialization-failed": "二维边界无法物化为严格草图，模型保持不变。",
+        "planar-ir.profile-invalid": "物化草图未通过 Profile 拓扑证明。",
+        "planar-ir.equivalence-failed": "物化草图与布尔结果不等价，已阻止提案。",
+        "planar-ir.transform-invalid": "三维变换参数或源 Profile 无效，请修正 output。",
+        "planar-ir.preflight-failed": "最终三维 Recipe 未通过本地精确预检。",
+        "planar-ir.stale-context": "文档、Session 或 revision 已变化，请重新读取上下文。",
+    }
+
+    def _planar_construction_failure(
+        diagnostic: object,
+        request: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        code = str(getattr(diagnostic, "code"))
+        allowed_fields = tuple(getattr(diagnostic, "allowed_fields"))
+        retry = controller.assess_planar_construction_failure(
+            request,
+            code=code,
+            node_id=getattr(diagnostic, "node_id"),
+            retryable=bool(getattr(diagnostic, "retryable")),
+            allowed_fields=allowed_fields,
+        )
+        payload = {
+            "code": code,
+            "message": str(getattr(diagnostic, "message"))[:240],
+            "node_id": getattr(diagnostic, "node_id"),
+            "retryable": retry["retryable"],
+            "allowed_fields": list(allowed_fields),
+            "model_unchanged": True,
+        }
+        user_message = _PLANAR_DIAGNOSTIC_MESSAGES.get(
+            code,
+            "二维构造未通过本地验证，模型保持不变。",
+        )
+        if retry["blocker"] is not None:
+            user_message = f"{user_message} {retry['blocker']}"
+        return AuthoringToolOutcome(
+            user_message,
+            {
+                "diagnostic": payload,
+                "retry": retry,
+                "authoring_path": "planar_construction_ir_v1",
+                "required_action": "revise_same_planar_construction_ir",
+            },
+            ok=False,
+        )
+
+    def _planar_construction_profile_selection(
+        sketch: SketchGeometry,
+        raw_selection: object,
+    ) -> tuple[str, ...]:
+        context = profile_transform_context(sketch)
+        profiles = context.get("profiles")
+        if not context.get("topology_exact") or not isinstance(profiles, list):
+            raise AuthoringContractError(
+                "profile-transform.topology-unproven: IR-derived Profile "
+                "topology is not exact"
+            )
+        canonical = tuple(
+            str(item["face_id"])
+            for item in profiles
+            if isinstance(item, Mapping) and isinstance(item.get("face_id"), str)
+        )
+        if raw_selection == "unique_material_profile":
+            if len(canonical) != 1 or int(context["material_profile_count"]) != 1:
+                candidates = ", ".join(canonical) or "none"
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: "
+                    "unique_material_profile requires exactly one material "
+                    f"Profile; candidates={candidates}"
+                )
+            return canonical
+        if isinstance(raw_selection, Mapping):
+            if set(raw_selection) != {"source_face_ids"}:
+                raise ValueError("profile_selection fields do not match")
+            raw_selection = raw_selection["source_face_ids"]
+        if not isinstance(raw_selection, list) or not raw_selection:
+            raise ValueError(
+                "profile_selection must be unique_material_profile or an "
+                "explicit source_face_ids array"
+            )
+        if any(not isinstance(item, str) for item in raw_selection):
+            raise TypeError("source_face_ids must contain strings")
+        requested = tuple(raw_selection)
+        if len(requested) != len(set(requested)):
+            raise AuthoringContractError(
+                "profile-transform.invalid-source-id: source_face_ids must be unique"
+            )
+        unknown = tuple(item for item in requested if item not in canonical)
+        if unknown:
+            raise AuthoringContractError(
+                "profile-transform.invalid-source-id: explicit IDs must be "
+                f"canonical material Profile IDs; invalid={unknown[0]}"
+            )
+        return requested
+
+    def _planar_construction_output_recipe(
+        sketch: SketchGeometry,
+        output: object,
+        *,
+        part_function: str,
+    ) -> tuple[str, object, _DetachedRecipeMesh | None]:
+        if output == "planar":
+            return "planar", sketch, None
+        if not isinstance(output, Mapping) or not isinstance(output.get("kind"), str):
+            raise ValueError("output must be planar or a derived output object")
+        kind = str(output["kind"])
+        required = {
+            "extrusion": {"kind", "profile_selection", "height"},
+            "revolution": {
+                "kind",
+                "profile_selection",
+                "axis",
+                "angle_degrees",
+            },
+            "path_sweep": {
+                "kind",
+                "profile_selection",
+                "path",
+                "frame_strategy",
+            },
+        }.get(kind)
+        if required is None or set(output) != required:
+            raise ValueError("derived output fields do not match")
+        selected = _planar_construction_profile_selection(
+            sketch,
+            output["profile_selection"],
+        )
+        if kind == "extrusion":
+            extrusions = tuple(
+                ExtrudedGeometry(sketch, output["height"], (face_id,))
+                for face_id in selected
+            )
+            recipe = (
+                extrusions[0]
+                if len(extrusions) == 1
+                else MultiBodyGeometry(
+                    f"{part_function} Geometry",
+                    tuple(
+                        SolidBody(f"B{index}", f"Body-{index}", extrusion)
+                        for index, extrusion in enumerate(extrusions, start=1)
+                    ),
+                )
+            )
+        elif kind == "revolution":
+            if len(selected) != 1:
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: revolution "
+                    "requires exactly one canonical material Profile"
+                )
+            recipe = RevolvedGeometry(
+                sketch,
+                str(output["axis"]),
+                output["angle_degrees"],
+                selected,
+            )
+        else:
+            if len(selected) != 1:
+                raise AuthoringContractError(
+                    "profile-transform.ambiguous-material-profiles: path sweep "
+                    "requires exactly one canonical material Profile"
+                )
+            path = _composite_path(
+                output["path"],
+                name=f"扫掠路径-{part_function}",
+            )
+            recipe = PathSweptGeometry(
+                sketch,
+                path,
+                selected,
+                str(output["frame_strategy"]),
+            )
+        preview = _preflight_composite_geometry(recipe, include_preview=True)
+        if preview is None:
+            raise AuthoringContractError(
+                "planar-ir.preflight-failed: detached preview was not produced"
+            )
+        return kind, recipe, preview
+
+    def prepare_planar_construction(
+        arguments: Mapping[str, object],
+        controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if set(arguments) != {"part_function", "construction", "output"}:
+            raise AuthoringContractError(
+                "prepare_planar_construction_proposal fields do not match"
+            )
+        part_function = arguments["part_function"]
+        raw_construction = arguments["construction"]
+        if (
+            type(part_function) is not str
+            or not part_function.strip()
+            or part_function != part_function.strip()
+            or len(part_function) > 96
+        ):
+            raise AuthoringContractError(
+                "part_function must be a bounded nonblank string"
+            )
+        if not isinstance(raw_construction, Mapping):
+            raise AuthoringContractError("construction must be an object")
+
+        initial_context = current_context()
+        try:
+            construction = PlanarConstructionIR.from_dict(raw_construction)
+            compiled = compile_planar_construction(construction)
+        except (PlanarIRValidationError, PlanarConstructionCompileError) as error:
+            return _planar_construction_failure(
+                error.diagnostic,
+                arguments,
+                controller,
+            )
+        if type(compiled.recipe) is not SketchGeometry or not compiled.recipe.is_strict:
+            raise AuthoringContractError(
+                "planar construction compiler returned no strict sketch"
+            )
+        try:
+            output_kind, output_recipe, output_mesh = _planar_construction_output_recipe(
+                compiled.recipe,
+                arguments["output"],
+                part_function=part_function,
+            )
+        except (AuthoringContractError, TypeError, ValueError) as error:
+            code = (
+                "planar-ir.preflight-failed"
+                if "preflight" in str(error).casefold()
+                else "planar-ir.transform-invalid"
+            )
+            return _planar_construction_failure(
+                geometry_runtime.PlanarIRDiagnostic(
+                    code,
+                    str(error),
+                    None,
+                    True,
+                    ("output",),
+                ),
+                arguments,
+                controller,
+            )
+
+        current = current_context()
+        if (
+            initial_context.binding.document_id,
+            initial_context.binding.session_id,
+            initial_context.binding.session_revision,
+        ) != (
+            current.binding.document_id,
+            current.binding.session_id,
+            current.binding.session_revision,
+        ):
+            return _planar_construction_failure(
+                geometry_runtime.PlanarIRDiagnostic(
+                    "planar-ir.stale-context",
+                    "The document, session, or revision changed during compilation.",
+                    None,
+                    True,
+                    ("construction",),
+                ),
+                arguments,
+                controller,
+            )
+
+        evidence = planar_construction_proposal_evidence(
+            construction,
+            compiled,
+            output_kind=output_kind,
+            output_recipe=output_recipe,
+        )
+        source_preview = compiled.preview if output_mesh is None else output_mesh
+        detached_preview = AgentProposalPreview(
+            dimension=2 if output_kind == "planar" else 3,
+            points=source_preview.points,
+            faces=source_preview.faces,
+            edges=source_preview.edges,
+            recipe_digest=str(evidence["output_recipe_digest"]),
+            proof_digest=str(evidence["output_proof_digest"]),
+        )
+        draft = geometry_draft(output_recipe)
+        requirements = controller.collected_requirements("geometry")
+        defaulted_keys = controller.defaulted_requirement_keys("geometry")
+        construction_summary = evidence["construction_summary"]
+        proof_summary = evidence["proof_summary"]
+        output_label = {
+            "planar": "2D 平面构造",
+            "extrusion": "3D Profile 拉伸",
+            "revolution": "3D Profile 旋转扫掠",
+            "path_sweep": "3D Profile 路径扫掠",
+        }[output_kind]
+        proposal_summary = (
+            f"设计提案：{output_label}"
+            f"（节点={construction_summary['node_count']}，"
+            f"材料区={proof_summary['material_profile_count']}，"
+            f"孔洞={proof_summary['hole_count']}）；单位制 "
+            f"{_geometry_unit_summary(requirements, defaulted_keys)}"
+        )
+        metadata = envelope(controller, "planar-construction")
+        suffix = str(metadata.pop("identity_suffix"))
+        proposal = create_geometry_proposal(
+            proposal_id=f"proposal-{suffix}",
+            context=current,
+            draft=draft,
+            part_function=part_function,
+            project_function=(
+                part_function
+                if current.binding.source_kind == "blank"
+                else None
+            ),
+            summary=proposal_summary,
+            unit_context=UnitContextSummary(
+                str(requirements["length_unit"]),
+                str(requirements["force_unit"]),
+                str(requirements["stress_unit"]),
+                convention=(
+                    f"{requirements['force_unit']}-"
+                    f"{requirements['length_unit']}-"
+                    f"{requirements['stress_unit']}"
+                ),
+            ),
+            local_evidence=evidence,
+            include_static_preview=False,
+            **metadata,
+        )
+        outcome = proposal_outcome(
+            proposal,
+            summary=proposal_summary,
+            impact=(
+                "确认后创建该二维几何并刷新 GUI"
+                if output_kind == "planar"
+                else "确认后直接创建最终三维几何并刷新 GUI"
+            ),
+            confirm_label="加入部件",
+            detached_preview=detached_preview,
+            extra_data={
+                "authoring_path": "planar_construction_ir_v1",
+                "output_kind": output_kind,
+                "construction_summary": construction_summary,
+                "proof_summary": proof_summary,
+                "construction_digest_short": str(
+                    evidence["construction_digest"]
+                )[:12],
+                "recipe_proof_digest_short": str(
+                    evidence["recipe_proof_digest"]
+                )[:12],
+                "output_recipe_digest_short": str(
+                    evidence["output_recipe_digest"]
+                )[:12],
+                "output_proof_digest_short": str(
+                    evidence["output_proof_digest"]
+                )[:12],
+            },
+        )
+        controller.record_planar_construction_proposal(
+            str(evidence["construction_digest"]),
+            proposal.proposal_id,
+        )
+        return outcome
 
     def read_geometry_edit_context(
         arguments: Mapping[str, object],
@@ -4497,6 +5178,7 @@ def create_session_authoring_workflow_controller(
                 "profile-transform.source-not-strict",
                 "profile-transform.no-material-profile",
                 "profile-transform.ambiguous-material-profiles",
+                "profile-transform.invalid-profile",
                 "profile-transform.invalid-source-id",
                 "profile-transform.nonpositive-height",
                 "profile-transform.invalid-path",
@@ -4533,6 +5215,18 @@ def create_session_authoring_workflow_controller(
                 code = "profile-transform.unexpected-body-count"
             elif "topolog" in lowered or "strict" in lowered:
                 code = "profile-transform.topology-unproven"
+            elif any(
+                marker in lowered
+                for marker in (
+                    "composite profile",
+                    "polygon vertices",
+                    "rectangle profile",
+                    "circle profile",
+                    "slot path",
+                    "slot width",
+                )
+            ):
+                code = "profile-transform.invalid-profile"
             elif "source" in lowered or "profile" in lowered:
                 code = "profile-transform.invalid-source-id"
 
@@ -5392,8 +6086,26 @@ def create_session_authoring_workflow_controller(
         )
         try:
             return prepare_geometry(arguments, controller)
+        except _GeometryIntentMismatchError as error:
+            message = str(error)
+            return AuthoringToolOutcome(
+                message,
+                {
+                    "diagnostic": {
+                        "code": "geometry.intent-dimension-mismatch",
+                        "message": message,
+                        "retryable": True,
+                        "submitted_kind": error.submitted_kind,
+                        "expected_kinds": list(error.expected_kinds),
+                    }
+                },
+                ok=False,
+            )
         except (AuthoringContractError, TypeError, ValueError) as error:
-            if kind == "extruded_profiles":
+            if kind in {
+                "extruded_profiles",
+                "extruded_path_slot_plate",
+            }:
                 return _profile_transform_error(error, operation="复合 Profile 拉伸")
             if kind == "path_swept_profile":
                 return _profile_transform_error(
@@ -5826,6 +6538,7 @@ def create_session_authoring_workflow_controller(
                     "proposal_id": preview.proposal_id,
                     "proposal_hash": preview.proposal_hash,
                     "model_revision": preview.base_session_revision,
+                    "proposal_kind": "project_save",
                 },
             },
         )
@@ -5835,6 +6548,57 @@ def create_session_authoring_workflow_controller(
             context,
         )
         return provisional
+
+    def create_native_model_document(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if set(arguments) - {"model_name"}:
+            raise AuthoringContractError(
+                "create_native_model_document has unknown fields"
+            )
+        if create_model_document is None:
+            raise AuthoringContractError(
+                "native model document creation is unavailable"
+            )
+        requested_name = arguments.get("model_name")
+        if requested_name is not None and (
+            type(requested_name) is not str
+            or not requested_name.strip()
+            or requested_name != requested_name.strip()
+            or len(requested_name) > 160
+        ):
+            raise AuthoringContractError(
+                "model_name must be a nonblank trimmed string"
+            )
+        previous = current_context().binding
+        model_name = create_model_document(requested_name)
+        if type(model_name) is not str or not model_name.strip():
+            raise AuthoringContractError(
+                "model document creation returned no model name"
+            )
+        context = current_context()
+        if (
+            context.binding.document_id == previous.document_id
+            or context.binding.session_id == previous.session_id
+        ):
+            raise AuthoringContractError(
+                "model document creation did not activate a new binding"
+            )
+        return AuthoringToolOutcome(
+            f"Created and activated additional native model {model_name.strip()}.",
+            {
+                "state": "succeeded",
+                "model_name": model_name.strip(),
+                "target_document_id": context.binding.document_id,
+                "target_session_id": context.binding.session_id,
+                "model_revision": context.binding.session_revision,
+                "preserved_existing_documents": True,
+                "next_action": (
+                    "read_authoring_context_then_prepare_requested_geometry"
+                ),
+            },
+        )
 
     def read_deletable_objects(
         _arguments: Mapping[str, object],
@@ -6111,6 +6875,7 @@ def create_session_authoring_workflow_controller(
         current_context,
         {
             "prepare_geometry_proposal": prepare_geometry_with_diagnostics,
+            "prepare_planar_construction_proposal": prepare_planar_construction,
             "read_profile_transform_context": read_profile_transform_context,
             "prepare_profile_extrusion": prepare_profile_extrusion,
             "prepare_profile_revolution": prepare_profile_revolution,
@@ -6124,6 +6889,13 @@ def create_session_authoring_workflow_controller(
             "run_native_preflight": run_preflight,
             "prepare_solve_proposal": prepare_solve,
             "request_project_save": request_project_save,
+            **(
+                {}
+                if create_model_document is None
+                else {
+                    "create_native_model_document": create_native_model_document
+                }
+            ),
             "read_deletable_objects": read_deletable_objects,
             "prepare_delete_proposal": prepare_delete,
             "read_editable_model_objects": read_editable_objects,
@@ -6158,6 +6930,7 @@ __all__ = [
     "AgentPreflightTaskRequest",
     "AgentGeometryMutation",
     "AgentMeshTaskRequest",
+    "AgentProposalPreview",
     "AgentSolveTaskRequest",
     "AgentAuthoringBridge",
     "AgentProposal",

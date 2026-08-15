@@ -26,7 +26,6 @@ from fem_gui.action_state import ACTION_DESCRIPTORS, GuiActionKey
 from fem_gui.action_state import GuiActionContext, derive_action_availability
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.commands import MeshInputEdit
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_result_archive_model_view
 from fem_gui.viewport_image_export_dialog import ViewportImageExportOptions
@@ -157,8 +156,9 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
         )
         if button.defaultAction() is not None
     ]
-    assert project_buttons[:7] == [
+    assert project_buttons[:8] == [
         "action_new_native",
+        "action_delete_model",
         "action_open_project",
         "action_save_project",
         "action_open",

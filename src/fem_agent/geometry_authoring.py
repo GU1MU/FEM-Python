@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+import hashlib
 import math
 import json
 from dataclasses import dataclass
@@ -62,6 +64,8 @@ from fem.geometry import (
     solve_sketch_constraints,
 )
 from fem.application.feature_history import derive_feature_history
+from fem.application.planar_construction import CompiledPlanarConstruction
+from fem.geometry.construction_ir import PlanarConstructionIR
 from fem.geometry.recipe_topology import (
     describe_recipe_topology,
     topology_fingerprint_for_recipe,
@@ -368,6 +372,111 @@ def planar_polygon_geometry(
     )
 
 
+def planar_path_slot_vertices(
+    points: Sequence[Sequence[Real]],
+    width: Real,
+) -> tuple[tuple[float, float], ...]:
+    """Return one closed constant-width slot around an open XY polyline.
+
+    The returned vertices use square end caps and bounded miter joins.  Exact
+    sketch topology validation remains authoritative for rejecting a path whose
+    offset self-intersects.
+    """
+
+    values = tuple(points)
+    if not 2 <= len(values) <= 32:
+        raise ValueError("slot path must contain between 2 and 32 points")
+    coordinates: list[tuple[float, float]] = []
+    for index, point in enumerate(values):
+        if isinstance(point, (str, bytes, bytearray)):
+            raise TypeError("slot path points must contain coordinate pairs")
+        components = tuple(point)
+        if len(components) != 2:
+            raise ValueError("slot path points must contain coordinate pairs")
+        coordinates.append(
+            (
+                _finite(components[0], f"points[{index}].x"),
+                _finite(components[1], f"points[{index}].y"),
+            )
+        )
+    if len(set(coordinates)) != len(coordinates):
+        raise ValueError("slot path points must be distinct")
+
+    width_value = _finite(width, "width")
+    if width_value <= 0.0:
+        raise ValueError("slot width must be positive")
+    half_width = width_value / 2.0
+
+    tangents: list[tuple[float, float]] = []
+    normals: list[tuple[float, float]] = []
+    for start, end in zip(coordinates[:-1], coordinates[1:], strict=True):
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= _SKETCH_AUTHORING_TOLERANCE:
+            raise ValueError("slot path contains a zero-length segment")
+        tangent = (dx / length, dy / length)
+        tangents.append(tangent)
+        normals.append((-tangent[1], tangent[0]))
+
+    start_center = (
+        coordinates[0][0] - tangents[0][0] * half_width,
+        coordinates[0][1] - tangents[0][1] * half_width,
+    )
+    end_center = (
+        coordinates[-1][0] + tangents[-1][0] * half_width,
+        coordinates[-1][1] + tangents[-1][1] * half_width,
+    )
+    left = [
+        (
+            start_center[0] + normals[0][0] * half_width,
+            start_center[1] + normals[0][1] * half_width,
+        )
+    ]
+    right = [
+        (
+            start_center[0] - normals[0][0] * half_width,
+            start_center[1] - normals[0][1] * half_width,
+        )
+    ]
+
+    for index, center in enumerate(coordinates[1:-1], start=1):
+        previous_normal = normals[index - 1]
+        next_normal = normals[index]
+        miter_x = previous_normal[0] + next_normal[0]
+        miter_y = previous_normal[1] + next_normal[1]
+        miter_length = math.hypot(miter_x, miter_y)
+        if miter_length <= _SKETCH_AUTHORING_TOLERANCE:
+            raise ValueError("slot path cannot reverse direction at one point")
+        miter = (miter_x / miter_length, miter_y / miter_length)
+        denominator = miter[0] * next_normal[0] + miter[1] * next_normal[1]
+        if abs(denominator) <= _SKETCH_AUTHORING_TOLERANCE:
+            raise ValueError("slot path contains an unsupported sharp turn")
+        scale = half_width / denominator
+        if abs(scale) > half_width * 8.0:
+            raise ValueError("slot path turn is too sharp for the requested width")
+        offset = (miter[0] * scale, miter[1] * scale)
+        left.append((center[0] + offset[0], center[1] + offset[1]))
+        right.append((center[0] - offset[0], center[1] - offset[1]))
+
+    left.append(
+        (
+            end_center[0] + normals[-1][0] * half_width,
+            end_center[1] + normals[-1][1] * half_width,
+        )
+    )
+    right.append(
+        (
+            end_center[0] - normals[-1][0] * half_width,
+            end_center[1] - normals[-1][1] * half_width,
+        )
+    )
+    vertices = tuple((*left, *reversed(right)))
+    if len(set(vertices)) != len(vertices):
+        raise ValueError("slot path produced duplicate boundary vertices")
+    return vertices
+
+
 def plate_with_hole_geometry(
     name: str,
     *,
@@ -564,6 +673,8 @@ def create_geometry_proposal(
     unit_context: UnitContextSummary,
     project_function: str | None = None,
     summary: str | None = None,
+    local_evidence: Mapping[str, object] | None = None,
+    include_static_preview: bool = True,
 ) -> AgentProposal:
     """Create one revision-bound proposal for blank or native sessions."""
 
@@ -629,6 +740,40 @@ def create_geometry_proposal(
         raise AuthoringContractError("geometry proposal summary is blank")
     if len(proposal_summary.encode("utf-8")) > 2048:
         raise AuthoringContractError("geometry proposal summary is too long")
+    preconditions: dict[str, object] = {
+        "source_kind": binding.source_kind,
+        "unit_context": units,
+    }
+    if local_evidence is not None:
+        if not isinstance(local_evidence, Mapping):
+            raise TypeError("local_evidence must be an object or None")
+        preconditions["local_evidence"] = dict(local_evidence)
+    display_summary = {
+        "title": operation_label,
+        "summary": proposal_summary,
+        "target_model": target_model,
+        "operation": operation.kind.value,
+        "part_name": part_name,
+        "recipe_type": type(draft.recipe).__name__,
+        "source": _proposal_source(draft.recipe),
+        "feature_operation": _proposal_operation(draft.recipe),
+        "dimension": geometry_dimension(draft.recipe),
+        "key_dimensions": dict(draft.key_dimensions),
+        "expected_entity_count": draft.proof.expected_body_count,
+        "length_unit": unit_context.length,
+        "transforms": [dict(item) for item in draft.transforms],
+        "expected_new_objects": [part_name],
+        "invalidated_objects": [],
+        "invalidation_impact": {
+            "mesh": False,
+            "definitions": False,
+            "results": False,
+        },
+        "base_session_revision": binding.session_revision,
+        "proof": draft.proof.to_dict(),
+    }
+    if include_static_preview:
+        display_summary["preview"] = draft.preview.to_dict()
     return AgentProposal.create(
         proposal_id=proposal_id,
         proposal_kind=ProposalKind.GEOMETRY,
@@ -640,10 +785,7 @@ def create_geometry_proposal(
         base_session_revision=binding.session_revision,
         draft_revision=draft_revision,
         operations=(operation,),
-        preconditions={
-            "source_kind": binding.source_kind,
-            "unit_context": units,
-        },
+        preconditions=preconditions,
         expected_changes={
             "part_count_delta": 1,
             "project_created": binding.source_kind == "blank",
@@ -654,32 +796,81 @@ def create_geometry_proposal(
             "definitions": False,
             "results": False,
         },
-        display_summary={
-            "title": operation_label,
-            "summary": proposal_summary,
-            "target_model": target_model,
-            "operation": operation.kind.value,
-            "part_name": part_name,
-            "recipe_type": type(draft.recipe).__name__,
-            "source": _proposal_source(draft.recipe),
-            "feature_operation": _proposal_operation(draft.recipe),
-            "dimension": geometry_dimension(draft.recipe),
-            "key_dimensions": dict(draft.key_dimensions),
-            "expected_entity_count": draft.proof.expected_body_count,
-            "length_unit": unit_context.length,
-            "transforms": [dict(item) for item in draft.transforms],
-            "expected_new_objects": [part_name],
-            "invalidated_objects": [],
-            "invalidation_impact": {
-                "mesh": False,
-                "definitions": False,
-                "results": False,
-            },
-            "base_session_revision": binding.session_revision,
-            "preview": draft.preview.to_dict(),
-            "proof": draft.proof.to_dict(),
-        },
+        display_summary=display_summary,
     )
+
+
+def planar_construction_proposal_evidence(
+    construction: PlanarConstructionIR,
+    compiled: CompiledPlanarConstruction,
+    *,
+    output_kind: str = "planar",
+    output_recipe: object | None = None,
+) -> dict[str, object]:
+    """Return bounded local evidence hashed into an IR-derived proposal."""
+
+    if type(construction) is not PlanarConstructionIR:
+        raise TypeError("construction must be PlanarConstructionIR")
+    if type(compiled) is not CompiledPlanarConstruction:
+        raise TypeError("compiled must be CompiledPlanarConstruction")
+    if compiled.construction_digest != construction.digest():
+        raise ValueError("compiled construction digest does not match the IR")
+    if output_kind not in {"planar", "extrusion", "revolution", "path_sweep"}:
+        raise ValueError("unsupported planar construction output kind")
+    if output_recipe is None:
+        output_recipe = compiled.recipe
+    output_recipe_digest = hashlib.sha256(
+        json.dumps(
+            geometry_recipe_to_payload(output_recipe),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    output_proof_digest = hashlib.sha256(
+        json.dumps(
+            geometry_contract_proof(output_recipe).to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    proof = compiled.proof
+    proof_summary = {
+        "equivalent": proof.equivalent,
+        "tolerance_version": proof.tolerance_version,
+        "area": proof.area,
+        "bounding_box": list(proof.bounding_box),
+        "component_count": proof.component_count,
+        "profile_count": proof.profile_count,
+        "material_profile_count": proof.material_profile_count,
+        "hole_count": proof.hole_count,
+        "curve_type_counts": dict(proof.curve_type_counts),
+        "recipe_digest": proof.recipe_digest,
+    }
+    proof_digest = hashlib.sha256(
+        json.dumps(
+            proof_summary,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    construction_summary = construction.provider_safe_summary().to_dict()
+    construction_summary["node_kind_counts"] = dict(
+        sorted(Counter(node.kind for node in construction.nodes).items())
+    )
+    return {
+        "kind": "planar_construction_ir_v1",
+        "output_kind": output_kind,
+        "plane": construction.plane,
+        "construction_digest": compiled.construction_digest,
+        "recipe_proof_digest": proof_digest,
+        "output_recipe_digest": output_recipe_digest,
+        "output_proof_digest": output_proof_digest,
+        "construction_summary": construction_summary,
+        "proof_summary": proof_summary,
+    }
 
 
 def create_geometry_edit_proposal(
@@ -3402,9 +3593,19 @@ def _proposal_operation(recipe: object) -> str:
     }.get(type(recipe), "create")
 
 
-def _preview(recipe: object) -> StaticGeometryPreview:
+def _preview(
+    recipe: object,
+    *,
+    point_budget: int = _MAX_PREVIEW_POINTS,
+) -> StaticGeometryPreview:
+    if (
+        isinstance(point_budget, bool)
+        or not isinstance(point_budget, int)
+        or not 1 <= point_budget <= _MAX_PREVIEW_POINTS
+    ):
+        raise ValueError("preview point budget is outside the A2 bound")
     if type(recipe) is MovedGeometry:
-        base = _preview(recipe.base)
+        base = _preview(recipe.base, point_budget=point_budget)
         points = tuple(
             (x + recipe.dx, y + recipe.dy, z + recipe.dz) for x, y, z in base.points
         )
@@ -3416,7 +3617,7 @@ def _preview(recipe: object) -> StaticGeometryPreview:
             member_names=base.member_names,
         )
     if type(recipe) is RotatedGeometry:
-        base = _preview(recipe.base)
+        base = _preview(recipe.base, point_budget=point_budget)
         angle = math.radians(recipe.angle_degrees)
         cosine, sine = math.cos(angle), math.sin(angle)
 
@@ -3436,9 +3637,12 @@ def _preview(recipe: object) -> StaticGeometryPreview:
             member_names=base.member_names,
         )
     if type(recipe) is ExtrudedGeometry:
-        base = _preview(recipe.base)
+        base = _preview(
+            recipe.base,
+            point_budget=max(1, point_budget // 2),
+        )
         count = len(base.points)
-        if count * 2 > _MAX_PREVIEW_POINTS:
+        if count * 2 > point_budget:
             raise ValueError("extruded preview exceeds the point budget")
         nx, ny, nz = planar_geometry_normal(recipe.base)
         points = base.points + tuple(
@@ -3544,6 +3748,8 @@ def _preview(recipe: object) -> StaticGeometryPreview:
             sketch.plane.to_global(point.u, point.v)
             for point in sketch.points
         )
+        if len(points) > point_budget:
+            raise ValueError("sketch preview exceeds the point budget")
         point_indexes = {
             point.id: index for index, point in enumerate(sketch.points)
         }
@@ -3561,7 +3767,7 @@ def _preview(recipe: object) -> StaticGeometryPreview:
                 _PREVIEW_SEGMENTS,
                 max(
                     0,
-                    (_MAX_PREVIEW_POINTS - len(preview_points))
+                    (point_budget - len(preview_points))
                     // curved_count,
                 ),
             )
@@ -3999,6 +4205,8 @@ __all__ = [
     "profile_transform_context",
     "feature_topology_catalog",
     "planar_geometry_catalog",
+    "planar_construction_proposal_evidence",
+    "planar_path_slot_vertices",
     "planar_polygon_geometry",
     "planar_sketch_geometry",
     "rectangle_geometry",

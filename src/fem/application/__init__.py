@@ -163,6 +163,15 @@ from .planar_boolean import (
     prepare_planar_boolean,
     prepare_strict_planar_recipe_preview,
 )
+from .planar_construction import (
+    CompiledPlanarConstruction,
+    PlanarConstructionCompileError,
+    PlanarConstructionDiagnostic,
+    PlanarConstructionPreview,
+    PlanarConstructionProof,
+    PlanarCurveLineage,
+    compile_planar_construction,
+)
 from .session import (
     BooleanReferenceUndoRecord,
     ModelSession,
@@ -191,6 +200,7 @@ __all__ = [
     "BooleanReferenceUndoRecord",
     "ChangeKind",
     "CompiledDomainRegionSource",
+    "CompiledPlanarConstruction",
     "CompressedMeshEntityRefs",
     "DefinitionCompileResult",
     "DefinitionEditBatch",
@@ -217,6 +227,11 @@ __all__ = [
     "PartBooleanProvenance",
     "PartBooleanUndoRecord",
     "PartRevisionConflictError",
+    "PlanarConstructionCompileError",
+    "PlanarConstructionDiagnostic",
+    "PlanarConstructionPreview",
+    "PlanarConstructionProof",
+    "PlanarCurveLineage",
     "NativeDimension",
     "NativeMeshContract",
     "NativeMeshContractError",
@@ -276,6 +291,7 @@ __all__ = [
     "compatibility_analysis_name",
     "compile_model_definitions",
     "compile_named_region_edit",
+    "compile_planar_construction",
     "compiled_model_snapshot",
     "describe_model_capabilities",
     "describe_native_mesh_contract",

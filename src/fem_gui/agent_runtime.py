@@ -133,6 +133,7 @@ _TOOL_DISPLAY_NAMES = {
     "query_results": "查询求解结果",
     "export_results": "检查结果导出",
     "list_artifacts": "列出 Agent 工件",
+    "create_native_model_document": "新建模型文档",
 }
 
 
@@ -424,6 +425,7 @@ class QtAgentRuntime(QObject):
         self._cancel_requested = False
         self._shutdown = False
         self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
+        self._owner_authoring_dispatch_depth = 0
         self._authoring_snapshot = AuthoringTurnSnapshot.unavailable()
         self._authoring_definitions: tuple[ToolDefinition, ...] = ()
         self._authoring_snapshot_blocked = False
@@ -488,6 +490,28 @@ class QtAgentRuntime(QObject):
                 raise RuntimeError("Agent runtime is shut down")
             if self._busy:
                 raise RuntimeError("Agent runtime must be idle before rebinding")
+            self._target_document_id = normalized_document
+            self._target_session_id = normalized_session
+
+    def bind_target_from_authoring_tool(
+        self,
+        document_id: str | int,
+        session_id: str,
+    ) -> None:
+        """Rebind during the one owner-thread tool allowed to create a document."""
+
+        self._require_owner_thread()
+        normalized_document = str(document_id)
+        normalized_session = str(session_id)
+        if not normalized_document or not normalized_session:
+            raise ValueError("Agent target document/session identities are required")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Agent runtime is shut down")
+            if self._owner_authoring_dispatch_depth != 1:
+                raise RuntimeError(
+                    "Agent target may rebind only during an owner-thread authoring tool"
+                )
             self._target_document_id = normalized_document
             self._target_session_id = normalized_session
 
@@ -1190,7 +1214,12 @@ class QtAgentRuntime(QObject):
             with self._lock:
                 if self._shutdown:
                     raise RuntimeError("Agent runtime is closed")
-            result = controller.dispatch(name, arguments, context)
+                self._owner_authoring_dispatch_depth += 1
+            try:
+                result = controller.dispatch(name, arguments, context)
+            finally:
+                with self._lock:
+                    self._owner_authoring_dispatch_depth -= 1
             try:
                 self._publish_authoring_tool_cache_owner_thread()
             except Exception:
@@ -1290,7 +1319,10 @@ class QtAgentRuntime(QObject):
             return
         controller.invalidate_binding("Agent session changed")
         controller.reset_for_binding()
-        self._try_publish_authoring_tool_cache_owner_thread()
+        # A new chat clears workflow state, then immediately re-observes the
+        # still-active GUI document. Publishing alone would leave the reset
+        # controller unavailable and expose only global read tools.
+        self._try_refresh_authoring_turn_snapshot_from_gui()
 
     def _require_owner_thread(self) -> None:
         if threading.get_ident() != self._owner_thread_id:

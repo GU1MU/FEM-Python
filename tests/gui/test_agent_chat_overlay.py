@@ -164,6 +164,21 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     host.close()
 
 
+def test_reset_runtime_session_keeps_composer_notice_hidden():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    drawer = host.agent_chat_drawer
+
+    drawer._show_preview_notice("临时提示")
+    drawer._reset_runtime_session("new-session")
+    application.processEvents()
+
+    assert drawer.composer_hint.text() == ""
+    assert drawer.composer_hint.isHidden()
+    host.close()
+
+
 def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
     application = _application()
     viewport = _ViewportProbe()

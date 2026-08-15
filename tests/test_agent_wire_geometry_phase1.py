@@ -188,6 +188,34 @@ def test_phase1_prepare_geometry_schema_exposes_only_bounded_named_wire() -> Non
     assert wire["properties"]["members"]["items"]["additionalProperties"] is False
 
 
+def test_phase1_plate_or_slot_intent_cannot_be_downgraded_to_wire() -> None:
+    session = ModelSession()
+    bridge = AgentAuthoringBridge(
+        SessionGeometryAuthoringPort(session, lambda: None)
+    )
+    bridge.bind_snapshot(session.snapshot())
+    controller = create_session_authoring_workflow_controller(
+        session,
+        bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+    arguments = _frame_arguments()
+    arguments["part_function"] = "平板（带 S 形切除槽，先建中心线）"
+
+    rejected = controller.dispatch(
+        "prepare_geometry_proposal",
+        arguments,
+        ToolExecutionContext("wire-intent", 0, "wire-intent"),
+    )
+
+    assert not rejected.ok
+    diagnostic = rejected.data["diagnostic"]
+    assert diagnostic["code"] == "geometry.intent-dimension-mismatch"
+    assert diagnostic["submitted_kind"] == "wire"
+    assert "extruded_path_slot_plate" in diagnostic["expected_kinds"]
+    assert session.snapshot().parts == ()
+
+
 def test_phase1_gui_bridge_commits_wire_once_then_project_round_trips(tmp_path) -> None:
     session = ModelSession()
     refreshes: list[int] = []

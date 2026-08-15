@@ -124,7 +124,81 @@ def _path_geometry(*, with_hole: bool = False, frame_strategy: str = "transport"
     }
 
 
-def test_phase4_runtime_schema_publishes_blank_composite_variants() -> None:
+def _s_slot_plate_geometry() -> dict[str, object]:
+    return {
+        "kind": "extruded_path_slot_plate",
+        "plate": {
+            "x": -400.0,
+            "y": -200.0,
+            "width": 800.0,
+            "height": 400.0,
+        },
+        "slot_path": [
+            {"x": -300.0, "y": 0.0},
+            {"x": -180.0, "y": 100.0},
+            {"x": 0.0, "y": 0.0},
+            {"x": 180.0, "y": -100.0},
+            {"x": 300.0, "y": 0.0},
+        ],
+        "slot_width": 20.0,
+        "height": 10.0,
+        "provisional": True,
+    }
+
+
+def _h_slot_plate_2d_geometry() -> dict[str, object]:
+    return {
+        "kind": "planar_profiles",
+        "profiles": [
+            {
+                "kind": "rectangle",
+                "x": 0.0,
+                "y": 0.0,
+                "width": 500.0,
+                "height": 300.0,
+                "role": "material",
+                "operation": "material",
+            },
+            {
+                "kind": "polygon",
+                "vertices": [
+                    {"x": 225.0, "y": 110.0},
+                    {"x": 235.0, "y": 110.0},
+                    {"x": 235.0, "y": 138.0},
+                    {"x": 265.0, "y": 138.0},
+                    {"x": 265.0, "y": 110.0},
+                    {"x": 275.0, "y": 110.0},
+                    {"x": 275.0, "y": 190.0},
+                    {"x": 265.0, "y": 190.0},
+                    {"x": 265.0, "y": 162.0},
+                    {"x": 235.0, "y": 162.0},
+                    {"x": 235.0, "y": 190.0},
+                    {"x": 225.0, "y": 190.0},
+                ],
+                "role": "hole",
+                "operation": "cut",
+            },
+            *(
+                {
+                    "kind": "circle",
+                    "center_x": x,
+                    "center_y": y,
+                    "radius": 10.0,
+                    "role": "hole",
+                    "operation": "cut",
+                }
+                for x, y in (
+                    (40.0, 40.0),
+                    (460.0, 40.0),
+                    (40.0, 260.0),
+                    (460.0, 260.0),
+                )
+            ),
+        ],
+    }
+
+
+def test_phase6_runtime_schema_retires_blank_composite_variants() -> None:
     _bridge, controller = _controller(ModelSession())
     definition = next(
         item
@@ -132,20 +206,157 @@ def test_phase4_runtime_schema_publishes_blank_composite_variants() -> None:
         if item.name == "prepare_geometry_proposal"
     )
     variants = definition.parameters["properties"]["geometry"]["oneOf"]
-    extruded = next(
-        item
-        for item in variants
-        if item["properties"]["kind"].get("const") == "extruded_profiles"
+    assert {
+        item["properties"]["kind"].get("const") for item in variants
+    } == {"wire", "box", "cylinder"}
+    assert "prepare_planar_construction_proposal" in {
+        item.name for item in controller.definitions
+    }
+
+
+def test_phase4_planar_h_slot_and_four_holes_are_one_exact_part() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    result = controller.dispatch(
+        "prepare_geometry_proposal",
+        {
+            "part_function": "宽平板，中央H形槽，四周开孔",
+            "geometry": _h_slot_plate_2d_geometry(),
+        },
+        ToolExecutionContext("phase4-h-slot", 0, "h-slot"),
     )
-    swept = next(
-        item
-        for item in variants
-        if item["properties"]["kind"].get("const") == "path_swept_profile"
+
+    assert result.ok, result.summary
+    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
+    assert receipt.state is ProposalState.SUCCEEDED
+    recipe = session.snapshot().parts[0].geometry_recipe
+    analysis = geometry_runtime.analyze_sketch_profiles(recipe)
+    assert analysis.valid
+    assert sum(profile.role == "outer" for profile in analysis.profiles) == 1
+    assert sum(profile.role == "hole" for profile in analysis.profiles) == 5
+
+
+def test_phase4_blank_s_path_slot_plate_is_one_final_solid_proposal() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    result = controller.dispatch(
+        "prepare_geometry_proposal",
+        {
+            "part_function": "带 S 形贯穿槽的平板",
+            "geometry": _s_slot_plate_geometry(),
+        },
+        ToolExecutionContext("phase4-s-slot", 0, "s-slot"),
     )
-    assert extruded["properties"]["height"]["exclusiveMinimum"] == 0
-    assert swept["properties"]["frame_strategy"]["enum"] == ["fixed", "transport"]
-    assert extruded["additionalProperties"] is False
-    assert swept["additionalProperties"] is False
+
+    assert result.ok, result.summary
+    proposal = bridge._records[result.data["proposal_id"]].proposal
+    summary = proposal.display_summary["summary"]
+    assert proposal.display_summary["dimension"] == 3
+    assert proposal.display_summary["expected_entity_count"] == 1
+    assert all(
+        value in summary
+        for value in ("路径槽平板", "槽宽=20", "拉伸高=10", "holes=1")
+    )
+    assert len(proposal.display_summary["preview"]["points"]) <= 128
+
+    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
+    assert receipt.state is ProposalState.SUCCEEDED
+    recipe = session.snapshot().parts[0].geometry_recipe
+    assert type(recipe) is ExtrudedGeometry
+    topology = describe_recipe_topology(recipe)
+    assert topology.exact
+    assert len(topology.entities_of("body", selectable_only=True)) == 1
+    assert any(
+        entity.semantic_role == "sweep.boundary.hole"
+        for entity in topology.entities_of("face")
+    )
+
+
+def test_phase4_five_circular_holes_fit_extruded_preview_budget() -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    profiles = [
+        {
+            "kind": "rectangle",
+            "x": -400.0,
+            "y": -200.0,
+            "width": 800.0,
+            "height": 400.0,
+        },
+        *(
+            {
+                "kind": "circle",
+                "center_x": x,
+                "center_y": y,
+                "radius": 10.0,
+            }
+            for x, y in (
+                (-300.0, 0.0),
+                (-150.0, -60.0),
+                (0.0, 60.0),
+                (150.0, -60.0),
+                (300.0, 0.0),
+            )
+        ),
+    ]
+    result = controller.dispatch(
+        "prepare_geometry_proposal",
+        {
+            "part_function": "五孔平板",
+            "geometry": {
+                "kind": "extruded_profiles",
+                "profiles": profiles,
+                "height": 10.0,
+            },
+        },
+        ToolExecutionContext("phase4-five-holes", 0, "five-holes"),
+    )
+
+    assert result.ok, result.summary
+    proposal = bridge._records[result.data["proposal_id"]].proposal
+    preview = proposal.display_summary["preview"]
+    assert preview["dimension"] == 3
+    assert len(preview["points"]) <= 128
+    assert "holes=5" in proposal.display_summary["summary"]
+
+
+def test_phase4_duplicate_polygon_vertex_returns_profile_input_diagnostic() -> None:
+    session = ModelSession()
+    _bridge, controller = _controller(session)
+    result = controller.dispatch(
+        "prepare_geometry_proposal",
+        {
+            "part_function": "带槽平板",
+            "geometry": {
+                "kind": "extruded_profiles",
+                "profiles": [
+                    {
+                        "kind": "rectangle",
+                        "x": -5.0,
+                        "y": -3.0,
+                        "width": 10.0,
+                        "height": 6.0,
+                    },
+                    {
+                        "kind": "polygon",
+                        "vertices": [
+                            {"x": -2.0, "y": 0.0},
+                            {"x": 0.0, "y": 1.0},
+                            {"x": 2.0, "y": 0.0},
+                            {"x": -2.0, "y": 0.0},
+                        ],
+                    },
+                ],
+                "height": 1.0,
+            },
+        },
+        ToolExecutionContext("phase4-invalid-profile", 0, "invalid-profile"),
+    )
+
+    assert not result.ok
+    diagnostic = result.data["diagnostic"]
+    assert diagnostic["code"] == "profile-transform.invalid-profile"
+    assert diagnostic["required_fields"] == ["profiles"]
 
 
 def test_phase4_blank_ring_is_one_atomic_final_3d_proposal_and_persistent() -> None:

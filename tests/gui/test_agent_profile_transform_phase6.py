@@ -490,7 +490,6 @@ def test_phase6_fake_provider_guard_prepare_accept_continuation_uses_new_snapsho
                     "height": 4.0,
                 },
             ),
-            _text("proposal is waiting for local GUI confirmation"),
             _tool("next", "read_authoring_context", {}),
             _text("geometry accepted; mesh stage is ready"),
         ]
@@ -503,7 +502,7 @@ def test_phase6_fake_provider_guard_prepare_accept_continuation_uses_new_snapsho
 
     before = session.snapshot()
     events = engine.send_message("拉伸成3d，尺寸任意")
-    assert len(provider.requests) == 4
+    assert len(provider.requests) == 3
     assert [
         event.data["tool"]
         for event in events
@@ -630,7 +629,6 @@ def test_phase6_blank_composite_ring_is_one_final_proposal_with_hole_selection(
                 "prepare_geometry_proposal",
                 {"part_function": "blank-hollow-cylinder", "geometry": geometry},
             ),
-            _text("中空圆柱提案等待 GUI 确认"),
             _tool("blank-next", "read_authoring_context", {}),
             _text("几何已接受；现在可以进入网格阶段"),
         ]
@@ -642,7 +640,7 @@ def test_phase6_blank_composite_ring_is_one_final_proposal_with_hole_selection(
     )
     before = session.snapshot()
     events = engine.send_message("创建外半径 5、内半径 2、高度 4 的中空圆柱")
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 1
     prepare_events = [
         event
         for event in events

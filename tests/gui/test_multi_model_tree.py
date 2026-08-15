@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 from fem.application import ModelSession, ProjectSnapshot
 from fem.core.model import DisplacementConstraint
 from fem.io.project import LoadedProject
+from fem_agent.tools.registry import ToolExecutionContext
 import fem_gui.main_window as main_window_module
 from fem_gui.commands import (
     GuiCommandDiagnostic,
@@ -908,6 +909,58 @@ def test_create_native_models_append_roots_without_global_tree_clear(
             context.display_name
             for context in window.workspace.models.values()
         } == {"模型-1", "Model-2", "Model-3"}
+    finally:
+        dispose_gui_widget(window)
+
+
+def test_agent_creates_additional_model_and_keeps_geometry_tools_available(
+    dispose_gui_widget,
+):
+    _application()
+    window = FEMMainWindow()
+    original = window.workspace.active_document()
+    assert original is not None
+    runtime = window.viewport_panel.agent_chat_drawer.agent_runtime
+    try:
+        runtime.refresh_authoring_turn_snapshot_from_gui()
+        assert "create_native_model_document" in {
+            item.name for item in runtime._authoring_tool_definitions()
+        }
+        result = runtime._dispatch_authoring_tool(
+            "create_native_model_document",
+            {},
+            ToolExecutionContext(
+                "agent-new-document",
+                0,
+                "create-additional-model",
+            ),
+        )
+
+        created = window.workspace.active_document()
+        assert result.ok
+        assert created is not None and created is not original
+        assert len(window.workspace.models) == 2
+        assert original.document_id in window.workspace.models
+        assert created.display_name == "模型-2"
+        assert result.data["preserved_existing_documents"] is True
+        assert result.data["target_document_id"] == str(created.document_id)
+        assert runtime.target_identity == (
+            str(created.document_id),
+            created.session.session_id,
+        )
+        assert "prepare_geometry_proposal" in {
+            item.name for item in window.agent_authoring_controller.definitions
+        }
+        assert "prepare_geometry_proposal" in {
+            item.name for item in runtime._authoring_tool_definitions()
+        }
+        assert window.agent_authoring_controller.collected_requirements(
+            "geometry"
+        ) == {
+            "length_unit": "mm",
+            "force_unit": "N",
+            "stress_unit": "MPa",
+        }
     finally:
         dispose_gui_widget(window)
 

@@ -65,6 +65,7 @@ class ToolExecutionContext:
     expected_revision: int
     idempotency_key: str
     completed_run: WorkerResponse | None = None
+    turn_id: str | None = None
 
 
 @dataclass(frozen=True)

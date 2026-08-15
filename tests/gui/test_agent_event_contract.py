@@ -230,6 +230,21 @@ def test_event_schema_round_trip_and_unknown_values_are_rejected():
         AgentEvent.from_dict(unknown_payload)
 
 
+def test_message_delta_preserves_whitespace_but_rejects_empty_text():
+    events = _Events()
+    whitespace = events.make(
+        EventType.MESSAGE_DELTA,
+        {"message_id": "message-whitespace", "delta": "\n  "},
+    )
+
+    assert whitespace.payload["delta"] == "\n  "
+    with pytest.raises(AgentEventError, match="delta 不能为空"):
+        events.make(
+            EventType.MESSAGE_DELTA,
+            {"message_id": "message-empty", "delta": ""},
+        )
+
+
 def test_event_payload_is_immutable_and_to_dict_is_detached():
     event = AgentEvent.create(
         event_id="event-immutable",

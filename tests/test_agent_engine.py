@@ -11,12 +11,14 @@ from fem_agent.engine import (
     AgentSessionEngine,
     EngineConfig,
     EngineEventType,
+    _missing_requested_geometry_features,
 )
 from fem_agent.providers.base import (
     AssistantMessage,
     ProviderConfig,
     ProviderResponse,
     ToolCall,
+    ToolDefinition,
 )
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
@@ -45,6 +47,63 @@ def _text_response(text):
         AssistantMessage("assistant", content=text),
         finish_reason="stop",
     )
+
+
+class _AdditionalModelToolRegistry:
+    def __init__(self):
+        no_arguments = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        self.definitions = tuple(
+            ToolDefinition(name, name, no_arguments)
+            for name in (
+                "create_native_model_document",
+                "read_authoring_context",
+                "prepare_planar_construction_proposal",
+            )
+        )
+        self.calls = []
+
+    @property
+    def provider_snapshot(self):
+        return None
+
+    def refresh_turn_snapshot(self, published_tool_names=()):
+        del published_tool_names
+        return None
+
+    def dispatch(self, name, arguments, context):
+        self.calls.append((name, dict(arguments)))
+        data = {}
+        if name == "create_native_model_document":
+            data = {
+                "state": "succeeded",
+                "next_action": (
+                    "read_authoring_context_then_prepare_requested_geometry"
+                ),
+            }
+        elif name == "prepare_planar_construction_proposal":
+            data = {
+                "state": "pending_confirmation",
+                "continuation_checkpoint": {
+                    "session_id": context.session_id,
+                    "source_turn_id": "source-turn-model",
+                    "proposal_id": "proposal-new-model-geometry",
+                    "proposal_hash": "b" * 64,
+                    "model_revision": 0,
+                    "proposal_kind": "geometry",
+                },
+            }
+        return ToolResult(
+            ok=True,
+            session_id=context.session_id,
+            input_revision=context.expected_revision,
+            idempotency_key=context.idempotency_key,
+            summary=f"{name} completed",
+            data=data,
+        )
 
 
 class _StreamingFakeProvider(FakeProvider):
@@ -149,9 +208,200 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "material removal is represented by a closed" in system_prompt
     assert "prefer one non-self-intersecting add_polygon" in system_prompt
     assert "use every returned diagnostic and affected logical" in system_prompt
+    assert "use prepare_planar_construction_proposal as the sole" in system_prompt
+    assert "never calculate the final" in system_prompt
+    assert "or submit that centerline as a wire Part" in system_prompt
+    assert "Never use a user-visible" in system_prompt
+    assert "diagnostic probe" in system_prompt
+    assert "call create_native_model_document" in system_prompt
+    assert "Never delete the current Part" in system_prompt
 
 
-def _register_test_continuation(engine, *, revision=4):
+def test_blank_geometry_omitted_units_cannot_create_a_unit_question(tmp_path):
+    question = (
+        "我需要先确认一下你的项目单位制。请告诉我：你希望使用什么单位制？"
+    )
+    provider = FakeProvider(
+        [_text_response(question), _text_response(question)]
+    )
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_default_native_units",
+        dynamic_tools=controller,
+    )
+
+    events = engine.send_message("帮我建立一个平板，上面切除出一个S形")
+
+    assert len(provider.requests) == 2
+    first_state = provider.requests[0].messages[1].content or ""
+    assert '"blank_native_geometry_unit_policy"' in first_state
+    assert all(value in first_state for value in ('"mm"', '"N"', '"MPa"'))
+    correction = provider.requests[1].messages[-1]
+    assert correction.role == "system"
+    assert "length=mm, force=N, and stress=MPa" in (correction.content or "")
+    deltas = [
+        event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert len(deltas) == 1
+    assert "默认单位制 mm-N-MPa" in deltas[0]
+    assert "几何建模工具" in deltas[0]
+    assert question not in tuple(
+        message.content for message in engine._history if message.content
+    )
+
+
+def test_explicit_native_geometry_units_do_not_activate_default_unit_guard(
+    tmp_path,
+):
+    response = "将按用户指定的 m-kN-kPa 单位制继续。"
+    provider = FakeProvider([_text_response(response)])
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_explicit_native_units",
+        dynamic_tools=controller,
+    )
+
+    events = engine.send_message("请用 m-kN-kPa 创建一个平板")
+
+    assert len(provider.requests) == 1
+    assert any(
+        event.event is EngineEventType.MESSAGE_DELTA
+        and event.data["text"] == response
+        for event in events
+    )
+
+
+def test_new_model_tool_cannot_stop_before_requested_geometry_proposal(tmp_path):
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall("create-model", "create_native_model_document", {})
+            ),
+            _text_response("新模型已创建。"),
+            _tool_response(
+                ToolCall("read-new-model", "read_authoring_context", {})
+            ),
+            _tool_response(
+                ToolCall(
+                    "prepare-new-geometry",
+                    "prepare_planar_construction_proposal",
+                    {
+                        "part_function": "2D平板",
+                        "construction": {
+                            "schema_version": 1,
+                            "name": "2D平板",
+                            "plane": "XY",
+                            "nodes": [
+                                {
+                                    "id": "plate",
+                                    "kind": "rectangle",
+                                    "x": 0,
+                                    "y": 0,
+                                    "width": 10,
+                                    "height": 5,
+                                }
+                            ],
+                            "result_node_id": "plate",
+                        },
+                        "output": "planar",
+                    },
+                )
+            ),
+        ]
+    )
+    tools = _AdditionalModelToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_new_model_follow_up",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("另建立一个2D平板")
+
+    assert len(provider.requests) == 4
+    correction = provider.requests[2].messages[-1]
+    assert correction.role == "system"
+    assert "prepare_planar_construction_proposal" in (correction.content or "")
+    assert [name for name, _arguments in tools.calls] == [
+        "create_native_model_document",
+        "read_authoring_context",
+        "prepare_planar_construction_proposal",
+    ]
+    assert "新模型已创建。" not in tuple(
+        event.data.get("text")
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+
+
+def test_generic_geometry_feature_guard_requires_requested_slot_and_holes():
+    partial = {
+        "part_function": "宽平板",
+        "geometry": {
+            "kind": "planar_profiles",
+            "profiles": [
+                {
+                    "kind": "rectangle",
+                    "x": 0,
+                    "y": 0,
+                    "width": 500,
+                    "height": 300,
+                }
+            ],
+        },
+    }
+    complete = {
+        "part_function": "宽平板，中央开槽，四周开孔",
+        "geometry": {
+            "kind": "planar_profiles",
+            "profiles": [
+                {
+                    "kind": "rectangle",
+                    "x": 0,
+                    "y": 0,
+                    "width": 500,
+                    "height": 300,
+                    "role": "material",
+                },
+                {
+                    "kind": "rectangle",
+                    "x": 225,
+                    "y": 110,
+                    "width": 50,
+                    "height": 80,
+                    "role": "hole",
+                },
+                {
+                    "kind": "circle",
+                    "center_x": 40,
+                    "center_y": 40,
+                    "radius": 10,
+                    "role": "hole",
+                },
+            ],
+        },
+    }
+    request = "做一个宽平板，中央开槽，四周开孔"
+    assert _missing_requested_geometry_features(request, partial) == (
+        "slot_or_cutout",
+        "holes",
+    )
+    assert _missing_requested_geometry_features(request, complete) == ()
+
+
+def _register_test_continuation(
+    engine,
+    *,
+    revision=4,
+    proposal_kind="",
+):
     engine._register_continuation_from_result(
         ToolResult(
             ok=True,
@@ -166,6 +416,7 @@ def _register_test_continuation(engine, *, revision=4):
                     "proposal_id": "proposal-continue-1",
                     "proposal_hash": "a" * 64,
                     "model_revision": revision,
+                    "proposal_kind": proposal_kind,
                 }
             },
         )
@@ -204,6 +455,9 @@ def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
     assert "Treat this terminal status as authoritative" in (
         continuation_request.messages[-1].content
     )
+    assert "do not add a standalone completion acknowledgement" in (
+        continuation_request.messages[-1].content
+    )
     assert sum(
         message.role == "user" for message in continuation_request.messages
     ) == 1
@@ -226,6 +480,115 @@ def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
         "cancelled",
     ) == ()
     assert len(provider.requests) == 2
+
+
+def test_succeeded_proposal_suppresses_bare_completion_echo(tmp_path):
+    provider = FakeProvider(
+        [_text_response("等待本地确认"), _text_response("已完成")]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_redundant_completion",
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine, proposal_kind="geometry")
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "已完成",
+    )
+
+    assert not any(
+        event.event
+        in {EngineEventType.MESSAGE_STARTED, EngineEventType.MESSAGE_DELTA}
+        for event in events
+    )
+    assert "已完成" not in tuple(
+        message.content
+        for message in engine._history
+        if message.role == "assistant" and message.content
+    )
+    assert len(provider.requests) == 2
+
+
+def test_succeeded_proposal_suppresses_reconfirmation_and_refusal(tmp_path):
+    contradiction = (
+        "当前无法创建几何，请你在本地 UI 中再次点击并确认这个提案。"
+    )
+    provider = FakeProvider(
+        [_text_response("等待本地确认"), _text_response(contradiction)]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_continuation_guard",
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine)
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "几何创建完成",
+    )
+
+    deltas = [
+        event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert deltas == ["几何创建完成"]
+    assert engine._history[-1] == AssistantMessage(
+        "assistant",
+        "几何创建完成",
+    )
+    assert contradiction not in tuple(
+        message.content for message in engine._history if message.content
+    )
+
+
+def test_succeeded_proposal_suppresses_unpublished_tool_call(tmp_path):
+    provider = FakeProvider(
+        [
+            _text_response("等待本地确认"),
+            _tool_response(
+                ToolCall("missing-tool", "draft_native_geometry", {})
+            ),
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_continuation_tool_guard",
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine)
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "几何创建完成",
+    )
+
+    assert not any(
+        event.event is EngineEventType.TOOL_STARTED for event in events
+    )
+    assert [
+        event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ] == ["几何创建完成"]
 
 
 def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
@@ -259,6 +622,48 @@ def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
         "succeeded",
     ) == ()
     assert len(provider.requests) == 2
+
+
+def test_additional_model_request_retries_bare_delete_completion(tmp_path):
+    provider = FakeProvider(
+        [
+            _text_response("等待本地确认"),
+            _text_response("已完成"),
+            _text_response("新增模型尚未创建，当前缺少所需工具。"),
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_additional_model_continuation",
+    )
+    engine.send_message("另建立一个2D平板")
+    _register_test_continuation(
+        engine,
+        proposal_kind="destructive_edit",
+    )
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "部件已删除",
+    )
+
+    assert len(provider.requests) == 3
+    correction = provider.requests[2].messages[-1]
+    assert correction.role == "system"
+    assert "create_native_model_document" in (correction.content or "")
+    assert [
+        event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ] == ["新增模型尚未创建，当前缺少所需工具。"]
+    assert "已完成" not in tuple(
+        message.content for message in engine._history if message.content
+    )
 
 
 def _attached_engine(tmp_path, provider):

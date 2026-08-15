@@ -20,7 +20,38 @@ _PREPARE_TOOLS = {
     "revolve_profile": "prepare_profile_revolution",
     "path_sweep_profile": "prepare_profile_path_sweep",
 }
+_PLANAR_CONSTRUCTION_PREPARE_TOOL = "prepare_planar_construction_proposal"
+_AUTHORING_CONTEXT_TOOL = "read_authoring_context"
 _TRANSFORM_DIMENSION = 2
+
+_CREATE_MARKERS = (
+    "创建",
+    "新建",
+    "生成",
+    "做一个",
+    "建一个",
+    "create",
+    "build",
+    "make",
+    "new",
+)
+_PLANAR_REGION_MARKERS = (
+    "二维板",
+    "平板",
+    "薄板",
+    "厚板",
+    "截面",
+    "矩形",
+    "圆形",
+    "圆盘",
+    "planar region",
+    "plate",
+    "sheet",
+    "section",
+    "rectangle",
+    "circle",
+    "disk",
+)
 
 _PATH_MARKERS = (
     "沿路径扫掠",
@@ -153,6 +184,10 @@ class GeometryRouteHint:
         return self.intent_kind == "meshing"
 
     @property
+    def is_construction(self) -> bool:
+        return self.intent_kind == "construction"
+
+    @property
     def is_ambiguous(self) -> bool:
         return self.intent_kind == "ambiguous"
 
@@ -210,6 +245,48 @@ def geometry_route_hint(text: str) -> GeometryRouteHint | None:
         and explicit_path
         and re.search(r"(?i)\balong\b", normalized)
     )
+
+    creates_planar_region = any(
+        marker in normalized or marker in compact for marker in _CREATE_MARKERS
+    ) and any(
+        marker in normalized or marker in compact
+        for marker in _PLANAR_REGION_MARKERS
+    )
+    if creates_planar_region:
+        requested_operation = "planar_construction"
+        missing: tuple[str, ...] = ()
+        target_dimension = 2
+        if has_path:
+            requested_operation = "planar_construction_path_sweep"
+            target_dimension = 3
+            missing = () if explicit_path else ("path",)
+        elif has_revolve:
+            requested_operation = "planar_construction_revolution"
+            target_dimension = 3
+            missing_values: list[str] = []
+            if not _contains_explicit_axis(normalized):
+                missing_values.append("axis")
+            if not arbitrary and not _REVOLVE_ANGLE.search(normalized):
+                missing_values.append("angle_degrees")
+            missing = tuple(missing_values)
+        elif has_extrude:
+            requested_operation = "planar_construction_extrusion"
+            target_dimension = 3
+            has_height = bool(
+                _DIMENSION_VALUE.search(normalized)
+                or _HEIGHT_VALUE.search(normalized)
+                or _EXTRUDE_BY_VALUE.search(normalized)
+            )
+            missing = () if has_height or arbitrary else ("height",)
+        return GeometryRouteHint(
+            requested_operation,
+            target_part_dimension=target_dimension,
+            required_probe_tool=_AUTHORING_CONTEXT_TOOL,
+            required_prepare_tool=_PLANAR_CONSTRUCTION_PREPARE_TOOL,
+            missing_fields=missing,
+            allow_arbitrary_size=arbitrary,
+            intent_kind="construction",
+        )
 
     # A mesh request is not a geometry sweep unless the user supplied an
     # explicit path/revolve/extrude operation in the same request.

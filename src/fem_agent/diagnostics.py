@@ -65,6 +65,7 @@ PROFILE_TRANSFORM_DIAGNOSTIC_CODES = (
     "profile-transform.source-not-strict",
     "profile-transform.no-material-profile",
     "profile-transform.ambiguous-material-profiles",
+    "profile-transform.invalid-profile",
     "profile-transform.invalid-source-id",
     "profile-transform.nonpositive-height",
     "profile-transform.invalid-path",
@@ -84,6 +85,7 @@ _PROFILE_TRANSFORM_DEFAULTS: dict[str, tuple[bool, tuple[str, ...]]] = {
         True,
         ("profile_selection",),
     ),
+    "profile-transform.invalid-profile": (True, ("profiles",)),
     "profile-transform.invalid-source-id": (
         True,
         ("profile_selection", "context_revision"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import operator
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from .._validation import (
@@ -90,6 +91,127 @@ _LOFT_PARAMETRIZATION_NAMES: dict[LoftParametrization, str] = {
     "centripetal": "Centripetal",
     "iso_parametric": "IsoParametric",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarBoundaryCurve:
+    """Tag-free analytic data for one oriented planar boundary curve."""
+
+    kind: Literal["line", "circle", "arc"]
+    start: tuple[float, float] | None
+    end: tuple[float, float] | None
+    center: tuple[float, float] | None
+    radius: float | None
+    orientation: Literal["ccw", "cw"] | None
+    length: float
+    samples: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlanarBoundaryLoop:
+    """One deterministic CCW planar boundary loop without backend identity."""
+
+    curves: tuple[PlanarBoundaryCurve, ...]
+    signed_area: float
+    bounding_box: tuple[float, float, float, float]
+
+
+def _reverse_planar_curve(curve: PlanarBoundaryCurve) -> PlanarBoundaryCurve:
+    orientation = curve.orientation
+    if orientation is not None:
+        orientation = "cw" if orientation == "ccw" else "ccw"
+    return PlanarBoundaryCurve(
+        curve.kind,
+        curve.end,
+        curve.start,
+        curve.center,
+        curve.radius,
+        orientation,
+        curve.length,
+        tuple(reversed(curve.samples)),
+    )
+
+
+def _planar_curve_sort_key(curve: PlanarBoundaryCurve) -> tuple[object, ...]:
+    return (
+        curve.start if curve.start is not None else curve.center,
+        curve.kind,
+        curve.end,
+        curve.center,
+        curve.radius,
+        curve.orientation,
+        curve.length,
+    )
+
+
+def _canonical_planar_loop(
+    curves: tuple[PlanarBoundaryCurve, ...],
+) -> PlanarBoundaryLoop:
+    polyline: list[tuple[float, float]] = []
+    for curve in curves:
+        samples = curve.samples
+        polyline.extend(samples if not polyline else samples[1:])
+    signed_area = 0.5 * sum(
+        left[0] * right[1] - right[0] * left[1]
+        for left, right in zip(polyline, (*polyline[1:], polyline[0]), strict=True)
+    )
+    if signed_area < 0.0:
+        curves = tuple(_reverse_planar_curve(curve) for curve in reversed(curves))
+        signed_area = -signed_area
+    if curves and all(curve.kind == "arc" for curve in curves):
+        first_curve = curves[0]
+        center = first_curve.center
+        radius = first_curve.radius
+        orientation = first_curve.orientation
+        scale = max(1.0, radius or 0.0)
+        if all(
+            curve.orientation == orientation
+            and curve.center is not None
+            and center is not None
+            and math.dist(curve.center, center) <= _PLANAR_TOLERANCE * scale
+            and math.isclose(
+                curve.radius or 0.0,
+                radius or 0.0,
+                rel_tol=1.0e-8,
+                abs_tol=_PLANAR_TOLERANCE * scale,
+            )
+            for curve in curves
+        ) and math.isclose(
+            sum(curve.length for curve in curves),
+            2.0 * math.pi * (radius or 0.0),
+            rel_tol=1.0e-8,
+            abs_tol=_PLANAR_TOLERANCE * scale,
+        ):
+            samples = tuple(
+                point
+                for index, curve in enumerate(curves)
+                for point in (curve.samples if index == 0 else curve.samples[1:])
+            )
+            curves = (
+                PlanarBoundaryCurve(
+                    "circle",
+                    None,
+                    None,
+                    center,
+                    radius,
+                    None,
+                    sum(curve.length for curve in curves),
+                    samples,
+                ),
+            )
+    if len(curves) > 1:
+        first = min(
+            range(len(curves)), key=lambda index: _planar_curve_sort_key(curves[index])
+        )
+        curves = (*curves[first:], *curves[:first])
+    points = tuple(point for curve in curves for point in curve.samples)
+    bounds = (
+        min(point[0] for point in points),
+        min(point[1] for point in points),
+        max(point[0] for point in points),
+        max(point[1] for point in points),
+    )
+    return PlanarBoundaryLoop(tuple(curves), signed_area, bounds)
 
 
 class GeometryModel:
@@ -1847,6 +1969,230 @@ class GeometryModel:
             key=lambda item: (item[0], item[1]),
         )
         return tuple(self._wrap_entity(pair) for pair in pairs)
+
+    def planar_boundary_loops(
+        self,
+        surfaces: Iterable[EntityRef],
+    ) -> tuple[PlanarBoundaryLoop, ...]:
+        """Return deterministic tag-free analytic loops for planar surfaces."""
+
+        operation = "planar_boundary_loops"
+        self._check_state(operation, _QUERY_STATES)
+        normalized = self._normalize_entities(surfaces, operation=operation)
+        if not normalized or any(entity.dimension != 2 for entity in normalized):
+            raise ValueError("planar_boundary_loops requires planar surfaces")
+        self._activate(operation)
+        self._assert_occ_liveness(normalized, operation)
+        self._assert_planar_entities(normalized, operation)
+        self._gmsh.model.occ.synchronize()
+
+        loops: list[PlanarBoundaryLoop] = []
+        ordered_surfaces = sorted(
+            normalized,
+            key=lambda entity: (
+                self.bounding_box(entity),
+                self.area(entity),
+            ),
+        )
+        for surface in ordered_surfaces:
+            raw_boundary = tuple(
+                (int(dimension), int(signed_tag))
+                for dimension, signed_tag in self._gmsh.model.getBoundary(
+                    [(2, surface.tag)],
+                    combined=False,
+                    oriented=True,
+                    recursive=False,
+                )
+            )
+            signed_curves = tuple(
+                signed_tag for dimension, signed_tag in raw_boundary if dimension == 1
+            )
+            if not signed_curves:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} found an empty boundary"
+                )
+            loops.extend(
+                self._planar_curve_loops_from_signed_tags(
+                    signed_curves,
+                    operation=operation,
+                )
+            )
+        return tuple(
+            sorted(
+                loops,
+                key=lambda loop: (
+                    loop.bounding_box,
+                    abs(loop.signed_area),
+                    tuple(_planar_curve_sort_key(curve) for curve in loop.curves),
+                ),
+            )
+        )
+
+    def _planar_curve_loops_from_signed_tags(
+        self,
+        signed_tags: tuple[int, ...],
+        *,
+        operation: str,
+    ) -> tuple[PlanarBoundaryLoop, ...]:
+        records: list[tuple[int, int, PlanarBoundaryCurve]] = []
+        full_circles: list[PlanarBoundaryLoop] = []
+        for signed_tag in signed_tags:
+            raw_points = tuple(
+                int(point_tag)
+                for dimension, point_tag in self._gmsh.model.getBoundary(
+                    [(1, signed_tag)],
+                    combined=False,
+                    oriented=True,
+                    recursive=False,
+                )
+                if int(dimension) == 0
+            )
+            curve = self._read_planar_boundary_curve(
+                signed_tag,
+                operation=operation,
+            )
+            if curve.kind == "circle":
+                full_circles.append(_canonical_planar_loop((curve,)))
+                continue
+            if len(raw_points) != 2:
+                raise GeometryError(
+                    f"geometry model {self.name!r}: {operation} could not read "
+                    "two curve endpoints"
+                )
+            records.append((abs(raw_points[0]), abs(raw_points[1]), curve))
+
+        remaining = set(range(len(records)))
+        result = list(full_circles)
+        while remaining:
+            adjacency: dict[int, list[int]] = {}
+            for index in remaining:
+                start, end, _curve = records[index]
+                adjacency.setdefault(start, []).append(index)
+                adjacency.setdefault(end, []).append(index)
+            seed_point = min(
+                adjacency,
+                key=lambda point: self._point_coordinates(
+                    (self.entity(0, point),), operation
+                )[0][:2],
+            )
+            current_point = seed_point
+            ordered: list[PlanarBoundaryCurve] = []
+            while True:
+                candidates = [
+                    index for index in adjacency[current_point] if index in remaining
+                ]
+                if not candidates:
+                    raise GeometryError(
+                        f"geometry model {self.name!r}: {operation} found an open loop"
+                    )
+                index = min(
+                    candidates,
+                    key=lambda item: _planar_curve_sort_key(records[item][2]),
+                )
+                start, end, curve = records[index]
+                if current_point == end:
+                    curve = _reverse_planar_curve(curve)
+                    following = start
+                else:
+                    following = end
+                ordered.append(curve)
+                remaining.remove(index)
+                current_point = following
+                if current_point == seed_point:
+                    break
+            result.append(_canonical_planar_loop(tuple(ordered)))
+        return tuple(result)
+
+    def _read_planar_boundary_curve(
+        self,
+        signed_tag: int,
+        *,
+        operation: str,
+    ) -> PlanarBoundaryCurve:
+        tag = abs(signed_tag)
+        try:
+            raw_minimum, raw_maximum = self._gmsh.model.getParametrizationBounds(1, tag)
+            minimum = float(raw_minimum[0])
+            maximum = float(raw_maximum[0])
+            parameters = tuple(
+                minimum + (maximum - minimum) * index / 8.0 for index in range(9)
+            )
+            raw_values = tuple(self._gmsh.model.getValue(1, tag, parameters))
+            samples = tuple(
+                (float(raw_values[index]), float(raw_values[index + 1]))
+                for index in range(0, len(raw_values), 3)
+            )
+            length = float(self._gmsh.model.occ.getMass(1, tag))
+        except Exception as error:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} could not read curve geometry"
+            ) from error
+        if len(samples) != 9 or not math.isfinite(length) or length <= 0.0:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} received invalid curve data"
+            )
+        if signed_tag < 0:
+            samples = tuple(reversed(samples))
+        start, end = samples[0], samples[-1]
+        scale = max(1.0, *(abs(value) for point in samples for value in point), length)
+        chord = math.dist(start, end)
+        tolerance = _PLANAR_TOLERANCE * scale
+        if math.isclose(chord, length, rel_tol=1.0e-9, abs_tol=tolerance):
+            return PlanarBoundaryCurve(
+                "line", start, end, None, None, None, length, samples
+            )
+        try:
+            center3 = _three_point_circle_center(
+                (samples[0][0], samples[0][1], 0.0),
+                (samples[2][0], samples[2][1], 0.0),
+                (samples[5][0], samples[5][1], 0.0),
+            )
+        except Exception as error:
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} found an unsupported boundary"
+            ) from error
+        center = center3[:2]
+        radii = tuple(math.dist(center, sample) for sample in samples)
+        radius = sum(radii) / len(radii)
+        if radius <= tolerance or any(
+            not math.isclose(value, radius, rel_tol=1.0e-8, abs_tol=tolerance)
+            for value in radii
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} found an unsupported boundary"
+            )
+        full = math.dist(start, end) <= tolerance and math.isclose(
+            length,
+            2.0 * math.pi * radius,
+            rel_tol=1.0e-8,
+            abs_tol=tolerance,
+        )
+        if full:
+            return PlanarBoundaryCurve(
+                "circle", None, None, center, radius, None, length, samples
+            )
+        turn = sum(
+            math.atan2(
+                (left[0] - center[0]) * (right[1] - center[1])
+                - (left[1] - center[1]) * (right[0] - center[0]),
+                (left[0] - center[0]) * (right[0] - center[0])
+                + (left[1] - center[1]) * (right[1] - center[1]),
+            )
+            for left, right in zip(samples, samples[1:])
+        )
+        orientation: Literal["ccw", "cw"] = "ccw" if turn > 0.0 else "cw"
+        if not math.isclose(
+            abs(turn) * radius,
+            length,
+            rel_tol=1.0e-7,
+            abs_tol=tolerance,
+        ):
+            raise GeometryError(
+                f"geometry model {self.name!r}: {operation} found an unsupported boundary"
+            )
+        return PlanarBoundaryCurve(
+            "arc", start, end, center, radius, orientation, length, samples
+        )
 
     def select(
         self,

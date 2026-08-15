@@ -2124,10 +2124,6 @@ class AgentChatDrawer(_BoundaryFrame):
         title = _plain_label(proposal.title, card)
         title.setObjectName("agentChatProposalTitle")
         layout.addWidget(title)
-        summary = _plain_label(proposal.summary, card)
-        summary.setObjectName("agentChatProposalSummary")
-        summary.setWordWrap(True)
-        layout.addWidget(summary)
         status = proposal.status
         status_labels = {
             ProposalViewStatus.PENDING_CONFIRMATION: "等待 GUI 确认",
@@ -2848,6 +2844,9 @@ class AgentChatDrawer(_BoundaryFrame):
 
     def _cancel_runtime_operation(self) -> None:
         if self.agent_runtime.cancel():
+            self.authoring_bridge.cancel_pending_proposals_from_gui(
+                "Agent operation was cancelled by the user"
+            )
             self._show_preview_notice("正在取消当前操作…")
 
     def _confirm_runtime_solve(
@@ -3343,7 +3342,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._render_event_presentation(preserve_tool_expansion=False)
         self.input.clear()
         self._workspace_references.clear()
-        self._show_preview_notice("新的 Agent 会话已就绪")
+        self._show_preview_notice("")
 
     def _apply_runtime_event(self, event: AgentEvent) -> None:
         if self._shutting_down:

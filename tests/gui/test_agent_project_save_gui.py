@@ -54,7 +54,7 @@ def _native_window() -> FEMMainWindow:
     controller.reset_for_binding()
     assert window.agent_authoring_bridge.context is not None
     controller.observe_binding(window.agent_authoring_bridge.context)
-    window._confirm_discard_changes = lambda: True
+    window._confirm_workspace_context_close = lambda *_args, **_kwargs: True
     window.show()
     window.viewport_panel.agent_chat_drawer.show()
     _application().processEvents()

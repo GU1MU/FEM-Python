@@ -425,6 +425,62 @@ def test_controller_publishes_delete_tools_and_waits_for_gui_terminal() -> None:
     assert session.snapshot().steps[0].boundaries == ()
 
 
+def test_deleting_last_part_restores_geometry_creation_and_context_units() -> None:
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "模型-单部件",
+        UnitContext("mm", "N", "MPa"),
+        RectangleGeometry("实体-板", 10.0, 4.0),
+        part_name="部件-板",
+    )
+    holders: dict[str, object] = {}
+
+    def refresh() -> None:
+        bridge = holders["bridge"]
+        controller = holders["controller"]
+        assert isinstance(bridge, AgentAuthoringBridge)
+        stale = bridge.bind_snapshot(session.snapshot())
+        controller.observe_binding(  # type: ignore[union-attr]
+            bridge.context,
+            proposal_staled=bool(stale),
+        )
+
+    bridge = AgentAuthoringBridge(SessionGeometryAuthoringPort(session, refresh))
+    bridge.bind_snapshot(session.snapshot())
+    controller = create_session_authoring_workflow_controller(
+        session,
+        bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+    holders.update(bridge=bridge, controller=controller)
+    execution = ToolExecutionContext("agent-delete-last", 0, "delete-last-part")
+
+    controller.dispatch("read_deletable_objects", {}, execution)
+    prepared = controller.dispatch(
+        "prepare_delete_proposal",
+        {"object_type": "part", "target_id": "P1"},
+        execution,
+    )
+    receipt = bridge.accept_from_gui_control(str(prepared.data["proposal_id"]))
+    controller.record_proposal_state(
+        "destructive_edit",
+        receipt.state,
+        receipt.message,
+    )
+
+    assert receipt.state is ProposalState.SUCCEEDED
+    assert session.snapshot().parts == ()
+    assert controller.stage is AuthoringWorkflowStage.REQUIREMENTS
+    assert "prepare_geometry_proposal" in {
+        item.name for item in controller.definitions
+    }
+    assert controller.collected_requirements("geometry") == {
+        "length_unit": "mm",
+        "force_unit": "N",
+        "stress_unit": "MPa",
+    }
+
+
 def test_editable_catalog_exposes_current_values_and_opaque_scope_references() -> None:
     catalog = editable_object_catalog(_session().snapshot())
     scope = next(

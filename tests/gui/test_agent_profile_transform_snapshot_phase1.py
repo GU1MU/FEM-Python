@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from fem_agent.authoring import (
 )
 from fem_agent.authoring_runtime import (
     AUTHORING_TURN_SNAPSHOT_MAX_BYTES,
+    AuthoringToolOutcome,
     AuthoringTurnSnapshot,
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
@@ -98,6 +100,29 @@ def test_phase1_snapshot_binds_revision_and_preserves_owner_cache() -> None:
     assert fresh.available
     assert fresh.session_revision == 5
     assert fresh.workflow_stage == AuthoringWorkflowStage.STALE.value
+
+
+def test_phase1_snapshot_does_not_advertise_abstract_operations_as_tools() -> None:
+    context = replace(
+        _context(),
+        capabilities=(
+            CapabilitySummary("read_authoring_context", True),
+            CapabilitySummary("draft_native_geometry", True),
+            CapabilitySummary("commit_native_geometry", True),
+        ),
+    )
+    controller = AuthoringWorkflowController(lambda: context, {})
+    controller.observe_binding(context)
+
+    snapshot = controller.set_published_tool_names(
+        ("read_authoring_context", "prepare_geometry_proposal")
+    )
+
+    assert snapshot.enabled_capabilities == ("read_authoring_context",)
+    assert snapshot.published_tool_names == (
+        "read_authoring_context",
+        "prepare_geometry_proposal",
+    )
 
 
 def test_phase1_snapshot_is_bounded_and_deterministically_clipped() -> None:
@@ -233,6 +258,70 @@ def test_phase1_runtime_publish_failures_atomically_drop_provider_cache(
         failed_refresh = runtime.authoring_turn_snapshot
         assert not failed_refresh.available
         assert runtime._authoring_tool_definitions() == ()
+    finally:
+        runtime.shutdown()
+
+
+def test_phase1_new_agent_session_rebinds_the_active_authoring_context(
+    tmp_path,
+) -> None:
+    context = AuthoringContext(
+        binding=LocalModelBinding(
+            "document:blank",
+            "native-blank",
+            0,
+            "blank",
+            True,
+        ),
+        model_name=None,
+        active_part_id=None,
+        parts=(),
+        mesh=MeshSummary(False, False),
+        capabilities=(
+            CapabilitySummary("prepare_geometry_proposal", True),
+        ),
+    )
+    controller = AuthoringWorkflowController(
+        lambda: context,
+        {
+            "prepare_geometry_proposal": (
+                lambda _arguments, _controller: AuthoringToolOutcome(
+                    "Geometry proposal registered.",
+                    {"state": "pending_confirmation"},
+                )
+            )
+        },
+    )
+    controller.observe_binding(context)
+    runtime = QtAgentRuntime(
+        tmp_path / "agent-private-session-reset",
+        provider_factory=FakeProvider,
+        authoring_controller=controller,
+    )
+    try:
+        initial = runtime.refresh_authoring_turn_snapshot_from_gui()
+        assert initial.available
+        assert "prepare_geometry_proposal" in {
+            item.name for item in runtime._authoring_tool_definitions()
+        }
+
+        runtime._reset_authoring_controller_for_session("new-agent-session")
+
+        rebound = runtime.authoring_turn_snapshot
+        published = {
+            item.name for item in runtime._authoring_tool_definitions()
+        }
+        assert rebound.available
+        assert rebound.document_id == context.binding.document_id
+        assert rebound.session_id == context.binding.session_id
+        assert rebound.session_revision == context.binding.session_revision
+        assert "prepare_geometry_proposal" in published
+        assert set(rebound.published_tool_names) == published
+        assert controller.collected_requirements("geometry") == {
+            "length_unit": "mm",
+            "force_unit": "N",
+            "stress_unit": "MPa",
+        }
     finally:
         runtime.shutdown()
 
