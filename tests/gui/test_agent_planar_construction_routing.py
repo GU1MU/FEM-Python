@@ -267,6 +267,10 @@ def test_phase6_follow_up_planar_cut_routes_through_geometry_edit_tools() -> Non
     assert geometry_route_hint("如果在H左边加上S字母，能做到吗？") is None
     direct = geometry_route_hint("请在H字母的左边加入一个字母S")
     assert direct is not None and direct.is_edit
+    direction_fix = geometry_route_hint("还是不对，注意开口朝着+y方向")
+    assert direction_fix is not None and direction_fix.is_edit
+    regenerate = geometry_route_hint("重新生成这个U形槽，开口朝+y方向")
+    assert regenerate is not None and regenerate.is_edit
 
 
 def test_phase6_legacy_decoder_is_deprecated_and_project_stores_only_recipe() -> None:

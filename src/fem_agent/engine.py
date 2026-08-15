@@ -827,6 +827,8 @@ class AgentSessionEngine:
         route_probe_failed = False
         route_progress_retries: set[str] = set()
         route_correction: str | None = None
+        proposal_claim_retry_used = False
+        proposal_claim_correction: str | None = None
         unit_clarification_retry_used = False
         unit_correction: str | None = None
         prerequisite_retry_used = False
@@ -998,12 +1000,14 @@ class AgentSessionEngine:
                     route_hint = self._route_hint_for_current_turn()
                     correction_for_round = (
                         route_correction
+                        or proposal_claim_correction
                         or unit_correction
                         or prerequisite_correction
                         or new_model_follow_up_correction
                         or language_correction
                     )
                     route_correction = None
+                    proposal_claim_correction = None
                     unit_correction = None
                     prerequisite_correction = None
                     new_model_follow_up_correction = None
@@ -1013,6 +1017,10 @@ class AgentSessionEngine:
                         tuple[EngineEventType, Mapping[str, Any]]
                     ] = []
                     stream_started = False
+                    required_resync_tool = _required_authoring_resync_tool(
+                        self.registry.provider_snapshot,
+                        available_tools,
+                    )
                     hold_stream = (
                         (
                             route_hint is not None
@@ -1024,6 +1032,7 @@ class AgentSessionEngine:
                         )
                         or default_native_units_apply
                     )
+                    hold_stream = hold_stream or required_resync_tool is not None
                     hold_stream = hold_stream or new_model_follow_up_pending
                     hold_stream = hold_stream or requested_response_language == "zh-CN"
 
@@ -1217,23 +1226,29 @@ class AgentSessionEngine:
             required_edit_tool = (
                 None
                 if trusted_terminal is not None
-                else _required_edit_route_progress_tool(
-                    route_hint,
-                    available_tools,
-                    route_probe_called=route_probe_called,
-                    route_probe_failed=route_probe_failed,
+                else (
+                    required_resync_tool
+                    or _required_edit_route_progress_tool(
+                        route_hint,
+                        available_tools,
+                        route_probe_called=route_probe_called,
+                        route_probe_failed=route_probe_failed,
+                    )
                 )
             )
             if required_edit_tool is not None and tuple(
                 call.name for call in response.message.tool_calls
             ) != (required_edit_tool,):
-                assert route_hint is not None
                 if required_edit_tool not in route_progress_retries:
                     route_progress_retries.add(required_edit_tool)
-                    route_correction = _geometry_edit_route_progress_correction(
-                        route_hint,
-                        required_edit_tool,
-                    )
+                    if required_edit_tool == required_resync_tool:
+                        route_correction = _authoring_resync_progress_correction()
+                    else:
+                        assert route_hint is not None
+                        route_correction = _geometry_edit_route_progress_correction(
+                            route_hint,
+                            required_edit_tool,
+                        )
                     continue
                 return local_geometry_recovery()
 
@@ -1288,6 +1303,32 @@ class AgentSessionEngine:
                 response.message,
             ):
                 return tuple(events)
+
+            if (
+                trusted_terminal is None
+                and getattr(self.registry, "_dynamic_tools", None) is not None
+                and _claims_unbacked_proposal_execution(response.message)
+            ):
+                if not proposal_claim_retry_used:
+                    proposal_claim_retry_used = True
+                    proposal_claim_correction = (
+                        _unbacked_proposal_execution_correction()
+                    )
+                    continue
+                return local_assistant_recovery(
+                    (
+                        "当前没有可确认或正在执行的本地提案，请重新提交本次修改。"
+                        if requested_response_language == "zh-CN"
+                        else (
+                            "There is no local proposal awaiting confirmation "
+                            "or execution. Resubmit the requested change."
+                        )
+                    ),
+                    storage_error=(
+                        "The local unbacked-proposal recovery message could not "
+                        "fit in the bounded conversation store."
+                    ),
+                )
 
             if _message_calls_proposal_prepare_tool(response.message):
                 response = replace(
@@ -2191,7 +2232,18 @@ class AgentSessionEngine:
         user_text = self._latest_user_request()
         if user_text is None:
             return None
-        return geometry_route_hint(user_text)
+        direct = geometry_route_hint(user_text)
+        if direct is not None:
+            return direct
+        if _continues_text_only_geometry_edit_preview(self._history, user_text):
+            return GeometryRouteHint(
+                "planar_geometry_edit",
+                target_part_dimension=2,
+                required_probe_tool="read_geometry_edit_context",
+                required_prepare_tool="prepare_geometry_edit",
+                intent_kind="edit",
+            )
+        return None
 
     def _latest_user_request(self) -> str | None:
         return next(
@@ -2965,6 +3017,41 @@ _PROPOSAL_RECONFIRMATION_PATTERNS = tuple(
         r"(?:create|submit|complete|apply|proceed)",
     )
 )
+_UNBACKED_PROPOSAL_EXECUTION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"(?:方案|提案|proposal).{0,20}(?:已确认|已提交|已发送|已创建)",
+        r"(?:等待|正在).{0,24}(?:本地)?(?:操作)?(?:执行|应用|完成)",
+        r"(?:proposal|plan).{0,24}(?:confirmed|submitted|sent|executing)",
+    )
+)
+_GEOMETRY_EDIT_FOLLOW_UP_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE | re.DOTALL)
+    for pattern in (
+        r"^\s*(?:可以|确认|好的?|对|就这样|按这个(?:方案)?|ok(?:ay)?|yes)"
+        r"(?:了)?[。.!！]?\s*$",
+        r"(?:还是)?不对|画反|开口|横档|竖臂|对齐|间距|"
+        r"朝\s*[+-]?[xyz]|沿着?\s*[+-]?[xyz]|改成|修正|重做|重新生成",
+    )
+)
+_GEOMETRY_EDIT_PREVIEW_MARKERS = (
+    "方案预览",
+    "修正方案",
+    "修改对象",
+    "中心路径",
+    "槽宽",
+    "geometry preview",
+    "centerline",
+)
+_GEOMETRY_EDIT_PREVIEW_FEATURE_MARKERS = (
+    "槽",
+    "切除",
+    "开口",
+    "轮廓",
+    "profile",
+    "slot",
+    "cutout",
+)
 _PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
     {
         "prepare_delete_proposal",
@@ -3322,6 +3409,29 @@ def _proposal_success_response_conflicts(
     return any(
         pattern.search(content) is not None
         for pattern in _PROPOSAL_RECONFIRMATION_PATTERNS
+    )
+
+
+def _claims_unbacked_proposal_execution(message: AssistantMessage) -> bool:
+    """Return whether plain text claims a proposal transition without a tool."""
+
+    if message.tool_calls or not isinstance(message.content, str):
+        return False
+    return any(
+        pattern.search(message.content) is not None
+        for pattern in _UNBACKED_PROPOSAL_EXECUTION_PATTERNS
+    )
+
+
+def _unbacked_proposal_execution_correction() -> str:
+    return (
+        "Local proposal-grounding correction (deterministic): no local tool "
+        "result created or confirmed a proposal in this turn. Do not claim "
+        "that a proposal was submitted, confirmed, sent, or is executing. "
+        "If the user is continuing a text-only geometry preview, call the "
+        "published context read and matching prepare tool to create one real "
+        "revision-bound proposal. Otherwise state that no executable proposal "
+        "exists. Natural-language approval cannot confirm a proposal."
     )
 
 
@@ -4235,6 +4345,77 @@ def _should_guard_geometry_refusal(
     ):
         return False
     return not _snapshot_proves_transform_unsupported(snapshot)
+
+
+def _continues_text_only_geometry_edit_preview(
+    history: Sequence[AssistantMessage],
+    user_text: str,
+) -> bool:
+    """Carry one bounded edit intent across a plain-text preview follow-up."""
+
+    if len(user_text) > 240 or not any(
+        pattern.search(user_text) is not None
+        for pattern in _GEOMETRY_EDIT_FOLLOW_UP_PATTERNS
+    ):
+        return False
+    user_index = next(
+        (
+            index
+            for index in range(len(history) - 1, -1, -1)
+            if history[index].role == "user"
+            and isinstance(history[index].content, str)
+        ),
+        None,
+    )
+    if user_index is None or user_index == 0:
+        return False
+    preview = history[user_index - 1]
+    if preview.role != "assistant" or not isinstance(preview.content, str):
+        return False
+    if user_index >= 2 and history[user_index - 2].role == "tool":
+        # A tool-backed preview already has its own confirmation card. Plain
+        # text approval must not create a duplicate or replace GUI consent.
+        return False
+    lowered = preview.content.casefold()
+    return any(
+        marker in lowered for marker in _GEOMETRY_EDIT_PREVIEW_MARKERS
+    ) and any(
+        marker in lowered for marker in _GEOMETRY_EDIT_PREVIEW_FEATURE_MARKERS
+    )
+
+
+def _required_authoring_resync_tool(
+    snapshot: object | None,
+    available_tools: Sequence[object],
+) -> str | None:
+    """Require one typed context refresh after an undo or external revision."""
+
+    projected = _provider_snapshot_dict(snapshot)
+    if projected is None or projected.get("workflow_stage") not in {
+        "stale",
+        "cancelled",
+    }:
+        return None
+    published = {
+        str(getattr(item, "name", ""))
+        for item in available_tools
+        if isinstance(getattr(item, "name", None), str)
+    }
+    return (
+        "read_authoring_context"
+        if "read_authoring_context" in published
+        else None
+    )
+
+
+def _authoring_resync_progress_correction() -> str:
+    return (
+        "Local authoring resynchronization (deterministic): the GUI document "
+        "revision changed outside the active Agent workflow, for example by "
+        "undo. Call read_authoring_context as the only tool in this response. "
+        "Do not answer from the stale revision or claim that a proposal was "
+        "submitted, confirmed, or executed."
+    )
 
 
 def _required_edit_route_progress_tool(

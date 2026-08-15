@@ -219,6 +219,75 @@ class _GeometryEditToolRegistry:
         )
 
 
+class _StaleGeometryEditToolRegistry:
+    def __init__(self):
+        self.stage = "stale"
+        self.calls = []
+
+    @property
+    def definitions(self):
+        no_arguments = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        names = (
+            ("read_authoring_context",)
+            if self.stage == "stale"
+            else (
+                "read_authoring_context",
+                "read_geometry_edit_context",
+                "prepare_geometry_edit",
+            )
+        )
+        return tuple(
+            ToolDefinition(name, name, no_arguments)
+            for name in names
+        )
+
+    @property
+    def provider_snapshot(self):
+        return {
+            "available": True,
+            "workflow_stage": self.stage,
+            "published_tool_names": [item.name for item in self.definitions],
+        }
+
+    def refresh_turn_snapshot(self, published_tool_names=()):
+        del published_tool_names
+        return self.provider_snapshot
+
+    def dispatch(self, name, arguments, context):
+        self.calls.append((name, dict(arguments)))
+        data = {}
+        if name == "read_authoring_context":
+            self.stage = "mesh_ready"
+        elif name == "prepare_geometry_edit":
+            data = {
+                "state": "pending_confirmation",
+                "proposal_view": {
+                    "summary": "修正 U 形槽",
+                    "impact": "确认后更新该部件并刷新 GUI",
+                },
+                "continuation_checkpoint": {
+                    "session_id": context.session_id,
+                    "source_turn_id": "source-turn-stale-edit",
+                    "proposal_id": "proposal-stale-edit",
+                    "proposal_hash": "d" * 64,
+                    "model_revision": context.expected_revision,
+                    "proposal_kind": "geometry",
+                },
+            }
+        return ToolResult(
+            ok=True,
+            session_id=context.session_id,
+            input_revision=context.expected_revision,
+            idempotency_key=context.idempotency_key,
+            summary=f"{name} completed",
+            data=data,
+        )
+
+
 class _StreamingFakeProvider(FakeProvider):
     def complete_stream(self, messages, tools, on_text_delta):
         response = super().complete(messages, tools)
@@ -968,6 +1037,163 @@ def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_pa
         event.event is EngineEventType.TOOL_COMPLETED
         and event.data["tool"] == "prepare_geometry_edit"
         and event.data["result"]["data"]["state"] == "pending_confirmation"
+        for event in events
+    )
+
+
+def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
+    corrected_edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_path_slot",
+            "points": [
+                {"x": 70, "y": 30},
+                {"x": 70, "y": -30},
+                {"x": 40, "y": -30},
+                {"x": 40, "y": 30},
+            ],
+            "width": 12,
+            "cap": "butt",
+            "join": "miter",
+        },
+    }
+    provider = FakeProvider(
+        [
+            _text_response("我先按旧坐标说明。"),
+            _tool_response(
+                ToolCall("sync", "read_authoring_context", {})
+            ),
+            _text_response("修正路径如下。"),
+            _tool_response(
+                ToolCall("read-edit", "read_geometry_edit_context", {})
+            ),
+            _text_response("方案已确认，等待本地操作执行完成。"),
+            _tool_response(
+                ToolCall("prepare-edit", "prepare_geometry_edit", corrected_edit)
+            ),
+        ]
+    )
+    tools = _StaleGeometryEditToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_stale_undo_edit",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("还是不对，注意开口朝着+y方向")
+
+    assert [name for name, _arguments in tools.calls] == [
+        "read_authoring_context",
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    ]
+    assert tools.calls[-1][1] == corrected_edit
+    assert "read_authoring_context" in (
+        provider.requests[1].messages[-1].content or ""
+    )
+    assert "read_geometry_edit_context" in (
+        provider.requests[3].messages[-1].content or ""
+    )
+    assert "prepare_geometry_edit" in (
+        provider.requests[5].messages[-1].content or ""
+    )
+    assert not any(
+        "旧坐标" in str(event.data.get("text", ""))
+        or "等待本地操作执行完成" in str(event.data.get("text", ""))
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+    assert any(
+        event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["tool"] == "prepare_geometry_edit"
+        and event.data["result"]["data"]["state"] == "pending_confirmation"
+        for event in events
+    )
+
+
+def test_text_only_geometry_preview_approval_inherits_edit_route(tmp_path):
+    edit = {
+        "part_id": "P1",
+        "edit": {
+            "operation": "add_path_slot",
+            "points": [
+                {"x": 70, "y": 30},
+                {"x": 70, "y": -30},
+                {"x": 40, "y": -30},
+                {"x": 40, "y": 30},
+            ],
+            "width": 12,
+            "cap": "butt",
+            "join": "miter",
+        },
+    }
+    provider = FakeProvider(
+        [
+            _text_response(
+                "**方案预览**\n- 修改内容：切除 U 形槽，中心路径见上，槽宽 12"
+            ),
+            _text_response("我现在提交修订方案。"),
+            _tool_response(
+                ToolCall("read-edit", "read_geometry_edit_context", {})
+            ),
+            _text_response("提交。"),
+            _tool_response(
+                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
+            ),
+        ]
+    )
+    tools = _GeometryEditToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_text_preview_follow_up",
+        dynamic_tools=tools,
+    )
+
+    engine.send_message("请先给出这个 U 形槽的坐标预览")
+    events = engine.send_message("可以")
+
+    assert [name for name, _arguments in tools.calls] == [
+        "read_geometry_edit_context",
+        "prepare_geometry_edit",
+    ]
+    assert tools.calls[-1][1] == edit
+    assert any(
+        event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["tool"] == "prepare_geometry_edit"
+        for event in events
+    )
+
+
+def test_unbacked_proposal_execution_claim_is_not_exposed(tmp_path):
+    provider = FakeProvider(
+        [
+            _text_response("方案已确认，等待本地操作执行完成。"),
+            _text_response("当前没有可执行的本地提案。"),
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_unbacked_proposal_claim",
+        dynamic_tools=_GeometryEditToolRegistry(),
+    )
+
+    events = engine.send_message("当前状态是什么？")
+
+    assert len(provider.requests) == 2
+    assert "proposal-grounding correction" in (
+        provider.requests[1].messages[-1].content or ""
+    )
+    assert not any(
+        "等待本地操作执行完成" in str(event.data.get("text", ""))
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+    assert any(
+        event.event is EngineEventType.MESSAGE_DELTA
+        and event.data["text"] == "当前没有可执行的本地提案。"
         for event in events
     )
 
