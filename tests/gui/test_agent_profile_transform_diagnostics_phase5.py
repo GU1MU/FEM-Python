@@ -214,7 +214,7 @@ def test_phase5_part_not_found_is_typed_and_keeps_snapshot() -> None:
     assert session.snapshot() == before
 
 
-def test_phase5_source_not_planar_and_not_strict_are_distinguished() -> None:
+def test_phase5_non_planar_blocks_while_legacy_exact_topology_is_transformable() -> None:
     non_planar = _session(CylinderGeometry("Solid", 1.0, 2.0))
     non_planar_refresh = []
     _bridge, non_planar_controller = _controller(
@@ -252,6 +252,9 @@ def test_phase5_source_not_planar_and_not_strict_are_distinguished() -> None:
     assert non_planar.snapshot() == non_planar_before
     assert non_planar_refresh == []
 
+    # The Profile-transform contract is now defined over exact topology rather
+    # than sketch strictness: a legacy non-strict sketch whose topology proof
+    # is exact exposes its feature-history Profile and stays transformable.
     legacy = _session(
         SketchGeometry("Legacy", (SketchCircle("material", 0, 0, 1),))
     )
@@ -266,10 +269,13 @@ def test_phase5_source_not_planar_and_not_strict_are_distinguished() -> None:
         {"part_id": "P1"},
         _context(legacy_controller, "legacy"),
     )
-    assert (
-        result.data["operations"]["extrusion"]["blocking_code"]
-        == "profile-transform.source-not-strict"
-    )
+    extrusion = result.data["operations"]["extrusion"]
+    assert extrusion["blocking_code"] is None
+    assert extrusion["available"] is True
+    assert result.data["topology_exact"] is True
+    assert [profile["face_id"] for profile in result.data["profiles"]] == [
+        "face:domain",
+    ]
     prepared = legacy_controller.dispatch(
         "prepare_profile_extrusion",
         {
@@ -279,12 +285,8 @@ def test_phase5_source_not_planar_and_not_strict_are_distinguished() -> None:
         },
         _context(legacy_controller, "legacy-prepare"),
     )
-    legacy_diagnostic = prepared.data["diagnostic"]
-    assert legacy_diagnostic["code"] == "profile-transform.source-not-strict"
-    assert isinstance(legacy_diagnostic["message"], str)
-    assert legacy_diagnostic["retryable"] is False
-    assert legacy_diagnostic["required_fields"] == []
-    assert legacy_diagnostic["preserve_draft"] is True
+    assert prepared.ok, prepared.summary
+    assert prepared.data["proposal_id"]
     assert legacy.snapshot() == legacy_before
     assert legacy_refresh == []
 

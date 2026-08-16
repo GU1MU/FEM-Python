@@ -477,7 +477,7 @@ def test_phase5_stable_diagnostics_are_provider_safe(
     monkeypatch: pytest.MonkeyPatch,
     code: str,
 ) -> None:
-    def fail(_construction):
+    def fail(_construction, **_kwargs):
         raise PlanarConstructionCompileError(
             PlanarConstructionDiagnostic(
                 code,
@@ -601,7 +601,7 @@ def test_phase5_split_material_diagnostic_identifies_source_and_topology() -> No
 def test_phase5_invalid_output_is_rejected_before_cad_compilation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unexpected_compile(_construction):
+    def unexpected_compile(_construction, **_kwargs):
         raise AssertionError("CAD compilation must not start for invalid output")
 
     monkeypatch.setattr(
@@ -625,7 +625,7 @@ def test_phase5_fourth_planar_attempt_is_blocked_before_compilation(
 ) -> None:
     compile_calls = 0
 
-    def fail_compile(_construction):
+    def fail_compile(_construction, **_kwargs):
         nonlocal compile_calls
         compile_calls += 1
         raise PlanarConstructionCompileError(

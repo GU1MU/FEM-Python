@@ -154,7 +154,9 @@ def test_cancelled_compile_stops_at_checkpoint_and_keeps_model(
     # worker deterministically stops at a cancellation checkpoint.
     def gated_factory(cancel_event):
         def factory(*args, **kwargs):
-            if cancel_event.wait(timeout=10.0):
+            # Cancellation fires within ~0.2s; the bound only guards the gate
+            # itself and must respect the GUI test real-wait policy.
+            if cancel_event.wait(timeout=2.0):
                 raise agent_authoring.PlanarCompileCancelled(
                     "test gate observed cancellation"
                 )
@@ -175,7 +177,7 @@ def test_cancelled_compile_stops_at_checkpoint_and_keeps_model(
     result = _dispatch(
         controller, deepcopy(EXPECTED_H_CONSTRUCTION), key="cancelled"
     )
-    canceller.join(timeout=15.0)
+    canceller.join(timeout=2.0)
 
     assert result.ok is False
     assert result.data["diagnostic"]["code"] == "planar-ir.cancelled"

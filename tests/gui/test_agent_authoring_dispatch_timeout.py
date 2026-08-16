@@ -69,7 +69,9 @@ def _dispatch_from_other_thread(runtime, name: str, key: str) -> ToolResult:
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
-    worker.join(timeout=10.0)
+    # The owner-dispatch deadline is 0.15s; the join bound only guards it
+    # and must respect the GUI test real-wait policy.
+    worker.join(timeout=2.0)
     assert not worker.is_alive(), "dispatch did not honor its deadline"
     result = outcome["result"]
     assert type(result) is ToolResult

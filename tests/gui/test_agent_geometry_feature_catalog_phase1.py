@@ -262,7 +262,11 @@ def test_phase1_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() ->
         if branch["properties"]["operation"]["const"] == "planar_boolean"
     )
     tool_schema = planar_boolean["properties"]["tool"]
-    assert "Prefer polygon" in tool_schema["description"]
+    # The guidance now routes constant-width slots to add_path_slot first and
+    # keeps polygon/path_stroke as the bounded planar_boolean tool forms.
+    assert "prefer edit.operation=add_path_slot" in tool_schema["description"]
+    assert "path_stroke" in tool_schema["description"]
+    assert "polygon" in tool_schema["description"]
     polygon_tool = next(
         branch
         for branch in tool_schema["oneOf"]
