@@ -172,6 +172,9 @@ from fem.io.result_csv import write_result_table_csv
 from fem_agent.export_authoring import (
     DISPLAY_SETTING_KEYS,
     CONTOUR_SETTING_KEYS,
+    RESULT_OVERRIDE_KEYS,
+    RESULT_SCALE_MODES,
+    RESULT_SHAPE_MODES,
     ResultDisplayContext,
     ResultDisplayField,
 )
@@ -3705,9 +3708,10 @@ class FEMMainWindow(QMainWindow):
         """事务式导出当前视口图片并校验落盘大小。
 
         返回 ``(size_bytes, sha256)``。事务在渲染抑制下临时应用
-        display/contour 覆盖组到视口渲染配置，复用现有离屏捕获管
-        线（相机状态自动保留/恢复），并在 ``finally`` 中逐键还原
-        快照后重渲染；不换场、不触碰 ``_result_render_payload``。
+        display/contour/result 覆盖组到视口渲染配置，复用现有离屏
+        捕获管线（相机状态自动保留/恢复），并在 ``finally`` 中逐键
+        还原快照后重渲染。result 组（Phase 3）通过脱体 payload 临
+        时换场/变形比例/未变形叠加，只接受 READY 场，绝不降级。
         """
 
         if self.busy:
@@ -3731,16 +3735,20 @@ class FEMMainWindow(QMainWindow):
         transparent = transparent and suffix == ".png"
 
         override_groups = dict(overrides or {})
-        if set(override_groups) - {"display", "contour"}:
+        if set(override_groups) - {"display", "contour", "result"}:
             raise ValueError(
-                "viewport export overrides support only display and contour"
+                "viewport export overrides support only display, contour "
+                "and result"
             )
         display_overrides = dict(override_groups.get("display") or {})
         contour_overrides = dict(override_groups.get("contour") or {})
+        result_overrides = dict(override_groups.get("result") or {})
         if set(display_overrides) - DISPLAY_SETTING_KEYS:
             raise ValueError("display overrides contain unsupported keys")
         if set(contour_overrides) - CONTOUR_SETTING_KEYS:
             raise ValueError("contour overrides contain unsupported keys")
+        if set(result_overrides) - RESULT_OVERRIDE_KEYS:
+            raise ValueError("result overrides contain unsupported keys")
 
         viewport = self.viewport
         if not viewport.can_capture:
@@ -3748,6 +3756,10 @@ class FEMMainWindow(QMainWindow):
         if contour_overrides and self._current_result_provider() is None:
             raise RuntimeError(
                 "contour overrides require a displayed accepted result"
+            )
+        if result_overrides and self._current_result_provider() is None:
+            raise RuntimeError(
+                "result overrides require a displayed accepted result"
             )
 
         # 有效状态 = 当前 live 渲染配置 ⊕ 显式覆盖键；edge_mode 与
@@ -3765,13 +3777,36 @@ class FEMMainWindow(QMainWindow):
         ):
             effective["edge_mode"] = CONTOUR_EDGE_ALL
 
+        # result 组在事务开始前构建脱体 payload（不安装、不刷新视口）；
+        # 非 READY 场在此处以 KeyError 拒绝，视口状态尚未被触碰。
+        export_payload = None
+        export_shape_mode = "undeformed"
+        export_overlay = False
+        if result_overrides:
+            export_payload, export_shape_mode, export_overlay = (
+                self._export_viewport_result_payload(
+                    contour_overrides,
+                    result_overrides,
+                )
+            )
+
         snapshot_contour = dict(viewport._contour)
         snapshot_show_edges = viewport._show_edges
         snapshot_suppressed = viewport._render_suppressed
+        snapshot_payload = None
+        snapshot_display = None
+        snapshot_overlay = False
+        if result_overrides:
+            snapshot_payload = viewport._result_render_payload
+            snapshot_display = viewport._display
+            snapshot_overlay = viewport._overlay_undeformed
         contour_enabled = viewport._display.contour_enabled
         coordinate_changed = bool(
             effective.get("show_coordinate_system")
             != snapshot_contour.get("show_coordinate_system")
+        )
+        overlay_changed = (
+            bool(result_overrides) and export_overlay != snapshot_overlay
         )
         viewport._render_suppressed = True
         try:
@@ -3780,9 +3815,21 @@ class FEMMainWindow(QMainWindow):
                 viewport._show_edges = bool(
                     effective.get("edges", snapshot_show_edges)
                 )
+            if result_overrides:
+                # 临时安装脱体 payload 与形状状态；窗口级 live 状态
+                # （self._display/_scale_mode/...）全程不动。
+                if export_payload is not viewport._result_render_payload:
+                    viewport.set_result_render_payload(export_payload)
+                viewport._display = DisplayState(
+                    export_shape_mode,
+                    contour_enabled,
+                )
+                if overlay_changed:
+                    viewport._overlay_undeformed = export_overlay
+                    viewport._refresh_undeformed_overlay()
             if coordinate_changed:
                 viewport._refresh_coordinate_system_axes()
-            if contour_enabled:
+            if contour_enabled or result_overrides:
                 viewport._update_result_layer()
             viewport.save_screenshot(
                 str(target),
@@ -3795,9 +3842,22 @@ class FEMMainWindow(QMainWindow):
             viewport._contour.clear()
             viewport._contour.update(snapshot_contour)
             viewport._show_edges = snapshot_show_edges
+            if result_overrides:
+                if viewport._result_render_payload is not snapshot_payload:
+                    if snapshot_payload is None:
+                        viewport._result_render_payload = None
+                        viewport._scalar_reuse_pending = False
+                        viewport._geometry_reuse_pending = False
+                        viewport._scalar_reuse_display = None
+                    else:
+                        viewport.set_result_render_payload(snapshot_payload)
+                viewport._display = snapshot_display
+                if overlay_changed:
+                    viewport._overlay_undeformed = snapshot_overlay
+                    viewport._refresh_undeformed_overlay()
             if coordinate_changed:
                 viewport._refresh_coordinate_system_axes()
-            if contour_enabled:
+            if contour_enabled or result_overrides:
                 viewport._update_result_layer()
             viewport._render_suppressed = snapshot_suppressed
             viewport._render()
@@ -3806,6 +3866,98 @@ class FEMMainWindow(QMainWindow):
             maximum_bytes=MAX_EXPORT_IMAGE_BYTES,
         )
         return size, digest
+
+    def _export_viewport_result_payload(
+        self,
+        contour_overrides: Mapping[str, object],
+        result_overrides: Mapping[str, object],
+    ) -> tuple[object, str, bool]:
+        """为 result 覆盖组构建脱体结果 payload。
+
+        返回 ``(payload, 有效 shape_mode, 有效未变形叠加)``。
+        averaging_threshold 覆盖必须在场请求转换之前生效（第 7 节
+        坑 1）：先临时写入 ``_contour_options``，经
+        ``_result_averaging_visual_selection`` 完成 S 场 ELEMENT_NODAL
+        → RESOLVED_NODAL 的场请求转换，构建完成后立即还原；只改
+        渲染 dict 会导出错误的场。非 READY 场由
+        ``_build_result_render_payload`` 以 KeyError 拒绝（坑 2），
+        绝不降级到其它场。
+        """
+
+        provider = self._current_result_provider()
+        if provider is None:
+            raise RuntimeError(
+                "result overrides require a displayed accepted result"
+            )
+        field_ref = result_overrides.get("field_ref")
+        component = result_overrides.get("component")
+        if (field_ref is None) != (component is None):
+            raise ValueError(
+                "result overrides require field_ref and component together"
+            )
+        if field_ref is None:
+            selection = self.result_selection
+            if type(selection) is not ScalarFieldSelection:
+                raise RuntimeError("there is no current result selection")
+        else:
+            selection = self._agent_resolve_result_selection(
+                str(field_ref),
+                str(component),
+            )
+        shape_mode = result_overrides.get("shape_mode")
+        if shape_mode is not None and shape_mode not in RESULT_SHAPE_MODES:
+            raise ValueError("shape_mode must be deformed or undeformed")
+        scale_mode = result_overrides.get("scale_mode")
+        if scale_mode is not None and scale_mode not in RESULT_SCALE_MODES:
+            raise ValueError("scale_mode must be auto, real or custom")
+        scale_value = result_overrides.get("scale_value")
+        if scale_value is not None:
+            if type(scale_value) is bool or not isinstance(
+                scale_value,
+                (int, float),
+            ):
+                raise ValueError("scale_value must be a real number")
+            scale_value = float(scale_value)
+            if not np.isfinite(scale_value) or scale_value < 0.0:
+                raise ValueError("scale_value must be finite and non-negative")
+        overlay = result_overrides.get("overlay_undeformed")
+        if overlay is not None and type(overlay) is not bool:
+            raise ValueError("overlay_undeformed must be boolean")
+
+        effective_shape_mode = (
+            self._display.shape_mode if shape_mode is None else str(shape_mode)
+        )
+        effective_scale_mode = (
+            self._scale_mode if scale_mode is None else str(scale_mode)
+        )
+        effective_scale_value = (
+            self._scale_value if scale_value is None else scale_value
+        )
+        threshold_override = contour_overrides.get("averaging_threshold")
+        previous_threshold = self._contour_options["averaging_threshold"]
+        if threshold_override is not None:
+            self._contour_options["averaging_threshold"] = float(
+                threshold_override
+            )
+        try:
+            visual_selection = self._result_averaging_visual_selection(
+                provider,
+                selection,
+            )
+            payload = self._build_result_render_payload(
+                provider,
+                visual_selection,
+                shape_mode=effective_shape_mode,
+                scale_mode=effective_scale_mode,
+                scale_value=effective_scale_value,
+            )
+        finally:
+            self._contour_options["averaging_threshold"] = previous_threshold
+        return (
+            payload,
+            effective_shape_mode,
+            bool(self._overlay_undeformed if overlay is None else overlay),
+        )
 
     def export_result_vtk(
         self,

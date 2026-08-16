@@ -251,10 +251,10 @@ def test_controller_gates_and_dispatches_viewport_export(
         facade.workspace.workspace_id,
     )
 
-    # Phase 3 的 result 组在 dispatch 前即被 schema 归一化拒绝。
+    # result 组在无已接受结果显示时由端口层诊断拒绝。
     rejected = controller.dispatch(
         EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
-        {"result": {"field_ref": "U@nodes:c0"}},
+        {"result": {"field_ref": "U@nodes:c0", "component": "U1"}},
         context,
     )
     assert rejected.ok is False
@@ -448,12 +448,12 @@ def test_transaction_validates_arguments(tmp_path: Path) -> None:
             {"width": 1024},
             None,
         )
-    with pytest.raises(ValueError, match="only display and contour"):
+    with pytest.raises(ValueError, match="only display, contour and result"):
         FEMMainWindow.export_viewport_image_to(
             harness,
             target,
             None,
-            {"result": {"field_ref": "U@nodes:c0"}},
+            {"camera": {"position": [0, 0, 0]}},
         )
     with pytest.raises(ValueError, match="unsupported keys"):
         FEMMainWindow.export_viewport_image_to(

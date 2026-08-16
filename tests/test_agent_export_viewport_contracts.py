@@ -1,4 +1,4 @@
-"""Contract tests for the Phase 2 export_viewport_image DTOs and schemas."""
+"""Contract tests for the export_viewport_image DTOs and schemas."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from fem_agent.export_authoring import (
     EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
     NO_WORKSPACE_DIAGNOSTIC_CODE,
     NO_WORKSPACE_DIAGNOSTIC_MESSAGE,
+    RESULT_OVERRIDE_KEYS,
     AgentExportBridge,
     ExportAuthoringError,
     ExportFileReceipt,
@@ -52,7 +53,7 @@ def _viewport_request(**overrides: object) -> ExportViewportImageRequest:
 # ---------------------------------------------------------------------------
 
 
-def test_viewport_image_schema_is_closed_without_result_group() -> None:
+def test_viewport_image_schema_is_closed_with_result_group() -> None:
     schema = export_viewport_image_tool_schema()
     assert schema["name"] == EXPORT_VIEWPORT_IMAGE_TOOL_NAME
     input_schema = schema["input_schema"]
@@ -63,8 +64,8 @@ def test_viewport_image_schema_is_closed_without_result_group() -> None:
         "image",
         "display",
         "contour",
+        "result",
     }
-    assert "result" not in input_schema["properties"]
     image_schema = input_schema["properties"]["image"]
     assert image_schema["additionalProperties"] is False
     assert set(image_schema["properties"]) == {
@@ -80,6 +81,19 @@ def test_viewport_image_schema_is_closed_without_result_group() -> None:
     contour_schema = input_schema["properties"]["contour"]
     assert contour_schema["additionalProperties"] is False
     assert set(contour_schema["properties"]) == CONTOUR_SETTING_KEYS
+    result_schema = input_schema["properties"]["result"]
+    assert result_schema["additionalProperties"] is False
+    assert set(result_schema["properties"]) == RESULT_OVERRIDE_KEYS
+    assert result_schema["required"] == []
+    assert result_schema["properties"]["shape_mode"]["enum"] == [
+        "deformed",
+        "undeformed",
+    ]
+    assert result_schema["properties"]["scale_mode"]["enum"] == [
+        "auto",
+        "real",
+        "custom",
+    ]
     assert "do not retry" in schema["description"]
 
 
@@ -115,7 +129,7 @@ def test_image_options_defaults_and_bounds() -> None:
         ViewportImageOptions.from_dict({"quality": "2"})
 
 
-def test_viewport_request_from_dict_is_closed_and_rejects_result_group() -> None:
+def test_viewport_request_from_dict_is_closed_and_parses_result_group() -> None:
     request = _viewport_request(
         display_overrides={"legend": False, "decimals": 2},
         contour_overrides={"colormap": "jet", "levels": 16},
@@ -124,6 +138,7 @@ def test_viewport_request_from_dict_is_closed_and_rejects_result_group() -> None
     assert payload["schema_version"] == EXPORT_AUTHORING_SCHEMA_VERSION
     assert payload["display"] == {"legend": False, "decimals": 2}
     assert payload["contour"] == {"colormap": "jet", "levels": 16}
+    assert payload["result"] == {}
     assert request.has_overrides is True
     assert ExportViewportImageRequest.from_dict(payload) == request
     # 省略所有参数组 = 沿用当前视口状态。
@@ -131,12 +146,14 @@ def test_viewport_request_from_dict_is_closed_and_rejects_result_group() -> None
     assert bare.image == ViewportImageOptions()
     assert bare.display_overrides == {}
     assert bare.contour_overrides == {}
+    assert bare.result_overrides == {}
     assert bare.has_overrides is False
-    # Phase 3 的 result 组在 Phase 2 必须被封闭解析拒绝。
-    with pytest.raises(ExportAuthoringError):
-        ExportViewportImageRequest.from_dict(
-            {**payload, "result": {"field_ref": "U@nodes:c0"}}
-        )
+    # Phase 3 的 result 组被封闭解析接受并往返。
+    with_result = ExportViewportImageRequest.from_dict(
+        {**payload, "result": {"field_ref": "U@nodes:c0"}}
+    )
+    assert with_result.result_overrides == {"field_ref": "U@nodes:c0"}
+    assert with_result.has_overrides is True
     with pytest.raises(ExportAuthoringError):
         ExportViewportImageRequest.from_dict({**payload, "extra": 1})
     with pytest.raises(ExportAuthoringError):
@@ -207,9 +224,15 @@ def test_bridge_normalizes_viewport_requests_and_enforces_types() -> None:
     normalized = port.viewport_image_calls[0]
     assert normalized.image.format == "jpeg"
     assert normalized.image.quality == 2
-    # result 组键在归一化阶段即被拒绝。
-    with pytest.raises(ExportAuthoringError):
-        bridge.viewport_image({"result": {"field_ref": "U@nodes:c0"}})
+    # result 组在归一化阶段被接受并保留在 DTO 中。
+    response = bridge.viewport_image(
+        {"result": {"field_ref": "U@nodes:c0", "component": "U1"}}
+    )
+    assert response.ok is False
+    assert port.viewport_image_calls[-1].result_overrides == {
+        "field_ref": "U@nodes:c0",
+        "component": "U1",
+    }
 
     class _WrongReturnPort:
         def export_accepted_result_csv(self, request):

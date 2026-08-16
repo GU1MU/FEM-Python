@@ -1573,6 +1573,20 @@ class SessionExportPort:
                 retryable=False,
                 clarification_required=True,
             )
+        if request.result_overrides and not (
+            self._facade.accepted_result_displayed()
+        ):
+            return ExportViewportImageResponse.failure(
+                "export.result.unavailable",
+                "result 参数组仅在有已接受结果显示时可传，"
+                "当前没有显示中的结果",
+                retryable=False,
+                clarification_required=True,
+            )
+        if request.result_overrides:
+            rejected = self._validate_viewport_result_overrides(request)
+            if rejected is not None:
+                return rejected
         extension = VIEWPORT_IMAGE_EXTENSION_BY_FORMAT[request.image.format]
         kind = request.image.format
         filename = (
@@ -1597,6 +1611,8 @@ class SessionExportPort:
             overrides["display"] = dict(request.display_overrides)
         if request.contour_overrides:
             overrides["contour"] = dict(request.contour_overrides)
+        if request.result_overrides:
+            overrides["result"] = dict(request.result_overrides)
         try:
             size_bytes, digest = self._facade.export_viewport_image_to(
                 target,
@@ -1610,6 +1626,19 @@ class SessionExportPort:
                 retryable=False,
                 clarification_required=True,
             )
+        except KeyError as error:
+            # 仅把 _build_result_render_payload 的 READY 门控哨兵映射为
+            # 场未物化诊断；无关 KeyError 照常上抛，避免误导 agent。
+            if "READY catalog field" not in str(error):
+                raise
+            # 请求的场（或 averaging 转换后的场请求）未物化为 READY：
+            # 拒绝并列出当前 READY 场清单，绝不降级。
+            return ExportViewportImageResponse.failure(
+                "export.field.not_ready",
+                self._not_ready_field_message(),
+                retryable=False,
+                clarification_required=True,
+            )
         except (RuntimeError, TypeError, ValueError) as error:
             message = str(error)
             if "background task" in message:
@@ -1618,6 +1647,8 @@ class SessionExportPort:
                 code = "export.viewport.unavailable"
             elif "contour overrides require" in message:
                 code = "export.contour.unavailable"
+            elif "result overrides require" in message:
+                code = "export.result.unavailable"
             else:
                 code = "export.rejected"
             return ExportViewportImageResponse.failure(
@@ -1637,6 +1668,10 @@ class SessionExportPort:
         if request.contour_overrides:
             summary_parts.append(
                 "contour:" + ",".join(sorted(request.contour_overrides))
+            )
+        if request.result_overrides:
+            summary_parts.append(
+                "result:" + ",".join(sorted(request.result_overrides))
             )
         document_id = self._facade.document_id()
         try:
@@ -1673,6 +1708,80 @@ class SessionExportPort:
                 kind=kind,
             )
         )
+
+    def _validate_viewport_result_overrides(
+        self,
+        request: ExportViewportImageRequest,
+    ) -> ExportViewportImageResponse | None:
+        """校验 result 组的 field_ref/component；返回 None 表示放行。"""
+
+        field_ref = request.result_overrides.get("field_ref")
+        component = request.result_overrides.get("component")
+        if (field_ref is None) != (component is None):
+            return ExportViewportImageResponse.failure(
+                "export.result.incomplete",
+                "result 参数组的 field_ref 与 component 必须成对提供",
+                retryable=False,
+                clarification_required=True,
+            )
+        if field_ref is None:
+            return None
+        try:
+            context = self._facade.result_display_context()
+        except (RuntimeError, ValueError) as error:
+            return ExportViewportImageResponse.failure(
+                "export.result.unavailable",
+                f"当前没有可导出的 READY 结果：{str(error)[:256]}",
+                retryable=False,
+                clarification_required=True,
+            )
+        field = next(
+            (
+                item
+                for item in context.fields
+                if item.field_ref == field_ref
+            ),
+            None,
+        )
+        if field is None:
+            ready_refs = ", ".join(
+                item.field_ref for item in context.fields[:8]
+            )
+            return ExportViewportImageResponse.failure(
+                "export.field.unknown",
+                (
+                    "field_ref 不在当前 READY 场目录中；"
+                    f"可用场：{ready_refs}"
+                ),
+                retryable=False,
+                clarification_required=True,
+            )
+        if component not in field.components:
+            return ExportViewportImageResponse.failure(
+                "export.component.unknown",
+                (
+                    "component 不属于所选场；"
+                    f"可用分量：{', '.join(field.components)}"
+                ),
+                retryable=False,
+                clarification_required=True,
+            )
+        return None
+
+    def _not_ready_field_message(self) -> str:
+        """非 READY 场拒绝文案：尽力附上当前 READY 场清单。"""
+
+        message = "请求的场未物化为 READY，导出已拒绝，未降级到其它场"
+        try:
+            context = self._facade.result_display_context()
+        except (RuntimeError, ValueError):
+            return message
+        ready_refs = ", ".join(
+            item.field_ref for item in context.fields[:8]
+        )
+        if ready_refs:
+            message = f"{message}；当前 READY 场：{ready_refs}"
+        return message[:1024]
 
 
 class SessionResultQueryPort:
@@ -7888,6 +7997,7 @@ def create_session_authoring_workflow_controller(
             snapshot=current_session().snapshot(),
             step_name=step_name,
             job_name=supplied_job_name.strip(),
+            target_document_id=current_context().binding.document_id,
             **metadata,
         )
         return proposal_outcome(

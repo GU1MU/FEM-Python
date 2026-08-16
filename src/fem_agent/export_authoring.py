@@ -1,16 +1,17 @@
 """Strict contracts for Agent-authored result exports and display context.
 
 Phase 1 exposed the CSV export plus the read-only display-context tool;
-Phase 2 adds ``export_viewport_image`` with the image, display and contour
-parameter groups (the result group stays Phase 3 and its keys are rejected
-by the closed schema).  Both contracts stay fail-closed: every DTO is
-bounded, every schema is closed, and a missing user workspace returns one
-short diagnostic that the engine relays verbatim without retrying.
+Phase 2 added ``export_viewport_image`` with the image, display and contour
+parameter groups; Phase 3 completes it with the result group (field_ref +
+component, shape_mode, scale_mode + scale_value, overlay_undeformed).
+Both contracts stay fail-closed: every DTO is bounded, every schema is
+closed, and a missing user workspace returns one short diagnostic that the
+engine relays verbatim without retrying.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 import json
 import math
@@ -63,6 +64,16 @@ CONTOUR_SETTING_KEYS = {
     "show_maximum",
     "averaging_threshold",
 }
+RESULT_OVERRIDE_KEYS = {
+    "field_ref",
+    "component",
+    "shape_mode",
+    "scale_mode",
+    "scale_value",
+    "overlay_undeformed",
+}
+RESULT_SHAPE_MODES = ("deformed", "undeformed")
+RESULT_SCALE_MODES = ("auto", "real", "custom")
 
 
 class ExportAuthoringError(ValueError):
@@ -455,15 +466,18 @@ class ViewportImageOptions:
 
 @dataclass(frozen=True, slots=True)
 class ExportViewportImageRequest:
-    """One Phase 2 viewport capture: image options plus optional overrides.
+    """One viewport capture: image options plus optional override groups.
 
-    Only the image, display and contour groups exist in Phase 2; the result
-    group belongs to Phase 3 and any of its keys fail the closed parsing.
+    The image, display, contour and result groups are all optional;
+    omitted groups keep the current viewport state.  The result group
+    (Phase 3) selects the rendered field and deformation state and is
+    only accepted while an accepted result is displayed.
     """
 
     image: ViewportImageOptions
     display_overrides: Mapping[str, object]
     contour_overrides: Mapping[str, object]
+    result_overrides: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.image) is not ViewportImageOptions:
@@ -486,10 +500,19 @@ class ExportViewportImageRequest:
                 "contour_overrides",
             ),
         )
+        object.__setattr__(
+            self,
+            "result_overrides",
+            _bounded_result_overrides(self.result_overrides),
+        )
 
     @property
     def has_overrides(self) -> bool:
-        return bool(self.display_overrides or self.contour_overrides)
+        return bool(
+            self.display_overrides
+            or self.contour_overrides
+            or self.result_overrides
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -497,6 +520,7 @@ class ExportViewportImageRequest:
             "image": self.image.to_dict(),
             "display": dict(self.display_overrides),
             "contour": dict(self.contour_overrides),
+            "result": dict(self.result_overrides),
         }
 
     def to_json(self) -> str:
@@ -515,7 +539,13 @@ class ExportViewportImageRequest:
             raise TypeError(
                 "export viewport image request keys must be strings"
             )
-        allowed = {"schema_version", "image", "display", "contour"}
+        allowed = {
+            "schema_version",
+            "image",
+            "display",
+            "contour",
+            "result",
+        }
         if not set(value) <= allowed:
             raise ExportAuthoringError(
                 "export viewport image request fields do not match the schema"
@@ -538,6 +568,7 @@ class ExportViewportImageRequest:
             ),
             display_overrides=value.get("display") or {},
             contour_overrides=value.get("contour") or {},
+            result_overrides=value.get("result") or {},
         )
 
 
@@ -664,6 +695,62 @@ def _bounded_setting_value(value: object, label: str) -> object:
     if type(value) is str:
         return _bounded_text(value, label, maximum=128)
     raise TypeError(f"{label} must be a JSON scalar")
+
+
+def _bounded_result_overrides(value: object) -> dict[str, object]:
+    """Bound the Phase 3 result group; every key stays optional."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("result_overrides must be an object")
+    if any(type(key) is not str for key in value):
+        raise TypeError("result_overrides keys must be strings")
+    if not set(value) <= RESULT_OVERRIDE_KEYS:
+        raise ExportAuthoringError(
+            "result_overrides contains unsupported keys"
+        )
+    payload: dict[str, object] = {}
+    if "field_ref" in value:
+        payload["field_ref"] = _bounded_text(
+            value["field_ref"],
+            "result_overrides.field_ref",
+            maximum=FIELD_REF_MAX_LENGTH,
+        )
+    if "component" in value:
+        payload["component"] = _bounded_text(
+            value["component"],
+            "result_overrides.component",
+            maximum=COMPONENT_MAX_LENGTH,
+        )
+    if "shape_mode" in value:
+        shape_mode = value["shape_mode"]
+        if shape_mode not in RESULT_SHAPE_MODES:
+            raise ExportAuthoringError(
+                "result_overrides.shape_mode must be deformed or undeformed"
+            )
+        payload["shape_mode"] = shape_mode
+    if "scale_mode" in value:
+        scale_mode = value["scale_mode"]
+        if scale_mode not in RESULT_SCALE_MODES:
+            raise ExportAuthoringError(
+                "result_overrides.scale_mode must be auto, real or custom"
+            )
+        payload["scale_mode"] = scale_mode
+    if "scale_value" in value:
+        scale_value = _finite_real(
+            value["scale_value"],
+            "result_overrides.scale_value",
+        )
+        if scale_value < 0.0:
+            raise ExportAuthoringError(
+                "result_overrides.scale_value must be non-negative"
+            )
+        payload["scale_value"] = scale_value
+    if "overlay_undeformed" in value:
+        overlay = value["overlay_undeformed"]
+        if type(overlay) is not bool:
+            raise TypeError("result_overrides.overlay_undeformed must be boolean")
+        payload["overlay_undeformed"] = overlay
+    return payload
 
 
 def _bounded_settings(
@@ -1124,8 +1211,41 @@ def _viewport_contour_group_schema() -> dict[str, object]:
     }
 
 
+def _viewport_result_group_schema() -> dict[str, object]:
+    """Closed schema for the optional Phase 3 result override group."""
+
+    properties: dict[str, object] = {
+        "field_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": FIELD_REF_MAX_LENGTH,
+        },
+        "component": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": COMPONENT_MAX_LENGTH,
+        },
+        "shape_mode": {
+            "type": "string",
+            "enum": list(RESULT_SHAPE_MODES),
+        },
+        "scale_mode": {
+            "type": "string",
+            "enum": list(RESULT_SCALE_MODES),
+        },
+        "scale_value": {"type": "number", "minimum": 0.0},
+        "overlay_undeformed": {"type": "boolean"},
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": [],
+    }
+
+
 def export_viewport_image_tool_schema() -> dict[str, object]:
-    """Return the closed Phase 2 schema for export_viewport_image."""
+    """Return the closed schema for export_viewport_image."""
 
     properties: dict[str, object] = {
         "schema_version": {
@@ -1150,6 +1270,7 @@ def export_viewport_image_tool_schema() -> dict[str, object]:
         },
         "display": _viewport_display_group_schema(),
         "contour": _viewport_contour_group_schema(),
+        "result": _viewport_result_group_schema(),
     }
     return {
         "name": EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
@@ -1159,13 +1280,18 @@ def export_viewport_image_tool_schema() -> dict[str, object]:
             "workspace. All parameter groups are optional; omitted values "
             "keep the current viewport state. The display and contour groups "
             "temporarily override rendering settings for the capture only and "
-            "are restored afterwards; the contour group is only allowed while "
-            "an accepted result is displayed. Output size is always the "
-            "current viewport size multiplied by quality; custom dimensions "
-            "are not accepted. The receipt returns only the "
-            "workspace-relative path. If the response carries the "
-            "export.no_workspace diagnostic, relay that exact short message "
-            "to the user in one sentence and do not retry the export."
+            "are restored afterwards; the contour and result groups are only "
+            "allowed while an accepted result is displayed. The result group "
+            "selects the rendered field (field_ref and component must come "
+            "from read_result_display_context and be provided together), the "
+            "shape mode, the deformation scale and the undeformed overlay; "
+            "requesting a field that is not READY is rejected without "
+            "fallback. Output size is always the current viewport size "
+            "multiplied by quality; custom dimensions are not accepted. The "
+            "receipt returns only the workspace-relative path. If the "
+            "response carries the export.no_workspace diagnostic, relay that "
+            "exact short message to the user in one sentence and do not "
+            "retry the export."
         ),
         "input_schema": {
             "type": "object",
@@ -1212,6 +1338,9 @@ __all__ = [
     "NO_WORKSPACE_DIAGNOSTIC_CODE",
     "NO_WORKSPACE_DIAGNOSTIC_MESSAGE",
     "RESULT_DISPLAY_CONTEXT_TOOL_NAME",
+    "RESULT_OVERRIDE_KEYS",
+    "RESULT_SCALE_MODES",
+    "RESULT_SHAPE_MODES",
     "VIEWPORT_IMAGE_EXTENSION_BY_FORMAT",
     "VIEWPORT_IMAGE_FORMATS",
     "VIEWPORT_IMAGE_QUALITIES",
