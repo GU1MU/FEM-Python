@@ -19,6 +19,7 @@ from fem.geometry.extrusion_selection import (
     resolve_extrusion_source_faces,
 )
 from fem.geometry.planar_boolean_lineage import (
+    PlanarBooleanLineageProof,
     PlanarBooleanLineageResolutionError,
     capture_planar_operand_evidence,
     resolve_planar_boolean_lineage,
@@ -1331,6 +1332,12 @@ def _compile_strict_planar_boolean(
             "planar-boolean.lineage.catalog-mismatch: persisted proof "
             "does not match the current OCC result"
         )
+    return _strict_planar_boolean_draft(proof)
+
+
+def _strict_planar_boolean_draft(
+    proof: PlanarBooleanLineageProof,
+) -> _CompiledDraft:
     return _CompiledDraft(
         tuple(proof.logical_entities["body:domain"]),
         dict(proof.logical_entities),
@@ -1341,6 +1348,25 @@ def _compile_strict_planar_boolean(
             if logical_id.startswith("edge:")
             for entity in proof.logical_entities[logical_id]
         ),
+    )
+
+
+def finalize_strict_planar_boolean_carrier(
+    cad: Any,
+    geometry: BooleanGeometry,
+    proof: PlanarBooleanLineageProof,
+) -> CompiledRecipeTopology:
+    """Finalize the live carrier of a proven strict planar Boolean.
+
+    Shared by the ``compile_recipe`` replay path and the incremental
+    feature-chain path so the proof-to-carrier mapping cannot drift.
+    """
+
+    return _finalize(
+        cad,
+        geometry,
+        describe_recipe_topology(geometry),
+        _strict_planar_boolean_draft(proof),
     )
 
 
@@ -2742,4 +2768,5 @@ __all__ = [
     "CompiledRecipeTopology",
     "TopologyResolutionError",
     "compile_recipe",
+    "finalize_strict_planar_boolean_carrier",
 ]

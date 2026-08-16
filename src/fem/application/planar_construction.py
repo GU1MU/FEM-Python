@@ -255,6 +255,11 @@ def compile_planar_feature_recipe(
     derived from.  This companion compiler keeps operand sketches detached and
     commits each object-side union/difference as the same proven planar Boolean
     feature used by the interactive GUI workflow.
+
+    The Boolean chain is built incrementally in one CAD model whose lifetime
+    is this single call: the base sketch is compiled once and every step
+    performs exactly one cut plus its lineage proof.  The final equivalence
+    proof still replays the whole recipe in a fresh model.
     """
 
     if type(construction) is not PlanarConstructionIR:
@@ -354,13 +359,15 @@ def compile_planar_feature_recipe(
         )
 
     def boolean_feature(
+        cad: Any,
         object_recipe: object,
+        object_compiled: object,
         tool_recipe: SketchGeometry,
         operation: Literal["fuse", "cut"],
         node_id: str,
         prior_ambiguity: _FeatureTargetAmbiguity | None,
-    ) -> object:
-        from .planar_boolean import prepare_planar_boolean
+    ) -> tuple[object, object]:
+        from .planar_boolean import prepare_planar_boolean_incremental
 
         target_faces = resolve_extrusion_source_faces(object_recipe).face_ids
         tool_faces = resolve_extrusion_source_faces(tool_recipe).face_ids
@@ -398,18 +405,20 @@ def compile_planar_feature_recipe(
                 ),
             )
         try:
-            with model_factory(
-                f"planar-feature-{node_id}-{operation}",
-                dimension=2,
-            ) as cad:
-                return prepare_planar_boolean(
-                    cad,
-                    object_recipe,
-                    target_faces[0],
-                    tool_recipe,
-                    tool_faces,
-                    operation,
-                ).geometry
+            if object_compiled is None:
+                # The base sketch (flatten result) is compiled exactly once,
+                # lazily, on the shared chain model.
+                object_compiled = compile_recipe(cad, object_recipe)
+            feature, compiled = prepare_planar_boolean_incremental(
+                cad,
+                object_recipe,
+                object_compiled,
+                target_faces[0],
+                tool_recipe,
+                tool_faces,
+                operation,
+            )
+            return feature.geometry, compiled
         except PlanarConstructionCompileError:
             raise
         except Exception as error:
@@ -422,10 +431,11 @@ def compile_planar_feature_recipe(
 
     def build(
         node_id: str,
-    ) -> tuple[object, _FeatureTargetAmbiguity | None]:
+        cad: Any,
+    ) -> tuple[object, object, _FeatureTargetAmbiguity | None]:
         node = nodes[node_id]
         if isinstance(node, DifferenceNode):
-            result, ambiguity = build(node.base)
+            result, result_compiled, ambiguity = build(node.base, cad)
             for tool_id in node.subtract:
                 tool_node = nodes[tool_id]
                 tool_ids = (tool_id,)
@@ -437,8 +447,10 @@ def compile_planar_feature_recipe(
                     tool_ids = tool_node.operands
                 for separated_tool_id in tool_ids:
                     tool_recipe = flatten(separated_tool_id)
-                    result = boolean_feature(
+                    result, result_compiled = boolean_feature(
+                        cad,
                         result,
+                        result_compiled,
                         tool_recipe,
                         "cut",
                         node.id,
@@ -449,24 +461,35 @@ def compile_planar_feature_recipe(
                         separated_tool_id,
                         tool_recipe,
                     )
-            return result, ambiguity
+            return result, result_compiled, ambiguity
         if isinstance(node, UnionNode):
             if len(resolve_extrusion_source_faces(flatten(node_id)).face_ids) > 1:
-                return flatten(node_id), None
-            result, ambiguity = build(node.operands[0])
+                return flatten(node_id), None, None
+            result, result_compiled, ambiguity = build(node.operands[0], cad)
             for tool_id in node.operands[1:]:
-                result = boolean_feature(
+                result, result_compiled = boolean_feature(
+                    cad,
                     result,
+                    result_compiled,
                     flatten(tool_id),
                     "fuse",
                     node.id,
                     ambiguity,
                 )
                 ambiguity = None
-            return result, ambiguity
-        return flatten(node_id), None
+            return result, result_compiled, ambiguity
+        return flatten(node_id), None, None
 
-    feature_recipe, _ambiguity = build(construction.result_node_id)
+    # The whole Boolean chain shares one CAD model for this single compile
+    # call; each step performs exactly one incremental cut plus its proof.
+    with model_factory(
+        f"planar-feature-chain-{construction.digest()[:12]}",
+        dimension=2,
+    ) as chain_cad:
+        feature_recipe, _chain_compiled, _ambiguity = build(
+            construction.result_node_id,
+            chain_cad,
+        )
     if type(feature_recipe) is SketchGeometry:
         return feature_recipe
     try:

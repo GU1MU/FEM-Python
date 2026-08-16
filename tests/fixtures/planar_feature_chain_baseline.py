@@ -15,17 +15,23 @@ plan's measured numbers (docs/2026-08-16-...-incremental-compilation-plan.md):
   {line 40, circle 4, arc 14}: exact curve counts depend on the lost stroke
   point lists; structural facts (bbox, 1 component, 7 holes, 7 chained cuts)
   match strictly;
-- baseline counts cut/lineage/evidence = 35/35/70 vs plan 28/28/56: the plan
-  table counted only the replay path; this fixture counts every call inside
-  one ``compile_planar_feature_recipe`` invocation (7 direct cuts + 21
-  step-side replays + 7 final-proof replays, evidence = 2x lineage), which is
-  still O(N^2) for the N=7 chain.
+- baseline counts cut/lineage/evidence = 35/35/70 (Phase-0 legacy): the plan
+  table counted only the replay path; the legacy implementation counted every
+  call inside one ``compile_planar_feature_recipe`` invocation (7 direct cuts
+  + 21 step-side replays + 7 final-proof replays, evidence = 2x lineage),
+  which is O(N^2) for the N=7 chain.  Phase 1 replaced the per-step replay
+  with single-model incremental compilation; see the count constants below.
 
 The fixture contains only IR and facts; no session paths or user data.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+
+from fem.application.planar_construction import _recipe_digest
+from fem.geometry import BooleanGeometry, SketchGeometry
 from fem.geometry.construction_ir import PlanarConstructionIR
 
 
@@ -144,12 +150,60 @@ BASELINE_DIRECT_CURVE_TYPE_COUNTS = (("arc", 12), ("circle", 4), ("line", 42))
 # because native Boolean features split analytic curves at intersections).
 BASELINE_FEATURE_CURVE_TYPE_COUNTS = (("arc", 19), ("circle", 4), ("line", 42))
 
-# Instrumented baseline counts over one compile_planar_feature_recipe call
-# (compiled construction passed in): GeometryModel.cut invocations,
+# Structural equivalence oracle: fingerprint of the legacy implementation's
+# feature recipe, computed over operation, feature_id, target_face_id,
+# tool_face_ids, tool/object recursion and sketch digests.  Verified
+# deterministic across runs; every Phase 1+ implementation must reproduce it.
+BASELINE_FEATURE_RECIPE_SHA256 = (
+    "8ba0059e96cecd4b2aee61ef4edd5eb657a76585531014f127015ff2d868290d"
+)
+
+
+def feature_recipe_fingerprint(recipe: object) -> str:
+    """Hash the structural shape of a feature recipe chain.
+
+    Only authoring structure is hashed (operations, PB identities, selected
+    logical faces and operand sketches); OCC-side proof details intentionally
+    stay out of the oracle.
+    """
+
+    def walk(item: object) -> object:
+        if isinstance(item, BooleanGeometry):
+            context = item.planar_context
+            return {
+                "boolean": item.operation,
+                "feature_id": None if context is None else context.feature_id,
+                "target_face_id": (
+                    None if context is None else context.target_face_id
+                ),
+                "tool_face_ids": (
+                    None if context is None else list(context.tool_face_ids)
+                ),
+                "tool": walk(item.tool_geometry),
+                "object": walk(item.object_geometry),
+            }
+        if isinstance(item, SketchGeometry):
+            return {"sketch_digest": _recipe_digest(item)}
+        raise TypeError(f"unexpected recipe node: {type(item)!r}")
+
+    payload = json.dumps(walk(recipe), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+# Instrumented counts over one compile_planar_feature_recipe call (compiled
+# construction passed in): GeometryModel.cut invocations,
 # resolve_planar_boolean_lineage calls and capture_planar_operand_evidence
 # calls summed over fem.application.planar_boolean and
-# fem.application.recipe_compiler.  O(N^2) for the N=7 chain:
-# 7 direct + 0+1+...+6 step replays + 7 final-proof replays = 35.
-BASELINE_CUT_COUNT = 35
-BASELINE_LINEAGE_COUNT = 35
-BASELINE_EVIDENCE_COUNT = 70
+# fem.application.recipe_compiler.
+#
+# Phase-0 legacy baseline (full-chain replay per step) was 35/35/70.  Phase 1
+# (single-model incremental chain build) leaves only the final-proof replay,
+# so the whole-call window decomposes as:
+#   chain build    = 7 incremental cuts / 7 lineage proofs / 14 evidence
+#                    captures (the plan's O(N) targets 7/7/<=14);
+#   final proof    = 7 replayed cuts / 7 lineage proofs / 14 evidence
+#                    captures (unchanged until Phase 2);
+#   whole call     = 14/14/28.
+BASELINE_CUT_COUNT = 14
+BASELINE_LINEAGE_COUNT = 14
+BASELINE_EVIDENCE_COUNT = 28

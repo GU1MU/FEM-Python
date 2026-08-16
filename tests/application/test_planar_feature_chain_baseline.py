@@ -1,10 +1,14 @@
-"""Phase-0 regression oracle for the planar feature-chain compilation baseline.
+"""Regression oracle for the planar feature-chain compilation baseline.
 
-Freezes the golden facts and the O(N^2) replay counts of the reconstructed
+Freezes the golden facts, the structural recipe fingerprint and the
+whole-call instrumented counts of the reconstructed
 ``plate_300x100_slot_shu`` IR (see tests/fixtures/planar_feature_chain_baseline.py)
-so Phases 1-3 of the incremental-compilation plan can prove semantic
-equivalence while reducing the instrumented counts.  No timing assertions:
-CI wall clocks are unstable, the time budget lives in the plan document.
+so the incremental-compilation plan phases can prove semantic equivalence.
+After Phase 1 the chain build is O(N) (7 cuts / 7 lineage proofs / 14
+evidence captures); the remaining calls come from the unchanged final-proof
+replay, giving 14/14/28 for the whole ``compile_planar_feature_recipe``
+call.  No timing assertions: CI wall clocks are unstable, the time budget
+lives in the plan document.
 """
 
 from __future__ import annotations
@@ -32,13 +36,15 @@ from tests.fixtures.planar_feature_chain_baseline import (
     BASELINE_DIRECT_CURVE_TYPE_COUNTS,
     BASELINE_EVIDENCE_COUNT,
     BASELINE_FEATURE_CURVE_TYPE_COUNTS,
+    BASELINE_FEATURE_RECIPE_SHA256,
     BASELINE_HOLE_COUNT,
     BASELINE_LINEAGE_COUNT,
+    feature_recipe_fingerprint,
     plate_300x100_slot_shu,
 )
 
-# The unoptimized baseline replays the whole chain per step, so the shared
-# feature-recipe run costs ~2 minutes and stays behind the slow opt-in.
+# The shared feature-recipe run still includes the final-proof full-chain
+# replay, so it costs tens of seconds and stays behind the slow opt-in.
 pytestmark = pytest.mark.slow
 
 _CONSTRUCTION = plate_300x100_slot_shu()
@@ -152,6 +158,10 @@ def test_feature_chain_has_seven_chained_cuts_and_golden_curves(
         current = current.object_geometry
     assert chained_cuts == BASELINE_CHAINED_CUT_COUNT
 
+    # Structural equivalence with the legacy implementation: same operation,
+    # feature IDs, selected logical faces and operand sketches at every node.
+    assert feature_recipe_fingerprint(recipe) == BASELINE_FEATURE_RECIPE_SHA256
+
     facts = run["feature_facts"]
     assert facts.curve_types == BASELINE_FEATURE_CURVE_TYPE_COUNTS
     assert math.isclose(facts.area, BASELINE_AREA, rel_tol=1.0e-9, abs_tol=1.0e-6)
@@ -163,14 +173,15 @@ def test_feature_chain_has_seven_chained_cuts_and_golden_curves(
     assert facts.hole_count == BASELINE_HOLE_COUNT
 
 
-def test_instrumented_baseline_counts_are_quadratic(real_gmsh) -> None:
+def test_instrumented_counts_match_incremental_window(real_gmsh) -> None:
     del real_gmsh
     counts = _feature_run()["counts"]
 
-    # Phase-0 baseline for one compile_planar_feature_recipe call on the
-    # N=7 chain: 7 direct cuts, 0+1+...+6 step-side replays and 7 final-proof
-    # replays (see the fixture module for the deviation from the plan table).
+    # Phase-1 whole-call window for the N=7 chain: 7 incremental chain-build
+    # cuts/proofs + 7 final-proof replay cuts/proofs (evidence = 2x lineage).
+    # The chain build alone hits the plan's O(N) targets 7/7/<=14; the final
+    # proof replay stays unchanged until Phase 2.
     assert counts["cut"] == BASELINE_CUT_COUNT
     assert counts["lineage"] == BASELINE_LINEAGE_COUNT
     assert counts["evidence"] == BASELINE_EVIDENCE_COUNT
-    assert min(counts.values()) > BASELINE_CHAINED_CUT_COUNT
+    assert counts["cut"] == 2 * BASELINE_CHAINED_CUT_COUNT

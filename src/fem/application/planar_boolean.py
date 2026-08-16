@@ -20,12 +20,15 @@ from fem.geometry.recipes import (
     PlanarBooleanContext,
     RevolvedGeometry,
     RotatedGeometry,
+    SketchGeometry,
 )
 from fem.geometry.types import StrictPlanarBooleanPreview
 
 from .recipe_compiler import (
+    CompiledRecipeTopology,
     _planar_unaffected_logical_entities,
     compile_recipe,
+    finalize_strict_planar_boolean_carrier,
 )
 
 
@@ -120,6 +123,115 @@ def prepare_planar_boolean(
         target_face_id=selection.target_face_id,
     )
     return StrictPlanarBooleanResult(geometry, proof, preview)
+
+
+def prepare_planar_boolean_incremental(
+    cad: Any,
+    object_geometry: BooleanGeometry | SketchGeometry,
+    object_compiled: CompiledRecipeTopology,
+    target_face_id: str,
+    tool_geometry: SketchGeometry,
+    tool_face_ids: tuple[str, ...],
+    operation: Literal["fuse", "cut"],
+) -> tuple[StrictPlanarBooleanResult, CompiledRecipeTopology]:
+    """Execute and prove one chained planar Boolean on a live carrier.
+
+    Semantics match ``prepare_planar_boolean`` except ``object_geometry`` is
+    not recompiled: ``object_compiled`` must be the live
+    ``CompiledRecipeTopology`` produced by the previous step in the same CAD
+    model.  The returned result additionally carries the new
+    ``CompiledRecipeTopology`` of the produced ``BooleanGeometry``; its faces
+    are re-parsed from ``proof.result_entities`` because OCC removes consumed
+    operands (``remove_objects=True``), so the carrier never holds dead tags.
+
+    ``StrictPlanarBooleanResult.preview`` is intentionally EMPTY: incremental
+    chain compilation only consumes ``.geometry``.  Interactive callers that
+    need a tessellated preview must use ``prepare_planar_boolean``.
+    """
+
+    selection = resolve_planar_boolean_faces(
+        object_geometry,
+        target_face_id,
+        tool_geometry,
+        tool_face_ids,
+    )
+    try:
+        for entity in object_compiled.domain:
+            cad.bounding_box(entity)
+    except Exception as error:
+        raise PlanarBooleanLineageResolutionError(
+            "planar-boolean.incremental.stale-carrier: live compiled "
+            "topology references entities removed from the CAD model"
+        ) from error
+    context = PlanarBooleanContext(
+        next_planar_boolean_feature_id(object_geometry),
+        selection.target_face_id,
+        selection.tool_face_ids,
+    )
+    draft = BooleanGeometry(
+        f"{getattr(object_geometry, 'name', 'Planar')}-Boolean",
+        operation,
+        object_geometry,
+        tool_geometry,
+        planar_context=context,
+    )
+    tool_compiled = compile_recipe(cad, tool_geometry)
+    target_surfaces = tuple(
+        object_compiled.logical_entities[selection.target_face_id]
+    )
+    if len(target_surfaces) != 1:
+        raise PlanarBooleanLineageResolutionError(
+            "planar-boolean.target.face-not-unique: target must resolve "
+            "to one OCC surface"
+        )
+    tool_surfaces = tuple(
+        tool_compiled.logical_entities[face_id][0]
+        for face_id in selection.tool_face_ids
+    )
+    target_evidence = capture_planar_operand_evidence(
+        cad,
+        object_compiled,
+        (selection.target_face_id,),
+    )
+    tool_evidence = capture_planar_operand_evidence(
+        cad,
+        tool_compiled,
+        selection.tool_face_ids,
+    )
+    unaffected = _planar_unaffected_logical_entities(
+        object_compiled,
+        selection,
+    )
+    boolean_operation = cad.fuse if operation == "fuse" else cad.cut
+    result = boolean_operation(target_surfaces, tool_surfaces)
+    validate_planar_boolean_input_map(
+        result,
+        tool_count=len(tool_surfaces),
+        operation=operation,
+    )
+    proof = resolve_planar_boolean_lineage(
+        cad,
+        target_evidence,
+        tool_evidence,
+        result,
+        context,
+        operation=operation,
+        unaffected_logical_entities=unaffected,
+    )
+    proven_context = replace(
+        context,
+        result_entities=proof.result_entities,
+        topology_mappings=proof.topology_mappings,
+    )
+    geometry = replace(draft, planar_context=proven_context)
+    # The carrier is finalized from the proof's live logical entities so
+    # every selectable catalog entity is proven exactly as the replay path
+    # (recipe_compiler._compile_strict_planar_boolean) would prove it.
+    compiled = finalize_strict_planar_boolean_carrier(cad, geometry, proof)
+    preview = StrictPlanarBooleanPreview(
+        selection.target_face_id, (), (), (), (), (), ()
+    )
+    return StrictPlanarBooleanResult(geometry, proof, preview), compiled
 
 
 def prepare_strict_planar_recipe_preview(
@@ -227,5 +339,6 @@ __all__ = [
     "StrictPlanarBooleanResult",
     "next_planar_boolean_feature_id",
     "prepare_planar_boolean",
+    "prepare_planar_boolean_incremental",
     "prepare_strict_planar_recipe_preview",
 ]
