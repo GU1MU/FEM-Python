@@ -14,6 +14,7 @@ from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Protocol
 
@@ -181,6 +182,27 @@ from fem_agent.workspace_catalog import (
     WorkspaceCatalogBridge,
     WorkspaceDocumentIdentity,
 )
+from fem_agent.export_authoring import (
+    EXPORT_CSV_TOOL_NAME,
+    RESULT_DISPLAY_CONTEXT_TOOL_NAME,
+    AgentExportBridge,
+    ExportAuthoringError,
+    ExportCsvRequest,
+    ExportCsvResponse,
+    ExportFileReceipt,
+    ResultDisplayContextResponse,
+)
+from fem_agent.export_storage import (
+    ExportStorageError,
+    allocate_export_path,
+    ensure_export_directory,
+    sanitize_export_filename,
+)
+from .agent_workspace import (
+    ExportLedgerRecord,
+    append_export_ledger_record,
+)
+from .commands import ResultCsvExportSpec
 from fem.geometry import (
     BooleanGeometry,
     BooleanLineageResolutionError,
@@ -883,6 +905,7 @@ def authoring_context_from_snapshot(
     snapshot: _SessionSnapshot,
     *,
     document_id: str | int | None = None,
+    workspace_selected: bool = False,
 ) -> AuthoringContext:
     """Copy a session projection into a bounded, provider-safe DTO."""
 
@@ -1076,6 +1099,37 @@ def authoring_context_from_snapshot(
                 None
                 if supported and source_kind == "native" and result_count >= 2
                 else "结果比较需要当前会话中至少两个已接受的 native 结果"
+            ),
+        ),
+        CapabilitySummary(
+            "read_result_display_context",
+            supported and source_kind == "native" and result_count > 0,
+            (
+                None
+                if supported and source_kind == "native" and result_count > 0
+                else "结果展示上下文需要当前已接受的 native 结果"
+            ),
+        ),
+        CapabilitySummary(
+            "export_accepted_result_csv",
+            (
+                supported
+                and source_kind == "native"
+                and result_count > 0
+                and bool(workspace_selected)
+            ),
+            (
+                None
+                if (
+                    supported
+                    and source_kind == "native"
+                    and result_count > 0
+                    and bool(workspace_selected)
+                )
+                else (
+                    "结果 CSV 导出需要先通过 /workspace 选择用户工作区，"
+                    "并有当前已接受的 native 结果"
+                )
             ),
         ),
     )
@@ -1287,6 +1341,193 @@ class _ResolvedResultTarget:
 
 class _WorkspaceResultResolutionError(ValueError):
     pass
+
+
+class SessionExportPort:
+    """Agent 导出端口：把 CSV 落盘到用户工作区并写入导出台账。
+
+    端口只依赖导出门面，便于测试注入 Fake。未选择工作区时统一返回
+    固定诊断文案；工作区中途失效时只诊断，不清理也不重试。
+    """
+
+    def __init__(self, facade: object) -> None:
+        for attribute in (
+            "current_workspace",
+            "agent_data_root",
+            "document_id",
+            "result_display_context",
+            "resolve_result_selection",
+            "export_result_csv_to",
+        ):
+            if not callable(getattr(facade, attribute, None)):
+                raise TypeError("export facade does not implement the protocol")
+        self._facade = facade
+
+    def read_result_display_context(self) -> ResultDisplayContextResponse:
+        try:
+            context = self._facade.result_display_context()
+        except (RuntimeError, ValueError) as error:
+            return ResultDisplayContextResponse.failure(
+                "export.context.unavailable",
+                f"当前没有可导出的 READY 结果：{str(error)[:256]}",
+                retryable=False,
+                clarification_required=True,
+            )
+        return ResultDisplayContextResponse.success(context)
+
+    def export_accepted_result_csv(
+        self,
+        request: ExportCsvRequest,
+    ) -> ExportCsvResponse:
+        workspace = self._facade.current_workspace()
+        if workspace is None:
+            return ExportCsvResponse.no_workspace()
+        try:
+            context = self._facade.result_display_context()
+        except (RuntimeError, ValueError) as error:
+            return ExportCsvResponse.failure(
+                "export.result.unavailable",
+                f"当前没有可导出的 READY 结果：{str(error)[:256]}",
+                retryable=False,
+                clarification_required=True,
+            )
+        field = next(
+            (
+                item
+                for item in context.fields
+                if item.field_ref == request.field_ref
+            ),
+            None,
+        )
+        if field is None:
+            ready_refs = ", ".join(
+                item.field_ref for item in context.fields[:8]
+            )
+            return ExportCsvResponse.failure(
+                "export.field.unknown",
+                (
+                    "field_ref 不在当前 READY 场目录中；"
+                    f"可用场：{ready_refs}"
+                ),
+                retryable=False,
+                clarification_required=True,
+            )
+        if request.component not in field.components:
+            return ExportCsvResponse.failure(
+                "export.component.unknown",
+                (
+                    "component 不属于所选场；"
+                    f"可用分量：{', '.join(field.components)}"
+                ),
+                retryable=False,
+                clarification_required=True,
+            )
+        try:
+            selection = self._facade.resolve_result_selection(
+                request.field_ref,
+                request.component,
+            )
+        except (RuntimeError, ValueError) as error:
+            return ExportCsvResponse.failure(
+                "export.field.unknown",
+                str(error)[:512],
+                retryable=False,
+                clarification_required=True,
+            )
+        stem_source = (
+            request.name
+            if request.name is not None
+            else f"{field.display_name}_{request.expected_source.run_id}"
+        )
+        filename = sanitize_export_filename(stem_source, ".csv")
+        try:
+            exports_root = ensure_export_directory(workspace.root)
+            target = allocate_export_path(exports_root, filename)
+        except ExportStorageError as error:
+            return ExportCsvResponse.failure(
+                "export.storage.rejected",
+                str(error)[:512] or "导出目录不可用",
+                retryable=False,
+                clarification_required=True,
+            )
+        source = request.expected_source
+        spec = ResultCsvExportSpec(
+            ResultSourceKey(
+                result_id=source.result_id,
+                session_id=source.session_id,
+                artifact_id=source.artifact_id,
+                model_revision=source.model_revision,
+                step_name=source.step_name,
+                run_id=source.run_id,
+            ),
+            request.expected_materialization_generation,
+            selection,
+        )
+        try:
+            size_bytes, digest = self._facade.export_result_csv_to(target, spec)
+        except OSError:
+            return ExportCsvResponse.failure(
+                "export.workspace.unavailable",
+                "工作区目录不可用，导出未完成；请检查工作区后由用户重新发起",
+                retryable=False,
+                clarification_required=True,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            message = str(error)
+            if "background task" in message:
+                code = "export.busy"
+            elif "does not match" in message:
+                code = "export.result.stale"
+            else:
+                code = "export.rejected"
+            return ExportCsvResponse.failure(
+                code,
+                message[:512],
+                retryable=False,
+                clarification_required=code != "export.busy",
+            )
+        relative_path = target.relative_to(workspace.root).as_posix()
+        document_id = self._facade.document_id()
+        try:
+            append_export_ledger_record(
+                self._facade.agent_data_root(),
+                workspace.workspace_id,
+                ExportLedgerRecord(
+                    display_path=relative_path,
+                    kind="csv",
+                    sha256=digest,
+                    size_bytes=size_bytes,
+                    document_id=(
+                        str(document_id)
+                        if document_id
+                        else f"document:{source.session_id}"
+                    ),
+                    session_id=source.session_id,
+                    run_id=source.run_id,
+                    materialization_generation=(
+                        request.expected_materialization_generation
+                    ),
+                    overrides_summary=(
+                        request.name if request.name is not None else "none"
+                    ),
+                    exported_at=datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                    tool=EXPORT_CSV_TOOL_NAME,
+                ),
+            )
+        except (OSError, ValueError):
+            # 台账是尽力而为的审计记录；落盘成功后不因台账失败而回滚。
+            pass
+        return ExportCsvResponse.success(
+            ExportFileReceipt(
+                workspace_relative_path=relative_path,
+                filename=target.name,
+                sha256=digest,
+                size_bytes=size_bytes,
+                kind="csv",
+            )
+        )
 
 
 class SessionResultQueryPort:
@@ -3546,9 +3787,14 @@ class AgentAuthoringBridge:
         snapshot: _SessionSnapshot,
         *,
         document_id: str | int | None = None,
+        workspace_selected: bool = False,
     ) -> tuple[str, ...]:
         return self.bind_context(
-            authoring_context_from_snapshot(snapshot, document_id=document_id)
+            authoring_context_from_snapshot(
+                snapshot,
+                document_id=document_id,
+                workspace_selected=workspace_selected,
+            )
         )
 
     def bind_context(self, context: AuthoringContext) -> tuple[str, ...]:
@@ -4057,6 +4303,7 @@ def create_session_authoring_workflow_controller(
     next_job_name: Callable[[], str] | None = None,
     workspace_catalog_bridge: WorkspaceCatalogBridge | None = None,
     create_model_document: Callable[[str | None], str] | None = None,
+    export_facade: object | None = None,
 ) -> AuthoringWorkflowController:
     """Wire A1-A7 handlers to one GUI-owner A8 controller."""
 
@@ -4077,6 +4324,13 @@ def create_session_authoring_workflow_controller(
         raise TypeError(
             "workspace_catalog_bridge must be WorkspaceCatalogBridge or None"
         )
+    if export_facade is not None and not callable(
+        getattr(export_facade, "current_workspace", None)
+    ):
+        raise TypeError("export_facade must expose the export facade protocol")
+    export_bridge: AgentExportBridge | None = (
+        None if export_facade is None else AgentExportBridge(SessionExportPort(export_facade))
+    )
 
     def current_context() -> AuthoringContext:
         context = authoring_bridge.context
@@ -7878,6 +8132,49 @@ def create_session_authoring_workflow_controller(
             sum(item.result_count for item in catalog.documents),
         )
 
+    def export_result_csv(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if export_bridge is None:
+            raise AuthoringContractError("export support is unavailable")
+        try:
+            response = export_bridge.export_csv(arguments)
+        except (TypeError, ExportAuthoringError) as error:
+            raise AuthoringContractError(
+                f"export csv request is invalid: {error}"
+            ) from error
+        return AuthoringToolOutcome(
+            "One accepted result table exported to the workspace.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
+    def read_result_display_context(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if export_bridge is None:
+            raise AuthoringContractError("export support is unavailable")
+        if arguments:
+            raise AuthoringContractError(
+                "read_result_display_context accepts no arguments"
+            )
+        response = export_bridge.display_context()
+        return AuthoringToolOutcome(
+            "Current READY result display context read locally.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
+    def workspace_export_available() -> bool:
+        if export_facade is None:
+            return False
+        try:
+            return export_facade.current_workspace() is not None
+        except Exception:
+            return False
+
     controller = AuthoringWorkflowController(
         current_context,
         {
@@ -7915,9 +8212,22 @@ def create_session_authoring_workflow_controller(
                 if workspace_catalog_bridge is None
                 else {"read_workspace_documents": read_workspace_documents}
             ),
+            **(
+                {}
+                if export_bridge is None
+                else {
+                    EXPORT_CSV_TOOL_NAME: export_result_csv,
+                    RESULT_DISPLAY_CONTEXT_TOOL_NAME: (
+                        read_result_display_context
+                    ),
+                }
+            ),
         },
         workspace_result_inventory=(
             None if workspace_catalog_bridge is None else workspace_result_inventory
+        ),
+        workspace_export_available=(
+            None if export_bridge is None else workspace_export_available
         ),
     )
     if authoring_bridge.context is not None:
@@ -7945,6 +8255,7 @@ __all__ = [
     "ProposalState",
     "SessionResultQueryPort",
     "SessionGeometryAuthoringPort",
+    "SessionExportPort",
     "authoring_context_from_snapshot",
     "create_session_authoring_workflow_controller",
 ]

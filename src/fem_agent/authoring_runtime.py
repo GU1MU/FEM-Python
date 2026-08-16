@@ -47,6 +47,12 @@ from .result_authoring import (
     result_comparison_tool_schema,
     result_query_tool_schema,
 )
+from .export_authoring import (
+    EXPORT_CSV_TOOL_NAME,
+    RESULT_DISPLAY_CONTEXT_TOOL_NAME,
+    export_result_csv_tool_schema,
+    result_display_context_tool_schema,
+)
 from .workspace_catalog import workspace_documents_tool_schema
 from .schemas import ToolResult
 
@@ -3853,6 +3859,10 @@ _WORKSPACE_DOCUMENTS = _result_tool_definition(workspace_documents_tool_schema()
 _GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
     geometry_feature_catalog_tool_schema()
 )
+_EXPORT_RESULT_CSV = _result_tool_definition(export_result_csv_tool_schema())
+_READ_RESULT_DISPLAY_CONTEXT = _result_tool_definition(
+    result_display_context_tool_schema()
+)
 
 
 _PROFILE_FACE_ID_SCHEMA = {
@@ -4269,6 +4279,8 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _RESULT_CATALOG,
         _RESULT_QUERY,
         _RESULT_COMPARISON,
+        _READ_RESULT_DISPLAY_CONTEXT,
+        _EXPORT_RESULT_CSV,
         _READ_GEOMETRY_EDIT_CONTEXT,
         _PREPARE_GEOMETRY_EDIT,
         _APPLY_DEFINITION,
@@ -4349,6 +4361,7 @@ class AuthoringWorkflowController:
         handlers: Mapping[str, AuthoringToolHandler],
         *,
         workspace_result_inventory: Callable[[], tuple[int, int]] | None = None,
+        workspace_export_available: Callable[[], bool] | None = None,
     ) -> None:
         if not callable(context_reader):
             raise TypeError("context_reader must be callable")
@@ -4371,7 +4384,12 @@ class AuthoringWorkflowController:
             workspace_result_inventory
         ):
             raise TypeError("workspace_result_inventory must be callable or None")
+        if workspace_export_available is not None and not callable(
+            workspace_export_available
+        ):
+            raise TypeError("workspace_export_available must be callable or None")
         self._workspace_result_inventory = workspace_result_inventory
+        self._workspace_export_available = workspace_export_available
         self._ledger = RequirementLedger()
         self._stage = AuthoringWorkflowStage.REQUIREMENTS
         self._pending_review: RequirementReview | None = None
@@ -4748,6 +4766,17 @@ class AuthoringWorkflowController:
                     *((_ANALYSIS_RUN_CATALOG,) if run_count > 0 else ()),
                     *((_RESULT_CATALOG, _RESULT_QUERY) if result_count > 0 else ()),
                     *((_RESULT_COMPARISON,) if result_count >= 2 else ()),
+                    *(
+                        (_READ_RESULT_DISPLAY_CONTEXT,)
+                        if result_count > 0
+                        else ()
+                    ),
+                    *(
+                        (_EXPORT_RESULT_CSV,)
+                        if result_count > 0
+                        and self._workspace_export_selected()
+                        else ()
+                    ),
                 )
                 return tuple(
                     item for item in global_reads if item.name in self._handlers
@@ -4778,6 +4807,9 @@ class AuthoringWorkflowController:
                 historical_definitions = [_ANALYSIS_RUN_CATALOG]
                 if result_count > 0:
                     historical_definitions.extend((_RESULT_CATALOG, _RESULT_QUERY))
+                    historical_definitions.append(_READ_RESULT_DISPLAY_CONTEXT)
+                    if self._workspace_export_selected():
+                        historical_definitions.append(_EXPORT_RESULT_CSV)
                 if result_count >= 2:
                     historical_definitions.append(_RESULT_COMPARISON)
                 for result_definition in historical_definitions:
@@ -4855,6 +4887,17 @@ class AuthoringWorkflowController:
                         )
                     )
                     and (
+                        item.name != _READ_RESULT_DISPLAY_CONTEXT.name
+                        or result_count > 0
+                    )
+                    and (
+                        item.name != _EXPORT_RESULT_CSV.name
+                        or (
+                            result_count > 0
+                            and self._workspace_export_selected()
+                        )
+                    )
+                    and (
                         item.name != _REQUEST_PROJECT_SAVE.name
                         or self._project_save_available()
                     )
@@ -4926,6 +4969,15 @@ class AuthoringWorkflowController:
             raise ValueError("workspace result inventory is invalid")
         return run_count, result_count
 
+    def _workspace_export_selected(self) -> bool:
+        reader = self._workspace_export_available
+        if reader is None:
+            return False
+        try:
+            return bool(reader())
+        except Exception:
+            return False
+
     def dispatch(
         self,
         name: str,
@@ -4993,6 +5045,8 @@ class AuthoringWorkflowController:
                         RESULT_CATALOG_TOOL_NAME,
                         RESULT_COMPARISON_TOOL_NAME,
                         ANALYSIS_RUN_CATALOG_TOOL_NAME,
+                        EXPORT_CSV_TOOL_NAME,
+                        RESULT_DISPLAY_CONTEXT_TOOL_NAME,
                         _RUN_PREFLIGHT.name,
                         _PREPARE_SOLVE.name,
                         _PREPARE_DELETE.name,

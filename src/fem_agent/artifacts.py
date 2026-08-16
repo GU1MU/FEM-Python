@@ -639,7 +639,14 @@ def _validated_input_source(path: str | os.PathLike[str]) -> Path:
     return resolved
 
 
-def _sanitize_input_filename(filename: str) -> str:
+def _sanitize_filename_stem(filename: str) -> str:
+    """Clean one user-supplied name into a safe stem without an extension.
+
+    Control/format characters and Windows separators become ``_``; trailing
+    blanks and dots are dropped; reserved device names get a ``_`` prefix;
+    Chinese characters stay untouched. Returns ``""`` when nothing remains.
+    """
+
     name = Path(filename).name
     characters = []
     for character in name:
@@ -653,10 +660,14 @@ def _sanitize_input_filename(filename: str) -> str:
     sanitized = "".join(characters).rstrip(" .")
     stem = Path(sanitized).stem.rstrip(" .")
     if not stem:
-        stem = "input"
+        return ""
     if stem.upper() in _WINDOWS_RESERVED_NAMES:
         stem = f"_{stem}"
-    stem = stem[:180]
+    return stem[:180]
+
+
+def _sanitize_input_filename(filename: str) -> str:
+    stem = _sanitize_filename_stem(filename) or "input"
     return f"{stem}.inp"
 
 

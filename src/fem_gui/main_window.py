@@ -169,6 +169,16 @@ from fem.io.project import (
     save_project,
 )
 from fem.io.result_csv import write_result_table_csv
+from fem_agent.export_authoring import (
+    DISPLAY_SETTING_KEYS,
+    CONTOUR_SETTING_KEYS,
+    ResultDisplayContext,
+    ResultDisplayField,
+)
+from fem_agent.export_storage import (
+    MAX_EXPORT_CSV_BYTES,
+    verify_export_file_size,
+)
 from fem.io.result_vtk import write_result_vtk
 from fem.io.result_archive import (
     LoadedResultArchive,
@@ -247,6 +257,7 @@ from .geometry_preview import (
     build_strict_sketch_draft_preview,
 )
 from .agent_workspace_catalog import create_workspace_catalog_bridge
+from .agent_workspace import UserWorkspace, WorkspaceCommandHandler
 from .face_sketch_boolean_dialog import (
     FaceSketchBooleanDialog,
     FaceSketchBooleanParameters,
@@ -647,6 +658,55 @@ class _LoadedProjectDisplayPayload:
     geometry: ModelGeometry | None
 
 
+class AgentExportFacade:
+    """向 Agent 导出端口暴露的小门面。
+
+    门面只提供三组能力：当前用户工作区身份、同步 CSV 导出命令和
+    结果展示上下文读取。台账写入由端口实现方完成，门面本身不持
+    有任何导出状态。
+    """
+
+    def __init__(
+        self,
+        window: FEMMainWindow,
+        workspace_commands: WorkspaceCommandHandler,
+    ) -> None:
+        self._window = window
+        self._workspace_commands = workspace_commands
+
+    def current_workspace(self) -> UserWorkspace | None:
+        """当前已选用户工作区；未选择时返回 None。"""
+
+        return self._workspace_commands.user_workspace
+
+    def agent_data_root(self) -> Path:
+        return Path(self._workspace_commands.agent_data_root)
+
+    def document_id(self) -> str | None:
+        context = self._window._task_context_or_active()
+        return None if context is None else context.document_id
+
+    def result_display_context(self) -> ResultDisplayContext:
+        return self._window._agent_result_display_context()
+
+    def resolve_result_selection(
+        self,
+        field_ref: str,
+        component: str,
+    ) -> ScalarFieldSelection:
+        return self._window._agent_resolve_result_selection(
+            field_ref,
+            component,
+        )
+
+    def export_result_csv_to(
+        self,
+        path: str | Path,
+        spec: ResultCsvExportSpec,
+    ) -> tuple[int, str]:
+        return self._window.export_result_csv_to(path, spec)
+
+
 class FEMMainWindow(QMainWindow):
     """只暴露当前内核已经实现的有限元工作流。"""
 
@@ -698,9 +758,15 @@ class FEMMainWindow(QMainWindow):
         self.agent_authoring_bridge.set_result_invalidation_confirmation(
             lambda: self._confirm_result_invalidation()
         )
+        self.agent_workspace_commands = WorkspaceCommandHandler()
+        self.agent_export_facade = AgentExportFacade(
+            self,
+            self.agent_workspace_commands,
+        )
         self.agent_authoring_bridge.bind_snapshot(
             self.document,
             document_id=self._active_context.document_id,
+            workspace_selected=self._agent_workspace_selected(),
         )
         self.agent_authoring_controller = (
             create_session_authoring_workflow_controller(
@@ -712,6 +778,7 @@ class FEMMainWindow(QMainWindow):
                     self.workspace
                 ),
                 create_model_document=self._create_agent_native_model_document,
+                export_facade=self.agent_export_facade,
             )
         )
         self._applied_session_revision = self.document.session_revision
@@ -986,6 +1053,7 @@ class FEMMainWindow(QMainWindow):
             self.agent_authoring_bridge.bind_snapshot(
                 context.projection,
                 document_id=context.document_id,
+                workspace_selected=self._agent_workspace_selected(),
             )
             current = self.agent_authoring_bridge.context
             if current is not None:
@@ -3575,6 +3643,33 @@ class FEMMainWindow(QMainWindow):
             )
         return GuiCommandReceipt.pending(command_id, completion)
 
+    def export_result_csv_to(
+        self,
+        path: str | Path,
+        spec: ResultCsvExportSpec,
+    ) -> tuple[int, str]:
+        """Synchronously export one ready field table and verify its size.
+
+        Returns ``(size_bytes, sha256)`` of the landed file. The command is
+        fail-closed: a busy session, a stale identity, or an oversized file
+        raises instead of leaving a partial export behind.
+        """
+
+        if self.busy:
+            raise RuntimeError("a background task is already running")
+        if type(spec) is not ResultCsvExportSpec:
+            raise TypeError("spec must be ResultCsvExportSpec")
+        target = Path(path)
+        if target.suffix.casefold() != ".csv":
+            raise ValueError("result CSV target must use the .csv extension")
+        exports = self._prepare_result_csv_exports(spec)
+        installed = write_result_table_csv(target, exports)
+        size, digest = verify_export_file_size(
+            installed,
+            maximum_bytes=MAX_EXPORT_CSV_BYTES,
+        )
+        return size, digest
+
     def export_result_vtk(
         self,
         path: str | Path,
@@ -3803,6 +3898,7 @@ class FEMMainWindow(QMainWindow):
             stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
                 snapshot,
                 document_id=target_context.document_id,
+                workspace_selected=self._agent_workspace_selected(),
             )
             current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
@@ -4799,6 +4895,7 @@ class FEMMainWindow(QMainWindow):
             self,
             authoring_bridge=self.agent_authoring_bridge,
             authoring_controller=self.agent_authoring_controller,
+            workspace_commands=self.agent_workspace_commands,
         )
         self.viewport_panel.overlay_host.viewportGeometryCommitted.connect(
             self._viewport_geometry_committed
@@ -14152,6 +14249,7 @@ class FEMMainWindow(QMainWindow):
             document_id=(
                 None if bound_context is None else bound_context.document_id
             ),
+            workspace_selected=self._agent_workspace_selected(),
         )
         current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
@@ -15377,6 +15475,116 @@ class FEMMainWindow(QMainWindow):
         ):
             return None
         return provider
+
+    def _agent_workspace_selected(self) -> bool:
+        """Whether the user has selected a local agent workspace."""
+
+        return self.agent_workspace_commands.user_workspace is not None
+
+    @staticmethod
+    def _agent_field_ref(availability: FieldAvailability) -> str:
+        """Encode one READY field key into a stable agent-visible ref."""
+
+        key = availability.key
+        field_id = key.request.field_id
+        parts = [f"{field_id.variable.value}@{field_id.position.value}"]
+        if field_id.section_point_number is not None:
+            parts.append(f"point={field_id.section_point_number}")
+        if key.request.gauss_order is not None:
+            parts.append(f"gauss={key.request.gauss_order}")
+        policy = key.request.averaging_policy
+        if policy is not None:
+            parts.append(
+                f"avg={policy.threshold_percent},"
+                f"{int(policy.preserve_region_boundaries)}"
+            )
+        parts.append(f"c{key.recovery_contract}")
+        return ":".join(parts)
+
+    def _agent_resolve_result_selection(
+        self,
+        field_ref: str,
+        component: str,
+    ) -> ScalarFieldSelection:
+        """Resolve one agent field_ref/component against the READY catalog."""
+
+        provider = self._current_result_provider()
+        if provider is None:
+            raise RuntimeError("there is no current accepted result")
+        for availability in visible_result_fields(provider.catalog().fields):
+            if availability.state is not FieldState.READY:
+                continue
+            if self._agent_field_ref(availability) != field_ref:
+                continue
+            if component not in availability.descriptor.columns:
+                raise ValueError(
+                    "export component is outside the requested field"
+                )
+            return ScalarFieldSelection(availability.key, component)
+        raise ValueError("export field_ref is not a READY catalog field")
+
+    def _agent_result_display_context(self) -> ResultDisplayContext:
+        """Build the bounded READY display context for the agent tools."""
+
+        provider = self._current_result_provider()
+        if provider is None:
+            raise RuntimeError("there is no current accepted result")
+        try:
+            section_point_labels = result_provider_section_point_labels(
+                provider
+            )
+        except (AttributeError, RuntimeError, ValueError):
+            section_point_labels = None
+        fields: list[ResultDisplayField] = []
+        for availability in visible_result_fields(provider.catalog().fields):
+            if availability.state is not FieldState.READY:
+                continue
+            field_id = availability.descriptor.field_id
+            fields.append(
+                ResultDisplayField(
+                    field_ref=self._agent_field_ref(availability),
+                    display_name=(
+                        f"{field_id.variable.value} "
+                        f"{result_field_position_label(field_id, section_point_labels=section_point_labels)}"
+                    ),
+                    components=tuple(availability.descriptor.columns),
+                    unit=availability.descriptor.unit_label or "",
+                )
+            )
+        if not fields:
+            raise RuntimeError("the current accepted result has no READY field")
+
+        def _projected_options(allowed: set[str]) -> dict[str, object]:
+            projected: dict[str, object] = {}
+            for key, value in self._contour_options.items():
+                if key not in allowed:
+                    continue
+                normalized = getattr(value, "value", value)
+                if isinstance(normalized, (bool, int, float, str)) or (
+                    normalized is None
+                ):
+                    projected[key] = normalized
+            return projected
+
+        selected_field_ref: str | None = None
+        selected_component: str | None = None
+        selection = self.result_selection
+        if self._selection_belongs_to_catalog(provider, selection):
+            availability = provider.field_status(selection.field_key)
+            selected_field_ref = self._agent_field_ref(availability)
+            selected_component = selection.component
+        try:
+            deformation_scale = self._result_deformation_scale(provider)
+        except (KeyError, TypeError, ValueError):
+            deformation_scale = 0.0
+        return ResultDisplayContext(
+            fields=tuple(fields),
+            display_settings=_projected_options(DISPLAY_SETTING_KEYS),
+            contour_settings=_projected_options(CONTOUR_SETTING_KEYS),
+            selected_field_ref=selected_field_ref,
+            selected_component=selected_component,
+            deformation_scale=float(deformation_scale),
+        )
 
     @staticmethod
     def _catalog_availability_for_selection(

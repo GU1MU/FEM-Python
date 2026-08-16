@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
+import uuid
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -229,6 +231,191 @@ def _path_is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# 导出台账
+# ---------------------------------------------------------------------------
+
+EXPORT_LEDGER_DIRECTORY_NAME = "export_ledgers"
+EXPORT_LEDGER_SCHEMA_VERSION = "1.0"
+_EXPORT_LEDGER_MAX_RECORDS = 500
+_EXPORT_LEDGER_KINDS = {"csv", "png"}
+
+
+class ExportLedgerRecordError(ValueError):
+    """导出台账记录不满足有界契约。"""
+
+
+def _bounded_ledger_text(value: object, name: str, maximum: int) -> str:
+    if not isinstance(value, str) or len(value) > maximum:
+        raise ExportLedgerRecordError(f"{name} 必须是不超过 {maximum} 字符的字符串")
+    return value
+
+
+def _bounded_ledger_integer(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ExportLedgerRecordError(f"{name} 必须是非负整数")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ExportLedgerRecord:
+    """一次 Agent 导出落盘后的台账记录。"""
+
+    display_path: str
+    kind: str
+    sha256: str
+    size_bytes: int
+    document_id: str
+    session_id: str
+    run_id: str
+    materialization_generation: int
+    overrides_summary: str
+    exported_at: str
+    tool: str
+
+    def __post_init__(self) -> None:
+        _bounded_ledger_text(self.display_path, "display_path", 512)
+        if self.kind not in _EXPORT_LEDGER_KINDS:
+            raise ExportLedgerRecordError("kind 只接受 csv 或 png")
+        digest = self.sha256
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ExportLedgerRecordError("sha256 必须是 64 位小写十六进制")
+        _bounded_ledger_integer(self.size_bytes, "size_bytes")
+        _bounded_ledger_text(self.document_id, "document_id", 128)
+        _bounded_ledger_text(self.session_id, "session_id", 128)
+        _bounded_ledger_text(self.run_id, "run_id", 128)
+        _bounded_ledger_integer(
+            self.materialization_generation,
+            "materialization_generation",
+        )
+        _bounded_ledger_text(self.overrides_summary, "overrides_summary", 256)
+        _bounded_ledger_text(self.exported_at, "exported_at", 40)
+        _bounded_ledger_text(self.tool, "tool", 64)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "display_path": self.display_path,
+            "kind": self.kind,
+            "sha256": self.sha256,
+            "size_bytes": self.size_bytes,
+            "document_id": self.document_id,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "materialization_generation": self.materialization_generation,
+            "overrides_summary": self.overrides_summary,
+            "exported_at": self.exported_at,
+            "tool": self.tool,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> ExportLedgerRecord:
+        if not isinstance(payload, dict):
+            raise ExportLedgerRecordError("台账记录必须是对象")
+        return cls(
+            display_path=payload.get("display_path", ""),
+            kind=payload.get("kind", ""),
+            sha256=payload.get("sha256", ""),
+            size_bytes=payload.get("size_bytes", -1),
+            document_id=payload.get("document_id", ""),
+            session_id=payload.get("session_id", ""),
+            run_id=payload.get("run_id", ""),
+            materialization_generation=payload.get(
+                "materialization_generation", -1
+            ),
+            overrides_summary=payload.get("overrides_summary", ""),
+            exported_at=payload.get("exported_at", ""),
+            tool=payload.get("tool", ""),
+        )
+
+
+def _validate_workspace_identity(workspace_id: str) -> str:
+    if (
+        not isinstance(workspace_id, str)
+        or not workspace_id
+        or len(workspace_id) > 64
+        or any(
+            not (character.isascii() and (character.isalnum() or character in "-_"))
+            for character in workspace_id
+        )
+    ):
+        raise WorkspacePathError("workspace_id 不是合法台账键")
+    return workspace_id
+
+
+def export_ledger_path(
+    agent_data_root: str | os.PathLike[str],
+    workspace_id: str,
+) -> Path:
+    """返回一个工作区对应的台账文件路径；不创建任何目录。"""
+    identity = _validate_workspace_identity(workspace_id)
+    return (
+        Path(agent_data_root)
+        / EXPORT_LEDGER_DIRECTORY_NAME
+        / f"{identity}.json"
+    )
+
+
+def read_export_ledger(
+    agent_data_root: str | os.PathLike[str],
+    workspace_id: str,
+) -> tuple[ExportLedgerRecord, ...]:
+    """读入一个工作区的台账；缺失或损坏时按空台账处理。"""
+    path = export_ledger_path(agent_data_root, workspace_id)
+    try:
+        text = path.read_text(encoding="utf-8")
+        payload = json.loads(text)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    raw_records = payload.get("records")
+    if not isinstance(raw_records, list):
+        return ()
+    records: list[ExportLedgerRecord] = []
+    for raw_record in raw_records:
+        try:
+            records.append(ExportLedgerRecord.from_dict(raw_record))
+        except ExportLedgerRecordError:
+            continue
+    return tuple(records[-_EXPORT_LEDGER_MAX_RECORDS:])
+
+
+def append_export_ledger_record(
+    agent_data_root: str | os.PathLike[str],
+    workspace_id: str,
+    record: ExportLedgerRecord,
+) -> Path:
+    """读入-合并-写回追加一条台账记录，落盘使用临时文件加 rename。"""
+    path = export_ledger_path(agent_data_root, workspace_id)
+    existing = read_export_ledger(agent_data_root, workspace_id)
+    records = (*existing, record)[-_EXPORT_LEDGER_MAX_RECORDS:]
+    payload = {
+        "schema_version": EXPORT_LEDGER_SCHEMA_VERSION,
+        "workspace_id": workspace_id,
+        "records": [item.to_dict() for item in records],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    serialized = json.dumps(payload, ensure_ascii=False, indent=1) + "\n"
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(serialized)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+    return path
 
 
 class WorkspaceIndexer:

@@ -381,7 +381,15 @@ authoring is unavailable. Geometry, mesh, solve, save, and delete
 proposals only present local GUI controls. Wait for the GUI-controlled terminal
 state before claiming acceptance, execution, or success. For deletion or edit,
 first select the exact local object returned by the corresponding read tool.
-Never describe a legacy recipe class as a limitation of geometry editing."""
+Never describe a legacy recipe class as a limitation of geometry editing.
+
+Agent-authored export files always land in agent_exports under the user's
+selected workspace. Before exporting an accepted result table as CSV, call
+read_result_display_context and reuse one returned field_ref and component
+exactly; the export receipt gives only the workspace-relative path, which is
+what you report to the user. If an export tool returns the no-workspace
+diagnostic, relay that short message to the user in one sentence and stop;
+never retry the export or invent a destination."""
 
 
 class _ConversationStorageLimit(ValueError):

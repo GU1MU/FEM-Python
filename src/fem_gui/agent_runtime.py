@@ -454,6 +454,9 @@ class QtAgentRuntime(QObject):
         self._attached_input_key: tuple[str, str, str] | None = None
         self._target_document_id: str | None = None
         self._target_session_id: str | None = None
+        self._export_receipt_listener: Callable[[Mapping[str, object]], None] | None = (
+            None
+        )
         self.sessionReset.connect(
             self._reset_authoring_controller_for_session,
             Qt.ConnectionType.QueuedConnection,
@@ -466,6 +469,16 @@ class QtAgentRuntime(QObject):
     @property
     def authoring_controller(self) -> AuthoringWorkflowController | None:
         return self._authoring_controller
+
+    def set_export_receipt_listener(
+        self,
+        callback: Callable[[Mapping[str, object]], None] | None,
+    ) -> None:
+        """Observe export receipts produced by authoring tool calls."""
+        self._require_owner_thread()
+        if callback is not None and not callable(callback):
+            raise TypeError("export receipt listener must be callable")
+        self._export_receipt_listener = callback
 
     @property
     def busy(self) -> bool:
@@ -1430,10 +1443,29 @@ class QtAgentRuntime(QObject):
                 # projection must never leave a previous document cache live.
                 if self.authoring_turn_snapshot.available:
                     self._invalidate_authoring_tool_cache_owner_thread()
+            self._notify_export_receipt_owner_thread(result)
             invocation.finish(result=result)
         finally:
             with self._lock:
                 self._authoring_invocations.pop(id(invocation), None)
+
+    def _notify_export_receipt_owner_thread(self, result: object) -> None:
+        listener = self._export_receipt_listener
+        if listener is None:
+            return
+        if not getattr(result, "ok", False):
+            return
+        data = getattr(result, "data", None)
+        if not isinstance(data, Mapping):
+            return
+        receipt = data.get("export_receipt")
+        if not isinstance(receipt, Mapping):
+            return
+        try:
+            listener(dict(receipt))
+        except Exception:
+            # A failing presentation layer must never break the tool result.
+            pass
 
     def _reset_authoring_controller_for_session(
         self,

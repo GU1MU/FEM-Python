@@ -22,6 +22,7 @@ from ..agent_authoring import (
     AgentAuthoringBridge,
     AuthoringWorkflowController,
 )
+from ..agent_workspace import WorkspaceCommandHandler
 from ..icons import icon
 from .agent_chat import ModelViewportOverlayHost
 
@@ -201,6 +202,7 @@ class ViewportPanel(QWidget):
         *,
         authoring_bridge: AgentAuthoringBridge | None = None,
         authoring_controller: AuthoringWorkflowController | None = None,
+        workspace_commands: WorkspaceCommandHandler | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportPanel")
@@ -212,6 +214,7 @@ class ViewportPanel(QWidget):
         self.overlay_host = ModelViewportOverlayHost(
             viewport,
             self,
+            workspace_commands=workspace_commands,
             authoring_bridge=authoring_bridge,
             authoring_controller=authoring_controller,
         )

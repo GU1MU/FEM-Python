@@ -15,16 +15,19 @@ from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
     QEvent,
+    QFileInfo,
     QPoint,
     Property,
     QPropertyAnimation,
     QRect,
     QSize,
     QTimer,
+    QUrl,
     Qt,
     Signal,
 )
 from PySide6.QtGui import (
+    QDesktopServices,
     QFocusEvent,
     QKeyEvent,
     QMouseEvent,
@@ -34,6 +37,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QFileIconProvider,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -1532,6 +1536,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._pending_solve_confirmations: set[tuple[int, str]] = set()
         self._completed_solve_confirmations: set[tuple[int, str]] = set()
         self._applied_patch_records: dict[str, object] = {}
+        self._export_receipt_records: dict[str, Mapping[str, object]] = {}
         self.event_projector = AgentEventProjector()
         self._message_widgets: dict[str, QLabel] = {}
         self._message_section_widgets: dict[str, AgentNarrativeSection] = {}
@@ -1577,6 +1582,13 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         if callable(lifecycle_listener):
             lifecycle_listener(self._record_bridge_proposal_lifecycle)
+        export_receipt_listener = getattr(
+            self.agent_runtime,
+            "set_export_receipt_listener",
+            None,
+        )
+        if callable(export_receipt_listener):
+            export_receipt_listener(self._show_export_receipt)
         self._workspace_index = self.workspace_commands.workspace_index
         self._workspace_references: list[
             WorkspaceFileReference
@@ -2091,6 +2103,8 @@ class AgentChatDrawer(_BoundaryFrame):
         self._rendering_event_presentation = False
         for record in self._applied_patch_records.values():
             self._add_applied_patch_card(record)
+        for receipt in self._export_receipt_records.values():
+            self._add_export_receipt_card(receipt)
         self._sync_composer_state()
         self._install_conversation_wheel_filters()
         self._conversation_auto_follow = follow_latest
@@ -2255,6 +2269,122 @@ class AgentChatDrawer(_BoundaryFrame):
             self._applied_patch_records[patch_id] = record
             self._show_preview_notice("已撤销 Agent 修改")
         self._render_event_presentation()
+
+    def _show_export_receipt(self, receipt: Mapping[str, object]) -> None:
+        """展示一次导出成功后由工具回执投影出的文件卡片。"""
+
+        if not isinstance(receipt, Mapping):
+            return
+        relative_path = receipt.get("workspace_relative_path")
+        filename = receipt.get("filename")
+        if type(relative_path) is not str or not relative_path:
+            return
+        if type(filename) is not str or not filename:
+            return
+        self._export_receipt_records[relative_path] = dict(receipt)
+        self._render_event_presentation()
+
+    def _resolve_export_receipt_path(
+        self,
+        relative_path: str,
+    ) -> Path | None:
+        workspace = self.workspace_commands.user_workspace
+        if workspace is None:
+            return None
+        try:
+            candidate = (workspace.root / relative_path)
+        except (TypeError, ValueError):
+            return None
+        return candidate
+
+    def _add_export_receipt_card(
+        self,
+        receipt: Mapping[str, object],
+    ) -> None:
+        relative_path = str(receipt.get("workspace_relative_path", ""))
+        filename = str(receipt.get("filename", ""))
+        if not relative_path or not filename:
+            return
+        card = _BoundaryFrame(self.event_feed)
+        card.setObjectName("agentChatExportReceipt")
+        card.setProperty("exportPath", relative_path)
+        card.setMaximumWidth(520)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Maximum,
+            QSizePolicy.Policy.Fixed,
+        )
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(10)
+        absolute_path = self._resolve_export_receipt_path(relative_path)
+        icon_provider = QFileIconProvider()
+        if absolute_path is not None:
+            icon = icon_provider.icon(QFileInfo(str(absolute_path)))
+        else:
+            icon = icon_provider.icon(QFileIconProvider.IconType.File)
+        icon_label = QLabel(card)
+        icon_label.setObjectName("agentChatExportIcon")
+        icon_label.setPixmap(icon.pixmap(QSize(20, 20)))
+        layout.addWidget(
+            icon_label,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        text_box = QVBoxLayout()
+        text_box.setContentsMargins(0, 0, 0, 0)
+        text_box.setSpacing(1)
+        title = _plain_label(filename, card)
+        title.setObjectName("agentChatExportName")
+        path_label = _plain_label(relative_path, card)
+        path_label.setObjectName("agentChatExportPath")
+        path_font = path_label.font()
+        if path_font.pointSize() > 0:
+            path_font.setPointSize(max(path_font.pointSize() - 1, 7))
+        else:
+            path_font.setPointSizeF(max(path_font.pointSizeF() - 1.0, 7.0))
+        path_label.setFont(path_font)
+        text_box.addWidget(title)
+        text_box.addWidget(path_label)
+        layout.addLayout(text_box)
+        open_button = _BoundaryToolButton(card)
+        open_button.setObjectName("agentChatExportOpenButton")
+        open_button.setProperty("exportPath", relative_path)
+        open_button.setText("打开")
+        open_button.setToolTip("打开导出的文件")
+        open_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+        open_button.clicked.connect(
+            lambda _checked=False, value=relative_path: (
+                self._open_export_receipt(value)
+            )
+        )
+        layout.addWidget(
+            open_button,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        self.event_feed_layout.addWidget(
+            card,
+            0,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+
+    def _open_export_receipt(self, relative_path: str) -> None:
+        path = self._resolve_export_receipt_path(relative_path)
+        if path is None:
+            self._show_runtime_notice("尚未选择工作区，无法打开导出文件")
+            return
+        if path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            return
+        # 文件已缺失时降级为打开所在目录。
+        parent = path.parent
+        if parent.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
+        else:
+            self._show_runtime_notice("导出文件不存在")
 
     def _add_user_message(self, text: str, turn_id: str) -> None:
         user_row = QWidget(self.event_feed)
@@ -3198,6 +3328,7 @@ class AgentChatDrawer(_BoundaryFrame):
         ):
             return
         self._applied_patch_records.clear()
+        self._export_receipt_records.clear()
         self._render_event_presentation()
         self._conversation_auto_follow = True
         self._queue_conversation_scroll()
@@ -3708,6 +3839,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._pending_solve_confirmations.clear()
         self._completed_solve_confirmations.clear()
         self._applied_patch_records.clear()
+        self._export_receipt_records.clear()
         self._manual_composer_proposal = None
         self._composer_proposal = None
         self._composer_accepting_id = None
