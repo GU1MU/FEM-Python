@@ -4585,7 +4585,6 @@ def _natural_parameter_details(
         "step_name": ("分析步", "analysis step"),
         "target_scope": ("作用区域", "target region"),
         "mesh_kind": ("实体类型", "entity type"),
-        "expected_count": ("实体数量", "entity count"),
         "E": ("弹性模量", "elastic modulus"),
         "nu": ("泊松比", "Poisson ratio"),
         "density": ("密度", "density"),

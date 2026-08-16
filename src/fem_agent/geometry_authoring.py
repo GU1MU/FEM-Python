@@ -98,6 +98,9 @@ _MAX_PREVIEW_POINTS = 128
 _RECIPE_SCHEMA_VERSION = 1
 _MAX_RECIPE_BYTES = 524_288
 _MAX_RECIPE_NODES = 128
+# Read-only catalogs may project richer topologies (e.g. planar boolean
+# plates with many logical edges) than a single authoring payload allows.
+_MAX_FEATURE_CATALOG_NODES = 256
 _MAX_BOOLEAN_RECIPE_PAYLOAD_NODES = 4_096
 _MAX_RECIPE_DEPTH = 16
 _SKETCH_AUTHORING_TOLERANCE = 1.0e-9
@@ -3127,7 +3130,10 @@ def feature_topology_catalog(
         raise TypeError("recipe must be native geometry")
     topology = describe_recipe_topology(recipe)
     features = derive_feature_history(recipe)
-    if len(features) > _MAX_RECIPE_NODES or len(topology.entities) > _MAX_RECIPE_NODES:
+    if (
+        len(features) > _MAX_FEATURE_CATALOG_NODES
+        or len(topology.entities) > _MAX_FEATURE_CATALOG_NODES
+    ):
         raise ValueError("feature/topology catalog exceeds the bounded contract")
     catalog = {
         "kind": "native_feature_topology_catalog",

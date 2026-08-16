@@ -7662,7 +7662,7 @@ def create_session_authoring_workflow_controller(
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         part, entities = mesh_refinement_entities()
-        visible = entities[:128]
+        visible = entities[:256]
         rows = []
         for entity in visible:
             falloff_references = ["global_size"]
@@ -7734,7 +7734,11 @@ def create_session_authoring_workflow_controller(
                         )
                     except ValueError:
                         continue
-                    if len(entries) == 128:
+                    # The provider payload budget (64 KiB) stays the hard
+                    # backstop; 256 entries keeps rich planar-boolean
+                    # topologies fully readable instead of dropping the
+                    # tail, which previously hid outer-edge matched counts.
+                    if len(entries) == 256:
                         truncated = True
                         break
                     entries.append(

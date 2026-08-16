@@ -261,7 +261,7 @@ def _create_named_region_patch(
 ) -> ModelPatch:
     _exact_fields(
         values,
-        {"name", "part_id", "logical_ids", "mesh_kind", "expected_count"},
+        {"name", "part_id", "logical_ids", "mesh_kind"},
     )
     mesh_kind = _enum(
         values["mesh_kind"],
@@ -292,10 +292,12 @@ def _create_named_region_patch(
         logical_references,
         mesh_kind=mesh_kind,
     )
-    expected_count = _positive_int(values["expected_count"], "expected_count")
-    if len(references) != expected_count:
+    if not references:
+        # An empty materialization would silently bind the scope to
+        # nothing; reject it instead of creating an unusable region.
         raise ValueError(
-            "scope selection count does not match the explicit expected_count"
+            "the logical references matched no "
+            f"{mesh_kind} entities in the current mesh"
         )
     regions = tuple(snapshot.named_regions.values()) + (
         NamedRegion(name, references),
@@ -1241,13 +1243,15 @@ def _require_live_native_context(
     snapshot: _Snapshot,
 ) -> None:
     binding = context.binding
+    # Multi-document workspaces bind stable integer document identities such
+    # as "2"; only session identity and revision prove freshness, so the
+    # document_id format is deliberately not compared here.
     if (
         snapshot.source_kind != "native"
         or snapshot.artifact is None
         or not snapshot.model_current
         or binding.source_kind != "native"
         or binding.session_id != snapshot.session_id
-        or binding.document_id != f"document:{snapshot.session_id}"
         or binding.session_revision != snapshot.session_revision
     ):
         raise ValueError("definition authoring context is stale or unavailable")

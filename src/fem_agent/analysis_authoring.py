@@ -681,11 +681,13 @@ def _require_live_context(
     context: AuthoringContext,
     snapshot: _Snapshot,
 ) -> None:
+    # Multi-document workspaces bind stable integer document identities such
+    # as "2"; only session identity and revision prove freshness, so the
+    # document_id format is deliberately not compared here.
     if (
         snapshot.source_kind != "native"
         or context.binding.source_kind != "native"
         or context.binding.session_id != snapshot.session_id
-        or context.binding.document_id != f"document:{snapshot.session_id}"
         or context.binding.session_revision != snapshot.session_revision
     ):
         raise AnalysisAuthoringError("authoring context is stale")

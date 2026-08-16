@@ -28,6 +28,7 @@ from fem.geometry.construction_ir import (
 
 from .authoring import (
     AuthoringContext,
+    AuthoringContractError,
     ProposalState,
     RequirementLedger,
     RequirementReview,
@@ -469,8 +470,14 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset(
         "credential",
     }
 )
-_MAX_PROVIDER_PAYLOAD_BYTES = 32_768
-_MAX_PROVIDER_COLLECTION_ITEMS = 128
+# Rich planar-boolean catalogs (entities + planar feature geometry) can
+# approach 40 KB once wrapped in the multi-part envelope; 64 KiB keeps one
+# worst-case catalog provider-safe while the read handler still truncates
+# additional Parts instead of exceeding the budget.
+_MAX_PROVIDER_PAYLOAD_BYTES = 65_536
+# Aligned with the feature/topology catalog bound so a full catalog entity
+# array survives the provider payload sanitization pass.
+_MAX_PROVIDER_COLLECTION_ITEMS = 256
 _MAX_PROVIDER_DEPTH = 12
 
 
@@ -2539,7 +2546,6 @@ def _named_region_parameters(
             },
             "logical_ids": _LOGICAL_IDS_SCHEMA,
             "mesh_kind": {"type": "string", "const": mesh_kind},
-            "expected_count": {"type": "integer", "minimum": 1},
         }
     )
 
@@ -3697,10 +3703,6 @@ _EDIT_MODEL_OBJECT = _tool(
                     "mesh_kind": {
                         "type": "string",
                         "enum": ["node", "edge", "face", "element"],
-                    },
-                    "expected_count": {
-                        "type": "integer",
-                        "minimum": 1,
                     },
                     "reference_keys": {
                         "type": "array",
@@ -5178,6 +5180,23 @@ class AuthoringWorkflowController:
                     )[:64]
                     or "LocalAuthoringError"
                 )
+                # Curated contract/validation errors carry provider-safe,
+                # actionable detail; surface them instead of the masked
+                # placeholder so failures can be diagnosed in one turn.
+                # Unexpected exception types stay masked, and curated detail
+                # that carries local-only content (filesystem paths or
+                # credential markers) falls back to the masked form too.
+                detail = ""
+                if isinstance(
+                    error,
+                    (AuthoringContractError, ValueError, TypeError, KeyError),
+                ):
+                    detail = _provider_safe_error_detail(str(error))
+                rejection_message = (
+                    f"{error_type}: {detail}"
+                    if detail
+                    else f"{error_type}: the local authoring request was rejected."
+                )
                 return ToolResult(
                     ok=False,
                     session_id=context.session_id,
@@ -5187,10 +5206,7 @@ class AuthoringWorkflowController:
                     diagnostics=(
                         make_diagnostic(
                             DiagnosticCode.INVALID_TOOL_ARGUMENTS,
-                            (
-                                f"{error_type}: the local authoring request "
-                                "was rejected."
-                            ),
+                            rejection_message,
                             source="agent.authoring_runtime",
                         ),
                     ),
@@ -6575,6 +6591,28 @@ def _provider_safe_summary(value: str) -> str:
         for marker in ("api_key", "apikey", "password", "secret", "credential")
     ):
         raise ValueError("credential material is local-only")
+    return normalized
+
+
+def _provider_safe_error_detail(value: str) -> str:
+    """Return bounded exception detail, or "" when it carries local-only content.
+
+    Mirrors the ``_provider_safe_summary`` rules without raising, so the
+    generic rejection handler can fall back to the masked placeholder when an
+    exception message embeds a filesystem path or credential marker.
+    """
+
+    normalized = " ".join(value.split())[:320]
+    if not normalized:
+        return ""
+    if _ABSOLUTE_PATH.search(normalized):
+        return ""
+    lowered = normalized.casefold()
+    if any(
+        marker in lowered
+        for marker in ("api_key", "apikey", "password", "secret", "credential")
+    ):
+        return ""
     return normalized
 
 

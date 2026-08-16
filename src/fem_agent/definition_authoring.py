@@ -1474,9 +1474,11 @@ def _require_context_matches_snapshot(
     context: AuthoringContext,
     snapshot: _Snapshot,
 ) -> None:
+    # Multi-document workspaces bind stable integer document identities such
+    # as "2"; only session identity and revision prove freshness, so the
+    # document_id format is deliberately not compared here.
     if (
         context.binding.session_id != snapshot.session_id
-        or context.binding.document_id != f"document:{snapshot.session_id}"
         or context.binding.session_revision != snapshot.session_revision
         or context.binding.source_kind != "native"
     ):

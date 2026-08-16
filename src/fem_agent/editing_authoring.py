@@ -194,7 +194,6 @@ def editable_object_catalog(
                         "part_id",
                         "logical_ids",
                         "mesh_kind",
-                        "expected_count",
                     ],
                 },
             )
@@ -765,7 +764,6 @@ def _validated_region_edit(
         "part_id",
         "logical_ids",
         "mesh_kind",
-        "expected_count",
     }
     allowed = {"new_name", "reference_keys", *topology_fields}
     _require_change_keys(changes, allowed)
@@ -805,7 +803,7 @@ def _validated_region_edit(
         if not topology_fields <= set(changes):
             raise ValueError(
                 "logical topology redirect requires part_id, logical_ids, "
-                "mesh_kind, and expected_count"
+                "and mesh_kind"
             )
         part_id = _required_text(changes["part_id"], "part_id")
         part = _require_part(snapshot, part_id)
@@ -839,13 +837,12 @@ def _validated_region_edit(
             logical_references,
             mesh_kind=mesh_kind,
         )
-        expected_count = _positive_int(
-            changes["expected_count"],
-            "expected_count",
-        )
-        if len(references) != expected_count:
+        if not references:
+            # An empty materialization would silently bind the scope to
+            # nothing; reject it instead of storing an unusable region.
             raise ValueError(
-                "scope selection count does not match expected_count"
+                "the logical references matched no "
+                f"{mesh_kind} entities in the current mesh"
             )
         updates["references"] = references
         normalized.update(
@@ -853,7 +850,6 @@ def _validated_region_edit(
                 "part_id": part_id,
                 "logical_ids": list(logical_ids),
                 "mesh_kind": mesh_kind,
-                "expected_count": expected_count,
             }
         )
     replacement = replace(current, **updates)

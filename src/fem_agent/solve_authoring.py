@@ -306,6 +306,7 @@ def create_solve_proposal(
     draft_revision: int,
     step_name: str,
     job_name: str,
+    target_document_id: str | None = None,
 ) -> AgentProposal:
     """Create one executable A6 proposal from an accepted preflight only."""
 
@@ -334,7 +335,15 @@ def create_solve_proposal(
         agent_session_id=agent_session_id,
         turn_id=turn_id,
         source_tool_call_ids=source_tool_call_ids,
-        target_document_id=f"document:{snapshot.session_id}",
+        # Multi-document workspaces bind stable integer document identities;
+        # the caller passes the bound document_id so the GUI acceptance
+        # matcher recognizes the proposal target.  The synthesized format is
+        # kept only as a fallback for unbound single-document callers.
+        target_document_id=(
+            str(target_document_id)
+            if target_document_id is not None
+            else f"document:{snapshot.session_id}"
+        ),
         target_session_id=snapshot.session_id,
         base_session_revision=snapshot.session_revision,
         draft_revision=draft_revision,

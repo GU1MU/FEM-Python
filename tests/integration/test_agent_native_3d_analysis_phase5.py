@@ -481,7 +481,6 @@ def test_phase5_agent_controller_bridge_completes_real_3d_loop_and_reopens(
             "part_id": entry["part_id"],
             "logical_ids": [entry["logical_id"]],
             "mesh_kind": entry["mesh_kind"],
-            "expected_count": entry["matched_count"],
         }
 
     actions = (
