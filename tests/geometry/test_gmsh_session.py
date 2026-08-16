@@ -973,7 +973,7 @@ def test_nested_sessions_keep_independent_numeric_option_ledgers(
 
 
 def test_real_owned_session_close_finalizes_native_default_model() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
 
@@ -1001,7 +1001,7 @@ assert not bool(gmsh.isInitialized())
 
 
 def test_real_owned_session_can_initialize_in_background_worker() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -1036,7 +1036,7 @@ assert not bool(gmsh.isInitialized())
 
 
 def test_real_owned_session_preserves_added_duplicate_empty_model() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
 
@@ -1070,7 +1070,7 @@ finally:
 
 
 def test_real_owned_session_preserves_replaced_default_model() -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
 

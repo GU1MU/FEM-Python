@@ -22,7 +22,7 @@ from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
 
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "inp"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "inp"
 STANDARD = FIXTURES / "abaqus_standard"
 RETIRED = FIXTURES / "abaqus_retired"
 

@@ -340,7 +340,7 @@ def _smoke_tool_result(call: ToolCall) -> AssistantMessage:
 def test_phase6_opt_in_provider_smoke_matrix() -> None:
     """Run six bounded policy prompts only with the existing explicit cloud gate."""
 
-    from tests.test_agent_cloud_smoke import _cloud_smoke_config
+    from tests.helpers.agent_session_fixtures import _cloud_smoke_config
 
     try:
         config, reason = _cloud_smoke_config(os.environ)

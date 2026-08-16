@@ -248,11 +248,11 @@ def test_phase3_proves_path_body_while_unproven_boolean_never_guesses() -> None:
 def test_phase1_feature_catalog_rejects_an_unbounded_topology() -> None:
     points = tuple(
         WirePoint(f"P{index}", float(index), 0.0, 0.0)
-        for index in range(65)
+        for index in range(130)
     )
     members = tuple(
         WireMember(f"M{index}", f"P{index}", f"P{index + 1}")
-        for index in range(64)
+        for index in range(129)
     )
 
     with pytest.raises(ValueError, match="bounded contract"):

@@ -33,7 +33,10 @@ from fem_gui.agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 from tests.gui.test_agent_result_query_phase_a7 import STEP_NAME, _solved_session
-from tests.test_agent_authoring_phase_a5 import _analysis, _session
+from tests.helpers.agent_session_fixtures import (
+    _a5_analysis as _analysis,
+    _a5_session as _session,
+)
 
 
 def _reference(session: ModelSession, run_id: str) -> AcceptedResultReference:

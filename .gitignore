@@ -5,7 +5,7 @@ results/
 !/tests/application/results/**
 agent-workspace/
 /fem-agent.config.json
-/tests/fem-agent.test.config.json
+/tests/agent/fem-agent.test.config.json
 temp/
 __pycache__/
 .pytest_cache/

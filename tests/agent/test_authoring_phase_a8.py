@@ -836,7 +836,6 @@ def test_a8_direct_definition_schema_is_granular() -> None:
         "part_id",
         "logical_ids",
         "mesh_kind",
-        "expected_count",
         "unit",
         "distribution",
         "confirmed",

@@ -126,7 +126,7 @@ def test_harmless_keyword_duplicate_options_remain_parse_errors(
 
 
 def test_gui_import_production_path_uses_only_the_public_facade() -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     source = (
         project_root / "src" / "fem_gui" / "main_window.py"
     ).read_text(encoding="utf-8")

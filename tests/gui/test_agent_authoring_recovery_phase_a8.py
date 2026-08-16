@@ -21,7 +21,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.test_agent_authoring_phase_a5 import _session as _a5_session
+from tests.helpers.agent_session_fixtures import _a5_session
 
 
 STEP_NAME = "分析步-静力"

@@ -31,11 +31,11 @@ from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
     _AGENT_CHAT_STYLESHEET,
 )
-from tests.test_agent_authoring_phase_a4 import (
-    _change,
-    _plate_model,
-    _recipe,
-    _session,
+from tests.agent.test_authoring_phase_a4 import _change
+from tests.helpers.agent_session_fixtures import (
+    _a4_plate_model as _plate_model,
+    _a4_recipe as _recipe,
+    _a4_session as _session,
 )
 
 

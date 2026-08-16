@@ -35,8 +35,7 @@ from tests.gui.test_agent_authoring_recovery_phase_a8 import (
     _solve_and_read_displacement,
 )
 from tests.helpers.mesh_builders import make_selection_hex_mesh
-from tests.test_agent_authoring_phase_a4 import _session as _a4_session
-from tests.test_agent_authoring_phase_a5 import _session as _a5_session
+from tests.helpers.agent_session_fixtures import _a4_session, _a5_session
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
 
@@ -497,7 +496,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
         )
     )
     before = session.snapshot()
-    with pytest.raises(ValueError, match="expected_count"):
+    with pytest.raises(ValueError, match="reference_keys"):
         _edit_patch(
             session,
             "named_region",
@@ -506,7 +505,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
                 "part_id": hole["part_id"],
                 "logical_ids": [hole["logical_id"]],
                 "mesh_kind": hole["mesh_kind"],
-                "expected_count": hole["matched_count"] + 1,
+                "reference_keys": ["edge:P1/outer-loop"],
             },
         )
     assert session.session_revision == before.session_revision
@@ -518,7 +517,6 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
             "part_id": hole["part_id"],
             "logical_ids": [hole["logical_id"]],
             "mesh_kind": hole["mesh_kind"],
-            "expected_count": hole["matched_count"],
         },
     )
     apply_edit_operation(

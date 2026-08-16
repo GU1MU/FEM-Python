@@ -55,7 +55,7 @@ def test_ensure_export_directory_rejects_symlinked_root(
     real.mkdir()
     link = tmp_path / "link"
     if not _try_symlink(real, link):
-        pytest.skip("symlinks are unavailable on this platform")
+        pytest.skip("[platform-capability] symlinks are unavailable on this platform")
     with pytest.raises(ExportStorageError):
         ensure_export_directory(link)
 

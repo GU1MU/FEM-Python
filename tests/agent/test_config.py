@@ -34,13 +34,13 @@ def test_config_names_are_stable():
 
 
 def test_secret_bearing_config_paths_are_precisely_gitignored():
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     patterns = set(
         (project_root / ".gitignore").read_text(encoding="utf-8").splitlines()
     )
 
     assert f"/{ROOT_CONFIG_NAME}" in patterns
-    assert f"/tests/{TEST_CONFIG_NAME}" in patterns
+    assert f"/tests/agent/{TEST_CONFIG_NAME}" in patterns
     assert "*.config.json" not in patterns
 
 

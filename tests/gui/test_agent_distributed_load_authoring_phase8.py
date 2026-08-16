@@ -22,7 +22,7 @@ from tests.integration.test_agent_beam2_authoring_phase4 import (
 from tests.integration.test_agent_truss2_authoring_phase3 import (
     _meshed_session,
 )
-from tests.test_agent_authoring_phase_a5 import _session as _plate_session
+from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
 
 
 PLATE_STEP_NAME = "分析步-静力"

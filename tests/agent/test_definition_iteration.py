@@ -28,7 +28,7 @@ from fem_agent.editing_authoring import (
     editable_object_catalog,
 )
 from fem_gui.agent_authoring import authoring_context_from_snapshot
-from tests.test_agent_authoring_phase_a5 import _session as _base_session
+from tests.helpers.agent_session_fixtures import _a5_session as _base_session
 
 
 STEP = "分析步-静力"

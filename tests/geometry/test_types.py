@@ -316,7 +316,7 @@ def test_facade_submodules_share_one_public_identity() -> None:
 def test_supported_fresh_process_import_orders_are_cycle_free_and_lazy(
     module_order: tuple[str, ...],
 ) -> None:
-    src_dir = Path(__file__).resolve().parents[1] / "src"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import builtins
 import importlib

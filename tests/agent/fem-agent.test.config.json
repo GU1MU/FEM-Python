@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com",
+  "api_key": "sk-71c5a0c6b3ac42a393833c7b9770b915",
+  "workspace": "agent-workspace",
+  "timeout_seconds": 30,
+  "max_retries": 0,
+  "max_output_tokens": 256
+}

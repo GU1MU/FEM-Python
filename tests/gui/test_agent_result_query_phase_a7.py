@@ -36,7 +36,10 @@ from fem_gui.main_window import FEMMainWindow
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.test_agent_authoring_phase_a5 import _analysis, _session
+from tests.helpers.agent_session_fixtures import (
+    _a5_analysis as _analysis,
+    _a5_session as _session,
+)
 
 
 STEP_NAME = "分析步-静力"

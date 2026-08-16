@@ -47,7 +47,7 @@ fem_gui = ["resources/icons/*.png", "resources/icons/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider --strict-markers"
+addopts = "-p no:cacheprovider --strict-markers --import-mode=importlib"
 pythonpath = ["."]
 filterwarnings = [
     "error",

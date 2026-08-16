@@ -240,7 +240,7 @@ def test_exception_diagnostic_strips_terminal_controls_and_local_paths():
 
 
 def test_fem_package_does_not_import_agent_package():
-    fem_root = Path(__file__).resolve().parents[1] / "src" / "fem"
+    fem_root = Path(__file__).resolve().parents[2] / "src" / "fem"
 
     offenders = [
         str(path.relative_to(fem_root))
