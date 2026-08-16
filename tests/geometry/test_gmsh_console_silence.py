@@ -138,7 +138,7 @@ def test_external_session_keeps_caller_terminal_option(
 def _run_isolated_script(script: str) -> subprocess.CompletedProcess[str]:
     pytest.importorskip(
         "gmsh",
-        reason="the optional native Gmsh runtime is not installed",
+        reason="[optional-native-runtime] the optional native Gmsh runtime is not installed",
     )
     completed = subprocess.run(
         [sys.executable, "-c", script],

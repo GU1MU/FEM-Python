@@ -945,15 +945,25 @@ def test_gui_project_save_gates_only_use_session_can_save_projection():
         if isinstance(node, ast.FunctionDef)
         and node.name == "derive_action_availability"
     )
-    save_action_call = next(
+    # SAVE_PROJECT shares its gate with SAVE_PROJECT_AS in a single loop, so
+    # locate the set_state call inside the loop whose iterable lists the key.
+    save_loop = next(
         node
         for node in ast.walk(projector)
+        if isinstance(node, ast.For)
+        and isinstance(node.iter, ast.Tuple)
+        and any(
+            isinstance(item, ast.Attribute) and item.attr == "SAVE_PROJECT"
+            for item in node.iter.elts
+        )
+    )
+    save_action_call = next(
+        node
+        for node in ast.walk(save_loop)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "set_state"
         and len(node.args) >= 2
-        and isinstance(node.args[0], ast.Attribute)
-        and node.args[0].attr == "SAVE_PROJECT"
     )
     gate_nodes = {
         "save action": save_action_call.args[1],
