@@ -119,6 +119,9 @@ class _GmshModelSession:
             # Let the application retain signal ownership because Python only
             # permits signal handler registration on the main thread.
             gmsh.initialize(interruptible=False)
+            # Keep geometry compilation silent: Gmsh otherwise prints Info
+            # progress (OCC Booleans, tessellation meshing) to the terminal.
+            gmsh.option.setNumber("General.Terminal", 0)
 
         self._prior_current = str(gmsh.model.getCurrent())
         self._prior_current_captured = True

@@ -1537,6 +1537,10 @@ class _FakeOption:
         return self.values.get(name, 0.0)
 
     def setNumber(self, name: str, value: float) -> None:
+        # Console verbosity is a session-startup baseline, not a mesh option,
+        # so it stays out of the recorded option log and stored values.
+        if name == "General.Terminal":
+            return
         self.calls.append(("setNumber", name, float(value)))
         if name in self.fail_set_after:
             remaining = self.fail_set_after[name]

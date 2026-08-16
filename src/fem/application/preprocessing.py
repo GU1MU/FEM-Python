@@ -192,6 +192,9 @@ def generate_fem_model(
             # thread. GUI callers intentionally execute this function in a
             # worker, so the application retains signal ownership.
             gmsh.initialize(interruptible=False)
+            # Keep mesh generation silent: Gmsh otherwise prints Info
+            # progress to the terminal.
+            gmsh.option.setNumber("General.Terminal", 0)
         dimension = contract.dimension
         with geometry.model(model_name, dimension=dimension) as cad:
             topology = topology_resolver.build(cad, recipe)
