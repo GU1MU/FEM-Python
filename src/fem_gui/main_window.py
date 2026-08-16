@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -177,6 +177,7 @@ from fem_agent.export_authoring import (
 )
 from fem_agent.export_storage import (
     MAX_EXPORT_CSV_BYTES,
+    MAX_EXPORT_IMAGE_BYTES,
     verify_export_file_size,
 )
 from fem.io.result_vtk import write_result_vtk
@@ -661,9 +662,9 @@ class _LoadedProjectDisplayPayload:
 class AgentExportFacade:
     """向 Agent 导出端口暴露的小门面。
 
-    门面只提供三组能力：当前用户工作区身份、同步 CSV 导出命令和
-    结果展示上下文读取。台账写入由端口实现方完成，门面本身不持
-    有任何导出状态。
+    门面只提供四组能力：当前用户工作区身份、同步 CSV 导出命令、
+    同步视口图片导出命令和结果展示上下文读取。台账写入由端口实
+    现方完成，门面本身不持有任何导出状态。
     """
 
     def __init__(
@@ -705,6 +706,28 @@ class AgentExportFacade:
         spec: ResultCsvExportSpec,
     ) -> tuple[int, str]:
         return self._window.export_result_csv_to(path, spec)
+
+    def viewport_capture_available(self) -> bool:
+        """当前视口是否具备离屏捕获能力。"""
+
+        return bool(self._window.viewport.can_capture)
+
+    def accepted_result_displayed(self) -> bool:
+        """当前是否存在已接受的结果显示（contour 覆盖组的前置条件）。"""
+
+        return self._window._current_result_provider() is not None
+
+    def export_viewport_image_to(
+        self,
+        path: str | Path,
+        options: Mapping[str, object] | None,
+        overrides: Mapping[str, object] | None,
+    ) -> tuple[int, str]:
+        return self._window.export_viewport_image_to(
+            path,
+            options,
+            overrides,
+        )
 
 
 class FEMMainWindow(QMainWindow):
@@ -767,6 +790,8 @@ class FEMMainWindow(QMainWindow):
             self.document,
             document_id=self._active_context.document_id,
             workspace_selected=self._agent_workspace_selected(),
+            # 视口在 _build_central_area 中创建，首次绑定前不可捕获。
+            viewport_capturable=False,
         )
         self.agent_authoring_controller = (
             create_session_authoring_workflow_controller(
@@ -1054,6 +1079,7 @@ class FEMMainWindow(QMainWindow):
                 context.projection,
                 document_id=context.document_id,
                 workspace_selected=self._agent_workspace_selected(),
+                viewport_capturable=bool(self.viewport.can_capture),
             )
             current = self.agent_authoring_bridge.context
             if current is not None:
@@ -3670,6 +3696,117 @@ class FEMMainWindow(QMainWindow):
         )
         return size, digest
 
+    def export_viewport_image_to(
+        self,
+        path: str | Path,
+        options: Mapping[str, object] | None,
+        overrides: Mapping[str, object] | None,
+    ) -> tuple[int, str]:
+        """事务式导出当前视口图片并校验落盘大小。
+
+        返回 ``(size_bytes, sha256)``。事务在渲染抑制下临时应用
+        display/contour 覆盖组到视口渲染配置，复用现有离屏捕获管
+        线（相机状态自动保留/恢复），并在 ``finally`` 中逐键还原
+        快照后重渲染；不换场、不触碰 ``_result_render_payload``。
+        """
+
+        if self.busy:
+            raise RuntimeError("a background task is already running")
+        target = Path(path)
+        suffix = target.suffix.casefold()
+        if suffix not in {".png", ".jpg", ".jpeg"}:
+            raise ValueError(
+                "viewport image target must use the .png or .jpg extension"
+            )
+        image_options = dict(options or {})
+        if set(image_options) - {"quality", "transparent_background"}:
+            raise ValueError(
+                "viewport image options support only quality and "
+                "transparent_background"
+            )
+        quality = image_options.get("quality", 1)
+        if type(quality) is not int or quality not in (1, 2, 4):
+            raise ValueError("quality must be one of 1, 2 or 4")
+        transparent = bool(image_options.get("transparent_background", False))
+        transparent = transparent and suffix == ".png"
+
+        override_groups = dict(overrides or {})
+        if set(override_groups) - {"display", "contour"}:
+            raise ValueError(
+                "viewport export overrides support only display and contour"
+            )
+        display_overrides = dict(override_groups.get("display") or {})
+        contour_overrides = dict(override_groups.get("contour") or {})
+        if set(display_overrides) - DISPLAY_SETTING_KEYS:
+            raise ValueError("display overrides contain unsupported keys")
+        if set(contour_overrides) - CONTOUR_SETTING_KEYS:
+            raise ValueError("contour overrides contain unsupported keys")
+
+        viewport = self.viewport
+        if not viewport.can_capture:
+            raise RuntimeError("the viewport cannot capture an image")
+        if contour_overrides and self._current_result_provider() is None:
+            raise RuntimeError(
+                "contour overrides require a displayed accepted result"
+            )
+
+        # 有效状态 = 当前 live 渲染配置 ⊕ 显式覆盖键；edge_mode 与
+        # edges 的互推规则与 _set_contour_options 保持一致。
+        effective = {
+            **viewport._contour,
+            **display_overrides,
+            **contour_overrides,
+        }
+        if "edge_mode" in display_overrides or "edge_mode" in contour_overrides:
+            effective["edges"] = effective["edge_mode"] != CONTOUR_EDGE_NONE
+        elif (
+            effective.get("edges")
+            and viewport._contour["edge_mode"] == CONTOUR_EDGE_NONE
+        ):
+            effective["edge_mode"] = CONTOUR_EDGE_ALL
+
+        snapshot_contour = dict(viewport._contour)
+        snapshot_show_edges = viewport._show_edges
+        snapshot_suppressed = viewport._render_suppressed
+        contour_enabled = viewport._display.contour_enabled
+        coordinate_changed = bool(
+            effective.get("show_coordinate_system")
+            != snapshot_contour.get("show_coordinate_system")
+        )
+        viewport._render_suppressed = True
+        try:
+            viewport._contour.update(effective)
+            if contour_enabled:
+                viewport._show_edges = bool(
+                    effective.get("edges", snapshot_show_edges)
+                )
+            if coordinate_changed:
+                viewport._refresh_coordinate_system_axes()
+            if contour_enabled:
+                viewport._update_result_layer()
+            viewport.save_screenshot(
+                str(target),
+                scale=quality,
+                transparent_background=transparent,
+            )
+        finally:
+            # 无论成败都逐键还原快照并重渲染，屏幕视口尺寸与相机
+            # 状态由离屏捕获管线自身保留。
+            viewport._contour.clear()
+            viewport._contour.update(snapshot_contour)
+            viewport._show_edges = snapshot_show_edges
+            if coordinate_changed:
+                viewport._refresh_coordinate_system_axes()
+            if contour_enabled:
+                viewport._update_result_layer()
+            viewport._render_suppressed = snapshot_suppressed
+            viewport._render()
+        size, digest = verify_export_file_size(
+            target,
+            maximum_bytes=MAX_EXPORT_IMAGE_BYTES,
+        )
+        return size, digest
+
     def export_result_vtk(
         self,
         path: str | Path,
@@ -3899,6 +4036,7 @@ class FEMMainWindow(QMainWindow):
                 snapshot,
                 document_id=target_context.document_id,
                 workspace_selected=self._agent_workspace_selected(),
+                viewport_capturable=bool(self.viewport.can_capture),
             )
             current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
@@ -14250,6 +14388,7 @@ class FEMMainWindow(QMainWindow):
                 None if bound_context is None else bound_context.document_id
             ),
             workspace_selected=self._agent_workspace_selected(),
+            viewport_capturable=bool(self.viewport.can_capture),
         )
         current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:

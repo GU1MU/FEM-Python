@@ -49,8 +49,10 @@ from .result_authoring import (
 )
 from .export_authoring import (
     EXPORT_CSV_TOOL_NAME,
+    EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
     RESULT_DISPLAY_CONTEXT_TOOL_NAME,
     export_result_csv_tool_schema,
+    export_viewport_image_tool_schema,
     result_display_context_tool_schema,
 )
 from .workspace_catalog import workspace_documents_tool_schema
@@ -3860,6 +3862,9 @@ _GEOMETRY_FEATURE_CATALOG = _result_tool_definition(
     geometry_feature_catalog_tool_schema()
 )
 _EXPORT_RESULT_CSV = _result_tool_definition(export_result_csv_tool_schema())
+_EXPORT_VIEWPORT_IMAGE = _result_tool_definition(
+    export_viewport_image_tool_schema()
+)
 _READ_RESULT_DISPLAY_CONTEXT = _result_tool_definition(
     result_display_context_tool_schema()
 )
@@ -4315,6 +4320,18 @@ for _stage, _definitions in tuple(_STAGE_TOOLS.items()):
             expanded.extend(_PROFILE_TRANSFORM_STAGE_TOOLS)
     _STAGE_TOOLS[_stage] = tuple(expanded)
 
+# 视口图片导出在所有 ready 阶段发布（不限于后处理）；
+# 可见性由 definitions 里的能力门控进一步约束。
+for _stage, _definitions in tuple(_STAGE_TOOLS.items()):
+    if _stage not in _PROJECT_SAVE_READY_STAGES:
+        continue
+    if any(
+        _definition.name == _EXPORT_VIEWPORT_IMAGE.name
+        for _definition in _definitions
+    ):
+        continue
+    _STAGE_TOOLS[_stage] = (*_definitions, _EXPORT_VIEWPORT_IMAGE)
+
 
 def _stage_requirement_tool(
     group: str,
@@ -4362,6 +4379,7 @@ class AuthoringWorkflowController:
         *,
         workspace_result_inventory: Callable[[], tuple[int, int]] | None = None,
         workspace_export_available: Callable[[], bool] | None = None,
+        workspace_viewport_capture_available: Callable[[], bool] | None = None,
     ) -> None:
         if not callable(context_reader):
             raise TypeError("context_reader must be callable")
@@ -4388,8 +4406,17 @@ class AuthoringWorkflowController:
             workspace_export_available
         ):
             raise TypeError("workspace_export_available must be callable or None")
+        if workspace_viewport_capture_available is not None and not callable(
+            workspace_viewport_capture_available
+        ):
+            raise TypeError(
+                "workspace_viewport_capture_available must be callable or None"
+            )
         self._workspace_result_inventory = workspace_result_inventory
         self._workspace_export_available = workspace_export_available
+        self._workspace_viewport_capture_available = (
+            workspace_viewport_capture_available
+        )
         self._ledger = RequirementLedger()
         self._stage = AuthoringWorkflowStage.REQUIREMENTS
         self._pending_review: RequirementReview | None = None
@@ -4777,6 +4804,11 @@ class AuthoringWorkflowController:
                         and self._workspace_export_selected()
                         else ()
                     ),
+                    *(
+                        (_EXPORT_VIEWPORT_IMAGE,)
+                        if self._workspace_viewport_capturable()
+                        else ()
+                    ),
                 )
                 return tuple(
                     item for item in global_reads if item.name in self._handlers
@@ -4898,6 +4930,10 @@ class AuthoringWorkflowController:
                         )
                     )
                     and (
+                        item.name != _EXPORT_VIEWPORT_IMAGE.name
+                        or self._workspace_viewport_capturable()
+                    )
+                    and (
                         item.name != _REQUEST_PROJECT_SAVE.name
                         or self._project_save_available()
                     )
@@ -4978,6 +5014,16 @@ class AuthoringWorkflowController:
         except Exception:
             return False
 
+    def _workspace_viewport_capturable(self) -> bool:
+        # 视口导出能力 = 已选工作区 且 视口可捕获。
+        reader = self._workspace_viewport_capture_available
+        if reader is None:
+            return False
+        try:
+            return bool(reader()) and self._workspace_export_selected()
+        except Exception:
+            return False
+
     def dispatch(
         self,
         name: str,
@@ -5046,6 +5092,7 @@ class AuthoringWorkflowController:
                         RESULT_COMPARISON_TOOL_NAME,
                         ANALYSIS_RUN_CATALOG_TOOL_NAME,
                         EXPORT_CSV_TOOL_NAME,
+                        EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
                         RESULT_DISPLAY_CONTEXT_TOOL_NAME,
                         _RUN_PREFLIGHT.name,
                         _PREPARE_SOLVE.name,

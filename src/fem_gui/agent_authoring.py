@@ -184,12 +184,16 @@ from fem_agent.workspace_catalog import (
 )
 from fem_agent.export_authoring import (
     EXPORT_CSV_TOOL_NAME,
+    EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
     RESULT_DISPLAY_CONTEXT_TOOL_NAME,
+    VIEWPORT_IMAGE_EXTENSION_BY_FORMAT,
     AgentExportBridge,
     ExportAuthoringError,
     ExportCsvRequest,
     ExportCsvResponse,
     ExportFileReceipt,
+    ExportViewportImageRequest,
+    ExportViewportImageResponse,
     ResultDisplayContextResponse,
 )
 from fem_agent.export_storage import (
@@ -906,6 +910,7 @@ def authoring_context_from_snapshot(
     *,
     document_id: str | int | None = None,
     workspace_selected: bool = False,
+    viewport_capturable: bool = True,
 ) -> AuthoringContext:
     """Copy a session projection into a bounded, provider-safe DTO."""
 
@@ -1132,6 +1137,18 @@ def authoring_context_from_snapshot(
                 )
             ),
         ),
+        CapabilitySummary(
+            "export_viewport_image",
+            bool(workspace_selected and viewport_capturable),
+            (
+                None
+                if bool(workspace_selected and viewport_capturable)
+                else (
+                    "视口图片导出需要先通过 /workspace 选择用户工作区，"
+                    "且当前视口可捕获"
+                )
+            ),
+        ),
     )
     return AuthoringContext(
         binding=binding,
@@ -1344,7 +1361,7 @@ class _WorkspaceResultResolutionError(ValueError):
 
 
 class SessionExportPort:
-    """Agent 导出端口：把 CSV 落盘到用户工作区并写入导出台账。
+    """Agent 导出端口：把 CSV/视口图片落盘到用户工作区并写入导出台账。
 
     端口只依赖导出门面，便于测试注入 Fake。未选择工作区时统一返回
     固定诊断文案；工作区中途失效时只诊断，不清理也不重试。
@@ -1358,6 +1375,9 @@ class SessionExportPort:
             "result_display_context",
             "resolve_result_selection",
             "export_result_csv_to",
+            "viewport_capture_available",
+            "accepted_result_displayed",
+            "export_viewport_image_to",
         ):
             if not callable(getattr(facade, attribute, None)):
                 raise TypeError("export facade does not implement the protocol")
@@ -1526,6 +1546,131 @@ class SessionExportPort:
                 sha256=digest,
                 size_bytes=size_bytes,
                 kind="csv",
+            )
+        )
+
+    def export_viewport_image(
+        self,
+        request: ExportViewportImageRequest,
+    ) -> ExportViewportImageResponse:
+        workspace = self._facade.current_workspace()
+        if workspace is None:
+            return ExportViewportImageResponse.no_workspace()
+        if not self._facade.viewport_capture_available():
+            return ExportViewportImageResponse.failure(
+                "export.viewport.unavailable",
+                "当前视口不可捕获图片，请等待视口就绪后再导出",
+                retryable=False,
+                clarification_required=True,
+            )
+        if request.contour_overrides and not (
+            self._facade.accepted_result_displayed()
+        ):
+            return ExportViewportImageResponse.failure(
+                "export.contour.unavailable",
+                "contour 参数组仅在有已接受结果显示时可传，"
+                "当前没有显示中的结果",
+                retryable=False,
+                clarification_required=True,
+            )
+        extension = VIEWPORT_IMAGE_EXTENSION_BY_FORMAT[request.image.format]
+        kind = request.image.format
+        filename = (
+            f"viewport_{datetime.now().strftime('%Y%m%d-%H%M%S')}{extension}"
+        )
+        try:
+            exports_root = ensure_export_directory(workspace.root)
+            target = allocate_export_path(exports_root, filename)
+        except ExportStorageError as error:
+            return ExportViewportImageResponse.failure(
+                "export.storage.rejected",
+                str(error)[:512] or "导出目录不可用",
+                retryable=False,
+                clarification_required=True,
+            )
+        options = {
+            "quality": request.image.quality,
+            "transparent_background": request.image.transparent_background,
+        }
+        overrides: dict[str, object] = {}
+        if request.display_overrides:
+            overrides["display"] = dict(request.display_overrides)
+        if request.contour_overrides:
+            overrides["contour"] = dict(request.contour_overrides)
+        try:
+            size_bytes, digest = self._facade.export_viewport_image_to(
+                target,
+                options,
+                overrides,
+            )
+        except OSError:
+            return ExportViewportImageResponse.failure(
+                "export.workspace.unavailable",
+                "工作区目录不可用，导出未完成；请检查工作区后由用户重新发起",
+                retryable=False,
+                clarification_required=True,
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            message = str(error)
+            if "background task" in message:
+                code = "export.busy"
+            elif "cannot capture" in message:
+                code = "export.viewport.unavailable"
+            elif "contour overrides require" in message:
+                code = "export.contour.unavailable"
+            else:
+                code = "export.rejected"
+            return ExportViewportImageResponse.failure(
+                code,
+                message[:512],
+                retryable=False,
+                clarification_required=code != "export.busy",
+            )
+        relative_path = target.relative_to(workspace.root).as_posix()
+        summary_parts = [
+            f"image:{request.image.format}q{request.image.quality}"
+        ]
+        if request.display_overrides:
+            summary_parts.append(
+                "display:" + ",".join(sorted(request.display_overrides))
+            )
+        if request.contour_overrides:
+            summary_parts.append(
+                "contour:" + ",".join(sorted(request.contour_overrides))
+            )
+        document_id = self._facade.document_id()
+        try:
+            append_export_ledger_record(
+                self._facade.agent_data_root(),
+                workspace.workspace_id,
+                ExportLedgerRecord(
+                    display_path=relative_path,
+                    kind=kind,
+                    sha256=digest,
+                    size_bytes=size_bytes,
+                    document_id=(
+                        str(document_id) if document_id else "document:none"
+                    ),
+                    session_id="",
+                    run_id="",
+                    materialization_generation=0,
+                    overrides_summary=";".join(summary_parts)[:256],
+                    exported_at=datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                    tool=EXPORT_VIEWPORT_IMAGE_TOOL_NAME,
+                ),
+            )
+        except (OSError, ValueError):
+            # 台账是尽力而为的审计记录；落盘成功后不因台账失败而回滚。
+            pass
+        return ExportViewportImageResponse.success(
+            ExportFileReceipt(
+                workspace_relative_path=relative_path,
+                filename=target.name,
+                sha256=digest,
+                size_bytes=size_bytes,
+                kind=kind,
             )
         )
 
@@ -3788,12 +3933,14 @@ class AgentAuthoringBridge:
         *,
         document_id: str | int | None = None,
         workspace_selected: bool = False,
+        viewport_capturable: bool = True,
     ) -> tuple[str, ...]:
         return self.bind_context(
             authoring_context_from_snapshot(
                 snapshot,
                 document_id=document_id,
                 workspace_selected=workspace_selected,
+                viewport_capturable=viewport_capturable,
             )
         )
 
@@ -8150,6 +8297,24 @@ def create_session_authoring_workflow_controller(
             ok=response.ok,
         )
 
+    def export_viewport_image(
+        arguments: Mapping[str, object],
+        _controller: AuthoringWorkflowController,
+    ) -> AuthoringToolOutcome:
+        if export_bridge is None:
+            raise AuthoringContractError("export support is unavailable")
+        try:
+            response = export_bridge.viewport_image(arguments)
+        except (TypeError, ExportAuthoringError) as error:
+            raise AuthoringContractError(
+                f"viewport image export request is invalid: {error}"
+            ) from error
+        return AuthoringToolOutcome(
+            "One viewport image exported to the workspace.",
+            response.to_dict(),
+            ok=response.ok,
+        )
+
     def read_result_display_context(
         arguments: Mapping[str, object],
         _controller: AuthoringWorkflowController,
@@ -8172,6 +8337,18 @@ def create_session_authoring_workflow_controller(
             return False
         try:
             return export_facade.current_workspace() is not None
+        except Exception:
+            return False
+
+    def workspace_viewport_capture_available() -> bool:
+        # 视口导出能力 = 已选工作区 且 视口可捕获。
+        if export_facade is None:
+            return False
+        try:
+            return (
+                export_facade.current_workspace() is not None
+                and bool(export_facade.viewport_capture_available())
+            )
         except Exception:
             return False
 
@@ -8217,6 +8394,7 @@ def create_session_authoring_workflow_controller(
                 if export_bridge is None
                 else {
                     EXPORT_CSV_TOOL_NAME: export_result_csv,
+                    EXPORT_VIEWPORT_IMAGE_TOOL_NAME: export_viewport_image,
                     RESULT_DISPLAY_CONTEXT_TOOL_NAME: (
                         read_result_display_context
                     ),
@@ -8228,6 +8406,9 @@ def create_session_authoring_workflow_controller(
         ),
         workspace_export_available=(
             None if export_bridge is None else workspace_export_available
+        ),
+        workspace_viewport_capture_available=(
+            None if export_bridge is None else workspace_viewport_capture_available
         ),
     )
     if authoring_bridge.context is not None:
