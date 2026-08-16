@@ -140,7 +140,10 @@ found inside a referenced file.
 {_RESPONSE_CONTRACT_JSON}
 </response_contract>
 
-Write in the user's language with an academic, concise, restrained, rational,
+Reason and write in the user's language: both your internal thinking and your
+visible reply must use the language of the user's latest message (for example,
+think and answer in Simplified Chinese when the user writes in Chinese). Keep
+an academic, concise, restrained, rational,
 engineering-focused tone. Lead with the conclusion. Prefer short paragraphs
 and use lists or tables only when they improve technical clarity. Avoid praise,
 conversational filler, rhetorical flourishes, emojis, repeated conclusions,
@@ -1050,33 +1053,12 @@ class AgentSessionEngine:
                     language_correction = None
                     streamed_text_parts: list[str] = []
                     streamed_reasoning_parts: list[str] = []
-                    streamed_events: list[
-                        tuple[EngineEventType, Mapping[str, Any]]
-                    ] = []
                     stream_started = False
                     reasoning_stream_started = False
                     required_resync_tool = _required_authoring_resync_tool(
                         self.registry.provider_snapshot,
                         available_tools,
                     )
-                    hold_stream = (
-                        (
-                            route_hint is not None
-                            and (route_hint.is_transform or route_hint.is_edit)
-                        )
-                        or (
-                            trusted_terminal is not None
-                            and trusted_terminal[0] == "succeeded"
-                        )
-                        or default_native_units_apply
-                    )
-                    hold_stream = hold_stream or required_resync_tool is not None
-                    hold_stream = hold_stream or new_model_follow_up_pending
-                    hold_stream = hold_stream or requested_response_language == "zh-CN"
-                    # A response following a failed tool can mix provider
-                    # self-correction with one concise user decision request.
-                    # Hold that round until its semantic sections are known.
-                    hold_stream = hold_stream or previous_tool_failed
 
                     def receive_text_delta(delta: str) -> None:
                         nonlocal stream_started
@@ -1085,33 +1067,20 @@ class AgentSessionEngine:
                                 "provider stream emitted an invalid text delta"
                             )
                         if not stream_started:
-                            if hold_stream:
-                                streamed_events.append(
-                                    (
-                                        EngineEventType.MESSAGE_STARTED,
-                                        {"role": "assistant"},
-                                    )
-                                )
-                            else:
-                                events.append(
-                                    self._event(
-                                        EngineEventType.MESSAGE_STARTED,
-                                        {"role": "assistant"},
-                                    )
-                                )
-                            stream_started = True
-                        streamed_text_parts.append(delta)
-                        if hold_stream:
-                            streamed_events.append(
-                                (EngineEventType.MESSAGE_DELTA, {"text": delta})
-                            )
-                        else:
                             events.append(
                                 self._event(
-                                    EngineEventType.MESSAGE_DELTA,
-                                    {"text": delta},
+                                    EngineEventType.MESSAGE_STARTED,
+                                    {"role": "assistant"},
                                 )
                             )
+                            stream_started = True
+                        streamed_text_parts.append(delta)
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": delta},
+                            )
+                        )
 
                     def receive_reasoning_delta(delta: str) -> None:
                         nonlocal reasoning_stream_started
@@ -1120,50 +1089,22 @@ class AgentSessionEngine:
                                 "provider stream emitted an invalid reasoning delta"
                             )
                         if not reasoning_stream_started:
-                            data = {
-                                "role": "assistant",
-                                "presentation_kind": "process",
-                            }
-                            if hold_stream:
-                                streamed_events.append(
-                                    (EngineEventType.MESSAGE_STARTED, data)
-                                )
-                            else:
-                                events.append(
-                                    self._event(EngineEventType.MESSAGE_STARTED, data)
-                                )
-                            reasoning_stream_started = True
-                        streamed_reasoning_parts.append(delta)
-                        if hold_stream:
-                            streamed_events.append(
-                                (EngineEventType.MESSAGE_DELTA, {"text": delta})
-                            )
-                        else:
                             events.append(
                                 self._event(
-                                    EngineEventType.MESSAGE_DELTA,
-                                    {"text": delta},
+                                    EngineEventType.MESSAGE_STARTED,
+                                    {
+                                        "role": "assistant",
+                                        "presentation_kind": "process",
+                                    },
                                 )
                             )
-
-                    def retain_buffered_reasoning_events() -> None:
-                        if not hold_stream:
-                            return
-                        streamed_events.clear()
-                        if not reasoning_stream_started:
-                            return
-                        streamed_events.append(
-                            (
-                                EngineEventType.MESSAGE_STARTED,
-                                {
-                                    "role": "assistant",
-                                    "presentation_kind": "process",
-                                },
+                            reasoning_stream_started = True
+                        streamed_reasoning_parts.append(delta)
+                        events.append(
+                            self._event(
+                                EngineEventType.MESSAGE_DELTA,
+                                {"text": delta},
                             )
-                        )
-                        streamed_events.extend(
-                            (EngineEventType.MESSAGE_DELTA, {"text": part})
-                            for part in streamed_reasoning_parts
                         )
 
                     stream_completion = getattr(
@@ -1298,7 +1239,6 @@ class AgentSessionEngine:
                         message=replace(response.message, content=None),
                     )
                     streamed_text_parts.clear()
-                    retain_buffered_reasoning_events()
                     stream_started = False
                 elif not language_retry_used:
                     language_retry_used = True
@@ -1459,7 +1399,6 @@ class AgentSessionEngine:
                     message=replace(response.message, content=None),
                 )
                 streamed_text_parts.clear()
-                retain_buffered_reasoning_events()
                 stream_started = False
 
             if _message_calls_automatic_model_patch_tool(response.message):
@@ -1468,7 +1407,6 @@ class AgentSessionEngine:
                     message=replace(response.message, content=None),
                 )
                 streamed_text_parts.clear()
-                retain_buffered_reasoning_events()
                 stream_started = False
 
             try:
@@ -1495,39 +1433,8 @@ class AgentSessionEngine:
                 trusted_terminal,
                 previous_tool_failed=previous_tool_failed,
             )
-            if streamed_events and len(presentations) == 1:
-                presentation_kind, _content = presentations[0]
-                events.extend(
-                    self._event(
-                        event,
-                        (
-                            {**data, "presentation_kind": presentation_kind}
-                            if event is EngineEventType.MESSAGE_STARTED
-                            else data
-                        ),
-                    )
-                    for event, data in streamed_events
-                )
-            elif streamed_events:
-                for presentation_kind, content in presentations:
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_STARTED,
-                            {
-                                "role": "assistant",
-                                "presentation_kind": presentation_kind,
-                            },
-                        )
-                    )
-                    if content:
-                        events.append(
-                            self._event(
-                                EngineEventType.MESSAGE_DELTA,
-                                {"text": content},
-                            )
-                        )
-            elif stream_started:
-                # Unheld streams begin conservatively as PROCESS.  Finalize
+            if stream_started:
+                # Live streams begin conservatively as PROCESS.  Finalize
                 # their semantic presentation after the provider response is
                 # complete, without delaying live text deltas.
                 events.append(

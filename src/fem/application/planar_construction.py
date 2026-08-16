@@ -484,10 +484,15 @@ def compile_planar_feature_recipe(
             compiled.proof.hole_count,
             compiled.proof.curve_type_counts,
         )
+        # Native boolean features legitimately split analytic curves at
+        # intersection points (for example round path-stroke joins), so the
+        # final proof verifies geometry and topology but not exact curve
+        # counts.
         _require_equivalent(
             expected_facts,
             feature_facts,
             construction.result_node_id,
+            strict_curves=False,
         )
     except PlanarConstructionCompileError:
         raise
@@ -998,6 +1003,8 @@ def _require_equivalent(
     source: _NativeFacts,
     recipe: _NativeFacts,
     node_id: str,
+    *,
+    strict_curves: bool = True,
 ) -> None:
     scale = max(1.0, abs(source.area), *(abs(value) for value in source.bounding_box))
     if not math.isclose(
@@ -1031,7 +1038,7 @@ def _require_equivalent(
             node_id=node_id,
             allowed_fields=("nodes",),
         )
-    if source.curve_types != recipe.curve_types:
+    if strict_curves and source.curve_types != recipe.curve_types:
         _fail(
             "planar-ir.equivalence-failed",
             "Boundary curve types changed during strict sketch recompilation.",
