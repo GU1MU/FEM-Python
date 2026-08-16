@@ -109,10 +109,6 @@ class _FakeExportFacade:
         self._context = context
         self.export_calls: list[tuple[Path, object]] = []
         self.export_error: Exception | None = None
-        self.viewport_calls: list[tuple[Path, object, object]] = []
-        self.viewport_error: Exception | None = None
-        self.capture_available = True
-        self.result_displayed = False
 
     def current_workspace(self) -> UserWorkspace | None:
         return self.workspace
@@ -145,21 +141,6 @@ class _FakeExportFacade:
         if self.export_error is not None:
             raise self.export_error
         data = "节点,U1\n1,0.5\n".encode("utf-8")
-        target.write_bytes(data)
-        return len(data), hashlib.sha256(data).hexdigest()
-
-    def viewport_capture_available(self) -> bool:
-        return bool(self.capture_available)
-
-    def accepted_result_displayed(self) -> bool:
-        return bool(self.result_displayed)
-
-    def export_viewport_image_to(self, path, options, overrides) -> tuple[int, str]:
-        target = Path(path)
-        self.viewport_calls.append((target, options, overrides))
-        if self.viewport_error is not None:
-            raise self.viewport_error
-        data = b"\x89PNG fake viewport bytes"
         target.write_bytes(data)
         return len(data), hashlib.sha256(data).hexdigest()
 

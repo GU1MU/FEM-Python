@@ -20,8 +20,6 @@ from .artifacts import _hash_file, _sanitize_filename_stem
 
 EXPORT_DIRECTORY_NAME = "agent_exports"
 MAX_EXPORT_CSV_BYTES = 64 * 1024 * 1024
-# 视口图片上限：4 倍质量截图的保守字节预算，超限同样 fail-closed。
-MAX_EXPORT_IMAGE_BYTES = 256 * 1024 * 1024
 MAX_EXPORT_NAME_ATTEMPTS = 500
 _FALLBACK_EXPORT_STEM = "export"
 _WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x0400
@@ -162,7 +160,6 @@ def verify_export_file_size(path: Path, *, maximum_bytes: int) -> tuple[int, str
 __all__ = [
     "EXPORT_DIRECTORY_NAME",
     "MAX_EXPORT_CSV_BYTES",
-    "MAX_EXPORT_IMAGE_BYTES",
     "ExportStorageError",
     "allocate_export_path",
     "ensure_export_directory",

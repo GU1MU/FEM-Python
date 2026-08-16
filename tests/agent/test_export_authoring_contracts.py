@@ -334,9 +334,6 @@ def test_bridge_normalizes_requests_and_enforces_types() -> None:
         def export_accepted_result_csv(self, request):
             return object()
 
-        def export_viewport_image(self, request):
-            return object()
-
         def read_result_display_context(self):
             return object()
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -172,15 +172,11 @@ from fem.io.result_csv import write_result_table_csv
 from fem_agent.export_authoring import (
     DISPLAY_SETTING_KEYS,
     CONTOUR_SETTING_KEYS,
-    RESULT_OVERRIDE_KEYS,
-    RESULT_SCALE_MODES,
-    RESULT_SHAPE_MODES,
     ResultDisplayContext,
     ResultDisplayField,
 )
 from fem_agent.export_storage import (
     MAX_EXPORT_CSV_BYTES,
-    MAX_EXPORT_IMAGE_BYTES,
     verify_export_file_size,
 )
 from fem.io.result_vtk import write_result_vtk
@@ -665,9 +661,9 @@ class _LoadedProjectDisplayPayload:
 class AgentExportFacade:
     """向 Agent 导出端口暴露的小门面。
 
-    门面只提供四组能力：当前用户工作区身份、同步 CSV 导出命令、
-    同步视口图片导出命令和结果展示上下文读取。台账写入由端口实
-    现方完成，门面本身不持有任何导出状态。
+    门面只提供三组能力：当前用户工作区身份、同步 CSV 导出命令和
+    结果展示上下文读取。台账写入由端口实现方完成，门面本身不持
+    有任何导出状态。
     """
 
     def __init__(
@@ -709,28 +705,6 @@ class AgentExportFacade:
         spec: ResultCsvExportSpec,
     ) -> tuple[int, str]:
         return self._window.export_result_csv_to(path, spec)
-
-    def viewport_capture_available(self) -> bool:
-        """当前视口是否具备离屏捕获能力。"""
-
-        return bool(self._window.viewport.can_capture)
-
-    def accepted_result_displayed(self) -> bool:
-        """当前是否存在已接受的结果显示（contour 覆盖组的前置条件）。"""
-
-        return self._window._current_result_provider() is not None
-
-    def export_viewport_image_to(
-        self,
-        path: str | Path,
-        options: Mapping[str, object] | None,
-        overrides: Mapping[str, object] | None,
-    ) -> tuple[int, str]:
-        return self._window.export_viewport_image_to(
-            path,
-            options,
-            overrides,
-        )
 
 
 class FEMMainWindow(QMainWindow):
@@ -793,8 +767,6 @@ class FEMMainWindow(QMainWindow):
             self.document,
             document_id=self._active_context.document_id,
             workspace_selected=self._agent_workspace_selected(),
-            # 视口在 _build_central_area 中创建，首次绑定前不可捕获。
-            viewport_capturable=False,
         )
         self.agent_authoring_controller = (
             create_session_authoring_workflow_controller(
@@ -1082,7 +1054,6 @@ class FEMMainWindow(QMainWindow):
                 context.projection,
                 document_id=context.document_id,
                 workspace_selected=self._agent_workspace_selected(),
-                viewport_capturable=bool(self.viewport.can_capture),
             )
             current = self.agent_authoring_bridge.context
             if current is not None:
@@ -3699,266 +3670,6 @@ class FEMMainWindow(QMainWindow):
         )
         return size, digest
 
-    def export_viewport_image_to(
-        self,
-        path: str | Path,
-        options: Mapping[str, object] | None,
-        overrides: Mapping[str, object] | None,
-    ) -> tuple[int, str]:
-        """事务式导出当前视口图片并校验落盘大小。
-
-        返回 ``(size_bytes, sha256)``。事务在渲染抑制下临时应用
-        display/contour/result 覆盖组到视口渲染配置，复用现有离屏
-        捕获管线（相机状态自动保留/恢复），并在 ``finally`` 中逐键
-        还原快照后重渲染。result 组（Phase 3）通过脱体 payload 临
-        时换场/变形比例/未变形叠加，只接受 READY 场，绝不降级。
-        """
-
-        if self.busy:
-            raise RuntimeError("a background task is already running")
-        target = Path(path)
-        suffix = target.suffix.casefold()
-        if suffix not in {".png", ".jpg", ".jpeg"}:
-            raise ValueError(
-                "viewport image target must use the .png or .jpg extension"
-            )
-        image_options = dict(options or {})
-        if set(image_options) - {"quality", "transparent_background"}:
-            raise ValueError(
-                "viewport image options support only quality and "
-                "transparent_background"
-            )
-        quality = image_options.get("quality", 1)
-        if type(quality) is not int or quality not in (1, 2, 4):
-            raise ValueError("quality must be one of 1, 2 or 4")
-        transparent = bool(image_options.get("transparent_background", False))
-        transparent = transparent and suffix == ".png"
-
-        override_groups = dict(overrides or {})
-        if set(override_groups) - {"display", "contour", "result"}:
-            raise ValueError(
-                "viewport export overrides support only display, contour "
-                "and result"
-            )
-        display_overrides = dict(override_groups.get("display") or {})
-        contour_overrides = dict(override_groups.get("contour") or {})
-        result_overrides = dict(override_groups.get("result") or {})
-        if set(display_overrides) - DISPLAY_SETTING_KEYS:
-            raise ValueError("display overrides contain unsupported keys")
-        if set(contour_overrides) - CONTOUR_SETTING_KEYS:
-            raise ValueError("contour overrides contain unsupported keys")
-        if set(result_overrides) - RESULT_OVERRIDE_KEYS:
-            raise ValueError("result overrides contain unsupported keys")
-
-        viewport = self.viewport
-        if not viewport.can_capture:
-            raise RuntimeError("the viewport cannot capture an image")
-        if contour_overrides and self._current_result_provider() is None:
-            raise RuntimeError(
-                "contour overrides require a displayed accepted result"
-            )
-        if result_overrides and self._current_result_provider() is None:
-            raise RuntimeError(
-                "result overrides require a displayed accepted result"
-            )
-
-        # 有效状态 = 当前 live 渲染配置 ⊕ 显式覆盖键；edge_mode 与
-        # edges 的互推规则与 _set_contour_options 保持一致。
-        effective = {
-            **viewport._contour,
-            **display_overrides,
-            **contour_overrides,
-        }
-        if "edge_mode" in display_overrides or "edge_mode" in contour_overrides:
-            effective["edges"] = effective["edge_mode"] != CONTOUR_EDGE_NONE
-        elif (
-            effective.get("edges")
-            and viewport._contour["edge_mode"] == CONTOUR_EDGE_NONE
-        ):
-            effective["edge_mode"] = CONTOUR_EDGE_ALL
-
-        # result 组在事务开始前构建脱体 payload（不安装、不刷新视口）；
-        # 非 READY 场在此处以 KeyError 拒绝，视口状态尚未被触碰。
-        export_payload = None
-        export_shape_mode = "undeformed"
-        export_overlay = False
-        if result_overrides:
-            export_payload, export_shape_mode, export_overlay = (
-                self._export_viewport_result_payload(
-                    contour_overrides,
-                    result_overrides,
-                )
-            )
-
-        snapshot_contour = dict(viewport._contour)
-        snapshot_show_edges = viewport._show_edges
-        snapshot_suppressed = viewport._render_suppressed
-        snapshot_payload = None
-        snapshot_display = None
-        snapshot_overlay = False
-        if result_overrides:
-            snapshot_payload = viewport._result_render_payload
-            snapshot_display = viewport._display
-            snapshot_overlay = viewport._overlay_undeformed
-        contour_enabled = viewport._display.contour_enabled
-        coordinate_changed = bool(
-            effective.get("show_coordinate_system")
-            != snapshot_contour.get("show_coordinate_system")
-        )
-        overlay_changed = (
-            bool(result_overrides) and export_overlay != snapshot_overlay
-        )
-        viewport._render_suppressed = True
-        try:
-            viewport._contour.update(effective)
-            if contour_enabled:
-                viewport._show_edges = bool(
-                    effective.get("edges", snapshot_show_edges)
-                )
-            if result_overrides:
-                # 临时安装脱体 payload 与形状状态；窗口级 live 状态
-                # （self._display/_scale_mode/...）全程不动。
-                if export_payload is not viewport._result_render_payload:
-                    viewport.set_result_render_payload(export_payload)
-                viewport._display = DisplayState(
-                    export_shape_mode,
-                    contour_enabled,
-                )
-                if overlay_changed:
-                    viewport._overlay_undeformed = export_overlay
-                    viewport._refresh_undeformed_overlay()
-            if coordinate_changed:
-                viewport._refresh_coordinate_system_axes()
-            if contour_enabled or result_overrides:
-                viewport._update_result_layer()
-            viewport.save_screenshot(
-                str(target),
-                scale=quality,
-                transparent_background=transparent,
-            )
-        finally:
-            # 无论成败都逐键还原快照并重渲染，屏幕视口尺寸与相机
-            # 状态由离屏捕获管线自身保留。
-            viewport._contour.clear()
-            viewport._contour.update(snapshot_contour)
-            viewport._show_edges = snapshot_show_edges
-            if result_overrides:
-                if viewport._result_render_payload is not snapshot_payload:
-                    if snapshot_payload is None:
-                        viewport._result_render_payload = None
-                        viewport._scalar_reuse_pending = False
-                        viewport._geometry_reuse_pending = False
-                        viewport._scalar_reuse_display = None
-                    else:
-                        viewport.set_result_render_payload(snapshot_payload)
-                viewport._display = snapshot_display
-                if overlay_changed:
-                    viewport._overlay_undeformed = snapshot_overlay
-                    viewport._refresh_undeformed_overlay()
-            if coordinate_changed:
-                viewport._refresh_coordinate_system_axes()
-            if contour_enabled or result_overrides:
-                viewport._update_result_layer()
-            viewport._render_suppressed = snapshot_suppressed
-            viewport._render()
-        size, digest = verify_export_file_size(
-            target,
-            maximum_bytes=MAX_EXPORT_IMAGE_BYTES,
-        )
-        return size, digest
-
-    def _export_viewport_result_payload(
-        self,
-        contour_overrides: Mapping[str, object],
-        result_overrides: Mapping[str, object],
-    ) -> tuple[object, str, bool]:
-        """为 result 覆盖组构建脱体结果 payload。
-
-        返回 ``(payload, 有效 shape_mode, 有效未变形叠加)``。
-        averaging_threshold 覆盖必须在场请求转换之前生效（第 7 节
-        坑 1）：先临时写入 ``_contour_options``，经
-        ``_result_averaging_visual_selection`` 完成 S 场 ELEMENT_NODAL
-        → RESOLVED_NODAL 的场请求转换，构建完成后立即还原；只改
-        渲染 dict 会导出错误的场。非 READY 场由
-        ``_build_result_render_payload`` 以 KeyError 拒绝（坑 2），
-        绝不降级到其它场。
-        """
-
-        provider = self._current_result_provider()
-        if provider is None:
-            raise RuntimeError(
-                "result overrides require a displayed accepted result"
-            )
-        field_ref = result_overrides.get("field_ref")
-        component = result_overrides.get("component")
-        if (field_ref is None) != (component is None):
-            raise ValueError(
-                "result overrides require field_ref and component together"
-            )
-        if field_ref is None:
-            selection = self.result_selection
-            if type(selection) is not ScalarFieldSelection:
-                raise RuntimeError("there is no current result selection")
-        else:
-            selection = self._agent_resolve_result_selection(
-                str(field_ref),
-                str(component),
-            )
-        shape_mode = result_overrides.get("shape_mode")
-        if shape_mode is not None and shape_mode not in RESULT_SHAPE_MODES:
-            raise ValueError("shape_mode must be deformed or undeformed")
-        scale_mode = result_overrides.get("scale_mode")
-        if scale_mode is not None and scale_mode not in RESULT_SCALE_MODES:
-            raise ValueError("scale_mode must be auto, real or custom")
-        scale_value = result_overrides.get("scale_value")
-        if scale_value is not None:
-            if type(scale_value) is bool or not isinstance(
-                scale_value,
-                (int, float),
-            ):
-                raise ValueError("scale_value must be a real number")
-            scale_value = float(scale_value)
-            if not np.isfinite(scale_value) or scale_value < 0.0:
-                raise ValueError("scale_value must be finite and non-negative")
-        overlay = result_overrides.get("overlay_undeformed")
-        if overlay is not None and type(overlay) is not bool:
-            raise ValueError("overlay_undeformed must be boolean")
-
-        effective_shape_mode = (
-            self._display.shape_mode if shape_mode is None else str(shape_mode)
-        )
-        effective_scale_mode = (
-            self._scale_mode if scale_mode is None else str(scale_mode)
-        )
-        effective_scale_value = (
-            self._scale_value if scale_value is None else scale_value
-        )
-        threshold_override = contour_overrides.get("averaging_threshold")
-        previous_threshold = self._contour_options["averaging_threshold"]
-        if threshold_override is not None:
-            self._contour_options["averaging_threshold"] = float(
-                threshold_override
-            )
-        try:
-            visual_selection = self._result_averaging_visual_selection(
-                provider,
-                selection,
-            )
-            payload = self._build_result_render_payload(
-                provider,
-                visual_selection,
-                shape_mode=effective_shape_mode,
-                scale_mode=effective_scale_mode,
-                scale_value=effective_scale_value,
-            )
-        finally:
-            self._contour_options["averaging_threshold"] = previous_threshold
-        return (
-            payload,
-            effective_shape_mode,
-            bool(self._overlay_undeformed if overlay is None else overlay),
-        )
-
     def export_result_vtk(
         self,
         path: str | Path,
@@ -4188,7 +3899,6 @@ class FEMMainWindow(QMainWindow):
                 snapshot,
                 document_id=target_context.document_id,
                 workspace_selected=self._agent_workspace_selected(),
-                viewport_capturable=bool(self.viewport.can_capture),
             )
             current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:
@@ -14540,7 +14250,6 @@ class FEMMainWindow(QMainWindow):
                 None if bound_context is None else bound_context.document_id
             ),
             workspace_selected=self._agent_workspace_selected(),
-            viewport_capturable=bool(self.viewport.can_capture),
         )
         current_authoring_context = self.agent_authoring_bridge.context
         if current_authoring_context is not None:

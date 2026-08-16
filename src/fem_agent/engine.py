@@ -387,14 +387,9 @@ Agent-authored export files always land in agent_exports under the user's
 selected workspace. Before exporting an accepted result table as CSV, call
 read_result_display_context and reuse one returned field_ref and component
 exactly; the export receipt gives only the workspace-relative path, which is
-what you report to the user. export_viewport_image captures the current
-viewport; omit every parameter to keep the live display unchanged, and pass
-only the display or contour keys the user explicitly asked to change. The
-contour group is accepted only while an accepted result is displayed; never
-pass a result group, a field switch, or a custom image size. If an export
-tool returns the no-workspace diagnostic, relay that short message to the
-user in one sentence and stop; never retry the export or invent a
-destination."""
+what you report to the user. If an export tool returns the no-workspace
+diagnostic, relay that short message to the user in one sentence and stop;
+never retry the export or invent a destination."""
 
 
 class _ConversationStorageLimit(ValueError):

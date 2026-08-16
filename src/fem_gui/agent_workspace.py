@@ -240,7 +240,7 @@ def _path_is_within(path: Path, root: Path) -> bool:
 EXPORT_LEDGER_DIRECTORY_NAME = "export_ledgers"
 EXPORT_LEDGER_SCHEMA_VERSION = "1.0"
 _EXPORT_LEDGER_MAX_RECORDS = 500
-_EXPORT_LEDGER_KINDS = {"csv", "png", "jpeg"}
+_EXPORT_LEDGER_KINDS = {"csv", "png"}
 
 
 class ExportLedgerRecordError(ValueError):
@@ -278,7 +278,7 @@ class ExportLedgerRecord:
     def __post_init__(self) -> None:
         _bounded_ledger_text(self.display_path, "display_path", 512)
         if self.kind not in _EXPORT_LEDGER_KINDS:
-            raise ExportLedgerRecordError("kind 只接受 csv、png 或 jpeg")
+            raise ExportLedgerRecordError("kind 只接受 csv 或 png")
         digest = self.sha256
         if (
             not isinstance(digest, str)
