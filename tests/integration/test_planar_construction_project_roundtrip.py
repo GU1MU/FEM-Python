@@ -270,11 +270,17 @@ def test_phase7_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> No
     )
     assert result.ok, result.summary
     bridge.accept_from_gui_control(result.data["proposal_id"])
-    analysis = geometry_runtime.analyze_sketch_profiles(
-        session.snapshot().parts[0].geometry_recipe
-    )
-    assert sum(profile.is_material for profile in analysis.profiles) == 1
-    assert sum(profile.is_hole for profile in analysis.profiles) == 1
+    recipe = session.snapshot().parts[0].geometry_recipe
+    assert type(recipe) is BooleanGeometry
+    assert [feature.kind for feature in derive_feature_history(recipe)] == [
+        "sketch",
+        "cut",
+    ]
+    proof = compile_planar_construction(
+        PlanarConstructionIR.from_dict(construction)
+    ).proof
+    assert proof.material_profile_count == 1
+    assert proof.hole_count == 1
 
 
 @pytest.mark.gmsh
@@ -324,8 +330,11 @@ def test_phase7_u_path_stroke_preview_mesh_and_disk_roundtrip(
     assert bridge._proposal_previews[result.data["proposal_id"]].faces
     bridge.accept_from_gui_control(result.data["proposal_id"])
     recipe = session.snapshot().parts[0].geometry_recipe
-    analysis = geometry_runtime.analyze_sketch_profiles(recipe)
-    assert sum(profile.is_hole for profile in analysis.profiles) == 1
+    assert type(recipe) is BooleanGeometry
+    proof = compile_planar_construction(
+        PlanarConstructionIR.from_dict(construction)
+    ).proof
+    assert proof.hole_count == 1
     mesh = generate_fem_model(recipe, MeshSettings(1.0, cell_shape="triangle"))
     assert {element.type for element in mesh.mesh.elements} == {"Tri3"}
     reopened = _save_and_reopen(session, tmp_path / "u-path-slot.fempy")
@@ -379,9 +388,10 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
             for entity in compiled.catalog.entities_of("face")
             if entity.semantic_role == "sweep.boundary.hole"
         )
-        # Four circular holes contribute one side each; the H profile has
-        # twelve boundary segments and therefore twelve selectable sides.
-        assert len(hole_sides) == 16
+        # Feature-chain persistence keeps boolean-split boundaries: the H
+        # slot contributes twelve selectable sides and each of the four
+        # corner holes is cut into four arc sides (4 x 4), giving 28.
+        assert len(hole_sides) == 28
         assert all(
             compiled.resolve(LogicalEntityRef(logical_id)) for logical_id in hole_sides
         )
