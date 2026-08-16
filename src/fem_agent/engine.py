@@ -203,25 +203,41 @@ roadmap.
 
 Before every planar geometry modification, call read_geometry_edit_context and
 use the latest exact point, curve, constraint, and Profile summary from that
-read. In a two-dimensional sketch, material removal is represented by a closed
+read. Use only operations listed in supported_edits and in the narrowed tool
+schema returned after that read. A tool_geometry_recipe inside a planar Boolean
+feature is a read-only feature-local snapshot; never pass its point or curve IDs
+to root-sketch delete/update operations. To revise an existing planar Boolean
+feature, call replace_planar_boolean_feature with its feature_id and a complete
+replacement tool boundary; the local tool replays every later feature. In a
+two-dimensional strict sketch, material removal is represented by a closed
 inner Profile contained by a material Profile; do not claim that a Part Boolean
-is required. Use add_path_slot only when one ordered, open, non-branching
-centerline and one width fully define the requested slot. The local compiler
-turns that centerline into one closed cutout and enforces exactly one new hole
-Profile. When the intended centerline branches or the width is not constant,
-trace the complete boundary in order and prefer one non-self-intersecting
-add_polygon edit unless exact arcs are important. Use one batch for an ordered
-line/arc boundary and include every member needed to close it. Never submit a
-placeholder shape, a standalone open-centerline
+is required. Use add_path_slot as the preferred geometry-edit entry whenever
+supported_edits contains it and one ordered, open, non-branching centerline plus
+one constant width fully define the requested slot. Treat
+planar_boolean(tool.kind=path_stroke) as its lower-level equivalent and use that
+entry only when add_path_slot is unavailable. The centerline may contain multiple
+bends; select cap and join styles, then let the local compiler generate the closed
+boundary and enforce exactly one new hole Profile. When a single
+centerline and width cannot define the slot, trace its complete boundary in
+order and use one non-self-intersecting add_polygon edit as the primary
+closed-boundary method. Do not decompose one connected slot into rectangles
+merely because its edges are axis-aligned. Use one batch of ordered lines and
+arcs only when exact curved boundaries require it, and include every member
+needed to close the contour. Never submit a placeholder shape, a standalone open-centerline
 Part, or geometry unrelated to the requested final contour. Never use a user-visible
 geometry confirmation proposal as a diagnostic probe, and never deliberately
 omit a requested slot, cutout, or hole from that proposal. When the requested hole
 count, direction, spacing, center, and radius are already sufficient, use one
 replace_circle_pattern or batch edit in the same turn. Do not repeatedly ask for
 circle IDs that the geometry context already provides. If exact planar
-validation rejects an edit, use every returned diagnostic and affected logical
-ID to revise the same contour before presenting any confirmation; do not ask the
-user to repair generated geometry. After a successful geometry edit, refresh
+validation rejects a path slot because its submitted points close, repeat,
+reverse, or self-intersect, keep the path-slot representation and resubmit one
+revised open centerline through add_path_slot. A malformed centerline does not
+justify switching to polygon; use polygon only when the intended centerline has a
+junction or the intended width varies. For other rejected edits,
+use every returned diagnostic and affected logical ID to revise the same contour before
+presenting any confirmation; do not ask the user to repair generated geometry.
+After a successful geometry edit, refresh
 the authoring context first when it is the only published read, then read the
 geometry edit context and verify the intended Profile or hole-count change
 before continuing; never reuse IDs or a revision from an earlier successful
@@ -233,15 +249,22 @@ that local relation proof in the proposal instead of relying on conversational
 coordinate arithmetic.
 
 For a new planar region, use prepare_planar_construction_proposal as the sole
-planar creation path. Express composite regions with general primitives,
-Boolean operations, transforms, and patterns. Use path_stroke only when one
-ordered, open, non-branching centerline and one width fully define the cutout;
-never calculate its final offset polygon or submit its centerline as a wire
-Part. When the intended centerline contains a junction, build the cutout from
-overlapping connected primitives or strokes, unite them into one operand, and
-subtract that operand from the material; one complete closed polygon is also
-valid. The same tool wraps a new planar construction in a direct extrusion,
-revolution, or path sweep.
+planar creation path. Use one polygon as the default representation for a
+connected slot or cutout whose intended closed boundary can be listed directly;
+concave boundaries are valid, and the vertices follow the perimeter once. Use
+path_stroke as the preferred compact representation when one ordered, open,
+non-branching centerline and one constant width fully define the cutout. The
+centerline may contain multiple bends; select cap and join styles and let the
+compiler generate its offset boundary. When the centerline has a junction or
+the width varies, return to one complete polygon boundary. Use unions of
+rectangles or other primitives only when the intended geometry is genuinely
+composite, not as the default construction of one connected shaped slot. Never
+submit an open centerline as a wire Part. When the user describes a cutout, slot, or hole as internal or centered
+and does not request an edge opening or material separation, every provisional
+subtraction tool must remain strictly inside its material target with positive
+clearance. Choose conservative provisional dimensions from the target bounds
+and preserve one connected material component. The same tool wraps a new planar
+construction in a direct extrusion, revolution, or path sweep.
 In Planar Construction IR, rectangle x/y are always the lower-left corner, not
 the center; center a rectangle by subtracting half its width and height from the
 desired center. Circle radius is never diameter: when the user gives a diameter
@@ -1026,10 +1049,12 @@ class AgentSessionEngine:
                     new_model_follow_up_correction = None
                     language_correction = None
                     streamed_text_parts: list[str] = []
+                    streamed_reasoning_parts: list[str] = []
                     streamed_events: list[
                         tuple[EngineEventType, Mapping[str, Any]]
                     ] = []
                     stream_started = False
+                    reasoning_stream_started = False
                     required_resync_tool = _required_authoring_resync_tool(
                         self.registry.provider_snapshot,
                         available_tools,
@@ -1088,21 +1113,89 @@ class AgentSessionEngine:
                                 )
                             )
 
+                    def receive_reasoning_delta(delta: str) -> None:
+                        nonlocal reasoning_stream_started
+                        if not isinstance(delta, str) or not delta:
+                            raise ProviderMalformedResponseError(
+                                "provider stream emitted an invalid reasoning delta"
+                            )
+                        if not reasoning_stream_started:
+                            data = {
+                                "role": "assistant",
+                                "presentation_kind": "process",
+                            }
+                            if hold_stream:
+                                streamed_events.append(
+                                    (EngineEventType.MESSAGE_STARTED, data)
+                                )
+                            else:
+                                events.append(
+                                    self._event(EngineEventType.MESSAGE_STARTED, data)
+                                )
+                            reasoning_stream_started = True
+                        streamed_reasoning_parts.append(delta)
+                        if hold_stream:
+                            streamed_events.append(
+                                (EngineEventType.MESSAGE_DELTA, {"text": delta})
+                            )
+                        else:
+                            events.append(
+                                self._event(
+                                    EngineEventType.MESSAGE_DELTA,
+                                    {"text": delta},
+                                )
+                            )
+
+                    def retain_buffered_reasoning_events() -> None:
+                        if not hold_stream:
+                            return
+                        streamed_events.clear()
+                        if not reasoning_stream_started:
+                            return
+                        streamed_events.append(
+                            (
+                                EngineEventType.MESSAGE_STARTED,
+                                {
+                                    "role": "assistant",
+                                    "presentation_kind": "process",
+                                },
+                            )
+                        )
+                        streamed_events.extend(
+                            (EngineEventType.MESSAGE_DELTA, {"text": part})
+                            for part in streamed_reasoning_parts
+                        )
+
                     stream_completion = getattr(
                         self.provider,
                         "complete_stream",
                         None,
                     )
                     if callable(stream_completion):
-                        response = stream_completion(
-                            self._provider_messages(
-                                request_context=request_context,
-                                route_hint=route_hint,
-                                route_correction=correction_for_round,
-                            ),
-                            available_tools,
-                            receive_text_delta,
+                        provider_messages = self._provider_messages(
+                            request_context=request_context,
+                            route_hint=route_hint,
+                            route_correction=correction_for_round,
                         )
+                        if bool(
+                            getattr(
+                                self.provider,
+                                "supports_reasoning_stream",
+                                False,
+                            )
+                        ):
+                            response = stream_completion(
+                                provider_messages,
+                                available_tools,
+                                receive_text_delta,
+                                receive_reasoning_delta,
+                            )
+                        else:
+                            response = stream_completion(
+                                provider_messages,
+                                available_tools,
+                                receive_text_delta,
+                            )
                     else:
                         response = self.provider.complete(
                             self._provider_messages(
@@ -1169,6 +1262,22 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
+            if reasoning_stream_started and "".join(
+                streamed_reasoning_parts
+            ) != (response.message.reasoning_content or ""):
+                diagnostic = make_diagnostic(
+                    DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
+                    "The provider reasoning stream did not match its final response.",
+                    source="agent.provider",
+                )
+                events.append(self._diagnostic_event(diagnostic))
+                events.append(
+                    self._event(
+                        EngineEventType.ERROR,
+                        {"diagnostic": diagnostic.to_dict()},
+                    )
+                )
+                return tuple(events)
 
             # Keep one privacy-safe record per provider round.  This is
             # intentionally written before dispatching any local tool so an
@@ -1186,13 +1295,10 @@ class AgentSessionEngine:
                 if response.message.tool_calls:
                     response = replace(
                         response,
-                        message=AssistantMessage(
-                            "assistant",
-                            tool_calls=response.message.tool_calls,
-                        ),
+                        message=replace(response.message, content=None),
                     )
                     streamed_text_parts.clear()
-                    streamed_events.clear()
+                    retain_buffered_reasoning_events()
                     stream_started = False
                 elif not language_retry_used:
                     language_retry_used = True
@@ -1350,25 +1456,19 @@ class AgentSessionEngine:
             if _message_calls_proposal_prepare_tool(response.message):
                 response = replace(
                     response,
-                    message=AssistantMessage(
-                        "assistant",
-                        tool_calls=response.message.tool_calls,
-                    ),
+                    message=replace(response.message, content=None),
                 )
                 streamed_text_parts.clear()
-                streamed_events.clear()
+                retain_buffered_reasoning_events()
                 stream_started = False
 
             if _message_calls_automatic_model_patch_tool(response.message):
                 response = replace(
                     response,
-                    message=AssistantMessage(
-                        "assistant",
-                        tool_calls=response.message.tool_calls,
-                    ),
+                    message=replace(response.message, content=None),
                 )
                 streamed_text_parts.clear()
-                streamed_events.clear()
+                retain_buffered_reasoning_events()
                 stream_started = False
 
             try:
@@ -1433,9 +1533,17 @@ class AgentSessionEngine:
                 events.append(
                     self._event(
                         EngineEventType.MESSAGE_PRESENTATION,
-                        {"presentation_kind": presentations[0][0]},
+                        {
+                            "presentation_kind": _assistant_message_presentation_kind(
+                                replace(response.message, reasoning_content=None),
+                                trusted_terminal,
+                                previous_tool_failed=previous_tool_failed,
+                            )
+                        },
                     )
                 )
+            elif reasoning_stream_started:
+                pass
             else:
                 for presentation_kind, content in presentations:
                     events.append(
@@ -2571,10 +2679,10 @@ class AgentSessionEngine:
         *,
         remaining_tool_calls: int,
     ) -> Diagnostic | None:
-        if (
-            message.content is not None
-            and len(message.content) > self.config.max_provider_message_chars
-        ):
+        response_text_length = len(message.content or "") + len(
+            message.reasoning_content or ""
+        )
+        if response_text_length > self.config.max_provider_message_chars:
             return make_diagnostic(
                 DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
                 "The provider response text exceeded the configured limit.",
@@ -2806,6 +2914,7 @@ def _message_to_dict(message: AssistantMessage) -> dict[str, Any]:
     return {
         "role": message.role,
         "content": message.content,
+        "reasoning_content": message.reasoning_content,
         "tool_call_id": message.tool_call_id,
         "tool_calls": [
             {
@@ -2822,12 +2931,17 @@ def _message_from_dict(value: Any) -> AssistantMessage:
     if not isinstance(value, Mapping):
         raise ValueError("conversation message must be an object")
     required = {"role", "content", "tool_call_id", "tool_calls"}
-    if set(value) != required or not isinstance(value["tool_calls"], list):
+    allowed = required | {"reasoning_content"}
+    field_names = frozenset(value)
+    if field_names not in {frozenset(required), frozenset(allowed)} or not isinstance(
+        value["tool_calls"], list
+    ):
         raise ValueError("conversation message has invalid fields")
     return AssistantMessage(
         role=value["role"],
         content=value["content"],
         tool_call_id=value["tool_call_id"],
+        reasoning_content=value.get("reasoning_content"),
         tool_calls=tuple(
             ToolCall(
                 item["call_id"],
@@ -3948,8 +4062,10 @@ def _assistant_message_presentations(
 ) -> tuple[tuple[str, str], ...]:
     """Project one provider message into semantically presented UI sections."""
 
+    reasoning_content = (message.reasoning_content or "").strip()
     content = message.content or ""
     requests_decision = _message_requests_user_decision(message)
+    content_presentations: tuple[tuple[str, str], ...]
     if (
         (previous_tool_failed or bool(message.tool_calls))
         and trusted_terminal is None
@@ -3958,21 +4074,29 @@ def _assistant_message_presentations(
         split = _split_failed_process_decision(content)
         if split is not None:
             process, decision = split
-            return (
+            content_presentations = (
                 ("process", process),
                 ("decision_request", decision),
             )
-        return (("decision_request", content),)
-    return (
-        (
-            _assistant_message_presentation_kind(
-                message,
-                trusted_terminal,
-                previous_tool_failed=previous_tool_failed,
+        else:
+            content_presentations = (("decision_request", content),)
+    else:
+        content_presentations = (
+            (
+                _assistant_message_presentation_kind(
+                    message,
+                    trusted_terminal,
+                    previous_tool_failed=previous_tool_failed,
+                ),
+                content,
             ),
-            content,
-        ),
-    )
+        )
+    if not reasoning_content:
+        return content_presentations
+    reasoning_presentation = (("process", reasoning_content),)
+    if not content.strip():
+        return reasoning_presentation
+    return (*reasoning_presentation, *content_presentations)
 
 
 def _proposal_preview_message(
@@ -4355,6 +4479,20 @@ def _single_edit_description(
             return f"追加二维{action}特征，工具轮廓为 {tool_kind}"
         action = "cut" if boolean_operation == "cut" else "fuse"
         return f"Append one planar {action} feature using a {tool_kind} profile"
+    if operation == "replace_planar_boolean_feature":
+        feature_id = str(edit.get("feature_id", "?"))
+        tool = edit.get("tool")
+        tool_kind = (
+            str(tool.get("kind", "轮廓")) if isinstance(tool, Mapping) else "轮廓"
+        )
+        return (
+            f"替换二维布尔特征 {feature_id} 的工具轮廓为 {tool_kind}，并重放后续特征"
+            if chinese
+            else (
+                f"Replace the tool profile of planar Boolean feature {feature_id} "
+                f"with {tool_kind} and replay later features"
+            )
+        )
     if operation == "translate":
         dx = _preview_number(edit.get("dx"))
         dy = _preview_number(edit.get("dy"))
@@ -4408,6 +4546,10 @@ def _edit_operation_label(operation: str, chinese: bool) -> str:
         "add_polygon": ("增加闭合轮廓", "closed-profile addition"),
         "add_path_slot": ("增加连续定宽槽", "continuous-slot addition"),
         "planar_boolean": ("二维布尔特征", "planar Boolean feature"),
+        "replace_planar_boolean_feature": (
+            "替换二维布尔特征",
+            "planar Boolean feature replacement",
+        ),
         "update_point": ("调整草图点", "point update"),
         "update_circle": ("调整圆形轮廓", "circle update"),
         "delete_circles": ("删除圆形轮廓", "circle deletion"),

@@ -3066,6 +3066,13 @@ def planar_feature_geometry_catalog(recipe: object) -> dict[str, object]:
                 (x_min + x_max) / 2.0,
                 (y_min + y_max) / 2.0,
             ],
+            "tool_geometry_recipe_scope": {
+                "kind": "planar_boolean_feature_tool_snapshot",
+                "feature_id": feature_id,
+                "editable": False,
+                "logical_ids": "feature_local_read_only",
+                "replacement_operation": "replace_planar_boolean_feature",
+            },
         }
         if context is not None:
             compact["target_face_id"] = context.target_face_id

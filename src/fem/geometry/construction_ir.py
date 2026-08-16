@@ -44,6 +44,7 @@ class PlanarIRDiagnostic:
     retryable: bool
     allowed_fields: tuple[str, ...]
     model_unchanged: Literal[True] = True
+    evidence: tuple[tuple[str, object], ...] = ()
 
 
 class PlanarIRValidationError(ValueError):
@@ -247,6 +248,7 @@ def _fail(
     *,
     node_id: str | None = None,
     allowed_fields: Sequence[str] = (),
+    evidence: Mapping[str, object] | Sequence[tuple[str, object]] = (),
 ) -> None:
     bounded_node_id = node_id[:MAX_NODE_ID_LENGTH] if node_id is not None else None
     raise PlanarIRValidationError(
@@ -256,6 +258,9 @@ def _fail(
             node_id=bounded_node_id,
             retryable=True,
             allowed_fields=tuple(allowed_fields),
+            evidence=tuple(
+                evidence.items() if isinstance(evidence, Mapping) else evidence
+            ),
         )
     )
 
@@ -519,6 +524,12 @@ def _validate_polygon(
 
 
 def _validate_path(points: tuple[Point2D, ...], node_id: str) -> None:
+    common_evidence = {
+        "points_role": "centerline",
+        "required_topology": "open",
+        "submitted_point_count": len(points),
+        "first_equals_last": points[0] == points[-1],
+    }
     for index in range(len(points) - 1):
         if points[index] == points[index + 1]:
             _fail(
@@ -526,6 +537,11 @@ def _validate_path(points: tuple[Point2D, ...], node_id: str) -> None:
                 f"Path segment {index} has zero length.",
                 node_id=node_id,
                 allowed_fields=("points",),
+                evidence={
+                    **common_evidence,
+                    "failed_rule": "zero_length_segment",
+                    "segment_index": index,
+                },
             )
     for index in range(len(points) - 2):
         start, turn, end = points[index : index + 3]
@@ -539,6 +555,11 @@ def _validate_path(points: tuple[Point2D, ...], node_id: str) -> None:
                 f"Path segments {index} and {index + 1} overlap at a reversal.",
                 node_id=node_id,
                 allowed_fields=("points",),
+                evidence={
+                    **common_evidence,
+                    "failed_rule": "adjacent_reversal",
+                    "segment_indices": [index, index + 1],
+                },
             )
     if points[0] == points[-1]:
         _fail(
@@ -546,6 +567,10 @@ def _validate_path(points: tuple[Point2D, ...], node_id: str) -> None:
             "Path stroke must be open.",
             node_id=node_id,
             allowed_fields=("points",),
+            evidence={
+                **common_evidence,
+                "failed_rule": "closed_centerline",
+            },
         )
     for first in range(len(points) - 1):
         for second in range(first + 2, len(points) - 1):
@@ -557,6 +582,11 @@ def _validate_path(points: tuple[Point2D, ...], node_id: str) -> None:
                     f"Path segments {first} and {second} intersect.",
                     node_id=node_id,
                     allowed_fields=("points",),
+                    evidence={
+                        **common_evidence,
+                        "failed_rule": "self_intersection",
+                        "segment_indices": [first, second],
+                    },
                 )
 
 

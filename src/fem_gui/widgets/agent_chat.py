@@ -1168,6 +1168,8 @@ def _process_message_summary(markdown: str) -> str:
         return "处理中…"
 
     limit = _PROCESS_MESSAGE_SUMMARY_CHARACTERS
+    if len(visible) <= limit:
+        return visible
     sentence = re.match(r"^.*?(?:[。！？]|[.!?](?=\s|$))", visible)
     if sentence is not None and len(sentence.group(0).strip()) <= limit:
         summary = sentence.group(0).strip()
@@ -1275,9 +1277,11 @@ class AgentNarrativeSection(QWidget):
     def update_message(self, message: MessageView) -> None:
         text = message.materialize_text()
         visible = _visible_markdown_text(text)
+        process_summary = _process_message_summary(text)
         self._collapsible = (
             message.presentation_kind is MessagePresentationKind.PROCESS
             and bool(visible)
+            and process_summary != visible
         )
         rendered = (
             _streaming_plaintext_html(text)
@@ -1291,7 +1295,7 @@ class AgentNarrativeSection(QWidget):
         self.primary_label.setText(rendered)
         self.details_label.setText(rendered)
         self.summary_label.setText(
-            _process_message_summary(text) if self._collapsible else ""
+            process_summary if self._collapsible else ""
         )
         self.primary_label.setVisible(not self._collapsible)
         self.summary_row.setVisible(self._collapsible)
@@ -1698,6 +1702,9 @@ class AgentChatDrawer(_BoundaryFrame):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
         )
         scroll.viewport().setObjectName("agentChatScrollViewport")
         scroll.viewport().setAttribute(

@@ -1086,7 +1086,7 @@ def test_long_process_message_collapses_and_expands_while_streaming():
     drawer.close()
 
 
-def test_short_process_message_shows_summary_by_default():
+def test_short_process_message_shows_directly_without_toggle():
     application = _application()
     events = _Events(session_id="short-process-session")
     drawer = AgentChatDrawer()
@@ -1116,9 +1116,48 @@ def test_short_process_message_shows_summary_by_default():
 
     section = drawer.findChild(AgentNarrativeSection)
     assert section is not None
-    assert section.collapsible
-    assert section.primary_label.isHidden()
-    assert section.summary_label.text() == "正在重新校验当前轮廓。"
+    assert not section.collapsible
+    assert section.primary_label.isVisible()
+    assert section.summary_row.isHidden()
+    assert section.summary_label.text() == ""
+    assert "正在重新校验当前轮廓。" in section.primary_label.text()
+    drawer.close()
+
+
+def test_short_multi_sentence_process_message_shows_directly_without_toggle():
+    application = _application()
+    events = _Events(session_id="short-multi-sentence-process-session")
+    drawer = AgentChatDrawer()
+    drawer.replay_agent_events(
+        (
+            _turn_start(events),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "short-multi-sentence-process-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": "process",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "short-multi-sentence-process-message",
+                    "delta": "正在读取当前建模上下文。随后构造并校验二维轮廓。",
+                },
+            ),
+        )
+    )
+    drawer.show()
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert not section.collapsible
+    assert section.primary_label.isVisible()
+    assert section.summary_row.isHidden()
+    assert "随后构造并校验二维轮廓。" in section.primary_label.text()
     drawer.close()
 
 
@@ -1536,6 +1575,69 @@ def test_conversation_uses_white_background_and_compact_left_inset():
     margins = drawer.conversation_layout.contentsMargins()
     assert margins.left() == 6
     assert margins.right() == 14
+    drawer.close()
+
+
+def test_conversation_reserves_scrollbar_width_before_content_overflows():
+    application = _application()
+    events = _Events(session_id="conversation-width-session")
+    drawer = AgentChatDrawer()
+    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
+    drawer.resize(384, 320)
+    drawer.show()
+    application.processEvents()
+
+    viewport = drawer.conversation_scroll.viewport()
+    initial_viewport_width = viewport.width()
+    assert (
+        drawer.conversation_scroll.verticalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+    )
+    assert drawer.conversation_scroll.verticalScrollBar().maximum() == 0
+
+    drawer.replay_agent_events(
+        (
+            events.make(
+                EventType.TURN_STARTED,
+                {
+                    "user_message": (
+                        "在xy视图下，我希望在H的下方（-y方向）做一个U形槽，"
+                        "内外两者间距为20"
+                    )
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_START,
+                {
+                    "message_id": "width-message",
+                    "role": "assistant",
+                    "format": "restricted_markdown",
+                    "presentation_kind": "result_summary",
+                },
+            ),
+            events.make(
+                EventType.MESSAGE_DELTA,
+                {
+                    "message_id": "width-message",
+                    "delta": "\n".join(
+                        f"- 本地几何校验 {index}：形成材料区域和切除区域"
+                        for index in range(30)
+                    ),
+                },
+            ),
+        )
+    )
+    application.processEvents()
+    QTest.qWait(10)
+
+    assert drawer.conversation_scroll.verticalScrollBar().maximum() > 0
+    assert viewport.width() == initial_viewport_width
+    assert drawer.conversation_widget.width() == viewport.width()
+    for object_name in ("agentChatUserMessage", "agentChatAgentMessage"):
+        widget = drawer.findChild(QWidget, object_name)
+        assert widget is not None
+        right_edge = widget.mapTo(viewport, QPoint(widget.width(), 0)).x()
+        assert right_edge <= viewport.width()
     drawer.close()
 
 

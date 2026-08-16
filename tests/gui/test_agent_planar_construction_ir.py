@@ -156,6 +156,9 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     circle = next(
         item for item in variants if item["properties"]["kind"]["const"] == "circle"
     )
+    polygon = next(
+        item for item in variants if item["properties"]["kind"]["const"] == "polygon"
+    )
     path_stroke = next(
         item
         for item in variants
@@ -164,9 +167,29 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     assert "lower-left" in rectangle["properties"]["x"]["description"]
     assert "not the center" in rectangle["properties"]["y"]["description"]
     assert "never diameter" in circle["properties"]["radius"]["description"]
+    assert "Default closed-boundary representation" in (
+        polygon["properties"]["vertices"]["description"]
+    )
+    assert "decomposing one shaped slot into rectangles" in (
+        polygon["properties"]["vertices"]["description"]
+    )
     assert "non-branching centerline" in (
         path_stroke["properties"]["points"]["description"]
     )
+    path_points_description = path_stroke["properties"]["points"]["description"]
+    assert "multiple bends" in path_points_description
+    assert "straight [[10,10],[40,10]]" in path_points_description
+    assert "[[10,10],[10,30],[35,30],[35,50]]" in path_points_description
+    assert "first and last points must differ" in path_points_description
+    assert "never append the first point" in path_points_description
+    nodes_description = construction["properties"]["nodes"]["description"]
+    assert "two independent slots" in nodes_description
+    assert nodes_description.count('"kind":"path_stroke"') == 2
+    assert nodes_description.count('"kind":"difference"') == 2
+    assert '"base":"cut_a"' in nodes_description
+    assert "never concatenate disconnected centerlines" in nodes_description
+    assert "Use polygon as the default closed-boundary" in definition.description
+    assert "path_stroke as the preferred compact form" in definition.description
     provider_surface = json.dumps(
         {
             "description": definition.description,
@@ -194,6 +217,16 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
         "circle_position": "center_x, center_y",
         "circle_size": "radius; use diameter/2 when the request gives a diameter",
         "pattern_seed": "included_as_instance_zero",
+    }
+    assert capability["slot_representation_policy"] == {
+        "closed_boundary_default": "polygon",
+        "centerline_compact_form": "path_stroke",
+        "path_stroke_condition": (
+            "one_open_non_branching_polyline_and_one_constant_width"
+        ),
+        "multiple_bends_supported": True,
+        "primitive_union_role": "fallback_for_genuinely_composite_geometry",
+        "rectangle_decomposition_for_one_connected_slot": "avoid",
     }
     serialized = json.dumps(capability).casefold()
     assert "gmsh" not in serialized
@@ -445,6 +478,100 @@ def test_agent_appends_a_second_round_path_slot_as_a_new_cut_feature() -> None:
         "Cut-1",
         "Cut-2",
         "Cut-3",
+    ]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {
+            "operation": "add_path_slot",
+            "points": [
+                {"x": 30.0, "y": 190.0},
+                {"x": 30.0, "y": 220.0},
+                {"x": 60.0, "y": 220.0},
+                {"x": 30.0, "y": 190.0},
+            ],
+            "width": 6.0,
+            "cap": "butt",
+            "join": "miter",
+        },
+        {
+            "operation": "planar_boolean",
+            "boolean_operation": "cut",
+            "tool": {
+                "kind": "path_stroke",
+                "points": [
+                    {"x": 30.0, "y": 190.0},
+                    {"x": 30.0, "y": 220.0},
+                    {"x": 60.0, "y": 220.0},
+                    {"x": 30.0, "y": 190.0},
+                ],
+                "width": 6.0,
+                "cap": "butt",
+                "join": "miter",
+            },
+        },
+    ],
+)
+def test_closed_path_slot_edit_returns_same_representation_repair_guidance(
+    edit: dict[str, object],
+) -> None:
+    session = ModelSession()
+    bridge, controller = _controller(session)
+    initial = _dispatch(controller, key="closed-slot-initial")
+    receipt = bridge.accept_from_gui_control(str(initial.data["proposal_id"]))
+    assert receipt.state is ProposalState.SUCCEEDED
+    controller.record_proposal_state("geometry", receipt.state, receipt.message)
+    context = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "closed-slot-context",
+        ),
+    )
+    assert context.ok, context.summary
+    policy = context.data["freeform_profile_policy"]
+    assert policy["constant_width_slot_operation_priority"] == [
+        "add_path_slot",
+        "planar_boolean(tool.kind=path_stroke)",
+    ]
+    assert policy["planar_boolean_path_stroke_role"] == "lower_level_equivalent"
+
+    result = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": edit,
+        },
+        ToolExecutionContext(
+            session.session_id,
+            session.session_revision,
+            "closed-slot-edit",
+        ),
+    )
+
+    assert not result.ok
+    assert "error" in result.data, result.data
+    error = result.data["error"]
+    assert error["code"] == "planar-ir.invalid-path-stroke"
+    assert error["failed_operation"] == edit["operation"]
+    assert error["representation"] == "path_stroke"
+    assert error["evidence"]["points_role"] == "centerline"
+    assert error["evidence"]["required_topology"] == "open"
+    assert error["evidence"]["first_equals_last"] is True
+    remediation = error["remediation"]
+    assert remediation["action"] == "retry_same_path_slot_with_revised_centerline"
+    assert remediation["preserve_representation"] is True
+    assert remediation["preferred_operation"] == "add_path_slot"
+    assert remediation["lower_level_equivalent"] == (
+        "planar_boolean(tool.kind=path_stroke)"
+    )
+    assert remediation["polygon_fallback_only_when"] == [
+        "centerline_has_junction",
+        "width_varies",
     ]
 
 

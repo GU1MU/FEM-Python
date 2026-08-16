@@ -35,12 +35,22 @@ def _client(spy):
     return SimpleNamespace(chat=SimpleNamespace(completions=spy))
 
 
-def _response(*, content="done", tool_calls=(), finish_reason="stop"):
+def _response(
+    *,
+    content="done",
+    reasoning_content=None,
+    tool_calls=(),
+    finish_reason="stop",
+):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
                 finish_reason=finish_reason,
-                message=SimpleNamespace(content=content, tool_calls=tool_calls),
+                message=SimpleNamespace(
+                    content=content,
+                    reasoning_content=reasoning_content,
+                    tool_calls=tool_calls,
+                ),
             )
         ],
         usage=SimpleNamespace(
@@ -61,6 +71,7 @@ def _tool_call(arguments='{"session_id":"ses_test"}'):
 def _stream_chunk(
     *,
     content=None,
+    reasoning_content=None,
     tool_calls=(),
     finish_reason=None,
     usage=None,
@@ -71,6 +82,7 @@ def _stream_chunk(
                 finish_reason=finish_reason,
                 delta=SimpleNamespace(
                     content=content,
+                    reasoning_content=reasoning_content,
                     tool_calls=tool_calls,
                 ),
             )
@@ -109,7 +121,7 @@ def _tool_definition():
     )
 
 
-def test_deepseek_request_uses_openai_compatibility_and_disables_thinking():
+def test_deepseek_request_uses_openai_compatibility_and_enables_thinking():
     spy = _CompletionsSpy([_response()])
     provider = DeepSeekProvider(
         ProviderConfig(max_retries=0),
@@ -125,9 +137,10 @@ def test_deepseek_request_uses_openai_compatibility_and_disables_thinking():
     assert result.message.content == "done"
     call = spy.calls[0]
     assert call["model"] == "deepseek-v4-pro"
-    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
     assert call["stream"] is False
     assert call["tools"][0]["function"]["name"] == "get_analysis_summary"
+    assert "tool_choice" not in call
 
 
 def test_deepseek_streams_visible_text_and_returns_normalized_response():
@@ -160,8 +173,79 @@ def test_deepseek_streams_visible_text_and_returns_normalized_response():
     assert result.finish_reason == "stop"
     assert spy.calls[0]["stream"] is True
     assert spy.calls[0]["extra_body"] == {
-        "thinking": {"type": "disabled"}
+        "thinking": {"type": "enabled"}
     }
+
+
+def test_deepseek_normalizes_and_replays_reasoning_content():
+    spy = _CompletionsSpy(
+        [_response(content="完成。", reasoning_content="先检查工具结果。")]
+    )
+    provider = DeepSeekProvider(
+        ProviderConfig(max_retries=0),
+        client=_client(spy),
+        environ={},
+    )
+    prior = AssistantMessage(
+        "assistant",
+        content=None,
+        tool_calls=(
+            ToolCall(
+                "call_1",
+                "get_analysis_summary",
+                {"session_id": "ses_test"},
+            ),
+        ),
+        reasoning_content="需要先读取分析摘要。",
+    )
+
+    result = provider.complete(
+        [
+            prior,
+            AssistantMessage("tool", "{}", tool_call_id="call_1"),
+        ],
+        [_tool_definition()],
+    )
+
+    assert result.message.reasoning_content == "先检查工具结果。"
+    assert spy.calls[0]["messages"][0]["reasoning_content"] == (
+        "需要先读取分析摘要。"
+    )
+    assert spy.calls[0]["messages"][0]["content"] == ""
+
+
+def test_deepseek_streams_reasoning_separately_from_formal_content():
+    spy = _CompletionsSpy(
+        [
+            iter(
+                (
+                    _stream_chunk(reasoning_content="先读取"),
+                    _stream_chunk(reasoning_content="上下文"),
+                    _stream_chunk(content="已完成。"),
+                    _stream_chunk(finish_reason="stop"),
+                )
+            )
+        ]
+    )
+    provider = DeepSeekProvider(
+        ProviderConfig(max_retries=0),
+        client=_client(spy),
+        environ={},
+    )
+    text_deltas = []
+    reasoning_deltas = []
+
+    result = provider.complete_stream(
+        [AssistantMessage("user", "检查模型")],
+        [],
+        text_deltas.append,
+        reasoning_deltas.append,
+    )
+
+    assert reasoning_deltas == ["先读取", "上下文"]
+    assert text_deltas == ["已完成。"]
+    assert result.message.reasoning_content == "先读取上下文"
+    assert result.message.content == "已完成。"
 
 
 def test_deepseek_stream_assembles_tool_call_fragments():

@@ -9,10 +9,12 @@ from fem.geometry import (
     PlanarBooleanContext,
     RectangleGeometry,
     describe_recipe_topology,
+    resolve_extrusion_source_faces,
 )
 from fem_agent.geometry_authoring import (
     GEOMETRY_FEATURE_CATALOG_TOOL_NAME,
     geometry_feature_catalog_tool_schema,
+    planar_feature_geometry_catalog,
     planar_polygon_geometry,
 )
 from fem_agent.result_authoring import AgentResultQueryBridge
@@ -36,15 +38,37 @@ def _extrusion(name: str) -> ExtrudedGeometry:
 
 
 def _controller(session: ModelSession):
+    controller, _bridge = _controller_and_bridge(session)
+    return controller
+
+
+def _controller_and_bridge(session: ModelSession):
     bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
     )
     bridge.bind_snapshot(session.snapshot())
-    return create_session_authoring_workflow_controller(
-        session,
+    return (
+        create_session_authoring_workflow_controller(
+            session,
+            bridge,
+            AgentResultQueryBridge(SessionResultQueryPort(session)),
+        ),
         bridge,
-        AgentResultQueryBridge(SessionResultQueryPort(session)),
     )
+
+
+def _proven_cut(base, tool, model_name: str):
+    target_face_id = resolve_extrusion_source_faces(base).face_ids[0]
+    tool_face_ids = resolve_extrusion_source_faces(tool).face_ids
+    with geometry_runtime.model(model_name, dimension=2) as cad:
+        return prepare_planar_boolean(
+            cad,
+            base,
+            target_face_id,
+            tool,
+            tool_face_ids,
+            "cut",
+        ).geometry
 
 
 def test_phase1_geometry_catalog_tool_schema_accepts_optional_part_filter() -> None:
@@ -187,13 +211,21 @@ def test_phase1_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() ->
     )
 
     assert result.ok, result.summary
-    geometry = result.data["parts"][0]["planar_feature_geometry"]
+    part_context = result.data["parts"][0]
+    geometry = part_context["planar_feature_geometry"]
     feature = geometry["features"][0]
     assert feature["feature_id"] == "PB1"
     assert feature["operation"] == "cut"
     assert feature["bounding_box"] == [37.0, 120.0, 63.0, 180.0]
     assert feature["tool_geometry_recipe"]["kind"] == "planar_sketch"
     assert len(feature["tool_geometry_recipe"]["points"]) == 12
+    assert feature["tool_geometry_recipe_scope"] == {
+        "kind": "planar_boolean_feature_tool_snapshot",
+        "feature_id": "PB1",
+        "editable": False,
+        "logical_ids": "feature_local_read_only",
+        "replacement_operation": "replace_planar_boolean_feature",
+    }
 
     edit_context = controller.dispatch(
         "read_geometry_edit_context",
@@ -201,9 +233,264 @@ def test_phase1_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() ->
         ToolExecutionContext("catalog-planar", 0, "catalog-planar-edit-read"),
     )
     assert edit_context.ok, edit_context.diagnostics[0].message
+    policy = edit_context.data["freeform_profile_policy"]
+    assert policy["primary_operation_for_closed_boundary_slot"] == (
+        "planar_boolean(tool.kind=polygon)"
+    )
+    assert policy["rectangle_decomposition_for_one_connected_slot"] == "avoid"
     edit_feature = edit_context.data["planar_feature_geometry"]["features"][0]
     assert edit_feature["feature_id"] == "PB1"
     assert edit_feature["bounding_box"] == [37.0, 120.0, 63.0, 180.0]
+
+    definition = next(
+        item for item in controller.definitions if item.name == "prepare_geometry_edit"
+    )
+    operations = {
+        branch["properties"]["operation"]["const"]
+        for branch in definition.parameters["properties"]["edit"]["oneOf"]
+    }
+    assert operations == {
+        "planar_boolean",
+        "replace_planar_boolean_feature",
+        "add_path_slot",
+        "translate",
+        "rotate",
+    }
+    planar_boolean = next(
+        branch
+        for branch in definition.parameters["properties"]["edit"]["oneOf"]
+        if branch["properties"]["operation"]["const"] == "planar_boolean"
+    )
+    tool_schema = planar_boolean["properties"]["tool"]
+    assert "Prefer polygon" in tool_schema["description"]
+    polygon_tool = next(
+        branch
+        for branch in tool_schema["oneOf"]
+        if branch["properties"]["kind"]["const"] == "polygon"
+    )
+    path_tool = next(
+        branch
+        for branch in tool_schema["oneOf"]
+        if branch["properties"]["kind"]["const"] == "path_stroke"
+    )
+    assert "Primary boundary" in polygon_tool["properties"]["vertices"][
+        "description"
+    ]
+    assert "Multiple bends" in path_tool["properties"]["points"]["description"]
+    assert definition.parameters["properties"]["part_id"] == {"const": "P1"}
+
+
+def test_phase1_scoped_geometry_edit_schema_rejects_sketch_ids_before_handler() -> None:
+    plate = RectangleGeometry("Plate", 100.0, 300.0)
+    tool = planar_polygon_geometry(
+        "Wrong cut",
+        vertices=((40.0, 135.0), (60.0, 135.0), (60.0, 165.0), (40.0, 165.0)),
+    ).recipe
+    target_face_id = resolve_extrusion_source_faces(plate).face_ids[0]
+    tool_face_id = resolve_extrusion_source_faces(tool).face_ids[0]
+    recipe = BooleanGeometry(
+        "Plate with wrong cut",
+        "cut",
+        plate,
+        tool,
+        planar_context=PlanarBooleanContext("PB1", target_face_id, (tool_face_id,)),
+    )
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "Scoped schema",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+    )
+    controller = _controller(session)
+    read = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(session.session_id, 1, "read-scoped-schema"),
+    )
+    assert read.ok
+
+    invalid = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "batch",
+                "edits": [
+                    {
+                        "operation": "delete_curves",
+                        "curve_ids": ["pc-c0001"],
+                    }
+                ],
+            },
+        },
+        ToolExecutionContext(session.session_id, 1, "invalid-scoped-operation"),
+    )
+
+    assert not invalid.ok
+    assert invalid.data["error"]["code"] == "geometry-edit.schema-invalid"
+    assert invalid.data["error"]["path"] == "arguments.edit.operation"
+    assert "replace_planar_boolean_feature" in invalid.data["error"][
+        "allowed_values"
+    ]
+
+    missing_operation = controller.dispatch(
+        "prepare_geometry_edit",
+        {"part_id": "P1", "edit": {"edits": []}},
+        ToolExecutionContext(session.session_id, 1, "missing-operation"),
+    )
+    assert not missing_operation.ok
+    assert missing_operation.data["error"]["path"] == "arguments.edit.operation"
+
+    nested_part_id = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "replace_planar_boolean_feature",
+                "feature_id": "PB1",
+                "part_id": "P1",
+                "tool": {
+                    "kind": "rectangle",
+                    "x": 40.0,
+                    "y": 135.0,
+                    "width": 20.0,
+                    "height": 30.0,
+                },
+            },
+        },
+        ToolExecutionContext(session.session_id, 1, "nested-part-id"),
+    )
+    assert not nested_part_id.ok
+    assert nested_part_id.data["error"]["path"] == "arguments.edit.part_id"
+
+    incomplete_tool = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "replace_planar_boolean_feature",
+                "feature_id": "PB1",
+                "tool": {
+                    "kind": "rectangle",
+                    "x": 40.0,
+                    "y": 135.0,
+                    "width": 20.0,
+                },
+            },
+        },
+        ToolExecutionContext(session.session_id, 1, "incomplete-tool"),
+    )
+    assert not incomplete_tool.ok
+    assert incomplete_tool.data["error"]["code"] == "geometry-edit.schema-invalid"
+    assert incomplete_tool.data["error"]["path"] == "arguments.edit.tool.height"
+
+
+def test_phase1_replaces_planar_boolean_feature_and_replays_later_history(
+    real_gmsh,
+) -> None:
+    del real_gmsh
+    plate = RectangleGeometry("Plate", 100.0, 300.0)
+    wrong_tool = planar_polygon_geometry(
+        "Wrong rectangular cut",
+        vertices=((40.0, 135.0), (60.0, 135.0), (60.0, 165.0), (40.0, 165.0)),
+    ).recipe
+    wrong_cut = _proven_cut(plate, wrong_tool, "wrong-cut")
+    corner_hole = planar_polygon_geometry(
+        "Following cut",
+        vertices=((3.5, 3.5), (6.5, 3.5), (6.5, 6.5), (3.5, 6.5)),
+    ).recipe
+    accepted = _proven_cut(
+        wrong_cut,
+        corner_hole,
+        "following-hole",
+    )
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "Feature replacement",
+        UnitContext("mm", "N", "MPa"),
+        accepted,
+    )
+    controller, bridge = _controller_and_bridge(session)
+    read = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(session.session_id, 1, "read-before-replacement"),
+    )
+    assert read.ok
+
+    no_op_append = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "planar_boolean",
+                "boolean_operation": "cut",
+                "tool": {
+                    "kind": "polygon",
+                    "vertices": [
+                        {"x": 40.0, "y": 135.0},
+                        {"x": 50.0, "y": 135.0},
+                        {"x": 50.0, "y": 145.0},
+                        {"x": 60.0, "y": 145.0},
+                        {"x": 60.0, "y": 155.0},
+                        {"x": 50.0, "y": 155.0},
+                        {"x": 50.0, "y": 165.0},
+                        {"x": 40.0, "y": 165.0},
+                    ],
+                },
+            },
+        },
+        ToolExecutionContext(session.session_id, 1, "no-op-append"),
+    )
+    assert not no_op_append.ok
+    assert no_op_append.data["error"]["code"] == (
+        "geometry-edit.planar-boolean-lineage"
+    )
+    assert no_op_append.data["error"]["reason"].startswith("planar-boolean.")
+    assert no_op_append.data["error"]["remediation"]["replacement_operation"] == (
+        "replace_planar_boolean_feature"
+    )
+
+    replacement = controller.dispatch(
+        "prepare_geometry_edit",
+        {
+            "part_id": "P1",
+            "edit": {
+                "operation": "replace_planar_boolean_feature",
+                "feature_id": "PB1",
+                "tool": {
+                    "kind": "polygon",
+                    "vertices": [
+                        {"x": 30.0, "y": 135.0},
+                        {"x": 40.0, "y": 135.0},
+                        {"x": 40.0, "y": 145.0},
+                        {"x": 60.0, "y": 145.0},
+                        {"x": 60.0, "y": 135.0},
+                        {"x": 70.0, "y": 135.0},
+                        {"x": 70.0, "y": 165.0},
+                        {"x": 60.0, "y": 165.0},
+                        {"x": 60.0, "y": 155.0},
+                        {"x": 40.0, "y": 155.0},
+                        {"x": 40.0, "y": 165.0},
+                        {"x": 30.0, "y": 165.0},
+                    ],
+                },
+            },
+        },
+        ToolExecutionContext(session.session_id, 1, "replace-pb1"),
+    )
+
+    assert replacement.ok, replacement.data
+    assert replacement.data["replaced_feature_id"] == "PB1"
+    assert replacement.data["replayed_feature_count"] == 2
+    receipt = bridge.accept_from_gui_control(replacement.data["proposal_id"])
+    assert receipt.state.value == "succeeded"
+    features = planar_feature_geometry_catalog(
+        session.snapshot().parts[0].geometry_recipe
+    )["features"]
+    assert [feature["feature_id"] for feature in features] == ["PB1", "PB2"]
+    assert features[0]["bounding_box"] == [30.0, 135.0, 70.0, 165.0]
+    assert features[1]["bounding_box"] == [3.5, 3.5, 6.5, 6.5]
 
 
 def test_phase1_stale_geometry_read_resynchronizes_without_unknown_tool(

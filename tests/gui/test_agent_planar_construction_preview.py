@@ -69,6 +69,50 @@ def _missing_reference(name: str = "missing-a") -> dict[str, object]:
     }
 
 
+def _split_then_cut_arguments() -> dict[str, object]:
+    return {
+        "part_function": "带内部切除和圆孔的平板",
+        "construction": {
+            "schema_version": 1,
+            "name": "split material diagnostic",
+            "plane": "XY",
+            "nodes": [
+                {
+                    "id": "plate",
+                    "kind": "rectangle",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "width": 100.0,
+                    "height": 300.0,
+                },
+                {
+                    "id": "divider",
+                    "kind": "rectangle",
+                    "x": 0.0,
+                    "y": 140.0,
+                    "width": 100.0,
+                    "height": 20.0,
+                },
+                {
+                    "id": "hole",
+                    "kind": "circle",
+                    "center_x": 10.0,
+                    "center_y": 290.0,
+                    "radius": 2.0,
+                },
+                {
+                    "id": "result",
+                    "kind": "difference",
+                    "base": "plate",
+                    "subtract": ["divider", "hole"],
+                },
+            ],
+            "result_node_id": "result",
+        },
+        "output": "planar",
+    }
+
+
 def test_phase5_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -498,6 +542,60 @@ def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> No
     assert changed.data["retry"]["retryable"] is True
     assert exhausted.data["retry"]["retryable"] is False
     assert "three attempts" in exhausted.data["retry"]["blocker"]
+
+
+def test_phase5_split_material_diagnostic_identifies_source_and_topology() -> None:
+    _bridge, controller = _controller(ModelSession())
+    first = _dispatch(controller, _split_then_cut_arguments(), "split-first")
+
+    assert not first.ok
+    assert first.data["diagnostic"]["code"] == (
+        "planar-ir.feature-splits-material"
+    )
+    assert first.data["diagnostic"]["node_id"] == "divider"
+    evidence = first.data["diagnostic"]["evidence"]
+    assert {
+        key: value
+        for key, value in evidence.items()
+        if key != "tool_bounding_box"
+    } == {
+        "material_profile_count_before": 1,
+        "material_profile_count_after": 2,
+        "boundary_contact": "detected_or_crossed",
+        "positive_clearance": False,
+    }
+    assert evidence["tool_bounding_box"] == pytest.approx(
+        [0.0, 140.0, 100.0, 160.0],
+        abs=2.0e-7,
+    )
+    assert first.data["retry"]["retryable"] is True
+
+    equivalent = _split_then_cut_arguments()
+    equivalent["construction"]["nodes"][1] = {
+        "id": "divider",
+        "kind": "polygon",
+        "vertices": [
+            [0.0, 140.0],
+            [100.0, 140.0],
+            [100.0, 160.0],
+            [0.0, 160.0],
+        ],
+    }
+    same_topology = _dispatch(controller, equivalent, "split-equivalent")
+
+    assert not same_topology.ok
+    assert same_topology.data["retry"]["retryable"] is False
+    assert "same topology failure evidence" in same_topology.data["retry"][
+        "blocker"
+    ]
+
+    corrected = _split_then_cut_arguments()
+    corrected["construction"]["nodes"][1].update(
+        {"x": 20.0, "width": 60.0}
+    )
+    accepted = _dispatch(controller, corrected, "split-corrected")
+
+    assert accepted.ok, accepted.data
 
 
 def test_phase5_invalid_output_is_rejected_before_cad_compilation(

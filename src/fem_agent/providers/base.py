@@ -45,6 +45,7 @@ class AssistantMessage:
     content: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+    reasoning_content: str | None = None
 
     def __post_init__(self) -> None:
         if self.role not in _ROLES:
@@ -53,6 +54,12 @@ class AssistantMessage:
             raise TypeError("message content must be a string or None")
         if self.content is not None:
             _require_utf8(self.content, "message content")
+        if self.reasoning_content is not None and not isinstance(
+            self.reasoning_content, str
+        ):
+            raise TypeError("message reasoning_content must be a string or None")
+        if self.reasoning_content is not None:
+            _require_utf8(self.reasoning_content, "message reasoning_content")
         object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
         if self.role == "tool" and (
             not isinstance(self.tool_call_id, str)
@@ -63,6 +70,8 @@ class AssistantMessage:
             raise ValueError("only tool messages may contain tool_call_id")
         if self.role != "assistant" and self.tool_calls:
             raise ValueError("only assistant messages may contain tool_calls")
+        if self.role != "assistant" and self.reasoning_content is not None:
+            raise ValueError("only assistant messages may contain reasoning_content")
 
 
 @dataclass(frozen=True)

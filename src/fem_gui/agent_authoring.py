@@ -188,6 +188,7 @@ from fem.geometry import (
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
     PlanarConstructionIR,
+    PlanarBooleanLineageResolutionError,
     PlanarIRValidationError,
     PathSweptGeometry,
     RevolvedGeometry,
@@ -4649,6 +4650,10 @@ def create_session_authoring_workflow_controller(
         "planar-ir.materialization-failed": "二维边界无法物化为严格草图，模型保持不变。",
         "planar-ir.profile-invalid": "物化草图未通过 Profile 拓扑证明。",
         "planar-ir.equivalence-failed": "物化草图与布尔结果不等价，已阻止提案。",
+        "planar-ir.feature-splits-material": (
+            "内部切除使材料区域失去连通性；请根据诊断中的节点、边界接触"
+            "和包围盒调整位置或尺寸。"
+        ),
         "planar-ir.transform-invalid": (
             "输出参数无效：二维可使用 output: \"planar\" 或 "
             "output: {\"kind\": \"planar\"}；三维请检查变换参数与源 Profile。"
@@ -4664,12 +4669,19 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         code = str(getattr(diagnostic, "code"))
         allowed_fields = tuple(getattr(diagnostic, "allowed_fields"))
+        raw_evidence = getattr(diagnostic, "evidence", ())
+        evidence = (
+            dict(raw_evidence)
+            if isinstance(raw_evidence, (Mapping, tuple, list))
+            else {}
+        )
         retry = controller.assess_planar_construction_failure(
             request,
             code=code,
             node_id=getattr(diagnostic, "node_id"),
             retryable=bool(getattr(diagnostic, "retryable")),
             allowed_fields=allowed_fields,
+            failure_evidence=evidence,
         )
         payload = {
             "code": code,
@@ -4679,6 +4691,8 @@ def create_session_authoring_workflow_controller(
             "allowed_fields": list(allowed_fields),
             "model_unchanged": True,
         }
+        if evidence:
+            payload["evidence"] = evidence
         user_message = _PLANAR_DIAGNOSTIC_MESSAGES.get(
             code,
             "二维构造未通过本地验证，模型保持不变。",
@@ -5148,6 +5162,7 @@ def create_session_authoring_workflow_controller(
                     "recipe_kind": _provider_recipe_kind(part.geometry_recipe),
                     "supported_edits": [
                         "planar_boolean",
+                        "replace_planar_boolean_feature",
                         "extrude_profiles",
                         "revolve_profile",
                         "path_sweep_profile",
@@ -5173,9 +5188,28 @@ def create_session_authoring_workflow_controller(
                         "preferred_operation_for_constant_width_slot": (
                             "add_path_slot"
                         ),
+                        "constant_width_slot_operation_priority": [
+                            "add_path_slot",
+                            "planar_boolean(tool.kind=path_stroke)",
+                        ],
+                        "planar_boolean_path_stroke_role": "lower_level_equivalent",
+                        "primary_operation_for_closed_boundary_slot": (
+                            "planar_boolean(tool.kind=polygon)"
+                        ),
+                        "representation_priority": [
+                            "path_stroke_when_one_open_non_branching_centerline_"
+                            "and_constant_width_fully_define_the_slot",
+                            "polygon_for_other_single_closed_slot_boundaries",
+                            "primitive_union_only_for_genuinely_composite_geometry",
+                        ],
+                        "rectangle_decomposition_for_one_connected_slot": "avoid",
                         "postcondition_for_one_cutout": (
                             "append one proven cut feature to feature history"
                         ),
+                        "existing_feature_tool_mutation": (
+                            "replace_planar_boolean_feature"
+                        ),
+                        "feature_tool_recipe_ids_are_editable": False,
                     },
                     "planar_feature_geometry": planar_feature_geometry_catalog(
                         part.geometry_recipe
@@ -5254,7 +5288,20 @@ def create_session_authoring_workflow_controller(
                 "two_dimensional_cut_representation": "closed_inner_profile",
                 "part_boolean_required": False,
                 "preferred_operation_for_constant_width_slot": "add_path_slot",
+                "constant_width_slot_operation_priority": [
+                    "add_path_slot",
+                    "planar_boolean(tool.kind=path_stroke)",
+                ],
+                "planar_boolean_path_stroke_role": "lower_level_equivalent",
                 "preferred_operation_for_arbitrary_silhouette": "add_polygon",
+                "primary_operation_for_closed_boundary_slot": "add_polygon",
+                "representation_priority": [
+                    "add_path_slot_when_one_open_non_branching_centerline_"
+                    "and_constant_width_fully_define_the_slot",
+                    "add_polygon_for_other_single_closed_slot_boundaries",
+                    "ordered_lines_and_arcs_when_exact_curves_are_required",
+                ],
+                "rectangle_decomposition_for_one_connected_slot": "avoid",
                 "alternate_operation": "one_batch_of_ordered_lines_and_arcs",
                 "required_invariants": [
                     "closed",
@@ -5771,6 +5818,83 @@ def create_session_authoring_workflow_controller(
                 first_failed_member=_first_failed_path_member(arguments.get("path")),
             )
 
+    def compile_planar_boolean_tool(raw_tool: object) -> tuple[object, str]:
+        if not isinstance(raw_tool, Mapping):
+            raise TypeError("planar Boolean tool must be an object")
+        tool = dict(raw_tool)
+        kind = str(tool.get("kind", ""))
+        if kind in {"polygon", "path_stroke"}:
+            coordinate_field = "vertices" if kind == "polygon" else "points"
+            raw_coordinates = tool.get(coordinate_field)
+            if not isinstance(raw_coordinates, list) or any(
+                not isinstance(item, Mapping) or set(item) != {"x", "y"}
+                for item in raw_coordinates
+            ):
+                raise ValueError(
+                    f"planar Boolean {coordinate_field} must contain x/y objects"
+                )
+            tool[coordinate_field] = [
+                [item["x"], item["y"]] for item in raw_coordinates
+            ]
+        tool_node = {"id": "tool-profile", **tool}
+        construction = PlanarConstructionIR.from_dict(
+            {
+                "schema_version": 1,
+                "name": "agent-planar-boolean-tool",
+                "plane": "XY",
+                "nodes": [tool_node],
+                "result_node_id": "tool-profile",
+            }
+        )
+        return compile_planar_construction(construction).recipe, kind
+
+    def replace_planar_boolean_feature_tool(
+        recipe: object,
+        feature_id: str,
+        replacement_tool: object,
+    ) -> tuple[object, int]:
+        matched = 0
+        replayed = 0
+
+        def rebuild(item: object) -> object:
+            nonlocal matched, replayed
+            if type(item) is not BooleanGeometry:
+                return item
+            context = item.planar_context
+            if context is None:
+                raise AuthoringContractError(
+                    "geometry.feature-replacement.unsupported-history: "
+                    "the selected feature is not in a pure planar Boolean chain"
+                )
+            rebuilt_object = rebuild(item.object_geometry)
+            tool = item.tool_geometry
+            if context.feature_id == feature_id:
+                matched += 1
+                tool = replacement_tool
+            tool_face_ids = resolve_extrusion_source_faces(tool).face_ids
+            with geometry_runtime.model(
+                f"replace-{context.feature_id}",
+                dimension=2,
+            ) as cad:
+                prepared = prepare_planar_boolean(
+                    cad,
+                    rebuilt_object,
+                    context.target_face_id,
+                    tool,
+                    tool_face_ids,
+                    item.operation,
+                )
+            replayed += 1
+            return replace(prepared.geometry, name=item.name)
+
+        rebuilt = rebuild(recipe)
+        if matched != 1:
+            raise AuthoringContractError(
+                "geometry.feature-replacement.feature-missing: feature_id must "
+                "identify exactly one existing planar Boolean feature"
+            )
+        return rebuilt, replayed
+
     def verify_spatial_relation(
         before_recipe: object,
         after_recipe: object,
@@ -5922,35 +6046,7 @@ def create_session_authoring_workflow_controller(
                 raise AuthoringContractError(
                     "planar_boolean operation must be fuse or cut"
                 )
-            raw_tool = edit["tool"]
-            if not isinstance(raw_tool, Mapping):
-                raise TypeError("planar_boolean tool must be an object")
-            tool = dict(raw_tool)
-            kind = str(tool.get("kind", ""))
-            if kind in {"polygon", "path_stroke"}:
-                coordinate_field = "vertices" if kind == "polygon" else "points"
-                raw_coordinates = tool.get(coordinate_field)
-                if not isinstance(raw_coordinates, list) or any(
-                    not isinstance(item, Mapping) or set(item) != {"x", "y"}
-                    for item in raw_coordinates
-                ):
-                    raise ValueError(
-                        f"planar_boolean {coordinate_field} must contain x/y objects"
-                    )
-                tool[coordinate_field] = [
-                    [item["x"], item["y"]] for item in raw_coordinates
-                ]
-            tool_node = {"id": "tool-profile", **tool}
-            construction = PlanarConstructionIR.from_dict(
-                {
-                    "schema_version": 1,
-                    "name": "agent-planar-boolean-tool",
-                    "plane": "XY",
-                    "nodes": [tool_node],
-                    "result_node_id": "tool-profile",
-                }
-            )
-            compiled_tool = compile_planar_construction(construction).recipe
+            compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
             target_faces = resolve_extrusion_source_faces(part.geometry_recipe).face_ids
             tool_faces = resolve_extrusion_source_faces(compiled_tool).face_ids
             if len(target_faces) != 1:
@@ -6004,6 +6100,60 @@ def create_session_authoring_workflow_controller(
                         if spatial_proof is not None
                         else {}
                     ),
+                },
+            )
+        if operation == "replace_planar_boolean_feature":
+            if set(edit) != {"feature_id", "tool"}:
+                raise ValueError(
+                    "replace_planar_boolean_feature fields do not match"
+                )
+            if part.dimension != 2:
+                raise AuthoringContractError(
+                    "replace_planar_boolean_feature requires a two-dimensional Part"
+                )
+            if raw_spatial_relation is not None:
+                raise AuthoringContractError(
+                    "geometry.spatial-relation-operation: spatial_relation applies "
+                    "only when appending one new planar Boolean feature"
+                )
+            feature_id = str(edit["feature_id"])
+            compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
+            rebuilt_recipe, replayed_feature_count = (
+                replace_planar_boolean_feature_tool(
+                    part.geometry_recipe,
+                    feature_id,
+                    compiled_tool,
+                )
+            )
+            draft = geometry_draft(rebuilt_recipe)
+            summary = (
+                f"替换部件 {part.name} 的二维布尔特征 {feature_id}："
+                f"工具轮廓为 {kind}，并重放后续特征"
+            )
+            metadata = envelope(controller, "geometry-feature-replacement")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = planned_geometry_edit_mode()
+            proposal = create_geometry_edit_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current_context(),
+                part_id=part_id,
+                draft=draft,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "确认后替换所选二维布尔特征、重放后续特征，并使旧网格与结果失效",
+                ),
+                confirm_label="替换特征",
+                extra_data={
+                    "geometry_edit_mode": edit_mode,
+                    "replaced_feature_id": feature_id,
+                    "replayed_feature_count": replayed_feature_count,
                 },
             )
         if operation == "part_boolean":
@@ -6608,6 +6758,84 @@ def create_session_authoring_workflow_controller(
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
+        edit = arguments.get("edit")
+        operation = (
+            str(edit.get("operation", "")) if isinstance(edit, Mapping) else ""
+        )
+        tool = edit.get("tool") if isinstance(edit, Mapping) else None
+        submitted_path_stroke = operation == "add_path_slot" or (
+            operation in {"planar_boolean", "replace_planar_boolean_feature"}
+            and isinstance(tool, Mapping)
+            and tool.get("kind") == "path_stroke"
+        )
+
+        def path_slot_retry_outcome(
+            *,
+            code: str,
+            reason: str,
+            error_type: str,
+            evidence: Mapping[str, object],
+        ) -> AuthoringToolOutcome | None:
+            if code != "planar-ir.invalid-path-stroke" or not submitted_path_stroke:
+                return None
+            bounded_evidence = dict(evidence)
+            raw_points = (
+                edit.get("points")
+                if operation == "add_path_slot" and isinstance(edit, Mapping)
+                else tool.get("points") if isinstance(tool, Mapping) else None
+            )
+            if isinstance(raw_points, list):
+                bounded_evidence.setdefault("points_role", "centerline")
+                bounded_evidence.setdefault("required_topology", "open")
+                bounded_evidence.setdefault("submitted_point_count", len(raw_points))
+                bounded_evidence.setdefault(
+                    "first_equals_last",
+                    bool(raw_points) and raw_points[0] == raw_points[-1],
+                )
+            preferred_operation = (
+                "replace_planar_boolean_feature"
+                if operation == "replace_planar_boolean_feature"
+                else "add_path_slot"
+            )
+            remediation = {
+                "action": "retry_same_path_slot_with_revised_centerline",
+                "preserve_representation": True,
+                "preferred_operation": preferred_operation,
+                "lower_level_equivalent": "planar_boolean(tool.kind=path_stroke)",
+                "points_role": "centerline",
+                "required_topology": "open",
+                "non_branching": True,
+                "first_equals_last": bool(
+                    bounded_evidence.get("first_equals_last", False)
+                ),
+                "trace_slot_boundary": False,
+                "polygon_fallback_only_when": [
+                    "centerline_has_junction",
+                    "width_varies",
+                ],
+                "read_context_again": False,
+            }
+            return AuthoringToolOutcome(
+                "Path-slot validation rejected the centerline; revise the same "
+                "path-slot representation and retry before presenting a proposal.",
+                {
+                    "error": {
+                        "code": code,
+                        "failed_operation": operation,
+                        "reason": reason,
+                        "error_type": error_type,
+                        "representation": "path_stroke",
+                        "evidence": bounded_evidence,
+                        "allowed_operations": list(
+                            controller.geometry_edit_supported_operations
+                        ),
+                        "remediation": remediation,
+                    },
+                    "required_action": remediation["action"],
+                },
+                ok=False,
+            )
+
         try:
             return prepare_geometry_edit(arguments, controller)
         except PlanarEditValidationError as error:
@@ -6625,12 +6853,114 @@ def create_session_authoring_workflow_controller(
             }
             first = error.diagnostics[0]
             code = str(first["code"])
+            path_slot_outcome = path_slot_retry_outcome(
+                code=code,
+                reason=str(first["message"]),
+                error_type=type(error).__name__,
+                evidence={},
+            )
+            if path_slot_outcome is not None:
+                return path_slot_outcome
             affected = ", ".join(str(item) for item in first["affected_logical_ids"])
             location = f" ({affected})" if affected else ""
             return AuthoringToolOutcome(
                 "Exact planar Profile validation rejected the edit: "
                 f"{code}{location}. Revise the contour before presenting a proposal.",
                 data,
+                ok=False,
+            )
+        except PlanarIRValidationError as error:
+            diagnostic = error.diagnostic
+            raw_evidence = getattr(diagnostic, "evidence", ())
+            evidence = (
+                dict(raw_evidence)
+                if isinstance(raw_evidence, (Mapping, tuple, list))
+                else {}
+            )
+            path_slot_outcome = path_slot_retry_outcome(
+                code=diagnostic.code,
+                reason=diagnostic.message,
+                error_type=type(error).__name__,
+                evidence=evidence,
+            )
+            if path_slot_outcome is not None:
+                return path_slot_outcome
+            return AuthoringToolOutcome(
+                "Geometry edit execution was rejected; revise the operation using "
+                "the structured planar validation details.",
+                {
+                    "error": {
+                        "code": diagnostic.code,
+                        "failed_operation": operation,
+                        "reason": diagnostic.message,
+                        "error_type": type(error).__name__,
+                        "evidence": evidence,
+                        "allowed_operations": list(
+                            controller.geometry_edit_supported_operations
+                        ),
+                        "remediation": {
+                            "action": "revise_same_geometry_edit",
+                            "read_context_again": False,
+                        },
+                    }
+                },
+                ok=False,
+            )
+        except PlanarBooleanLineageResolutionError as error:
+            operation = ""
+            edit = arguments.get("edit")
+            if isinstance(edit, Mapping):
+                operation = str(edit.get("operation", ""))
+            reason = str(error).strip()[:1_000]
+            return AuthoringToolOutcome(
+                "Planar Boolean validation rejected the geometry edit; use the "
+                "returned reason and allowed operations before retrying.",
+                {
+                    "error": {
+                        "code": "geometry-edit.planar-boolean-lineage",
+                        "failed_operation": operation,
+                        "reason": reason,
+                        "allowed_operations": list(
+                            controller.geometry_edit_supported_operations
+                        ),
+                        "remediation": {
+                            "action": (
+                                "replace_existing_feature_or_revise_boolean_tool"
+                            ),
+                            "replacement_operation": (
+                                "replace_planar_boolean_feature"
+                            ),
+                            "append_requires_material_change": True,
+                            "read_context_again": False,
+                        },
+                    }
+                },
+                ok=False,
+            )
+        except (AuthoringContractError, TypeError, ValueError, KeyError) as error:
+            operation = ""
+            edit = arguments.get("edit")
+            if isinstance(edit, Mapping):
+                operation = str(edit.get("operation", ""))
+            reason = str(error).strip()[:1_000]
+            return AuthoringToolOutcome(
+                "Geometry edit execution was rejected; revise the operation using "
+                "the structured error details.",
+                {
+                    "error": {
+                        "code": "geometry-edit.execution-rejected",
+                        "failed_operation": operation,
+                        "reason": reason,
+                        "error_type": type(error).__name__,
+                        "allowed_operations": list(
+                            controller.geometry_edit_supported_operations
+                        ),
+                        "remediation": {
+                            "action": "use_allowed_operation_and_valid_ids",
+                            "read_context_again": False,
+                        },
+                    }
+                },
                 ok=False,
             )
 

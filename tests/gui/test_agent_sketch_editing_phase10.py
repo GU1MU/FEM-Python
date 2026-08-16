@@ -444,6 +444,19 @@ def test_freeform_profile_policy_guides_and_verifies_one_nonconvex_cutout() -> N
     assert policy["part_boolean_required"] is False
     assert policy["preferred_operation_for_arbitrary_silhouette"] == "add_polygon"
     assert policy["preferred_operation_for_constant_width_slot"] == "add_path_slot"
+    assert policy["constant_width_slot_operation_priority"] == [
+        "add_path_slot",
+        "planar_boolean(tool.kind=path_stroke)",
+    ]
+    assert policy["planar_boolean_path_stroke_role"] == "lower_level_equivalent"
+    assert policy["primary_operation_for_closed_boundary_slot"] == "add_polygon"
+    assert policy["representation_priority"] == [
+        "add_path_slot_when_one_open_non_branching_centerline_"
+        "and_constant_width_fully_define_the_slot",
+        "add_polygon_for_other_single_closed_slot_boundaries",
+        "ordered_lines_and_arcs_when_exact_curves_are_required",
+    ]
+    assert policy["rectangle_decomposition_for_one_connected_slot"] == "avoid"
 
     prepared = controller.dispatch(
         "prepare_geometry_edit",
@@ -938,7 +951,10 @@ def test_conflicting_constraint_tool_result_is_atomic_and_registers_no_proposal(
     )
 
     assert not result.ok
-    assert result.data is None
+    assert result.data is not None
+    assert result.data["error"]["code"] == "geometry-edit.execution-rejected"
+    assert result.data["error"]["failed_operation"] == "add_constraint"
+    assert "conflict" in result.data["error"]["reason"]
     assert bridge._records == {}
     assert session.snapshot() == before
 
@@ -1037,6 +1053,12 @@ def test_new_constraint_edit_uses_phase7_branch_migration_semantics() -> None:
 
 def test_prepare_geometry_edit_schema_advertises_all_phase10_operations() -> None:
     edit_schema = _PREPARE_GEOMETRY_EDIT.parameters["properties"]["edit"]
+    assert "add_path_slot as the preferred geometry-edit entry" in (
+        _PREPARE_GEOMETRY_EDIT.description
+    )
+    assert "planar_boolean(tool.kind=path_stroke)" in (
+        _PREPARE_GEOMETRY_EDIT.description
+    )
     spatial_relation = _PREPARE_GEOMETRY_EDIT.parameters["properties"][
         "spatial_relation"
     ]
@@ -1054,6 +1076,40 @@ def test_prepare_geometry_edit_schema_advertises_all_phase10_operations() -> Non
     operations = {
         branch["properties"]["operation"]["const"] for branch in edit_schema["oneOf"]
     }
+
+    add_path_slot = next(
+        branch
+        for branch in edit_schema["oneOf"]
+        if branch["properties"]["operation"]["const"] == "add_path_slot"
+    )
+    path_points_description = add_path_slot["properties"]["points"]["description"]
+    assert 'straight [{"x":10,"y":10},{"x":40,"y":10}]' in (
+        path_points_description
+    )
+    assert 'multiple bends [{"x":10,"y":10}' in path_points_description
+    assert "Points describe the centerline itself" in path_points_description
+    assert "first and last points must differ" in path_points_description
+
+    planar_boolean = next(
+        branch
+        for branch in edit_schema["oneOf"]
+        if branch["properties"]["operation"]["const"] == "planar_boolean"
+    )
+    assert "Low-level cut/fuse profile" in (
+        planar_boolean["properties"]["tool"]["description"]
+    )
+    assert "prefer edit.operation=add_path_slot" in (
+        planar_boolean["properties"]["tool"]["description"]
+    )
+    path_stroke = next(
+        tool
+        for tool in planar_boolean["properties"]["tool"]["oneOf"]
+        if tool["properties"]["kind"]["const"] == "path_stroke"
+    )
+    boolean_points_description = path_stroke["properties"]["points"]["description"]
+    assert boolean_points_description.split("Centerline point examples:", 1)[1] == (
+        path_points_description.split("Centerline point examples:", 1)[1]
+    )
 
     assert {
         "add_line",
@@ -1086,6 +1142,7 @@ def test_prepare_geometry_edit_schema_advertises_all_phase10_operations() -> Non
             "body_boolean",
             "batch",
             "add_path_slot",
+            "replace_planar_boolean_feature",
         }
         <= batch_operations
     )

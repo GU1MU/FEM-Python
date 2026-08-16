@@ -53,6 +53,7 @@ class PlanarConstructionDiagnostic:
     retryable: bool
     allowed_fields: tuple[str, ...]
     model_unchanged: Literal[True] = True
+    evidence: tuple[tuple[str, object], ...] = ()
 
 
 class PlanarConstructionCompileError(ValueError):
@@ -110,12 +111,30 @@ class _NativeFacts:
     curve_types: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _FeatureTargetAmbiguity:
+    source_node_id: str
+    material_profile_count: int
+    boundary_contact: str
+    tool_bounding_box: tuple[float, float, float, float]
+
+    def diagnostic_evidence(self) -> tuple[tuple[str, object], ...]:
+        return (
+            ("material_profile_count_before", 1),
+            ("material_profile_count_after", self.material_profile_count),
+            ("boundary_contact", self.boundary_contact),
+            ("positive_clearance", False),
+            ("tool_bounding_box", self.tool_bounding_box),
+        )
+
+
 def _fail(
     code: str,
     message: str,
     *,
     node_id: str | None = None,
     allowed_fields: tuple[str, ...] = (),
+    evidence: tuple[tuple[str, object], ...] = (),
 ) -> None:
     raise PlanarConstructionCompileError(
         PlanarConstructionDiagnostic(
@@ -124,6 +143,7 @@ def _fail(
             node_id,
             True,
             allowed_fields,
+            evidence=evidence,
         )
     )
 
@@ -253,6 +273,9 @@ def compile_planar_feature_recipe(
     flattened: dict[str, SketchGeometry] = {
         construction.result_node_id: compiled.recipe,
     }
+    flattened_compilations: dict[str, CompiledPlanarConstruction] = {
+        construction.result_node_id: compiled,
+    }
 
     def dependencies(node: object) -> tuple[str, ...]:
         if isinstance(node, (UnionNode, IntersectionNode)):
@@ -290,29 +313,89 @@ def compile_planar_feature_recipe(
     def flatten(node_id: str) -> SketchGeometry:
         recipe = flattened.get(node_id)
         if recipe is None:
-            recipe = compile_planar_construction(
+            node_compilation = compile_planar_construction(
                 subconstruction(node_id),
                 model_factory=model_factory,
-            ).recipe
+            )
+            recipe = node_compilation.recipe
             flattened[node_id] = recipe
+            flattened_compilations[node_id] = node_compilation
         return recipe
+
+    def feature_target_ambiguity(
+        result: object,
+        source_node_id: str,
+        tool_recipe: SketchGeometry,
+    ) -> _FeatureTargetAmbiguity | None:
+        material_profile_count = len(
+            resolve_extrusion_source_faces(result).face_ids
+        )
+        if material_profile_count <= 1:
+            return None
+        tool_analysis = analyze_sketch_profiles(
+            tool_recipe,
+            tolerance=MODELING_TOLERANCE,
+        )
+        simply_connected_tool = (
+            tool_analysis.valid
+            and sum(profile.is_material for profile in tool_analysis.profiles) == 1
+            and sum(profile.is_hole for profile in tool_analysis.profiles) == 0
+        )
+        tool_bounds = flattened_compilations[source_node_id].proof.bounding_box
+        return _FeatureTargetAmbiguity(
+            source_node_id,
+            material_profile_count,
+            (
+                "detected_or_crossed"
+                if simply_connected_tool
+                else "indeterminate"
+            ),
+            tool_bounds,
+        )
 
     def boolean_feature(
         object_recipe: object,
         tool_recipe: SketchGeometry,
         operation: Literal["fuse", "cut"],
         node_id: str,
+        prior_ambiguity: _FeatureTargetAmbiguity | None,
     ) -> object:
         from .planar_boolean import prepare_planar_boolean
 
         target_faces = resolve_extrusion_source_faces(object_recipe).face_ids
         tool_faces = resolve_extrusion_source_faces(tool_recipe).face_ids
         if len(target_faces) != 1:
+            if prior_ambiguity is not None:
+                contact = (
+                    " Exterior-boundary contact or crossing was detected."
+                    if prior_ambiguity.boundary_contact == "detected_or_crossed"
+                    else " Boundary contact could not be ruled out."
+                )
+                _fail(
+                    "planar-ir.feature-splits-material",
+                    (
+                        f"Subtraction node {prior_ambiguity.source_node_id!r} "
+                        f"split one material Profile into "
+                        f"{prior_ambiguity.material_profile_count}."
+                        f"{contact} Keep an internal cutout strictly inside "
+                        "its target with positive clearance."
+                    ),
+                    node_id=prior_ambiguity.source_node_id,
+                    allowed_fields=("nodes", "result_node_id"),
+                    evidence=prior_ambiguity.diagnostic_evidence(),
+                )
             _fail(
                 "planar-ir.feature-target-ambiguous",
-                "A planar Boolean feature requires one material target Profile.",
+                (
+                    "A planar Boolean feature requires one material target "
+                    f"Profile; {len(target_faces)} are currently selectable."
+                ),
                 node_id=node_id,
                 allowed_fields=("nodes", "result_node_id"),
+                evidence=(
+                    ("material_profile_count", len(target_faces)),
+                    ("boundary_contact", "indeterminate"),
+                ),
             )
         try:
             with model_factory(
@@ -337,10 +420,12 @@ def compile_planar_feature_recipe(
                 allowed_fields=("nodes", "result_node_id"),
             )
 
-    def build(node_id: str) -> object:
+    def build(
+        node_id: str,
+    ) -> tuple[object, _FeatureTargetAmbiguity | None]:
         node = nodes[node_id]
         if isinstance(node, DifferenceNode):
-            result = build(node.base)
+            result, ambiguity = build(node.base)
             for tool_id in node.subtract:
                 tool_node = nodes[tool_id]
                 tool_ids = (tool_id,)
@@ -351,23 +436,37 @@ def compile_planar_feature_recipe(
                 ):
                     tool_ids = tool_node.operands
                 for separated_tool_id in tool_ids:
+                    tool_recipe = flatten(separated_tool_id)
                     result = boolean_feature(
                         result,
-                        flatten(separated_tool_id),
+                        tool_recipe,
                         "cut",
                         node.id,
+                        ambiguity,
                     )
-            return result
+                    ambiguity = feature_target_ambiguity(
+                        result,
+                        separated_tool_id,
+                        tool_recipe,
+                    )
+            return result, ambiguity
         if isinstance(node, UnionNode):
             if len(resolve_extrusion_source_faces(flatten(node_id)).face_ids) > 1:
-                return flatten(node_id)
-            result = build(node.operands[0])
+                return flatten(node_id), None
+            result, ambiguity = build(node.operands[0])
             for tool_id in node.operands[1:]:
-                result = boolean_feature(result, flatten(tool_id), "fuse", node.id)
-            return result
-        return flatten(node_id)
+                result = boolean_feature(
+                    result,
+                    flatten(tool_id),
+                    "fuse",
+                    node.id,
+                    ambiguity,
+                )
+                ambiguity = None
+            return result, ambiguity
+        return flatten(node_id), None
 
-    feature_recipe = build(construction.result_node_id)
+    feature_recipe, _ambiguity = build(construction.result_node_id)
     if type(feature_recipe) is SketchGeometry:
         return feature_recipe
     try:

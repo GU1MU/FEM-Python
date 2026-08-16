@@ -58,6 +58,10 @@ class DeepSeekProvider:
     def model_name(self) -> str:
         return self.config.model
 
+    @property
+    def supports_reasoning_stream(self) -> bool:
+        return True
+
     def complete(
         self,
         messages: Sequence[AssistantMessage],
@@ -81,11 +85,10 @@ class DeepSeekProvider:
                     ],
                     "stream": False,
                     "max_tokens": self.config.max_output_tokens,
-                    "extra_body": {"thinking": {"type": "disabled"}},
+                    "extra_body": {"thinking": {"type": "enabled"}},
                 }
                 if tools:
                     request["tools"] = [_tool_payload(tool) for tool in tools]
-                    request["tool_choice"] = "auto"
                 response = self._request_with_deadline(
                     client,
                     request,
@@ -133,21 +136,30 @@ class DeepSeekProvider:
         messages: Sequence[AssistantMessage],
         tools: Sequence[ToolDefinition],
         on_text_delta: Callable[[str], None],
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> ProviderResponse:
-        """Stream visible assistant text while retaining one normalized response."""
+        """Stream assistant text and reasoning into separate channels."""
 
         if not callable(on_text_delta):
             raise TypeError("on_text_delta must be callable")
+        if on_reasoning_delta is not None and not callable(on_reasoning_delta):
+            raise TypeError("on_reasoning_delta must be callable or None")
         if self._cancel_event.is_set():
             raise ProviderUnavailableError("The DeepSeek request was cancelled.")
         attempts = self.config.max_retries + 1
         last_error: Exception | None = None
-        emitted_text = False
+        emitted_output = False
 
         def emit_text(delta: str) -> None:
-            nonlocal emitted_text
-            emitted_text = True
+            nonlocal emitted_output
+            emitted_output = True
             on_text_delta(delta)
+
+        def emit_reasoning(delta: str) -> None:
+            nonlocal emitted_output
+            emitted_output = True
+            if on_reasoning_delta is not None:
+                on_reasoning_delta(delta)
 
         for attempt in range(attempts):
             if self._cancel_event.is_set():
@@ -163,15 +175,15 @@ class DeepSeekProvider:
                     ],
                     "stream": True,
                     "max_tokens": self.config.max_output_tokens,
-                    "extra_body": {"thinking": {"type": "disabled"}},
+                    "extra_body": {"thinking": {"type": "enabled"}},
                 }
                 if tools:
                     request["tools"] = [_tool_payload(tool) for tool in tools]
-                    request["tool_choice"] = "auto"
                 return self._request_stream_with_deadline(
                     client,
                     request,
                     emit_text,
+                    emit_reasoning,
                 )
             except (
                 ProviderAuthenticationError,
@@ -187,7 +199,7 @@ class DeepSeekProvider:
                 normalized, retryable = _normalize_sdk_error(error)
                 last_error = normalized
                 if (
-                    emitted_text
+                    emitted_output
                     or not retryable
                     or attempt + 1 >= attempts
                 ):
@@ -323,6 +335,7 @@ class DeepSeekProvider:
         client: Any,
         request: Mapping[str, Any],
         on_text_delta: Callable[[str], None],
+        on_reasoning_delta: Callable[[str], None],
     ) -> ProviderResponse:
         done = threading.Event()
         aborted = threading.Event()
@@ -344,6 +357,7 @@ class DeepSeekProvider:
                 outcome["response"] = _normalize_stream_response(
                     stream,
                     on_text_delta,
+                    on_reasoning_delta,
                     lambda: (
                         aborted.is_set()
                         or self._cancel_event.is_set()
@@ -467,7 +481,12 @@ class DeepSeekProvider:
 
 
 def _message_payload(message: AssistantMessage) -> dict[str, Any]:
-    payload: dict[str, Any] = {"role": message.role, "content": message.content}
+    content = message.content
+    if message.role == "assistant" and message.tool_calls and content is None:
+        content = ""
+    payload: dict[str, Any] = {"role": message.role, "content": content}
+    if message.reasoning_content is not None:
+        payload["reasoning_content"] = message.reasoning_content
     if message.role == "tool":
         payload["tool_call_id"] = message.tool_call_id
     if message.tool_calls:
@@ -572,6 +591,16 @@ def _normalize_response(response: Any) -> ProviderResponse:
             raise ProviderMalformedResponseError(
                 "DeepSeek returned invalid Unicode text"
             ) from exc
+    reasoning_content = getattr(raw_message, "reasoning_content", None)
+    if reasoning_content is not None and not isinstance(reasoning_content, str):
+        reasoning_content = str(reasoning_content)
+    if reasoning_content is not None:
+        try:
+            reasoning_content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ProviderMalformedResponseError(
+                "DeepSeek returned invalid Unicode reasoning text"
+            ) from exc
     if content is None and not calls:
         raise ProviderMalformedResponseError(
             "DeepSeek response contained neither text nor tool calls"
@@ -590,6 +619,7 @@ def _normalize_response(response: Any) -> ProviderResponse:
             role="assistant",
             content=content,
             tool_calls=tuple(calls),
+            reasoning_content=reasoning_content,
         ),
         finish_reason=finish_reason,
         usage=usage,
@@ -599,10 +629,12 @@ def _normalize_response(response: Any) -> ProviderResponse:
 def _normalize_stream_response(
     stream: Any,
     on_text_delta: Callable[[str], None],
+    on_reasoning_delta: Callable[[str], None],
     cancelled: Callable[[], bool],
     on_chunk: Callable[[], None] | None = None,
 ) -> ProviderResponse:
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_parts: dict[int, dict[str, str]] = {}
     finish_reason = ""
     usage: Any = None
@@ -631,6 +663,19 @@ def _normalize_stream_response(
         delta = getattr(choice, "delta", None)
         if delta is None:
             continue
+        reasoning_content = getattr(delta, "reasoning_content", None)
+        if reasoning_content is not None:
+            if not isinstance(reasoning_content, str):
+                reasoning_content = str(reasoning_content)
+            try:
+                reasoning_content.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ProviderMalformedResponseError(
+                    "DeepSeek returned invalid Unicode reasoning text"
+                ) from error
+            if reasoning_content:
+                reasoning_parts.append(reasoning_content)
+                on_reasoning_delta(reasoning_content)
         content = getattr(delta, "content", None)
         if content is not None:
             if not isinstance(content, str):
@@ -689,6 +734,7 @@ def _normalize_stream_response(
                 finish_reason=finish_reason,
                 message=SimpleNamespace(
                     content="".join(content_parts) or None,
+                    reasoning_content="".join(reasoning_parts) or None,
                     tool_calls=raw_calls,
                 ),
             )

@@ -346,10 +346,19 @@ class _PlanarConstructionRetryState:
     turn_id: str
     construction_digest: str
     recovery_digest: str
+    failure_signature_digest: str | None
     diagnostic_code: str
     node_id: str | None
     allowed_fields: tuple[str, ...]
     attempt: int
+
+
+@dataclass(frozen=True, slots=True)
+class _GeometryEditSchemaScope:
+    binding_identity: tuple[str, str, int]
+    part_id: str
+    recipe_kind: str
+    supported_operations: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,6 +675,35 @@ def _result_tool_definition(schema: Mapping[str, object]) -> ToolDefinition:
         str(schema["description"]),
         schema["input_schema"],  # type: ignore[arg-type]
     )
+
+
+_PATH_STROKE_OBJECT_POINT_EXAMPLES = (
+    'Centerline point examples: straight '
+    '[{"x":10,"y":10},{"x":40,"y":10}]; multiple bends '
+    '[{"x":10,"y":10},{"x":10,"y":30},{"x":35,"y":30},'
+    '{"x":35,"y":50}]. Points describe the centerline itself, not either '
+    "offset boundary. The first and last points must differ; never append the "
+    "first point to close the path."
+)
+_PATH_STROKE_ARRAY_POINT_EXAMPLES = (
+    "Centerline point examples: straight [[10,10],[40,10]]; multiple bends "
+    "[[10,10],[10,30],[35,30],[35,50]]. Points describe the centerline "
+    "itself, not either offset boundary. The first and last points must differ; "
+    "never append the first point to close the path."
+)
+_MULTIPLE_PATH_STROKE_NODE_EXAMPLE = (
+    'Complete node example for two independent slots: [{"id":"plate",'
+    '"kind":"rectangle","x":0,"y":0,"width":80,"height":60},'
+    '{"id":"slot_a","kind":"path_stroke","points":[[10,15],[30,15]],'
+    '"width":4,"cap":"round","join":"round"},{"id":"cut_a",'
+    '"kind":"difference","base":"plate","subtract":["slot_a"]},'
+    '{"id":"slot_b","kind":"path_stroke","points":'
+    '[[45,15],[45,35],[65,35]],"width":4,"cap":"butt",'
+    '"join":"miter"},{"id":"result","kind":"difference",'
+    '"base":"cut_a","subtract":["slot_b"]}]. Keep independent slots in '
+    "separate path_stroke and difference nodes; never concatenate disconnected "
+    "centerlines into one points array."
+)
 
 
 _READ_CONTEXT = _tool(
@@ -1263,6 +1301,14 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "enum": ["fuse", "cut"],
                             },
                             "tool": {
+                                "description": (
+                                    "Low-level cut/fuse profile. For a new constant-"
+                                    "width slot, prefer edit.operation=add_path_slot "
+                                    "when that operation is available. This "
+                                    "planar_boolean tool may use path_stroke as the "
+                                    "equivalent open non-branching centerline form, "
+                                    "or polygon for one connected closed boundary."
+                                ),
                                 "oneOf": [
                                     {
                                         "type": "object",
@@ -1315,6 +1361,14 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                                 "type": "array",
                                                 "minItems": 3,
                                                 "maxItems": 64,
+                                                "description": (
+                                                    "Primary boundary for one "
+                                                    "connected slot or cutout. "
+                                                    "List the closed perimeter "
+                                                    "once in order; concave "
+                                                    "boundaries are valid. Avoid "
+                                                    "rectangle decomposition."
+                                                ),
                                                 "items": {
                                                     "type": "object",
                                                     "properties": {
@@ -1337,6 +1391,14 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                                 "type": "array",
                                                 "minItems": 2,
                                                 "maxItems": 64,
+                                                "description": (
+                                                    "Preferred compact centerline "
+                                                    "for one connected constant-"
+                                                    "width slot. Multiple bends "
+                                                    "are supported; the path must "
+                                                    "remain open and non-branching. "
+                                                    + _PATH_STROKE_OBJECT_POINT_EXAMPLES
+                                                ),
                                                 "items": {
                                                     "type": "object",
                                                     "properties": {
@@ -1350,14 +1412,23 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                             "width": {
                                                 "type": "number",
                                                 "exclusiveMinimum": 0,
+                                                "description": (
+                                                    "Full constant slot width."
+                                                ),
                                             },
                                             "cap": {
                                                 "type": "string",
                                                 "enum": ["butt", "square", "round"],
+                                                "description": (
+                                                    "Boundary style at both path ends."
+                                                ),
                                             },
                                             "join": {
                                                 "type": "string",
                                                 "enum": ["miter", "bevel", "round"],
+                                                "description": (
+                                                    "Boundary style at path bends."
+                                                ),
                                             },
                                         },
                                         "required": [
@@ -1492,9 +1563,12 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "minItems": 3,
                                 "maxItems": 64,
                                 "description": (
-                                    "One ordered, non-self-intersecting boundary; "
-                                    "the last vertex closes back to the first. "
-                                    "Prefer this for arbitrary freeform silhouettes."
+                                    "Primary closed-boundary method for one "
+                                    "connected slot or cutout. List one ordered, "
+                                    "non-self-intersecting perimeter; the last "
+                                    "vertex closes back to the first and concave "
+                                    "boundaries are valid. Prefer this over "
+                                    "decomposing one shaped slot into rectangles."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -1519,9 +1593,13 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "minItems": 2,
                                 "maxItems": 64,
                                 "description": (
-                                    "Ordered open, non-branching centerline of one "
-                                    "connected constant-width slot. Do not submit "
-                                    "offset boundary vertices or disconnected rectangles."
+                                    "Preferred compact representation for one "
+                                    "connected constant-width slot: submit its "
+                                    "ordered open, non-branching centerline, which "
+                                    "may contain multiple bends. The compiler "
+                                    "generates the offset boundary; for a junction "
+                                    "or varying width, use add_polygon. "
+                                    + _PATH_STROKE_OBJECT_POINT_EXAMPLES
                                 ),
                                 "items": {
                                     "type": "object",
@@ -1631,6 +1709,31 @@ _legacy_edit["oneOf"] = [
     if branch.get("properties", {}).get("operation", {}).get("const")
     not in _PROFILE_TRANSFORM_OPERATION_CONSTS
 ]
+_PLANAR_BOOLEAN_EDIT_SCHEMA = next(
+    branch
+    for branch in _legacy_edit["oneOf"]
+    if branch.get("properties", {}).get("operation", {}).get("const")
+    == "planar_boolean"
+)
+_REPLACE_PLANAR_BOOLEAN_FEATURE_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "operation": {"const": "replace_planar_boolean_feature"},
+        "feature_id": {
+            "type": "string",
+            "pattern": "^PB[1-9][0-9]*$",
+            "maxLength": 128,
+            "description": (
+                "Existing planar Boolean feature_id from "
+                "read_geometry_edit_context."
+            ),
+        },
+        "tool": _PLANAR_BOOLEAN_EDIT_SCHEMA["properties"]["tool"],
+    },
+    "required": ["operation", "feature_id", "tool"],
+    "additionalProperties": False,
+}
+_legacy_edit["oneOf"].append(_REPLACE_PLANAR_BOOLEAN_FEATURE_EDIT_SCHEMA)
 _DELETE_CIRCLES_EDIT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1976,12 +2079,21 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
     (
         "Prepare a revision-bound edit of an existing native Part. Profile "
         "transforms use the dedicated prepare_profile_* tools; this compatibility "
-        "tool retains sketch, rigid, and exact Boolean edits. A planar cutout is "
+        "tool retains sketch, rigid, and exact Boolean edits. Follow only the "
+        "operations in the latest read_geometry_edit_context result and in this "
+        "turn's narrowed schema. Feature tool recipes are read-only snapshots; "
+        "replace a prior planar Boolean tool with replace_planar_boolean_feature. "
+        "A planar cutout in a strict sketch is "
         "one contained closed inner Profile, so it does not require Part Boolean. "
-        "Use add_path_slot only when one ordered open, non-branching centerline "
-        "and one width fully define the slot. Branching centerlines and arbitrary "
-        "silhouettes require one complete closed add_polygon boundary or one "
-        "complete line/arc batch. Invalid Profiles return exact topology diagnostics "
+        "Use add_path_slot as the preferred geometry-edit entry and compact form "
+        "when one ordered open, "
+        "non-branching centerline, including multiple bends, and one constant "
+        "width fully define the slot. Treat planar_boolean(tool.kind=path_stroke) "
+        "as its lower-level equivalent and use it only when add_path_slot is not "
+        "available. Use one complete closed add_polygon boundary "
+        "as the primary method for other connected slot silhouettes; avoid "
+        "decomposing them into rectangles. Use one complete line/arc batch when "
+        "exact curved boundaries require it. Invalid Profiles return exact topology diagnostics "
         "and must be revised before presenting a confirmation. When the user "
         "specifies an exact clearance from an existing planar Boolean feature, "
         "include optional spatial_relation with that feature_id, direction, and "
@@ -1990,6 +2102,280 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
     ),
     _legacy_geometry_edit_parameters,
 )
+
+
+def _geometry_edit_operation(branch: Mapping[str, object]) -> str | None:
+    properties = branch.get("properties")
+    if not isinstance(properties, Mapping):
+        return None
+    operation = properties.get("operation")
+    if not isinstance(operation, Mapping):
+        return None
+    value = operation.get("const")
+    return value if isinstance(value, str) else None
+
+
+def _geometry_edit_tool_definition(
+    part_id: str,
+    recipe_kind: str,
+    supported_operations: Sequence[str],
+) -> ToolDefinition:
+    """Return one Part-scoped definition containing only executable branches."""
+
+    allowed = set(str(item) for item in supported_operations)
+    edit_schema = _PREPARE_GEOMETRY_EDIT.parameters["properties"]["edit"]
+    branches = [
+        branch
+        for branch in edit_schema["oneOf"]
+        if _geometry_edit_operation(branch) in allowed
+    ]
+    if not branches:
+        return _PREPARE_GEOMETRY_EDIT
+    properties = dict(_PREPARE_GEOMETRY_EDIT.parameters["properties"])
+    properties["part_id"] = {"const": str(part_id)}
+    properties["edit"] = {"oneOf": branches}
+    parameters = dict(_PREPARE_GEOMETRY_EDIT.parameters)
+    parameters["properties"] = properties
+    operations = ", ".join(
+        operation
+        for branch in branches
+        if (operation := _geometry_edit_operation(branch)) is not None
+    )
+    return ToolDefinition(
+        _PREPARE_GEOMETRY_EDIT.name,
+        (
+            f"Part-scoped geometry edit for {part_id} ({recipe_kind}). "
+            f"Allowed operations after the latest local read: {operations}. "
+            "Feature tool snapshots and their local point/curve IDs are read-only."
+        ),
+        parameters,
+    )
+
+
+class _AuthoringArgumentSchemaError(ValueError):
+    def __init__(
+        self,
+        path: str,
+        reason: str,
+        *,
+        allowed_values: Sequence[object] = (),
+    ) -> None:
+        self.path = str(path)
+        self.reason = str(reason)
+        self.allowed_values = tuple(allowed_values)
+        super().__init__(f"{self.path}: {self.reason}")
+
+
+def _schema_type_matches(value: object, expected: str) -> bool:
+    return {
+        "object": isinstance(value, Mapping),
+        "array": isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray)),
+        "string": type(value) is str,
+        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+        "integer": type(value) is int,
+        "boolean": type(value) is bool,
+        "null": value is None,
+    }.get(expected, True)
+
+
+def _schema_discriminator_branch(
+    value: object,
+    branches: Sequence[Mapping[str, object]],
+    path: str,
+) -> Mapping[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    for field in ("operation", "kind"):
+        raw_value = value.get(field)
+        choices: dict[object, Mapping[str, object]] = {}
+        for branch in branches:
+            properties = branch.get("properties")
+            field_schema = (
+                properties.get(field) if isinstance(properties, Mapping) else None
+            )
+            constant = (
+                field_schema.get("const")
+                if isinstance(field_schema, Mapping)
+                else None
+            )
+            if constant is not None:
+                choices[constant] = branch
+        if choices:
+            if field not in value:
+                raise _AuthoringArgumentSchemaError(
+                    f"{path}.{field}",
+                    "required field is missing",
+                    allowed_values=tuple(choices),
+                )
+            if raw_value not in choices:
+                raise _AuthoringArgumentSchemaError(
+                    f"{path}.{field}",
+                    f"unsupported value {raw_value!r}",
+                    allowed_values=tuple(choices),
+                )
+            return choices[raw_value]
+    return None
+
+
+def _validate_schema_value(
+    value: object,
+    schema: Mapping[str, object],
+    path: str,
+) -> None:
+    raw_branches = schema.get("oneOf")
+    if isinstance(raw_branches, Sequence):
+        branches = tuple(
+            item for item in raw_branches if isinstance(item, Mapping)
+        )
+        selected = _schema_discriminator_branch(value, branches, path)
+        if selected is not None:
+            _validate_schema_value(value, selected, path)
+            return
+        matched = 0
+        first_error: _AuthoringArgumentSchemaError | None = None
+        for branch in branches:
+            try:
+                _validate_schema_value(value, branch, path)
+            except _AuthoringArgumentSchemaError as error:
+                if first_error is None:
+                    first_error = error
+            else:
+                matched += 1
+        if matched != 1:
+            if first_error is not None:
+                raise first_error
+            raise _AuthoringArgumentSchemaError(path, "must match exactly one schema")
+        return
+
+    expected_type = schema.get("type")
+    if isinstance(expected_type, str) and not _schema_type_matches(value, expected_type):
+        raise _AuthoringArgumentSchemaError(
+            path,
+            f"expected {expected_type}, got {type(value).__name__}",
+        )
+    if "const" in schema and value != schema["const"]:
+        raise _AuthoringArgumentSchemaError(
+            path,
+            f"must equal {schema['const']!r}",
+            allowed_values=(schema["const"],),
+        )
+    raw_enum = schema.get("enum")
+    if isinstance(raw_enum, Sequence) and value not in raw_enum:
+        raise _AuthoringArgumentSchemaError(
+            path,
+            f"unsupported value {value!r}",
+            allowed_values=tuple(raw_enum),
+        )
+
+    if isinstance(value, Mapping):
+        properties = schema.get("properties")
+        declared = properties if isinstance(properties, Mapping) else {}
+        required = schema.get("required")
+        required_fields = tuple(required) if isinstance(required, Sequence) else ()
+        missing = [field for field in required_fields if field not in value]
+        if missing:
+            field = str(missing[0])
+            raise _AuthoringArgumentSchemaError(
+                f"{path}.{field}",
+                "required field is missing",
+            )
+        if schema.get("additionalProperties") is False:
+            extras = [field for field in value if field not in declared]
+            if extras:
+                field = str(extras[0])
+                raise _AuthoringArgumentSchemaError(
+                    f"{path}.{field}",
+                    "field is not allowed",
+                    allowed_values=tuple(declared),
+                )
+        minimum_properties = schema.get("minProperties")
+        if type(minimum_properties) is int and len(value) < minimum_properties:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"requires at least {minimum_properties} fields",
+            )
+        for field, item in value.items():
+            field_schema = declared.get(field)
+            if isinstance(field_schema, Mapping):
+                _validate_schema_value(item, field_schema, f"{path}.{field}")
+
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        minimum_items = schema.get("minItems")
+        maximum_items = schema.get("maxItems")
+        if type(minimum_items) is int and len(value) < minimum_items:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"requires at least {minimum_items} items",
+            )
+        if type(maximum_items) is int and len(value) > maximum_items:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"allows at most {maximum_items} items",
+            )
+        if schema.get("uniqueItems") is True:
+            canonical = [
+                json.dumps(item, sort_keys=True, separators=(",", ":"))
+                for item in value
+            ]
+            if len(canonical) != len(set(canonical)):
+                raise _AuthoringArgumentSchemaError(path, "items must be unique")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, Mapping):
+            for index, item in enumerate(value):
+                _validate_schema_value(item, item_schema, f"{path}[{index}]")
+
+    if type(value) is str:
+        minimum_length = schema.get("minLength")
+        maximum_length = schema.get("maxLength")
+        if type(minimum_length) is int and len(value) < minimum_length:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"requires at least {minimum_length} characters",
+            )
+        if type(maximum_length) is int and len(value) > maximum_length:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"allows at most {maximum_length} characters",
+            )
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"must match pattern {pattern}",
+            )
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(float(value)):
+            raise _AuthoringArgumentSchemaError(path, "number must be finite")
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        exclusive_minimum = schema.get("exclusiveMinimum")
+        exclusive_maximum = schema.get("exclusiveMaximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise _AuthoringArgumentSchemaError(path, f"must be >= {minimum}")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            raise _AuthoringArgumentSchemaError(path, f"must be <= {maximum}")
+        if isinstance(exclusive_minimum, (int, float)) and value <= exclusive_minimum:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"must be > {exclusive_minimum}",
+            )
+        if isinstance(exclusive_maximum, (int, float)) and value >= exclusive_maximum:
+            raise _AuthoringArgumentSchemaError(
+                path,
+                f"must be < {exclusive_maximum}",
+            )
+
+
+def _validate_geometry_edit_arguments(
+    arguments: Mapping[str, object],
+    definition: ToolDefinition,
+) -> None:
+    _validate_schema_value(arguments, definition.parameters, "arguments")
 
 
 _READ_MESH_REFINEMENT_CONTEXT = _tool(
@@ -2739,6 +3125,16 @@ def _planar_construction_context_capability() -> dict[str, object]:
                 "circular_pattern",
             ],
         },
+        "slot_representation_policy": {
+            "closed_boundary_default": "polygon",
+            "centerline_compact_form": "path_stroke",
+            "path_stroke_condition": (
+                "one_open_non_branching_polyline_and_one_constant_width"
+            ),
+            "multiple_bends_supported": True,
+            "primitive_union_role": "fallback_for_genuinely_composite_geometry",
+            "rectangle_decomposition_for_one_connected_slot": "avoid",
+        },
         "budgets": {
             "max_node_count": MAX_NODES,
             "max_boolean_operands": MAX_BOOLEAN_OPERANDS,
@@ -2816,6 +3212,13 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
                 "type": "array",
                 "minItems": 3,
                 "maxItems": MAX_POLYGON_VERTICES,
+                "description": (
+                    "Default closed-boundary representation for one connected "
+                    "slot or cutout. List the perimeter vertices once in order; "
+                    "the closing edge is implicit, concave boundaries are valid, "
+                    "and the first vertex must not be repeated at the end. Prefer "
+                    "this over decomposing one shaped slot into rectangles."
+                ),
                 "items": _PLANAR_POINT_SCHEMA,
             }
         },
@@ -2830,14 +3233,29 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
                 "maxItems": MAX_PATH_POINTS,
                 "items": _PLANAR_POINT_SCHEMA,
                 "description": (
-                    "One ordered, open, non-branching centerline. A slot with "
-                    "a junction cannot be represented by one path_stroke; use "
-                    "overlapping primitives or strokes and a union node."
+                    "Preferred compact representation when one ordered, open, "
+                    "non-branching centerline and one constant width fully define "
+                    "the slot. The centerline may contain multiple bends; the "
+                    "compiler generates the closed offset boundary using cap and "
+                    "join. For a junction or varying width, use one polygon. "
+                    + _PATH_STROKE_ARRAY_POINT_EXAMPLES
                 ),
             },
-            "width": {"type": "number", "exclusiveMinimum": 0},
-            "cap": {"type": "string", "enum": ["butt", "square", "round"]},
-            "join": {"type": "string", "enum": ["miter", "bevel", "round"]},
+            "width": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "Full constant width along the entire centerline.",
+            },
+            "cap": {
+                "type": "string",
+                "enum": ["butt", "square", "round"],
+                "description": "Boundary style at the two open centerline ends.",
+            },
+            "join": {
+                "type": "string",
+                "enum": ["miter", "bevel", "round"],
+                "description": "Boundary style at each centerline bend.",
+            },
         },
         ("points", "width", "cap", "join"),
     ),
@@ -3057,13 +3475,20 @@ _PREPARE_PLANAR_CONSTRUCTION = _tool(
         "the global XY plane, prove its exact Profiles and materialized strict "
         "sketch locally, then present one revision-bound planar or derived 3D "
         "Part proposal. "
-        "Use general primitives, Boolean operations, transforms, and patterns; "
-        "rectangle x/y are the lower-left corner, circle radius is not diameter, "
-        "path_stroke is one non-branching open centerline and branching slots "
-        "must unite multiple overlapping connected primitives or strokes, "
-        "semantically distinct slots and hole patterns use separate subtraction "
-        "operands so they remain separate native Cut features, "
-        "and 2D output accepts either the literal string 'planar' or the "
+        "Use polygon as the default closed-boundary representation for one "
+        "connected slot or cutout, including concave boundaries, and avoid "
+        "decomposing one shaped slot into rectangles. Use path_stroke as the "
+        "preferred compact form when one open non-branching polyline, which may "
+        "contain multiple bends, and one constant width fully define the slot; "
+        "cap and join control the generated boundary. Primitive unions remain a "
+        "fallback for genuinely composite geometry. Rectangle x/y are the "
+        "lower-left corner, circle radius is not diameter, and semantically "
+        "distinct slots and hole patterns use separate subtraction operands so "
+        "they remain separate native Cut features. For an internal "
+        "or centered cutout, keep positive clearance from the target exterior "
+        "and preserve one connected material component unless the user explicitly "
+        "requests an edge opening or material separation. "
+        "2D output accepts either the literal string 'planar' or the "
         "equivalent object {'kind': 'planar'}; both normalize to planar. "
         "do not calculate final Boolean boundary vertices or submit CAD code. "
         "The model changes only after the local GUI control is clicked."
@@ -3091,6 +3516,7 @@ _PREPARE_PLANAR_CONSTRUCTION = _tool(
                         "minItems": 1,
                         "maxItems": MAX_NODES,
                         "items": {"oneOf": list(_PLANAR_CONSTRUCTION_NODE_SCHEMAS)},
+                        "description": _MULTIPLE_PATH_STROKE_NODE_EXAMPLE,
                     },
                     "result_node_id": _PLANAR_NODE_ID_SCHEMA,
                 },
@@ -3959,6 +4385,7 @@ class AuthoringWorkflowController:
         self._pending_destructive_object_type: str | None = None
         self._terminals: list[AuthoringTerminalRecord] = []
         self._planar_retry_state: _PlanarConstructionRetryState | None = None
+        self._geometry_edit_schema_scope: _GeometryEditSchemaScope | None = None
         self._planar_audit: list[PlanarConstructionAuditRecord] = []
         self._pending_planar_proposal_id: str | None = None
         self._active_tool_context: ToolExecutionContext | None = None
@@ -3978,6 +4405,14 @@ class AuthoringWorkflowController:
         with self._lock:
             return tuple(self._planar_audit)
 
+    @property
+    def geometry_edit_supported_operations(self) -> tuple[str, ...]:
+        with self._lock:
+            scope = self._geometry_edit_schema_scope
+            if scope is None or scope.binding_identity != self._binding_identity:
+                return ()
+            return scope.supported_operations
+
     def assess_planar_construction_failure(
         self,
         request: Mapping[str, object],
@@ -3986,8 +4421,9 @@ class AuthoringWorkflowController:
         node_id: str | None,
         retryable: bool,
         allowed_fields: Sequence[str],
+        failure_evidence: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        """Bound retries and require a changed failing node or top-level payload."""
+        """Bound retries and require changed payload and topology evidence."""
 
         raw_construction = request.get("construction")
         construction = (
@@ -4033,6 +4469,23 @@ class AuthoringWorkflowController:
                 allow_nan=True,
             ).encode("utf-8")
         ).hexdigest()
+        evidence_payload = dict(failure_evidence or {})
+        failure_signature_digest = (
+            hashlib.sha256(
+                json.dumps(
+                    {
+                        "code": str(code),
+                        "node_id": node_id,
+                        "evidence": evidence_payload,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            if evidence_payload
+            else None
+        )
         active = self._active_tool_context
         turn_id = (
             "local" if active is None else str(active.turn_id or active.idempotency_key)
@@ -4042,10 +4495,27 @@ class AuthoringWorkflowController:
             if prior is not None and prior.turn_id != turn_id:
                 prior = None
             attempt = 1 if prior is None else prior.attempt + 1
-            changed = prior is None or recovery_digest != prior.recovery_digest
+            same_failure_signature = bool(
+                prior is not None
+                and failure_signature_digest is not None
+                and failure_signature_digest == prior.failure_signature_digest
+            )
+            changed = bool(
+                prior is None
+                or (
+                    recovery_digest != prior.recovery_digest
+                    and not same_failure_signature
+                )
+            )
             may_retry = bool(retryable and changed and attempt < 3)
             blocker = None
-            if prior is not None and not changed:
+            if same_failure_signature:
+                blocker = (
+                    "Retry changed the construction syntax but preserved the "
+                    "same topology failure evidence. Revise the failed node's "
+                    "bounds or spatial relation."
+                )
+            elif prior is not None and not changed:
                 blocker = "Retry must modify the failed node or allowed field."
             elif retryable and attempt >= 3:
                 blocker = (
@@ -4055,6 +4525,7 @@ class AuthoringWorkflowController:
                 turn_id,
                 digest,
                 recovery_digest,
+                failure_signature_digest,
                 str(code),
                 node_id,
                 fields,
@@ -4338,6 +4809,17 @@ class AuthoringWorkflowController:
                         keys,
                         {key: self._requirement_spec(key) for key in keys},
                     )
+                if item.name == _PREPARE_GEOMETRY_EDIT.name:
+                    scope = self._geometry_edit_schema_scope
+                    if (
+                        scope is not None
+                        and scope.binding_identity == self._binding_identity
+                    ):
+                        item = _geometry_edit_tool_definition(
+                            scope.part_id,
+                            scope.recipe_kind,
+                            scope.supported_operations,
+                        )
                 visible.append(item)
             return tuple(
                 item
@@ -4391,6 +4873,36 @@ class AuthoringWorkflowController:
                 )
             )
 
+    def _record_geometry_edit_schema_scope(
+        self,
+        outcome: AuthoringToolOutcome,
+    ) -> None:
+        data = outcome.data
+        part_id = data.get("part_id")
+        recipe_kind = data.get("kind") or data.get("recipe_kind")
+        raw_operations = data.get("supported_edits")
+        if (
+            not outcome.ok
+            or type(part_id) is not str
+            or type(recipe_kind) is not str
+            or not isinstance(raw_operations, list)
+            or self._binding_identity is None
+        ):
+            return
+        operations = tuple(
+            str(item)
+            for item in raw_operations
+            if isinstance(item, str) and item
+        )
+        if not operations:
+            return
+        self._geometry_edit_schema_scope = _GeometryEditSchemaScope(
+            self._binding_identity,
+            part_id,
+            recipe_kind,
+            operations,
+        )
+
     def _result_inventory(self) -> tuple[int, int] | None:
         reader = self._workspace_result_inventory
         if reader is None:
@@ -4413,7 +4925,8 @@ class AuthoringWorkflowController:
         context: ToolExecutionContext,
     ) -> ToolResult:
         with self._lock:
-            available = {item.name for item in self.definitions}
+            definitions = {item.name: item for item in self.definitions}
+            available = set(definitions)
             if (
                 name not in available
                 and self._stage
@@ -4432,7 +4945,8 @@ class AuthoringWorkflowController:
                         DiagnosticCode.INVALID_MODEL,
                         f"Authoring context resynchronization failed: {error}",
                     )
-                available = {item.name for item in self.definitions}
+                definitions = {item.name: item for item in self.definitions}
+                available = set(definitions)
             if name not in available:
                 return self._failure(
                     context,
@@ -4440,6 +4954,23 @@ class AuthoringWorkflowController:
                     f"Authoring tool {name!r} is unavailable in stage {self._stage.value}.",
                 )
             try:
+                raw_edit = arguments.get("edit")
+                compatibility_operation = (
+                    raw_edit.get("operation")
+                    if isinstance(raw_edit, Mapping)
+                    else None
+                )
+                # Profile transforms retain a local compatibility dispatcher;
+                # provider-facing calls use their dedicated typed tools.
+                if (
+                    name == _PREPARE_GEOMETRY_EDIT.name
+                    and compatibility_operation
+                    not in _PROFILE_TRANSFORM_OPERATION_CONSTS
+                ):
+                    _validate_geometry_edit_arguments(
+                        arguments,
+                        definitions[name],
+                    )
                 if name == _READ_CONTEXT.name:
                     _require_exact_fields(arguments, set())
                     outcome = self._read_context()
@@ -4477,6 +5008,8 @@ class AuthoringWorkflowController:
                         raise TypeError(
                             "authoring handler must return AuthoringToolOutcome"
                         )
+                    if name == _READ_GEOMETRY_EDIT_CONTEXT.name:
+                        self._record_geometry_edit_schema_scope(outcome)
                     self._advance_after_success(name, outcome)
                 safe_data = provider_safe_authoring_payload(outcome.data)
                 return ToolResult(
@@ -4496,6 +5029,35 @@ class AuthoringWorkflowController:
                                 source="agent.authoring_runtime",
                             ),
                         )
+                    ),
+                )
+            except _AuthoringArgumentSchemaError as error:
+                allowed_values = list(error.allowed_values)
+                summary = f"Invalid geometry edit argument at {error.path}: {error.reason}."
+                return ToolResult(
+                    ok=False,
+                    session_id=context.session_id,
+                    input_revision=max(context.expected_revision, 0),
+                    idempotency_key=context.idempotency_key,
+                    summary=summary,
+                    data={
+                        "error": {
+                            "code": "geometry-edit.schema-invalid",
+                            "path": error.path,
+                            "reason": error.reason,
+                            "allowed_values": allowed_values,
+                            "remediation": {
+                                "action": "revise_prepare_geometry_edit_arguments",
+                                "read_context_again": False,
+                            },
+                        }
+                    },
+                    diagnostics=(
+                        make_diagnostic(
+                            DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                            summary,
+                            source="agent.authoring_runtime",
+                        ),
                     ),
                 )
             except Exception as error:
@@ -4589,6 +5151,7 @@ class AuthoringWorkflowController:
             self._review_binding = None
             self._review_source_stage = None
             self._binding_identity = current
+            self._geometry_edit_schema_scope = None
             self._ledger = RequirementLedger()
             self._stage = AuthoringWorkflowStage.STALE
             self._observed_context = context
@@ -4640,6 +5203,7 @@ class AuthoringWorkflowController:
                 return True
             same_session = prior[:2] == current[:2]
             revision_increased = current[2] > prior[2]
+            self._geometry_edit_schema_scope = None
             first_native_project_transition = (
                 self._pending_operation == "geometry"
                 and prior[2] == 0
@@ -4893,6 +5457,7 @@ class AuthoringWorkflowController:
             self._geometry_resume_stage = None
             self._mesh_resume_stage = None
             self._planar_retry_state = None
+            self._geometry_edit_schema_scope = None
             self._pending_planar_proposal_id = None
             self._clear_destructive_pending()
             self._binding_identity = None

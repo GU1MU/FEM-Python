@@ -489,6 +489,32 @@ def test_path_adjacent_reversal_overlap_is_rejected() -> None:
     )
 
 
+def test_closed_path_stroke_reports_centerline_repair_evidence() -> None:
+    diagnostic = _diagnostic(
+        _construction(
+            [
+                {
+                    "id": "result",
+                    "kind": "path_stroke",
+                    "points": [[0, 0], [0, 4], [3, 4], [0, 0]],
+                    "width": 1,
+                    "cap": "butt",
+                    "join": "miter",
+                }
+            ]
+        )
+    )
+
+    assert diagnostic.code == "planar-ir.invalid-path-stroke"  # type: ignore[attr-defined]
+    assert dict(diagnostic.evidence) == {  # type: ignore[attr-defined]
+        "points_role": "centerline",
+        "required_topology": "open",
+        "submitted_point_count": 4,
+        "first_equals_last": True,
+        "failed_rule": "closed_centerline",
+    }
+
+
 def test_canonical_payload_is_provider_safe_json_within_budget() -> None:
     ir = PlanarConstructionIR.from_dict(_generic_shape_fixtures()[0])
     canonical = ir.canonical_json()

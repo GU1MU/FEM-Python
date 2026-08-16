@@ -341,6 +341,30 @@ class _StreamingFakeProvider(FakeProvider):
         return response
 
 
+class _ReasoningStreamingFakeProvider(FakeProvider):
+    supports_reasoning_stream = True
+
+    def complete_stream(
+        self,
+        messages,
+        tools,
+        on_text_delta,
+        on_reasoning_delta,
+    ):
+        response = super().complete(messages, tools)
+        reasoning = response.message.reasoning_content or ""
+        reasoning_split = max(1, len(reasoning) // 2)
+        for delta in (reasoning[:reasoning_split], reasoning[reasoning_split:]):
+            if delta:
+                on_reasoning_delta(delta)
+        content = response.message.content or ""
+        content_split = max(1, len(content) // 2)
+        for delta in (content[:content_split], content[content_split:]):
+            if delta:
+                on_text_delta(delta)
+        return response
+
+
 def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
     provider = _StreamingFakeProvider([_text_response("正在检查当前模型")])
     streamed = []
@@ -386,6 +410,102 @@ def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
         if event.event is EngineEventType.MESSAGE_PRESENTATION
     )
     assert presentation.data["presentation_kind"] == "decision_request"
+
+
+def test_reasoning_stream_is_process_and_formal_content_stays_separate(tmp_path):
+    reasoning = "I should inspect the current state and verify the requested values."
+    formal = "The requested values are valid."
+    provider = _ReasoningStreamingFakeProvider(
+        [
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    content=formal,
+                    reasoning_content=reasoning,
+                ),
+                finish_reason="stop",
+            )
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_streaming_reasoning_presentation",
+    )
+
+    events = engine.send_message("Inspect the current values.")
+
+    process_start = next(
+        event
+        for event in events
+        if event.event is EngineEventType.MESSAGE_STARTED
+        and event.data.get("presentation_kind") == "process"
+    )
+    assert process_start.data["presentation_kind"] == "process"
+    assert any(
+        event.event is EngineEventType.MESSAGE_PRESENTATION
+        and event.data.get("presentation_kind") == "result_summary"
+        for event in events
+    )
+    deltas = [
+        event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert "".join(deltas) == reasoning + formal
+
+
+def test_buffered_reasoning_is_presented_before_formal_content(tmp_path):
+    reasoning = "先读取当前状态，再核对参数。"
+    formal = "参数已经核对完成。"
+    provider = FakeProvider(
+        [
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    content=formal,
+                    reasoning_content=reasoning,
+                ),
+                finish_reason="stop",
+            )
+        ]
+    )
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_buffered_reasoning_presentation",
+    )
+
+    events = engine.send_message("检查当前参数。")
+
+    displayed = [
+        (
+            event.data.get("presentation_kind"),
+            events[index + 1].data.get("text"),
+        )
+        for index, event in enumerate(events[:-1])
+        if event.event is EngineEventType.MESSAGE_STARTED
+        and events[index + 1].event is EngineEventType.MESSAGE_DELTA
+        and events[index + 1].data.get("text") in {reasoning, formal}
+    ]
+    assert displayed == [
+        ("process", reasoning),
+        ("result_summary", formal),
+    ]
+
+    continuation_provider = FakeProvider([_text_response("继续。")])
+    reopened = AgentSessionEngine(
+        engine.workspace,
+        continuation_provider,
+        session_id=engine.session_id,
+    )
+    reopened.send_message("继续。")
+    replayed = next(
+        message
+        for message in continuation_provider.requests[0].messages
+        if message.role == "assistant" and message.content == formal
+    )
+    assert replayed.reasoning_content == reasoning
 
 
 def test_chinese_turn_retries_and_hides_an_english_only_response(tmp_path):
@@ -522,13 +642,27 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "never create a separate unit-selection" in system_prompt
     assert "do not add a natural-language instruction asking" in system_prompt
     assert "material removal is represented by a closed" in system_prompt
-    assert "prefer one non-self-intersecting" in system_prompt
+    assert "use one non-self-intersecting add_polygon edit as the primary" in (
+        system_prompt
+    )
     assert "add_polygon edit" in system_prompt
+    assert "add_path_slot as the preferred geometry-edit entry" in system_prompt
+    assert "planar_boolean(tool.kind=path_stroke) as its lower-level equivalent" in (
+        system_prompt
+    )
+    assert "keep the path-slot representation" in system_prompt
+    assert "A malformed centerline does not" in system_prompt
+    assert "junction or the intended width varies" in system_prompt
     assert "use every returned diagnostic and affected logical" in system_prompt
     assert "use prepare_planar_construction_proposal as the sole" in system_prompt
-    assert "never calculate its final" in system_prompt
-    assert "submit its centerline as a wire" in system_prompt
+    assert "Use one polygon as the default representation" in system_prompt
+    assert "path_stroke as the preferred compact representation" in system_prompt
+    assert "multiple bends" in system_prompt
+    assert "not as the default construction" in system_prompt
+    assert "submit an open centerline as a wire" in system_prompt
     assert "one ordered, open, non-branching" in system_prompt
+    assert "strictly inside its material target with positive" in system_prompt
+    assert "preserve one connected material component" in system_prompt
     assert "S-shaped" not in system_prompt
     assert "U-shaped" not in system_prompt
     assert "H-shaped" not in system_prompt
