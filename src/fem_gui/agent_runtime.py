@@ -14,6 +14,7 @@ import weakref
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, wait as wait_for_futures
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -31,6 +32,7 @@ from fem_agent.config import (
     find_main_config,
     resolve_local_config,
 )
+from fem_agent.diagnostics import DiagnosticCode, make_diagnostic
 from fem_agent.engine import (
     AgentSessionEngine,
     EngineEvent,
@@ -121,6 +123,19 @@ _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
 _MAX_ADAPTIVE_MESSAGE_DELTA_CHARACTERS = 64_000
 _MESSAGE_DELTA_FRAME_SECONDS = 0.03
 _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
+# Planar-construction compiles run their CAD work on a dedicated worker
+# thread, but the owner dispatch still holds until the plain-data result
+# returns.  Give exactly those dynamic tools one high budget; every other
+# authoring tool keeps the interactive default above.
+_AUTHORING_TOOL_LONG_OWNER_TIMEOUT_SECONDS = 120.0
+# Whitelist of dynamic tool names dispatched with the long owner budget.
+# Keep it in sync with the dynamic tool registry: every entry must remain a
+# registered authoring tool (asserted in
+# tests/gui/test_agent_authoring_dispatch_timeout.py).
+_AUTHORING_TOOL_LONG_TIMEOUT_NAMES = frozenset(
+    {"prepare_planar_construction_proposal"}
+)
+_AUTHORING_PROGRESS_HEARTBEAT_SECONDS = 10.0
 _RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 _TOOL_DISPLAY_NAMES = {
@@ -1240,10 +1255,20 @@ class QtAgentRuntime(QObject):
             if self._shutdown:
                 raise RuntimeError("Agent runtime is closed")
             self._authoring_invocations[id(invocation)] = invocation
-        self.authoringToolRequested.emit(invocation)
-        deadline = (
-            time.monotonic() + _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS
+        long_running = name in _AUTHORING_TOOL_LONG_TIMEOUT_NAMES
+        timeout_seconds = (
+            _AUTHORING_TOOL_LONG_OWNER_TIMEOUT_SECONDS
+            if long_running
+            else _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS
         )
+        if long_running:
+            self._narrate_authoring_tool_progress(
+                "正在后台线程编译二维构造，界面保持响应，预计需要数十秒。",
+            )
+        self.authoringToolRequested.emit(invocation)
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+        next_heartbeat = started + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
         while not invocation.completed.wait(timeout=0.05):
             with self._lock:
                 if self._shutdown:
@@ -1253,14 +1278,27 @@ class QtAgentRuntime(QObject):
                     invocation.cancel(error)
                     self._authoring_invocations.pop(id(invocation), None)
                     raise error
-            if time.monotonic() >= deadline:
-                error = TimeoutError(
-                    "Agent authoring tool exceeded its owner-thread budget"
+            now = time.monotonic()
+            if long_running and now >= next_heartbeat:
+                self._narrate_authoring_tool_progress(
+                    f"（二维构造编译仍在进行，已用时 {int(now - started)} 秒…）",
                 )
-                invocation.cancel(error)
+                next_heartbeat = now + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
+            if now >= deadline:
+                elapsed = now - started
+                invocation.cancel(
+                    TimeoutError(
+                        "Agent authoring tool exceeded its owner-thread budget"
+                    )
+                )
                 with self._lock:
                     self._authoring_invocations.pop(id(invocation), None)
-                raise error
+                return self._authoring_tool_timeout_result(
+                    name,
+                    context,
+                    timeout_seconds,
+                    elapsed,
+                )
         with self._lock:
             self._authoring_invocations.pop(id(invocation), None)
         if invocation.cancelled:
@@ -1274,6 +1312,89 @@ class QtAgentRuntime(QObject):
         if type(invocation.result) is not ToolResult:
             raise TypeError("Agent authoring tool returned an invalid result")
         return invocation.result
+
+    def _authoring_tool_timeout_result(
+        self,
+        name: str,
+        context: ToolExecutionContext,
+        timeout_seconds: float,
+        elapsed_seconds: float,
+    ) -> ToolResult:
+        """Convert one owner-dispatch deadline into a structured tool failure."""
+
+        summary = (
+            f"Authoring tool {name!r} did not return within "
+            f"{timeout_seconds:.0f} seconds."
+        )
+        advice = (
+            "Do not call this tool again in the same turn. Wait for the "
+            "next user request; if the construction is large, simplify it "
+            "before retrying."
+        )
+        return ToolResult(
+            ok=False,
+            session_id=context.session_id,
+            input_revision=max(context.expected_revision, 0),
+            idempotency_key=context.idempotency_key,
+            summary=summary,
+            data={
+                "error": {
+                    "code": "authoring.owner-dispatch-timeout",
+                    "tool": name,
+                    "timeout_seconds": timeout_seconds,
+                    "elapsed_seconds": round(elapsed_seconds, 2),
+                    "advice": advice,
+                }
+            },
+            diagnostics=(
+                make_diagnostic(
+                    DiagnosticCode.WORKER_TIMEOUT,
+                    summary,
+                    source="agent.agent_runtime",
+                    remediation=advice,
+                ),
+            ),
+        )
+
+    def _narrate_authoring_tool_progress(self, text: str) -> None:
+        """Inject one PROCESS marker while a long authoring dispatch waits.
+
+        The engine thread is blocked inside ``_dispatch_authoring_tool``, so
+        no provider narration can arrive; reusing the engine event channel
+        here keeps the session visibly busy instead of silent.
+        """
+
+        with self._lock:
+            context = self._active_turn
+            if context is None or context.terminal:
+                return
+            session_id = context.session_id
+            first_marker = context.active_message_id is None
+        timestamp = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        if first_marker:
+            self._receive_engine_event(
+                EngineEvent(
+                    EngineEventType.MESSAGE_STARTED,
+                    session_id,
+                    {
+                        "role": "assistant",
+                        "presentation_kind": (
+                            MessagePresentationKind.PROCESS.value
+                        ),
+                    },
+                    timestamp,
+                )
+            )
+        self._receive_engine_event(
+            EngineEvent(
+                EngineEventType.MESSAGE_DELTA,
+                session_id,
+                {"text": text},
+                timestamp,
+            )
+        )
 
     def _execute_authoring_tool(
         self,

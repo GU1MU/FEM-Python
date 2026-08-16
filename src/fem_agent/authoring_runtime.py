@@ -4394,6 +4394,14 @@ class AuthoringWorkflowController:
         self._snapshot_generation = 0
         self._turn_snapshot = AuthoringTurnSnapshot.unavailable()
         self._lock = threading.RLock()
+        # Set before cancel_turn takes the workflow lock: dispatch holds that
+        # lock for the whole handler call, so long-running handlers need one
+        # lock-free signal that a cancellation was requested.
+        self._cancel_requested = threading.Event()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested.is_set()
 
     @property
     def stage(self) -> AuthoringWorkflowStage:
@@ -5434,7 +5442,11 @@ class AuthoringWorkflowController:
 
     def cancel_turn(self, reason: str = "provider turn cancelled") -> None:
         normalized = str(reason).strip()
+        self._cancel_requested.set()
         with self._lock:
+            # The workflow lock is only acquired after any in-flight dispatch
+            # released it, so the in-flight handler already observed the flag.
+            self._cancel_requested.clear()
             self._record_terminal("provider_turn", "cancelled", normalized)
             if self._stage not in {
                 AuthoringWorkflowStage.GEOMETRY_PENDING,

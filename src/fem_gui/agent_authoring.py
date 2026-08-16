@@ -15,11 +15,12 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from fem import geometry as geometry_runtime
 from fem.application import (
     ModelSession,
+    PlanarConstructionCancelled,
     PlanarConstructionCompileError,
     UnitContext,
     compile_planar_feature_recipe,
@@ -206,6 +207,7 @@ from fem.geometry import (
     resolve_target_radius,
 )
 from .workspace import FEMWorkspace, WorkspaceDocument
+from .workers import OwnedWorkerTimeout, run_owned_worker
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 
 
@@ -250,6 +252,38 @@ class _DetachedRecipeMesh:
     points: tuple[tuple[float, float, float], ...]
     faces: tuple[tuple[int, ...], ...]
     edges: tuple[tuple[int, ...], ...]
+
+
+# One planar construction compile runs entirely on one dedicated worker
+# thread (gmsh affinity).  The budget stays below the owner-dispatch
+# whitelist timeout in ``agent_runtime`` so the worker reports a structured
+# failure before the outer dispatch deadline fires.
+_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS = 110.0
+
+
+class PlanarCompileCancelled(PlanarConstructionCancelled):
+    """Raised at safe checkpoints when one planar compile is cancelled."""
+
+
+def _cancellable_planar_model_factory(
+    cancel_event: threading.Event,
+) -> Callable[..., Any]:
+    """Checkpoint every CAD model open so cancellation unwinds context managers.
+
+    The compilers accept a ``model_factory``; wrapping it turns each model
+    open into a cancellation safe point.  The raise happens before a new
+    model is entered, and every previously opened model is already closed by
+    its ``with`` block, so no live gmsh entity survives a cancellation.
+    """
+
+    def factory(*args: object, **kwargs: object) -> Any:
+        if cancel_event.is_set():
+            raise PlanarCompileCancelled(
+                "planar construction compile cancelled before opening a CAD model"
+            )
+        return geometry_runtime.model(*args, **kwargs)
+
+    return factory
 
 
 def _normalize_profile_preflight_error(error: BaseException) -> AuthoringContractError:
@@ -4970,28 +5004,110 @@ def create_session_authoring_workflow_controller(
         initial_context = current_context()
         try:
             construction = PlanarConstructionIR.from_dict(raw_construction)
-            compiled = compile_planar_construction(construction)
-        except (PlanarIRValidationError, PlanarConstructionCompileError) as error:
+        except PlanarIRValidationError as error:
             return _planar_construction_failure(
                 error.diagnostic,
                 arguments,
                 controller,
             )
-        if type(compiled.recipe) is not SketchGeometry or not compiled.recipe.is_strict:
-            raise AuthoringContractError(
-                "planar construction compiler returned no strict sketch"
-            )
-        try:
-            feature_recipe = compile_planar_feature_recipe(
+
+        compile_cancel = threading.Event()
+
+        def compile_detached() -> tuple[
+            object, object, str, object, object
+        ]:
+            # Every CAD model of one compile opens on this single worker
+            # thread (gmsh affinity); only plain data returns to the owner.
+            factory = _cancellable_planar_model_factory(compile_cancel)
+            local_compiled = compile_planar_construction(
                 construction,
-                compiled=compiled,
+                model_factory=factory,
             )
-            output_kind, output_recipe, output_mesh = (
+            if compile_cancel.is_set():
+                raise PlanarCompileCancelled(
+                    "planar construction compile cancelled after sketch proof"
+                )
+            if (
+                type(local_compiled.recipe) is not SketchGeometry
+                or not local_compiled.recipe.is_strict
+            ):
+                raise AuthoringContractError(
+                    "planar construction compiler returned no strict sketch"
+                )
+            local_feature_recipe = compile_planar_feature_recipe(
+                construction,
+                compiled=local_compiled,
+                model_factory=factory,
+            )
+            if compile_cancel.is_set():
+                raise PlanarCompileCancelled(
+                    "planar construction compile cancelled after feature chain"
+                )
+            local_kind, local_recipe, local_mesh = (
                 _planar_construction_output_recipe(
-                    feature_recipe,
+                    local_feature_recipe,
                     normalized_output,
                     part_function=part_function,
                 )
+            )
+            return (
+                local_compiled,
+                local_feature_recipe,
+                local_kind,
+                local_recipe,
+                local_mesh,
+            )
+
+        try:
+            (
+                compiled,
+                feature_recipe,
+                output_kind,
+                output_recipe,
+                output_mesh,
+            ) = run_owned_worker(
+                compile_detached,
+                name="fem-agent-planar-compile",
+                timeout_seconds=_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS,
+                cancel_event=compile_cancel,
+                # cancel_requested is lock-free: this dispatch holds the
+                # controller lock, so cancel_turn cannot flip the stage yet.
+                should_cancel=lambda: controller.cancel_requested,
+            )
+        except PlanarCompileCancelled:
+            return AuthoringToolOutcome(
+                "二维构造编译已按取消请求停止，模型保持不变。",
+                {
+                    "diagnostic": {
+                        "code": "planar-ir.cancelled",
+                        "message": (
+                            "The planar construction compile stopped at a "
+                            "cancellation checkpoint."
+                        ),
+                        "model_unchanged": True,
+                    },
+                    "authoring_path": "planar_construction_ir_v1",
+                    "required_action": "wait_for_next_request",
+                },
+                ok=False,
+            )
+        except OwnedWorkerTimeout:
+            return AuthoringToolOutcome(
+                "二维构造编译超过本地时限，模型保持不变。",
+                {
+                    "diagnostic": {
+                        "code": "planar-ir.compile-timeout",
+                        "message": (
+                            "The planar construction compile exceeded its "
+                            f"{_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS:.0f}s "
+                            "worker budget."
+                        ),
+                        "model_unchanged": True,
+                    },
+                    "authoring_path": "planar_construction_ir_v1",
+                    "required_action": "simplify_construction_and_retry",
+                },
+                ok=False,
             )
         except PlanarConstructionCompileError as error:
             return _planar_construction_failure(

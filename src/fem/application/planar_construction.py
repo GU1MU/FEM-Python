@@ -62,6 +62,14 @@ class PlanarConstructionCompileError(ValueError):
         self.diagnostic = diagnostic
 
 
+class PlanarConstructionCancelled(RuntimeError):
+    """Raised at safe checkpoints when one planar compile is cancelled.
+
+    The broad ``except Exception`` safety nets below re-raise this unchanged
+    so cancellation is never masked by a compile diagnostic.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class PlanarCurveLineage:
     curve_id: str
@@ -175,6 +183,8 @@ def compile_planar_construction(
             source_facts = _native_facts(cad, surfaces, loops)
     except PlanarConstructionCompileError:
         raise
+    except PlanarConstructionCancelled:
+        raise
     except Exception as error:
         code = (
             "planar-ir.unsupported-boundary"
@@ -202,6 +212,8 @@ def compile_planar_construction(
             _require_equivalent(source_facts, recipe_facts, construction.result_node_id)
             preview = _preview(cad, recipe, compiled)
     except PlanarConstructionCompileError:
+        raise
+    except PlanarConstructionCancelled:
         raise
     except Exception as error:
         _fail(
@@ -422,6 +434,8 @@ def compile_planar_feature_recipe(
             return feature.geometry, compiled
         except PlanarConstructionCompileError:
             raise
+        except PlanarConstructionCancelled:
+            raise
         except Exception as error:
             _fail(
                 "planar-ir.feature-materialization-failed",
@@ -521,6 +535,8 @@ def compile_planar_feature_recipe(
                 strict_curves=False,
             )
         except PlanarConstructionCompileError:
+            raise
+        except PlanarConstructionCancelled:
             raise
         except Exception as error:
             _fail(
@@ -647,6 +663,8 @@ def _evaluate(
                 raise TypeError(f"Unsupported node: {type(node).__name__}")
             _require_non_degenerate(cad, output, node.id)
         except PlanarConstructionCompileError:
+            raise
+        except PlanarConstructionCancelled:
             raise
         except Exception as error:
             code = (

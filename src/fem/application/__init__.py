@@ -165,6 +165,7 @@ from .planar_boolean import (
 )
 from .planar_construction import (
     CompiledPlanarConstruction,
+    PlanarConstructionCancelled,
     PlanarConstructionCompileError,
     PlanarConstructionDiagnostic,
     PlanarConstructionPreview,
@@ -228,6 +229,7 @@ __all__ = [
     "PartBooleanProvenance",
     "PartBooleanUndoRecord",
     "PartRevisionConflictError",
+    "PlanarConstructionCancelled",
     "PlanarConstructionCompileError",
     "PlanarConstructionDiagnostic",
     "PlanarConstructionPreview",
