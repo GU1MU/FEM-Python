@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
+import copy
 import hashlib
 import json
 import math
@@ -1102,8 +1103,13 @@ _PREPARE_GEOMETRY = _tool(
 
 # Keep the legacy composite decoder callable for one migration cycle while the
 # provider sees one planar-construction path.  The remaining general branches
-# are deliberately disjoint from Planar Construction IR.
-_LEGACY_PREPARE_GEOMETRY = _PREPARE_GEOMETRY
+# are deliberately disjoint from Planar Construction IR.  Deep-copy the schema
+# so later edits to the live tool definition cannot mutate the frozen snapshot.
+_LEGACY_PREPARE_GEOMETRY = ToolDefinition(
+    _PREPARE_GEOMETRY.name,
+    _PREPARE_GEOMETRY.description,
+    copy.deepcopy(dict(_PREPARE_GEOMETRY.parameters)),
+)
 _LEGACY_COMPOSITE_GEOMETRY_KINDS = frozenset(
     {
         "planar_profiles",

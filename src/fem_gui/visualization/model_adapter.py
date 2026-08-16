@@ -14,7 +14,6 @@ from fem.core.model import (
     ElementSet,
     NodeSet,
 )
-from fem.elements import canonical_element_type
 from fem.post.vtk import cells as vtk_cells
 
 
@@ -144,8 +143,9 @@ def build_model_geometry(model: Any) -> ModelGeometry:
     missing: list[int] = []
     for index, element in enumerate(elements):
         try:
-            canonical_type = canonical_element_type(element.type)
-            expected_nodes, cell_type = vtk_cells.vtk_cell_spec(canonical_type)
+            expected_nodes, cell_type = vtk_cells.vtk_cell_spec_for_element(
+                element.type
+            )
         except (
             NotImplementedError,
             vtk_cells.UnsupportedVTKCellTypeError,

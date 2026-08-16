@@ -15,7 +15,7 @@ AGENT_ROOT = SRC_ROOT / "fem_agent"
 COMPATIBILITY_LEDGER = (
     PROJECT_ROOT
     / "tests"
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "phase8"
     / "result_compatibility_ledger.json"
 )
@@ -225,15 +225,20 @@ def test_retired_output_and_projection_alias_tokens_are_absent() -> None:
 def test_agent_imports_are_confined_to_gui_runtime_adapters() -> None:
     assert _forbidden_imports(SRC_ROOT / "fem", ("fem_agent",)) == []
 
+    # main_window.py is the GUI owner-thread execution point for the agent
+    # export tools (docs/2026-08-16-fem-agent-viewport-image-and-csv-export-
+    # plan.md section 9) and imports the agent export contracts directly.
     runtime_path = Path("src/fem_gui/agent_runtime.py")
     authoring_path = Path("src/fem_gui/agent_authoring.py")
     workspace_catalog_path = Path("src/fem_gui/agent_workspace_catalog.py")
+    main_window_path = Path("src/fem_gui/main_window.py")
     actual = set(_forbidden_imports(GUI_ROOT, ("fem_agent",)))
     assert actual
     assert {path for path, _symbol in actual} == {
         runtime_path,
         authoring_path,
         workspace_catalog_path,
+        main_window_path,
     }
 
 

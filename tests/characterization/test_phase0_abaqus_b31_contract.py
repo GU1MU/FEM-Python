@@ -69,5 +69,5 @@ def test_phase0_usage_ledger_is_complete_for_current_callers_and_data_free() -> 
     assert "src/fem_agent/tools/importing.py" in caller_paths
     assert "tests/application/test_preflight.py" in caller_paths
     assert "examples/cantilever_beam.py" in caller_paths
-    assert "tests/test_io.py" in caller_paths
+    assert "tests/io/test_io_general.py" in caller_paths
     assert all("data" not in path.casefold() for path in caller_paths)

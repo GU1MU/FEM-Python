@@ -39,6 +39,12 @@ def vtk_cell_spec(canonical_type: str) -> tuple[int, int]:
         ) from error
 
 
+def vtk_cell_spec_for_element(element_type: str) -> tuple[int, int]:
+    """Return required node count and VTK type for a raw element type or alias."""
+
+    return vtk_cell_spec(canonical_element_type(element_type))
+
+
 def vtk_cell_type(canonical_type: str) -> int:
     """Return the exact VTK Legacy cell type for a canonical FEM type."""
 
@@ -225,5 +231,6 @@ __all__ = [
     "build_result",
     "vtk_cell_node_count",
     "vtk_cell_spec",
+    "vtk_cell_spec_for_element",
     "vtk_cell_type",
 ]

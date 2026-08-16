@@ -10,11 +10,12 @@ from fem.application import RegionRef, resolve_effective_beam_frames
 from fem.elements.beam_section import parse_beam2_section
 from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
+from tests.io.test_abaqus_b31_phase2 import _ABAQUS_DLOAD_ORACLE
 
 
 STANDARD = (
     Path(__file__).resolve().parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )
@@ -46,9 +47,15 @@ def _rect_cantilever(load_label: str) -> list[str]:
     ]
 
 
-def test_rect_a_b_axes_match_timoshenko_tip_deflection_oracle(
+def test_rect_a_b_axes_match_abaqus_b31_tip_deflection_oracle(
     tmp_path,
 ) -> None:
+    # The B31 formulation (first-order interpolation with Abaqus shear and
+    # slenderness compensation) deliberately diverges from the classical
+    # cubic-interpolation Timoshenko closed form; the reference is the real
+    # Abaqus 2023 single-element RECT oracle from test_abaqus_b31_phase2,
+    # scaled linearly to this deck's 120 N/m distributed load.
+    load = 120.0
     p1_path = write_inp(
         tmp_path,
         "rect_p1.inp",
@@ -65,35 +72,19 @@ def test_rect_a_b_axes_match_timoshenko_tip_deflection_oracle(
     p1_result = solve(p1_model, "LOAD")
     p2_result = solve(p2_model, "LOAD")
 
-    width = 0.20
-    height = 0.10
-    length = 2.0
-    modulus = 210.0e9
-    poisson_ratio = 0.3
-    load = 120.0
-    area = height * width
-    i_yy = width * height**3 / 12.0
-    i_zz = height * width**3 / 12.0
-    shear_modulus = modulus / (2.0 * (1.0 + poisson_ratio))
-    shear_factor = 10.0 * (1.0 + poisson_ratio) / (
-        12.0 + 11.0 * poisson_ratio
-    )
-    shear_rigidity = shear_factor * shear_modulus * area
-    expected_y = (
-        load * length**4 / (8.0 * modulus * i_zz)
-        + load * length**2 / (2.0 * shear_rigidity)
-    )
-    expected_z = (
-        load * length**4 / (8.0 * modulus * i_yy)
-        + load * length**2 / (2.0 * shear_rigidity)
-    )
+    p1_oracle = _ABAQUS_DLOAD_ORACLE["P1"]
+    p2_oracle = _ABAQUS_DLOAD_ORACLE["P2"]
+    p1_magnitude = float(p1_oracle["record"].rsplit(",", 1)[1])
+    p2_magnitude = float(p2_oracle["record"].rsplit(",", 1)[1])
+    expected_y = p1_oracle["tip"][1] * load / p1_magnitude
+    expected_z = p2_oracle["tip"][1] * load / p2_magnitude
 
     displacement_y = p1_result.nodal_displacement(2, 2)
     displacement_z = p2_result.nodal_displacement(2, 3)
-    assert displacement_y == pytest.approx(expected_y)
-    assert displacement_z == pytest.approx(expected_z)
+    assert displacement_y == pytest.approx(expected_y, rel=1.0e-6)
+    assert displacement_z == pytest.approx(expected_z, rel=1.0e-6)
     assert displacement_y / displacement_z == pytest.approx(
-        expected_y / expected_z
+        expected_y / expected_z, rel=1.0e-6
     )
 
 

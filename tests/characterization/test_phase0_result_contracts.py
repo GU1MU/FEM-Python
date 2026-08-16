@@ -472,9 +472,10 @@ def test_phase0_project_router_dispatches_every_supported_schema(
 
 def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
-    assert tuple(item.key for item in ACTION_DESCRIPTORS[:10]) == (
+    assert tuple(item.key for item in ACTION_DESCRIPTORS[:11]) == (
         GuiActionKey.OPEN,
         GuiActionKey.NEW_NATIVE,
+        GuiActionKey.DELETE_MODEL,
         GuiActionKey.OPEN_PROJECT,
         GuiActionKey.SAVE_PROJECT,
         GuiActionKey.SAVE_PROJECT_AS,
@@ -554,6 +555,7 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces():
         if button.defaultAction() is not None
     ] == [
         "action_new_native",
+        "action_delete_model",
         "action_open_project",
         "action_save_project",
         "action_open",
