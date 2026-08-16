@@ -44,7 +44,7 @@ from tests.helpers.result_builders import (
 
 _FIXTURES = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

@@ -30,8 +30,8 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
-from tests.fixtures.planar_feature_chain_baseline import (
+from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
+from tests.helpers.fixtures.planar_feature_chain_baseline import (
     BASELINE_AREA,
     BASELINE_BOUNDING_BOX,
     BASELINE_COMPONENT_COUNT,

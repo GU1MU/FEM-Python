@@ -25,7 +25,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
+from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
 
 
 _LEGACY_COMPOSITE_KINDS = {

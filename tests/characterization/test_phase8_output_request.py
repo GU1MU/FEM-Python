@@ -26,7 +26,7 @@ from tests.helpers.file_builders import write_inp
 
 
 _STANDARD_INP_FIXTURES = (
-    Path(__file__).parent / "fixtures" / "inp" / "abaqus_standard"
+    Path(__file__).parents[1] / "helpers" / "fixtures" / "inp" / "abaqus_standard"
 )
 
 

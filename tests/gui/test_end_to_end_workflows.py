@@ -170,7 +170,7 @@ def test_inp_check_accepts_importer_internal_section_element_set(monkeypatch):
     )
     path = (
         Path(__file__).parents[1]
-        / "fixtures"
+        / "helpers" / "fixtures"
         / "inp"
         / "internal_section_set.inp"
     )

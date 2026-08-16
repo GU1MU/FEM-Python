@@ -26,7 +26,7 @@ from fem.io.project_v1 import (
 )
 
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "femproj" / "v1"
+FIXTURES = Path(__file__).parents[1] / "helpers" / "fixtures" / "femproj" / "v1"
 
 
 def test_static_minimal_v1_fixture_uses_legacy_defaults() -> None:

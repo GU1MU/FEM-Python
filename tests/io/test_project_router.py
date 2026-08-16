@@ -38,7 +38,7 @@ from fem.io.project_v14 import load_project_v14
 from fem.mesh.settings import MeshSettings
 
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "femproj" / "v1"
+FIXTURES = Path(__file__).parents[1] / "helpers" / "fixtures" / "femproj" / "v1"
 
 
 def test_public_model_suffix_contract_is_unique_and_legacy_is_read_only() -> None:

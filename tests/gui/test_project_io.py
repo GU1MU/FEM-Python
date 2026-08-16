@@ -288,7 +288,7 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
     _application()
     fixture = (
         Path(__file__).parents[1]
-        / "fixtures"
+        / "helpers" / "fixtures"
         / "femproj"
         / "v1"
         / "minimal_rectangle.femproj"
@@ -402,7 +402,7 @@ def test_legacy_project_save_cancel_preserves_document_and_source(
     _application()
     fixture = (
         Path(__file__).parents[1]
-        / "fixtures"
+        / "helpers" / "fixtures"
         / "femproj"
         / "v1"
         / "minimal_rectangle.femproj"

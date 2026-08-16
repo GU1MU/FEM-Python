@@ -13,7 +13,7 @@ from tests.helpers.file_builders import write_inp
 
 STANDARD = (
     Path(__file__).resolve().parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

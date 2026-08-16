@@ -19,7 +19,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.fixtures.profile_transform_baseline import (
+from tests.helpers.fixtures.profile_transform_baseline import (
     concentric_ring_fixture,
 )
 from tests.helpers.profile_transform_capture import (

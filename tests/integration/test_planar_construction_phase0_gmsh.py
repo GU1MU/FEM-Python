@@ -15,7 +15,7 @@ from fem.geometry import (
     SketchPoint,
     analyze_sketch_profiles,
 )
-from tests.fixtures.planar_construction_phase0 import (
+from tests.helpers.fixtures.planar_construction_phase0 import (
     EXPECTED_PLATE_PROFILE_ROLES,
     H_SLOT_AREA,
     H_SLOT_BOUNDARY_LINE_COUNT,

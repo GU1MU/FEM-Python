@@ -421,7 +421,7 @@ def test_resolution_supports_importer_internal_element_sets() -> None:
 def test_real_importer_internal_section_set_uses_the_same_resolution() -> None:
     fixture = (
         Path(__file__).parents[1]
-        / "fixtures"
+        / "helpers" / "fixtures"
         / "inp"
         / "internal_section_set.inp"
     )

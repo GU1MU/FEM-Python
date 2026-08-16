@@ -20,7 +20,7 @@ from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 _FIXTURES = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

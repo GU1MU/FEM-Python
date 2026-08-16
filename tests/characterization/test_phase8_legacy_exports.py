@@ -7,7 +7,7 @@ from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.post import vtk
 
 
-FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "phase8"
+FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "helpers" / "fixtures" / "phase8"
 
 
 def _write_utf8_lf(path: Path, text: str) -> Path:

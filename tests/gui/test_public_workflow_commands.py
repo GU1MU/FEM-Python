@@ -27,7 +27,7 @@ from tests.helpers.gui_command_receipts import (
 
 FIXTURES = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

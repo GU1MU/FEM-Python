@@ -2,7 +2,7 @@
 
 Freezes the golden facts, the structural recipe fingerprint and the
 whole-call instrumented counts of the reconstructed
-``plate_300x100_slot_shu`` IR (see tests/fixtures/planar_feature_chain_baseline.py)
+``plate_300x100_slot_shu`` IR (see tests/helpers/fixtures/planar_feature_chain_baseline.py)
 so the incremental-compilation plan phases can prove semantic equivalence.
 After Phase 2 the chain build is O(N) and IS the whole call (7 cuts / 7
 lineage proofs / 14 evidence captures); the final proof reuses the last-step
@@ -28,7 +28,7 @@ from fem.application.planar_construction import (
 from fem.geometry import BooleanGeometry
 from fem.geometry import model as geometry_model
 from fem.geometry._gmsh.model import GeometryModel
-from tests.fixtures.planar_feature_chain_baseline import (
+from tests.helpers.fixtures.planar_feature_chain_baseline import (
     BASELINE_AREA,
     BASELINE_BOUNDING_BOX,
     BASELINE_CHAINED_CUT_COUNT,

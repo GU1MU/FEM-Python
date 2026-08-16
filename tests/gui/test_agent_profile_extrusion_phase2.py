@@ -35,7 +35,7 @@ from tests.geometry.test_profile_extrusion import (
     profile_face_id,
     two_profile_sketch,
 )
-from tests.fixtures.profile_transform_baseline import concentric_ring_sketch
+from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_sketch
 
 
 def _controller(session: ModelSession):

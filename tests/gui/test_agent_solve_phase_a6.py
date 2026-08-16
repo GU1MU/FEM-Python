@@ -55,7 +55,7 @@ from fem_gui.visualization.model_adapter import build_model_geometry
 
 _FIXTURE = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
     / "truss2_tension.inp"

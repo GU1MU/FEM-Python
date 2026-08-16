@@ -726,7 +726,7 @@ def test_failed_project_open_preserves_session_tree_and_viewport(
     else:
         fixture = (
             Path(__file__).parents[1]
-            / "fixtures"
+            / "helpers" / "fixtures"
             / "femproj"
             / "v1"
             / "line_load_unsupported.femproj"

@@ -21,7 +21,7 @@ from fem.solvers import static_linear
 
 _STANDARD = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

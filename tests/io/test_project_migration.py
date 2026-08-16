@@ -40,7 +40,7 @@ from fem.io.project_v1 import (
 from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
 
 
-FIXTURES = Path(__file__).parents[1] / "fixtures" / "femproj" / "v1"
+FIXTURES = Path(__file__).parents[1] / "helpers" / "fixtures" / "femproj" / "v1"
 GLOBAL_FALLOFF = MeshSizeFalloff("global_size", 0.0, 2.0)
 RADIUS_FALLOFF = MeshSizeFalloff("target_radius", 0.25, 2.0)
 

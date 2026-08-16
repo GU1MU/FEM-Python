@@ -4,7 +4,7 @@ import hashlib
 import json
 
 from fem_agent.authoring_runtime import _LEGACY_PREPARE_GEOMETRY
-from tests.fixtures.planar_construction_phase0 import (
+from tests.helpers.fixtures.planar_construction_phase0 import (
     EXPECTED_H_CONSTRUCTION,
     LEGACY_PROFILE_SCHEMA_HASHES,
     MALFORMED_H_SLOT_PAYLOAD,

@@ -25,7 +25,7 @@ from tests.helpers.model_builders import make_simple_truss_mesh
 
 _FIXTURES = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

@@ -38,7 +38,7 @@ from tests.helpers.model_builders import make_static_pull_truss_model
 
 STANDARD_FIXTURES = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )

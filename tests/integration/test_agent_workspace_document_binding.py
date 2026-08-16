@@ -46,7 +46,7 @@ from tests.helpers.agent_session_fixtures import _a5_session
 
 _FIXTURE = (
     Path(__file__).parents[1]
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
     / "truss2_tension.inp"

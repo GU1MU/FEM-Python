@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LEDGER_PATH = (
     PROJECT_ROOT
     / "tests"
-    / "fixtures"
+    / "helpers" / "fixtures"
     / "phase8"
     / "result_compatibility_ledger.json"
 )
