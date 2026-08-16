@@ -259,7 +259,8 @@ def compile_planar_feature_recipe(
     The Boolean chain is built incrementally in one CAD model whose lifetime
     is this single call: the base sketch is compiled once and every step
     performs exactly one cut plus its lineage proof.  The final equivalence
-    proof still replays the whole recipe in a fresh model.
+    proof reuses the last-step live compiled carrier on that same model
+    instead of replaying the whole recipe in a fresh model.
     """
 
     if type(construction) is not PlanarConstructionIR:
@@ -482,50 +483,52 @@ def compile_planar_feature_recipe(
 
     # The whole Boolean chain shares one CAD model for this single compile
     # call; each step performs exactly one incremental cut plus its proof.
+    # The final equivalence proof reuses the last-step live compiled carrier
+    # on that same model instead of replaying the recipe in a fresh model, so
+    # it must run before the shared model closes (the carrier dies with it).
     with model_factory(
         f"planar-feature-chain-{construction.digest()[:12]}",
         dimension=2,
     ) as chain_cad:
-        feature_recipe, _chain_compiled, _ambiguity = build(
+        feature_recipe, chain_compiled, _ambiguity = build(
             construction.result_node_id,
             chain_cad,
         )
-    if type(feature_recipe) is SketchGeometry:
-        return feature_recipe
-    try:
-        with model_factory(
-            f"planar-feature-proof-{construction.digest()[:12]}",
-            dimension=2,
-        ) as cad:
-            feature_compiled = compile_recipe(cad, feature_recipe)
-            feature_loops = cad.planar_boundary_loops(feature_compiled.domain)
-            feature_facts = _native_facts(cad, feature_compiled.domain, feature_loops)
-        expected_facts = _NativeFacts(
-            compiled.proof.area,
-            compiled.proof.bounding_box,
-            compiled.proof.component_count,
-            compiled.proof.hole_count,
-            compiled.proof.curve_type_counts,
-        )
-        # Native boolean features legitimately split analytic curves at
-        # intersection points (for example round path-stroke joins), so the
-        # final proof verifies geometry and topology but not exact curve
-        # counts.
-        _require_equivalent(
-            expected_facts,
-            feature_facts,
-            construction.result_node_id,
-            strict_curves=False,
-        )
-    except PlanarConstructionCompileError:
-        raise
-    except Exception as error:
-        _fail(
-            "planar-ir.feature-equivalence-failed",
-            f"Feature recipe proof failed: {error}",
-            node_id=construction.result_node_id,
-            allowed_fields=("nodes", "result_node_id"),
-        )
+        if type(feature_recipe) is SketchGeometry:
+            # No top-level Boolean produced a feature chain (plain leaf or
+            # union-multi-face degrade), so there is no live carrier to prove.
+            return feature_recipe
+        try:
+            feature_loops = chain_cad.planar_boundary_loops(chain_compiled.domain)
+            feature_facts = _native_facts(
+                chain_cad, chain_compiled.domain, feature_loops
+            )
+            expected_facts = _NativeFacts(
+                compiled.proof.area,
+                compiled.proof.bounding_box,
+                compiled.proof.component_count,
+                compiled.proof.hole_count,
+                compiled.proof.curve_type_counts,
+            )
+            # Native boolean features legitimately split analytic curves at
+            # intersection points (for example round path-stroke joins), so the
+            # final proof verifies geometry and topology but not exact curve
+            # counts.
+            _require_equivalent(
+                expected_facts,
+                feature_facts,
+                construction.result_node_id,
+                strict_curves=False,
+            )
+        except PlanarConstructionCompileError:
+            raise
+        except Exception as error:
+            _fail(
+                "planar-ir.feature-equivalence-failed",
+                f"Feature recipe proof failed: {error}",
+                node_id=construction.result_node_id,
+                allowed_fields=("nodes", "result_node_id"),
+            )
     return feature_recipe
 
 

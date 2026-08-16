@@ -197,13 +197,22 @@ def feature_recipe_fingerprint(recipe: object) -> str:
 # fem.application.recipe_compiler.
 #
 # Phase-0 legacy baseline (full-chain replay per step) was 35/35/70.  Phase 1
-# (single-model incremental chain build) leaves only the final-proof replay,
-# so the whole-call window decomposes as:
+# (single-model incremental chain build) removed the per-step replay, leaving
+# only the final-proof replay.  Phase 2 removed that replay too by reusing the
+# last-step live compiled carrier, so the whole-call window now IS the chain
+# build alone:
 #   chain build    = 7 incremental cuts / 7 lineage proofs / 14 evidence
 #                    captures (the plan's O(N) targets 7/7/<=14);
-#   final proof    = 7 replayed cuts / 7 lineage proofs / 14 evidence
-#                    captures (unchanged until Phase 2);
-#   whole call     = 14/14/28.
-BASELINE_CUT_COUNT = 14
-BASELINE_LINEAGE_COUNT = 14
-BASELINE_EVIDENCE_COUNT = 28
+#   final proof    = 0 replayed cuts / 0 lineage proofs / 0 evidence captures
+#                    (reuses the live carrier; gone in Phase 2);
+#   whole call     = 7/7/14.
+BASELINE_CUT_COUNT = 7
+BASELINE_LINEAGE_COUNT = 7
+BASELINE_EVIDENCE_COUNT = 14
+
+# New CAD models opened by compile_planar_feature_recipe's own feature-chain
+# logic (models named "planar-feature-*"; the flatten sub-compilations open
+# their own "planar-construction-*"/"planar-recipe-proof-*" models).  Phase 1
+# opened 2 (chain build + final-proof replay); Phase 2 reuses the live carrier
+# and opens exactly 1 (the chain model).
+BASELINE_FEATURE_CHAIN_MODEL_COUNT = 1
