@@ -298,6 +298,25 @@ def _binding_error(interactor: type[object]) -> RuntimeError | None:
     return RuntimeError("无法确认 PyVistaQt 的 Qt 绑定来源")
 
 
+def _isolate_native_interactor(interactor_cls: type) -> type:
+    """包装 VTK 交互器,避免原生窗口属性向祖先控件级联传播。
+
+    QtInteractor 是原生 OpenGL 子窗口,构造期间 winId() 会沿父链传播
+    WA_NativeWindow 并对父控件执行 enforceNativeChildren(),把主窗口下
+    大量兄弟控件强制原生化;随后任何 QMenu/QDialog 以这些非顶级原生
+    窗口作为 transient parent 时,Qt 会打印
+    "must be a top level window" 警告。该属性必须在 QWidget 构造之前
+    设置才生效,因此通过子类在构造前置位。
+    """
+
+    class IsolatedQtInteractor(interactor_cls):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
+            super().__init__(*args, **kwargs)
+
+    return IsolatedQtInteractor
+
+
 def load_backend() -> tuple[object | None, type[object] | None, Exception | None]:
     """仅在需要显示网格时导入 VTK 相关包。"""
     global _pyvista, _QtInteractor, _backend_error, _backend_attempted
@@ -313,7 +332,9 @@ def load_backend() -> tuple[object | None, type[object] | None, Exception | None
     except Exception as error:
         _backend_error = error
         return None, None, error
-    _pyvista, _QtInteractor, _backend_error = pv, QtInteractor, None
+    _pyvista = pv
+    _QtInteractor = _isolate_native_interactor(QtInteractor)
+    _backend_error = None
     return _pyvista, _QtInteractor, None
 
 
