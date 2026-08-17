@@ -886,6 +886,12 @@ class AgentSessionEngine:
         stage_proposal_pending = False
         stage_proposal_retry_used = False
         stage_proposal_correction: str | None = None
+        # A post-terminal continuation may still decide, once the stream has
+        # completed, that the provider text contradicts the trusted proposal
+        # outcome and must be dropped.  Streamed events cannot be retracted
+        # after they reach the GUI, so hold every streamed delta back and
+        # replay the text only after the response passes the guards below.
+        defer_streamed_text = trusted_terminal is not None
         language_retry_used = False
         language_correction: str | None = None
         previous_tool_failed = False
@@ -1101,6 +1107,9 @@ class AgentSessionEngine:
                             raise ProviderMalformedResponseError(
                                 "provider stream emitted an invalid text delta"
                             )
+                        streamed_text_parts.append(delta)
+                        if defer_streamed_text:
+                            return
                         if not stream_started:
                             events.append(
                                 self._event(
@@ -1109,7 +1118,6 @@ class AgentSessionEngine:
                                 )
                             )
                             stream_started = True
-                        streamed_text_parts.append(delta)
                         events.append(
                             self._event(
                                 EngineEventType.MESSAGE_DELTA,
@@ -1123,6 +1131,9 @@ class AgentSessionEngine:
                             raise ProviderMalformedResponseError(
                                 "provider stream emitted an invalid reasoning delta"
                             )
+                        streamed_reasoning_parts.append(delta)
+                        if defer_streamed_text:
+                            return
                         if not reasoning_stream_started:
                             events.append(
                                 self._event(
@@ -1134,7 +1145,6 @@ class AgentSessionEngine:
                                 )
                             )
                             reasoning_stream_started = True
-                        streamed_reasoning_parts.append(delta)
                         events.append(
                             self._event(
                                 EngineEventType.MESSAGE_DELTA,
@@ -1222,7 +1232,7 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            if stream_started and "".join(streamed_text_parts) != (
+            if streamed_text_parts and "".join(streamed_text_parts) != (
                 response.message.content or ""
             ):
                 diagnostic = make_diagnostic(
@@ -1238,7 +1248,7 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            if reasoning_stream_started and "".join(
+            if streamed_reasoning_parts and "".join(
                 streamed_reasoning_parts
             ) != (response.message.reasoning_content or ""):
                 diagnostic = make_diagnostic(

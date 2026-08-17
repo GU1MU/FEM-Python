@@ -2537,6 +2537,134 @@ def test_additional_model_request_retries_bare_delete_completion(tmp_path):
     )
 
 
+def test_post_terminal_streamed_contradiction_is_held_back_from_gui(tmp_path):
+    contradiction = "网格操作卡已生成（待确认），内容如下：全局尺寸 5"
+    provider = _StreamingFakeProvider(
+        [_text_response("等待本地确认"), _text_response(contradiction)]
+    )
+    streamed = []
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_post_terminal_stream_guard",
+        event_sink=streamed.append,
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine, proposal_kind="mesh")
+    first_round_events = len(streamed)
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "网格意图和生成模型已原子提交",
+    )
+
+    continuation_deltas = [
+        event.data["text"]
+        for event in streamed[first_round_events:]
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert continuation_deltas == ["网格意图和生成模型已原子提交"]
+    assert not any(
+        "待确认" in event.data["text"]
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+    assert contradiction not in tuple(
+        message.content for message in engine._history if message.content
+    )
+
+
+def test_post_terminal_streamed_summary_replays_once_after_guards(tmp_path):
+    provider = _StreamingFakeProvider(
+        [_text_response("等待本地确认"), _text_response("下一阶段开始")]
+    )
+    streamed = []
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_post_terminal_stream_replay",
+        event_sink=streamed.append,
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine)
+    first_round_events = len(streamed)
+
+    engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "几何创建完成",
+    )
+
+    first_round_deltas = [
+        event.data["text"]
+        for event in streamed[:first_round_events]
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert len(first_round_deltas) == 2
+    assert "".join(first_round_deltas) == "等待本地确认"
+    continuation_deltas = [
+        event.data["text"]
+        for event in streamed[first_round_events:]
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert continuation_deltas == ["下一阶段开始"]
+
+
+def test_post_terminal_streamed_reasoning_is_also_held_back(tmp_path):
+    contradiction = "网格操作卡已生成（待确认），内容如下：全局尺寸 5"
+    provider = _ReasoningStreamingFakeProvider(
+        [
+            _text_response("等待本地确认"),
+            ProviderResponse(
+                AssistantMessage(
+                    "assistant",
+                    content=contradiction,
+                    reasoning_content="The card is pending user confirmation.",
+                ),
+                finish_reason="stop",
+            ),
+        ]
+    )
+    streamed = []
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_post_terminal_reasoning_guard",
+        event_sink=streamed.append,
+    )
+    engine.send_message("建立模型")
+    _register_test_continuation(engine, proposal_kind="mesh")
+    first_round_events = len(streamed)
+
+    events = engine.continue_after_proposal(
+        "proposal-continue-1",
+        "a" * 64,
+        "source-turn-1",
+        4,
+        "succeeded",
+        "网格意图和生成模型已原子提交",
+    )
+
+    continuation_deltas = [
+        event.data["text"]
+        for event in streamed[first_round_events:]
+        if event.event is EngineEventType.MESSAGE_DELTA
+    ]
+    assert continuation_deltas == ["网格意图和生成模型已原子提交"]
+    assert not any(
+        event.data["text"].startswith(("The card", "网格操作卡"))
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+
+
 def _attached_engine(tmp_path, provider):
     source = write_perforated_plate_style_inp(
         tmp_path,
