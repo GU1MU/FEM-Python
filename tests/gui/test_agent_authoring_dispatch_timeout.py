@@ -134,7 +134,8 @@ def test_whitelisted_tools_get_the_long_budget_tier(monkeypatch, tmp_path) -> No
         authoring_controller=controller,
     )
 
-    (whitelisted,) = agent_runtime._AUTHORING_TOOL_LONG_TIMEOUT_NAMES
+    whitelisted = "prepare_planar_construction_proposal"
+    assert whitelisted in agent_runtime._AUTHORING_TOOL_LONG_TIMEOUT_NAMES
     result = _dispatch_from_other_thread(runtime, whitelisted, "timeout-long")
 
     assert result.ok is False
@@ -148,9 +149,17 @@ def test_whitelisted_tools_get_the_long_budget_tier(monkeypatch, tmp_path) -> No
 def test_long_timeout_whitelist_matches_registered_dynamic_tools() -> None:
     names = agent_runtime._AUTHORING_TOOL_LONG_TIMEOUT_NAMES
     assert names, "the long-timeout whitelist must be explicit and non-empty"
-    assert names == {"prepare_planar_construction_proposal"}
+    assert names == {
+        "prepare_planar_construction_proposal",
+        "run_native_preflight",
+    }
     _bridge, controller = _controller(ModelSession())
-    registered = {item.name for item in controller.definitions}
+    # ``definitions`` is stage-gated (an empty session never publishes
+    # ``run_native_preflight``), so the consistency check must cover the
+    # full handler registry the controller was wired with.
+    registered = set(controller._handlers) | {
+        item.name for item in controller.definitions
+    }
     assert names <= registered, (
         "every long-timeout tool must stay a registered dynamic tool"
     )

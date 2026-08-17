@@ -386,6 +386,14 @@ _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS = 5.0
+# The Agent preflight dispatch holds the GUI owner until the background
+# model check is terminal; without this hold the provider burns its bounded
+# tool-call budget polling read_authoring_context while the task runs.  The
+# wait budget must stay below the long authoring owner-dispatch budget
+# (120 s in agent_runtime) so the tool result is produced locally instead
+# of timing out on the engine thread.
+_AGENT_PREFLIGHT_SYNC_WAIT_SECONDS = 100.0
+_AGENT_PREFLIGHT_RECORD_DRAIN_SECONDS = 4.0
 _TREE_KEY_MISSING = object()
 
 
@@ -13133,12 +13141,47 @@ class FEMMainWindow(QMainWindow):
             )
 
         completion.observe(terminal)
-        return self._begin_model_check(
+        started = self._begin_model_check(
             request.step_name,
             completion=completion,
             show_success=False,
             expected_session_revision=request.base_session_revision,
         )
+        if started:
+            self._await_agent_preflight_completion(
+                completion,
+                self.agent_authoring_bridge.port,
+                request.request_id,
+            )
+        return started
+
+    def _await_agent_preflight_completion(
+        self,
+        completion: GuiCommandCompletion,
+        port: SessionGeometryAuthoringPort,
+        request_id: str,
+    ) -> AgentPreflightRecord:
+        """Hold the GUI dispatch until the Agent preflight record is terminal.
+
+        ``GuiCommandCompletion.wait`` keeps the GUI event loop alive through a
+        nested ``processEvents`` loop, mirroring the synchronous save-command
+        pattern, so the background check keeps running and queued UI events
+        stay serviced.  A short bounded drain afterwards covers the ordering
+        gap between the task completion event and the port record update.
+        """
+
+        completion.wait(_AGENT_PREFLIGHT_SYNC_WAIT_SECONDS)
+        record = port.preflight_record(request_id)
+        deadline = perf_counter() + _AGENT_PREFLIGHT_RECORD_DRAIN_SECONDS
+        while (
+            record.state is AgentPreflightState.RUNNING
+            and perf_counter() < deadline
+        ):
+            QApplication.processEvents()
+            sleep(0.005)
+            record = port.preflight_record(request_id)
+        QApplication.processEvents()
+        return record
 
     @staticmethod
     def _evaluate_model_check(

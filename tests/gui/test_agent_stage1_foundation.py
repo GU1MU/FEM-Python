@@ -264,6 +264,31 @@ def test_multistep_solve_requires_explicit_step_and_uses_job_supplier() -> None:
     assert session.find_run("作业-9") is None
 
 
+def test_solve_proposal_dispatch_targets_bound_numeric_document() -> None:
+    session = _solved_session()
+    authoring_bridge = AgentAuthoringBridge(
+        SessionGeometryAuthoringPort(session, lambda: None)
+    )
+    authoring_bridge.bind_snapshot(session.snapshot(), document_id=2)
+    controller = create_session_authoring_workflow_controller(
+        session,
+        authoring_bridge,
+        AgentResultQueryBridge(SessionResultQueryPort(session)),
+    )
+    assert controller.stage.value == "results_ready"
+
+    outcome = controller.dispatch(
+        "prepare_solve_proposal",
+        {"step_name": STEP_NAME},
+        ToolExecutionContext(session.session_id, session.session_revision, "numeric"),
+    )
+
+    assert outcome.ok, outcome.summary
+    record = next(iter(authoring_bridge._records.values()))
+    assert record.proposal.target_document_id == "2"
+    assert record.state.name == "PENDING_CONFIRMATION"
+
+
 def test_results_ready_keeps_preflight_and_repeated_solve_tools() -> None:
     session = _solved_session()
     authoring_bridge = AgentAuthoringBridge(

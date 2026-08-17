@@ -741,6 +741,52 @@ def test_authoring_prompt_uses_proposal_first_geometry_and_local_unit_defaults(
     assert "Never delete the current Part" in system_prompt
 
 
+def test_authoring_prompt_drives_solve_preflight_and_card_chain(tmp_path):
+    provider = FakeProvider([_text_response("需要界面确认。")])
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_solve_chain",
+        dynamic_tools=controller,
+    )
+
+    engine.send_message("提交求解")
+
+    system_prompt = provider.requests[0].messages[0].content
+    assert "drive the whole local" in system_prompt
+    assert "call run_native_preflight for the current step" in system_prompt
+    assert "never state that the preflight passed" in system_prompt
+    assert "prepare_solve_proposal in that same flow" in system_prompt
+    assert "no confirmable control" in system_prompt
+    assert "before that card has been presented" in system_prompt
+
+
+def test_authoring_prompt_forbids_preflight_result_polling(tmp_path):
+    provider = FakeProvider([_text_response("等待预检。")])
+    controller = AuthoringWorkflowController(lambda: {}, {})
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_solve_polling",
+        dynamic_tools=controller,
+    )
+
+    engine.send_message("提交求解")
+
+    system_prompt = provider.requests[0].messages[0].content
+    # run_native_preflight waits locally and returns the terminal state, so
+    # re-reading the authoring context in a polling loop must be forbidden:
+    # it previously exhausted the bounded tool-call budget while the GUI
+    # background check was still running.
+    assert "exactly once" in system_prompt
+    assert "returns its terminal state" in system_prompt
+    assert "not re-read the authoring context to wait for it" in system_prompt
+    assert "do not poll read_authoring_context in a loop" in system_prompt
+    assert "read it at most" in system_prompt
+    assert "end the turn" in system_prompt
+
+
 def test_blank_geometry_omitted_units_cannot_create_a_unit_question(tmp_path):
     question = (
         "我需要先确认一下你的项目单位制。请告诉我：你希望使用什么单位制？"

@@ -132,9 +132,29 @@ _AUTHORING_TOOL_LONG_OWNER_TIMEOUT_SECONDS = 120.0
 # Keep it in sync with the dynamic tool registry: every entry must remain a
 # registered authoring tool (asserted in
 # tests/gui/test_agent_authoring_dispatch_timeout.py).
+# ``run_native_preflight`` holds the GUI owner while the deterministic model
+# check runs in the background, so it needs the high budget too.
 _AUTHORING_TOOL_LONG_TIMEOUT_NAMES = frozenset(
-    {"prepare_planar_construction_proposal"}
+    {"prepare_planar_construction_proposal", "run_native_preflight"}
 )
+# Opening narration and heartbeat subject per long-budget tool; the generic
+# entry covers future whitelist additions.
+_AUTHORING_LONG_TOOL_NARRATIONS = {
+    "prepare_planar_construction_proposal": (
+        "正在后台线程编译二维构造，界面保持响应，预计需要数十秒。"
+    ),
+    "run_native_preflight": (
+        "正在后台执行确定性模型预检，界面保持响应，请稍候。"
+    ),
+}
+_AUTHORING_LONG_TOOL_HEARTBEAT_SUBJECTS = {
+    "prepare_planar_construction_proposal": "二维构造编译",
+    "run_native_preflight": "模型预检",
+}
+_AUTHORING_LONG_TOOL_DEFAULT_NARRATION = (
+    "正在后台执行本地计算，界面保持响应，请稍候。"
+)
+_AUTHORING_LONG_TOOL_DEFAULT_SUBJECT = "本地计算"
 _AUTHORING_PROGRESS_HEARTBEAT_SECONDS = 10.0
 _RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
@@ -1276,7 +1296,10 @@ class QtAgentRuntime(QObject):
         )
         if long_running:
             self._narrate_authoring_tool_progress(
-                "正在后台线程编译二维构造，界面保持响应，预计需要数十秒。",
+                _AUTHORING_LONG_TOOL_NARRATIONS.get(
+                    name,
+                    _AUTHORING_LONG_TOOL_DEFAULT_NARRATION,
+                ),
             )
         self.authoringToolRequested.emit(invocation)
         started = time.monotonic()
@@ -1293,8 +1316,12 @@ class QtAgentRuntime(QObject):
                     raise error
             now = time.monotonic()
             if long_running and now >= next_heartbeat:
+                subject = _AUTHORING_LONG_TOOL_HEARTBEAT_SUBJECTS.get(
+                    name,
+                    _AUTHORING_LONG_TOOL_DEFAULT_SUBJECT,
+                )
                 self._narrate_authoring_tool_progress(
-                    f"（二维构造编译仍在进行，已用时 {int(now - started)} 秒…）",
+                    f"（{subject}仍在进行，已用时 {int(now - started)} 秒…）",
                 )
                 next_heartbeat = now + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
             if now >= deadline:

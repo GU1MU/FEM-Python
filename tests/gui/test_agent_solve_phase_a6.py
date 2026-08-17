@@ -189,9 +189,13 @@ def test_a6_agent_automatically_preflights_then_gui_click_solves_in_background(
 
     preflight = window.agent_authoring_bridge.request_preflight(STEP_NAME)
 
-    assert preflight.state is AgentPreflightState.RUNNING
-    assert window.session.validation_for(STEP_NAME) is None
-    _wait_for_task(window)
+    # The dispatch holds the GUI owner until the background check is
+    # terminal, so the provider gets the final outcome in one tool call
+    # instead of polling read_authoring_context while the task runs.
+    assert preflight.state is AgentPreflightState.PASSED
+    assert preflight.validation_stamp is not None
+    validation = window.session.validation_for(STEP_NAME)
+    assert validation is not None and validation.passed
     completed_preflight = (
         window.agent_authoring_bridge.port.preflight_record(
             preflight.request_id

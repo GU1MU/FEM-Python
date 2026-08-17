@@ -3051,7 +3051,12 @@ _APPLY_DEFINITION = _tool(
 )
 _RUN_PREFLIGHT = _tool(
     "run_native_preflight",
-    "Run the existing deterministic native preflight without solving.",
+    (
+        "Run the existing deterministic native preflight without solving. "
+        "The call waits locally until the background GUI check reports its "
+        "terminal state, returned in the state field; running is only "
+        "returned when the local wait budget elapsed."
+    ),
     {
         "type": "object",
         "properties": {

@@ -7713,12 +7713,26 @@ def create_session_authoring_workflow_controller(
                 "preflight requires a current runnable analysis step"
             )
         record = authoring_bridge.request_preflight(step_name)
+        if record.state is AgentPreflightState.RUNNING:
+            # Only reachable when the GUI wait budget elapsed before the
+            # background check finished; the provider is told to stop
+            # polling and report the still-running state instead.
+            summary = (
+                "Native preflight is still running in the background GUI "
+                "task after its local wait budget."
+            )
+        else:
+            summary = (
+                "Deterministic native preflight finished with state "
+                f"{record.state.value}."
+            )
         return AuthoringToolOutcome(
-            "Native preflight was submitted through the existing GUI task.",
+            summary,
             {
                 "request_id": record.request_id,
                 "state": record.state.value,
                 "passed": record.state is AgentPreflightState.PASSED,
+                "message": record.message,
             },
         )
 
@@ -7745,6 +7759,7 @@ def create_session_authoring_workflow_controller(
             snapshot=current_session().snapshot(),
             step_name=step_name,
             job_name=supplied_job_name.strip(),
+            target_document_id=current_context().binding.document_id,
             **metadata,
         )
         return proposal_outcome(
