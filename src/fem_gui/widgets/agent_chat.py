@@ -731,6 +731,19 @@ class _CurrentPageStack(QStackedWidget):
         self.updateGeometry()
 
 
+class _ConversationSurface(QWidget):
+    """对话内容宽度始终跟随滚动视口。
+
+    富文本消息（表格、长路径等）的最小尺寸会抬升容器的
+    ``minimumSizeHint``，导致 ``QScrollArea`` 按最小宽度保留超宽内容，
+    展开折叠区并调整抽屉宽度后右侧内容被裁掉。这里把最小宽度归零，
+    让内容始终收窄到视口宽度并自动换行。
+    """
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
+
+
 class _ChatInput(QPlainTextEdit):
     """在输入框内路由发送与候选键盘操作。"""
 
@@ -1724,7 +1737,7 @@ class AgentChatDrawer(_BoundaryFrame):
             True,
         )
 
-        conversation = QWidget(scroll)
+        conversation = _ConversationSurface(scroll)
         conversation.setObjectName("agentChatConversation")
         conversation.setAttribute(
             Qt.WidgetAttribute.WA_StyledBackground,

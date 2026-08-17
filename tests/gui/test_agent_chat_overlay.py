@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from fem_gui.agent_events import EventType, FakeAgentEventStream
 from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
+    AgentNarrativeSection,
     ModelViewportOverlayHost,
     ToolActivityPreview,
 )
@@ -942,4 +943,93 @@ def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
     assert "各种类型" in drawer.suggestion_item.text()
     assert not drawer.agent_runtime.busy
     assert list(tmp_path.iterdir()) == []
+    host.close()
+
+
+def test_expanded_narrative_stays_within_viewport_after_drawer_resize():
+    application = _application()
+    viewport = _ViewportProbe()
+    host = ModelViewportOverlayHost(viewport)
+    host.resize(900, 620)
+    host.show()
+    host.set_drawer_open(True, animated=False)
+    application.processEvents()
+
+    drawer = host.agent_chat_drawer
+    stream = FakeAgentEventStream(
+        session_id="narrative-width-session",
+        event_prefix="narrative-width-event",
+    )
+    turn_id = "narrative-width-turn"
+    thinking_text = (
+        "我先检查边界条件与载荷方向，再核对单元类型与材料属性。\n\n"
+        "| 检查项目 | 当前结果 | 详细说明与后续处理建议 | 负责人 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 边界条件施加情况 | 正常 | 底面固定约束已施加，侧面自由 | 检查工具 A |\n"
+        "| 载荷施加情况 | 正常 | 顶面均布压力 1.5e6 Pa，方向 -Z | 检查工具 B |\n"
+        "| 单元类型与积分方案 | C3D20R | 二阶六面体缩减积分单元，需要检查沙漏控制 | 网格检查 |\n"
+        "| 材料参数一致性 | 钢材 | E=2.1e11 Pa, nu=0.3, density=7850 | 材料库 |\n\n"
+        "接下来我会检查网格质量并运行静力求解。"
+    )
+    message_payload = {
+        "message_id": "narrative-width-message",
+        "role": "assistant",
+        "format": "restricted_markdown",
+        "presentation_kind": "process",
+    }
+    events = [
+        stream._event(
+            turn_id,
+            EventType.TURN_STARTED,
+            {"user_message": "请检查模型"},
+        ),
+        stream._event(turn_id, EventType.MESSAGE_START, message_payload),
+        stream._event(
+            turn_id,
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "narrative-width-message",
+                "delta": thinking_text[:80],
+            },
+        ),
+        stream._event(
+            turn_id,
+            EventType.MESSAGE_DELTA,
+            {
+                "message_id": "narrative-width-message",
+                "delta": thinking_text[80:],
+            },
+        ),
+        stream._event(
+            turn_id,
+            EventType.MESSAGE_COMPLETE,
+            {"message_id": "narrative-width-message"},
+        ),
+        stream._event(turn_id, EventType.TURN_COMPLETE, {}),
+    ]
+    drawer.replay_agent_events(events)
+    application.processEvents()
+
+    section = drawer.findChild(AgentNarrativeSection)
+    assert section is not None
+    assert section.collapsible
+    section.toggle_button.click()
+    application.processEvents()
+    assert section.details.isVisible()
+
+    def assert_content_fits_viewport() -> None:
+        scroll_viewport = drawer.conversation_scroll.viewport()
+        assert scroll_viewport.width() > 0
+        assert drawer.conversation_widget.width() <= scroll_viewport.width()
+        assert drawer.event_feed.width() <= scroll_viewport.width()
+        assert section.width() <= scroll_viewport.width()
+        assert section.details_label.width() <= scroll_viewport.width()
+
+    assert_content_fits_viewport()
+    host.set_drawer_width(640)
+    application.processEvents()
+    assert_content_fits_viewport()
+    host.set_drawer_width(320)
+    application.processEvents()
+    assert_content_fits_viewport()
     host.close()
