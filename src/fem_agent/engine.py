@@ -466,7 +466,11 @@ class EngineConfig:
     max_tool_payload_bytes: int = 64 * 1024
     max_conversation_messages: int = 64
     max_user_message_chars: int = 16_000
-    max_provider_message_chars: int = 64_000
+    # Must stay above the worst-case character count of the configured
+    # provider output budget (65536 tokens * ~4 chars/token for English
+    # reasoning); a smaller guard would re-truncate long thinking turns
+    # with a misleading malformed-response diagnostic.
+    max_provider_message_chars: int = 320_000
     max_request_context_bytes: int = 4 * 1024 * 1024
     max_tool_arguments_bytes: int = 64 * 1024
     max_conversation_storage_bytes: int = 4 * 1024 * 1024
@@ -879,6 +883,9 @@ class AgentSessionEngine:
         new_model_follow_up_pending = False
         new_model_follow_up_retry_used = False
         new_model_follow_up_correction: str | None = None
+        stage_proposal_pending = False
+        stage_proposal_retry_used = False
+        stage_proposal_correction: str | None = None
         language_retry_used = False
         language_correction: str | None = None
         previous_tool_failed = False
@@ -1013,6 +1020,24 @@ class AgentSessionEngine:
                 ),
             )
 
+        def local_stage_proposal_recovery() -> tuple[EngineEvent, ...]:
+            return local_assistant_recovery(
+                (
+                    "参数已记录完毕，但本轮未能生成确认卡片。"
+                    "请重新发送该建模或网格请求。"
+                    if requested_response_language == "zh-CN"
+                    else (
+                        "The requirements are recorded, but the confirmation "
+                        "card could not be created in this turn. Resubmit "
+                        "the modeling or meshing request."
+                    )
+                ),
+                storage_error=(
+                    "The local stage-proposal recovery message could not fit "
+                    "in the bounded conversation store."
+                ),
+            )
+
         def local_planar_retry_recovery() -> tuple[EngineEvent, ...]:
             recovery = (
                 "二维构造连续三次未通过本地验证，本轮已停止继续提交。"
@@ -1051,6 +1076,7 @@ class AgentSessionEngine:
                         or unit_correction
                         or prerequisite_correction
                         or new_model_follow_up_correction
+                        or stage_proposal_correction
                         or language_correction
                     )
                     route_correction = None
@@ -1058,6 +1084,7 @@ class AgentSessionEngine:
                     unit_correction = None
                     prerequisite_correction = None
                     new_model_follow_up_correction = None
+                    stage_proposal_correction = None
                     language_correction = None
                     streamed_text_parts: list[str] = []
                     streamed_reasoning_parts: list[str] = []
@@ -1293,6 +1320,23 @@ class AgentSessionEngine:
                     )
                     continue
                 return local_new_model_follow_up_recovery()
+
+            if (
+                stage_proposal_pending
+                and trusted_terminal is None
+                and not response.message.tool_calls
+            ):
+                # Requirements for the current stage are complete and the
+                # gated prepare tool is published, so a plain-text summary
+                # would leave the user without the confirmation card.  Hold
+                # the response back for one tool-directed correction round.
+                if not stage_proposal_retry_used:
+                    stage_proposal_retry_used = True
+                    stage_proposal_correction = (
+                        _stage_proposal_continuation_correction(available_tools)
+                    )
+                    continue
+                return local_stage_proposal_recovery()
 
             required_edit_tool = (
                 None
@@ -1639,11 +1683,15 @@ class AgentSessionEngine:
                         "read_authoring_context_then_prepare_requested_geometry"
                     ):
                         new_model_follow_up_pending = True
+                    if result.data.get("next_action") == "prepare_stage_proposal":
+                        stage_proposal_pending = True
                     if call.name in {
                         "prepare_geometry_proposal",
                         "prepare_planar_construction_proposal",
                     }:
                         new_model_follow_up_pending = False
+                if call.name in _PROPOSAL_PREPARE_TOOL_NAMES:
+                    stage_proposal_pending = False
                 payload = result.to_json()
                 if len(payload.encode("utf-8")) > self.config.max_tool_payload_bytes:
                     payload = _payload_limit_result(context).to_json()
@@ -3168,6 +3216,16 @@ _PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
         "request_project_save",
     }
 )
+# Requirement-gated proposal tools: each is published only after the current
+# stage's set_authoring_requirements ledger is complete, and each expects the
+# model to present its card in that same continuation.
+_GATED_PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
+    {
+        "prepare_geometry_proposal",
+        "prepare_planar_construction_proposal",
+        "prepare_mesh_proposal",
+    }
+)
 _AUTOMATIC_MODEL_PATCH_TOOL_NAMES = frozenset(
     {"apply_model_definition", "edit_model_object"}
 )
@@ -3761,6 +3819,32 @@ def _new_model_geometry_follow_up_correction() -> str:
         "read_authoring_context, then call the single matching published "
         "prepare tool for the user's requested Part. Planar regions and their "
         "direct derived 3D outputs use prepare_planar_construction_proposal."
+    )
+
+
+def _stage_proposal_continuation_correction(
+    available_tools: Sequence[object],
+) -> str:
+    published = sorted(
+        {
+            str(getattr(item, "name", ""))
+            for item in available_tools
+            if isinstance(getattr(item, "name", None), str)
+        }.intersection(_GATED_PROPOSAL_PREPARE_TOOL_NAMES)
+    )
+    target = (
+        " or ".join(published)
+        if published
+        else "the stage's published prepare tool"
+    )
+    return (
+        "Local stage-proposal correction (deterministic): every "
+        "current-stage requirement is recorded and the gated proposal tool "
+        f"is now published, so a plain summary cannot end this turn. In this "
+        f"turn call {target} to create the one real revision-bound "
+        "confirmation card. The card itself is the authorization; never "
+        "claim it is ready or waiting, and never ask the user to confirm in "
+        "text. If a decisive value is still missing, ask only for that value."
     )
 
 

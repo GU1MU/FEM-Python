@@ -483,6 +483,8 @@ def test_a8_geometry_uses_one_operation_confirmation_without_requirement_review(
     )
     assert recorded.ok
     assert recorded.data["operation_confirmation_required"] is True
+    assert recorded.data["next_action"] == "prepare_stage_proposal"
+    assert "Present the matching operation proposal" in recorded.summary
     names = {item.name for item in controller.definitions}
     assert "prepare_geometry_proposal" in names
     assert "set_authoring_requirements" in names

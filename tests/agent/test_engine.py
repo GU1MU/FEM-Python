@@ -128,6 +128,75 @@ class _AdditionalModelToolRegistry:
         )
 
 
+class _StageProposalToolRegistry:
+    def __init__(self):
+        no_arguments = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        self.definitions = tuple(
+            ToolDefinition(name, name, no_arguments)
+            for name in (
+                "set_authoring_requirements",
+                "prepare_mesh_proposal",
+            )
+        )
+        self.calls = []
+
+    @property
+    def provider_snapshot(self):
+        return None
+
+    def refresh_turn_snapshot(self, published_tool_names=()):
+        del published_tool_names
+        return None
+
+    def dispatch(self, name, arguments, context):
+        self.calls.append((name, dict(arguments)))
+        data = {}
+        if name == "set_authoring_requirements":
+            data = {
+                "requirement_stage": "mesh",
+                "recorded": sorted(dict(arguments.get("requirements", {}))),
+                "missing_requirements": [],
+                "operation_confirmation_required": True,
+                "next_action": "prepare_stage_proposal",
+            }
+        elif name == "prepare_mesh_proposal":
+            data = {
+                "state": "pending_confirmation",
+                "proposal_view": {
+                    "proposal_id": "proposal-mesh-stage",
+                    "proposal_hash": "c" * 64,
+                    "proposal_kind": "mesh",
+                    "title": "生成网格",
+                    "summary": "网格方案：二次三角形，全局 10 mm，孔边局部加密",
+                    "impact": "确认后调用 Gmsh 生成网格并刷新 GUI",
+                    "confirm_label": "生成网格",
+                    "target_document_id": "1",
+                    "target_session_id": "native-session",
+                    "base_session_revision": 0,
+                },
+                "continuation_checkpoint": {
+                    "session_id": context.session_id,
+                    "source_turn_id": "source-turn-mesh",
+                    "proposal_id": "proposal-mesh-stage",
+                    "proposal_hash": "c" * 64,
+                    "model_revision": 0,
+                    "proposal_kind": "mesh",
+                },
+            }
+        return ToolResult(
+            ok=True,
+            session_id=context.session_id,
+            input_revision=context.expected_revision,
+            idempotency_key=context.idempotency_key,
+            summary=f"{name} completed",
+            data=data,
+        )
+
+
 class _PatchToolRegistry:
     def __init__(self):
         self.definitions = (
@@ -802,6 +871,107 @@ def test_new_model_tool_cannot_stop_before_requested_geometry_proposal(tmp_path)
     assert any("正在创建新的模型文档" in text for text in visible_text)
     assert any("正在读取当前模型状态和建模约束" in text for text in visible_text)
     assert any("正在构造二维轮廓" in text for text in visible_text)
+
+
+def test_completed_stage_requirements_cannot_stop_before_the_proposal_card(
+    tmp_path,
+):
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "record-mesh-requirements",
+                    "set_authoring_requirements",
+                    {
+                        "turn_id": "turn-mesh",
+                        "requirements": {
+                            "mesh_global_size": 10,
+                            "mesh_order": 2,
+                        },
+                    },
+                )
+            ),
+            _text_response(
+                "网格方案如下，操作卡片已就绪：二次三角形、全局 10 mm。"
+                "确认后即生成网格。"
+            ),
+            _tool_response(
+                ToolCall("prepare-mesh-card", "prepare_mesh_proposal", {})
+            ),
+        ]
+    )
+    tools = _StageProposalToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_stage_proposal_card",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("划分网格，2次三角形，孔边加密")
+
+    assert len(provider.requests) == 3
+    correction = provider.requests[2].messages[-1]
+    assert correction.role == "system"
+    assert "prepare_mesh_proposal" in (correction.content or "")
+    assert [
+        message.role
+        for message in provider.requests[2].messages
+    ] == ["system", "system", "user", "assistant", "tool", "system"]
+    assert [name for name, _arguments in tools.calls] == [
+        "set_authoring_requirements",
+        "prepare_mesh_proposal",
+    ]
+    assert "操作卡片已就绪" not in tuple(
+        event.data.get("text")
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+    assert any(
+        event.event is EngineEventType.TOOL_COMPLETED
+        and event.data["tool"] == "prepare_mesh_proposal"
+        for event in events
+    )
+
+
+def test_stage_proposal_correction_retry_limit_recovers_locally(tmp_path):
+    provider = FakeProvider(
+        [
+            _tool_response(
+                ToolCall(
+                    "record-mesh-requirements",
+                    "set_authoring_requirements",
+                    {
+                        "turn_id": "turn-mesh",
+                        "requirements": {"mesh_global_size": 10},
+                    },
+                )
+            ),
+            _text_response("网格参数已记录，操作卡片已就绪。"),
+            _text_response("网格参数已记录，操作卡片仍然就绪。"),
+        ]
+    )
+    tools = _StageProposalToolRegistry()
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_stage_proposal_retry_limit",
+        dynamic_tools=tools,
+    )
+
+    events = engine.send_message("划分网格")
+
+    assert len(provider.requests) == 3
+    deltas = tuple(
+        str(event.data.get("text", ""))
+        for event in events
+        if event.event is EngineEventType.MESSAGE_DELTA
+    )
+    assert any("未能生成确认卡片" in text for text in deltas)
+    assert not any("操作卡片已就绪" in text for text in deltas)
+    assert [name for name, _arguments in tools.calls] == [
+        "set_authoring_requirements",
+    ]
 
 
 def test_explicit_2d_request_cannot_fall_back_to_a_derived_3d_output(tmp_path):

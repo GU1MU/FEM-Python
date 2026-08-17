@@ -731,8 +731,9 @@ _SET_REQUIREMENTS = _tool(
         "Record current-stage engineering values explicitly supplied by the "
         "user. Blank projects already provide mm-N-MPa geometry defaults; "
         "this tool overrides them only when the user requests other units. "
-        "Complete geometry or mesh values may then be presented in the "
-        "corresponding operation confirmation card."
+        "Once every current-stage value is recorded, call the stage's "
+        "published prepare tool in this same turn to present the operation "
+        "confirmation card; that card never appears without the call."
     ),
     {
         "type": "object",
@@ -6041,16 +6042,21 @@ class AuthoringWorkflowController:
             for key in self._requirement_keys(requirement_group)
             if key not in recorded
         ]
-        return AuthoringToolOutcome(
-            "Explicit current-operation requirements recorded.",
-            {
-                "ledger_revision": self._ledger.revision,
-                "requirement_stage": requirement_group,
-                "recorded": sorted(raw_requirements),
-                "missing_requirements": missing,
-                "operation_confirmation_required": not missing,
-            },
-        )
+        data = {
+            "ledger_revision": self._ledger.revision,
+            "requirement_stage": requirement_group,
+            "recorded": sorted(raw_requirements),
+            "missing_requirements": missing,
+            "operation_confirmation_required": not missing,
+        }
+        summary = "Explicit current-operation requirements recorded."
+        if not missing:
+            data["next_action"] = "prepare_stage_proposal"
+            summary = (
+                "All current-stage requirements are recorded. Present the "
+                "matching operation proposal now."
+            )
+        return AuthoringToolOutcome(summary, data)
 
     def _request_review(self) -> AuthoringToolOutcome:
         requirement_group = self._current_requirement_group()
