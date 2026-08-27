@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core.model import MaterialDefinition
+from fem.model import MaterialDefinition
 
 
 def _positive_finite(value: float, name: str) -> float:
@@ -48,7 +48,11 @@ def material(
     data["E"], data["nu"] = _elastic_constants(E, nu)
     if rho is not None:
         data["rho"] = _density(rho)
-    return MaterialDefinition(str(name), data)
+    return MaterialDefinition(
+        str(name),
+        data,
+        constitutive_model="linear_elastic",
+    )
 
 
 def plane_stress_matrix(E: float, nu: float) -> np.ndarray:

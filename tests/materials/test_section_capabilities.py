@@ -6,16 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
-import fem.materials.assignment as assignment_module
+import fem.analysis as materials
+import fem.analysis.compilation.assignments as assignment_module
+from fem.analysis.compilation import apply_sections
 from fem.io.inp import read
-from fem import materials
-from fem.core.model import (
+from fem.model import (
     ElementSet,
     MaterialDefinition,
     SectionAssignment,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientation,
     resolve_beam_frame,
@@ -428,7 +429,7 @@ def test_real_importer_internal_section_set_uses_the_same_resolution() -> None:
     model = read(fixture)
 
     resolution = materials.resolve_sections(model)
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert resolution.passed
     assert resolution.uncovered_element_ids == ()
@@ -456,7 +457,7 @@ def test_apply_sections_consumes_resolution_and_restores_baseline() -> None:
     ]
     resolved = materials.resolve_sections(model).for_element(1)
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert {
         name: element.props[name]
@@ -466,7 +467,7 @@ def test_apply_sections_consumes_resolution_and_restores_baseline() -> None:
     assert element.props["custom"] == "base"
 
     model.sections.clear()
-    materials.apply_sections(model)
+    apply_sections(model)
     assert element.props == {"custom": "base"}
 
 
@@ -622,7 +623,7 @@ def test_resolution_preserves_stable_beam_orientation_issue_codes() -> None:
 
     before = [dict(element.props) for element in model.mesh.elements]
     with pytest.raises(ValueError) as applied:
-        materials.apply_sections(model)
+        apply_sections(model)
     assert getattr(applied.value, "code", None) == "beam.orientation.invalid"
     assert [element.props for element in model.mesh.elements] == before
 
@@ -639,7 +640,7 @@ def test_uncovered_non_beam_cannot_keep_direct_orientation(
     model = _model(element)
 
     with pytest.raises(ValueError) as caught:
-        materials.apply_sections(model)
+        apply_sections(model)
 
     assert getattr(caught.value, "code", None) == (
         "beam.orientation.unsupported_target"
@@ -712,24 +713,24 @@ def test_apply_sections_clears_and_restores_owned_beam_orientation() -> None:
     model, element, direct_reference = _beam_orientation_ownership_model()
     model.sections = [_beam_assignment()]
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
     assert resolve_beam_frame(model.mesh, element).source == "automatic"
 
     assignment_reference = (0.0, 0.0, 1.0)
     model.sections = [_beam_assignment(BeamOrientation(assignment_reference))]
-    materials.apply_sections(model)
+    apply_sections(model)
     assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == assignment_reference
     assert resolve_beam_frame(model.mesh, element).source == "explicit"
 
     model.sections = [_beam_assignment()]
-    materials.apply_sections(model)
+    apply_sections(model)
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
     assert resolve_beam_frame(model.mesh, element).source == "automatic"
 
     model.sections.clear()
-    materials.apply_sections(model)
+    apply_sections(model)
     assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == direct_reference
     assert element.props["custom"] == "direct"
     assert resolve_beam_frame(model.mesh, element).source == "explicit"
@@ -739,16 +740,16 @@ def test_section_ownership_survives_model_deepcopy() -> None:
     model, _, direct_reference = _beam_orientation_ownership_model()
     assignment_reference = (0.0, 0.0, 1.0)
     model.sections = [_beam_assignment(assignment_reference)]
-    materials.apply_sections(model)
+    apply_sections(model)
 
     copied = deepcopy(model)
     copied_element = copied.mesh.elements[0]
     copied.sections = [_beam_assignment()]
-    materials.apply_sections(copied)
+    apply_sections(copied)
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in copied_element.props
 
     copied.sections.clear()
-    materials.apply_sections(copied)
+    apply_sections(copied)
 
     assert copied_element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (
         direct_reference
@@ -766,7 +767,7 @@ def test_last_automatic_assignment_cannot_leak_earlier_orientation() -> None:
     ]
 
     resolution = materials.resolve_sections(model)
-    materials.apply_sections(model)
+    apply_sections(model)
 
     effective = resolution.for_element(1)
     assert effective.assignment_index == 1
@@ -783,7 +784,7 @@ def test_apply_sections_rejects_shadowed_parallel_orientation() -> None:
     before = deepcopy(element.props)
 
     with pytest.raises(ValueError) as caught:
-        materials.apply_sections(model)
+        apply_sections(model)
 
     assert getattr(caught.value, "code", None) == "beam.orientation.parallel"
     assert element.props == before

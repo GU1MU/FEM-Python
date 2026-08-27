@@ -184,3 +184,4 @@ def _prepare_rhs(rhs: np.ndarray, dimension: int) -> np.ndarray:
             "PARDISO SPD right-hand side must contain only finite values"
         )
     return prepared
+

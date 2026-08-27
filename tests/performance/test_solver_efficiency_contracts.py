@@ -5,10 +5,10 @@ import gc
 import numpy as np
 import pytest
 
-from fem.assemble import stiffness as stiffness_module
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import AnalysisStep, FEMModel
-from fem.solvers import static_linear
+from fem.assembly import stiffness as stiffness_module
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import AnalysisStep, FEMModel
+from fem.analysis import linear_static as static_linear
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import (
     build_model_geometry,
@@ -23,7 +23,7 @@ def test_prepared_system_reuses_work_without_sharing_public_models(
     monkeypatch,
 ):
     calls = {"sections": 0, "assembly": 0, "factor": 0}
-    original_sections = static_linear.materials.apply_sections
+    original_sections = static_linear.apply_sections
     original_assembly = static_linear.assemble_global_stiffness_sparse
     original_factor = static_linear.factorize_spd
 
@@ -39,11 +39,7 @@ def test_prepared_system_reuses_work_without_sharing_public_models(
         calls["factor"] += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(
-        static_linear.materials,
-        "apply_sections",
-        apply_sections,
-    )
+    monkeypatch.setattr(static_linear, "apply_sections", apply_sections)
     monkeypatch.setattr(
         static_linear,
         "assemble_global_stiffness_sparse",
@@ -130,44 +126,22 @@ def test_prepared_system_clone_keeps_shared_factor_alive_until_last_owner(
     assert factors[0].close_calls == 1
 
 
-def test_sparse_assembly_plan_has_exact_flat_storage():
-    model = _plate_model(400)
-    plan = stiffness_module._build_assembly_plan(model.mesh)
-    element_count = len(model.mesh.elements)
-    entry_count = sum(
-        len(model.mesh.element_dofs(element)) ** 2
-        for element in model.mesh.elements
-    )
-    expected_bytes = (
-        2 * (element_count + 1) * np.dtype(np.int64).itemsize
-        + 2 * entry_count * np.dtype(np.int64).itemsize
-    )
+def test_sparse_assembly_returns_owned_csr_storage():
+    model = _plate_model(20)
+    for element in model.mesh.elements:
+        element.props.update(
+            {"E": 210.0, "nu": 0.3, "thickness": 1.0, "plane_type": "stress"}
+        )
+    stiffness = stiffness_module.assemble_global_stiffness_sparse(model.mesh)
 
-    assert not hasattr(plan, "__dict__")
-    assert plan.dof_offsets.shape == (element_count + 1,)
-    assert plan.entry_offsets.shape == (element_count + 1,)
-    assert plan.rows.shape == (entry_count,)
-    assert plan.cols.shape == (entry_count,)
-    assert all(
-        values.dtype == np.int64
-        and values.ndim == 1
-        and values.flags.c_contiguous
-        for values in (
-            plan.dof_offsets,
-            plan.entry_offsets,
-            plan.rows,
-            plan.cols,
-        )
-    )
-    assert sum(
-        values.nbytes
-        for values in (
-            plan.dof_offsets,
-            plan.entry_offsets,
-            plan.rows,
-            plan.cols,
-        )
-    ) == expected_bytes
+    assert stiffness.format == "csr"
+    assert stiffness.shape == (model.mesh.num_dofs, model.mesh.num_dofs)
+    assert stiffness.data.ndim == 1
+    assert stiffness.indices.ndim == 1
+    assert stiffness.indptr.ndim == 1
+    assert stiffness.data.flags.c_contiguous
+    assert stiffness.indices.flags.c_contiguous
+    assert stiffness.indptr.flags.c_contiguous
 
 
 def test_large_import_projection_stays_flat_and_inspection_stays_lazy():

@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any
 
-from ..elements.beam_frame import (
+from ...model.beam_frame import (
     BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientationInvalidError,
     parse_beam_orientation,
 )
-from ..elements.beam_section import parse_beam2_section
+from ...model.beam_section import parse_beam2_section
 
 
 BEAM_SECTION_TYPES = ("rectangle", "solid_circle", "hollow_circle")
@@ -170,6 +170,8 @@ def resolve_section_preset_properties(
     preset: str,
     material_properties: Mapping[str, Any],
     section_properties: Mapping[str, Any],
+    *,
+    constitutive_model: str | None = None,
 ) -> ResolvedSectionProperties:
     """Validate GUI/application authoring data through the domain schema."""
 
@@ -191,12 +193,15 @@ def resolve_section_preset_properties(
         material_properties,
         section_type_for_preset(normalized),
         properties,
+        constitutive_model=constitutive_model,
     )
 
 
 def validate_material_properties(
     element_family: str,
     properties: Mapping[str, Any],
+    *,
+    constitutive_model: str | None = None,
 ) -> dict[str, Any]:
     """Return owned material data valid for one element family."""
 
@@ -213,6 +218,29 @@ def validate_material_properties(
         )
 
     validated = deepcopy(dict(properties))
+    model = str(
+        constitutive_model
+        if constitutive_model is not None
+        else validated.get("constitutive_model", "linear_elastic")
+    ).strip().casefold()
+    if model == "neo_hookean":
+        if element_family not in {"plane_continuum", "solid_continuum"}:
+            raise MaterialPropertyError(
+                "Neo-Hookean material is supported only by continuum sections"
+            )
+        validated["C10"] = _required_positive(
+            validated,
+            "C10",
+            MaterialPropertyError,
+            "material",
+        )
+        validated["D1"] = _required_positive(
+            validated,
+            "D1",
+            MaterialPropertyError,
+            "material",
+        )
+        return validated
     validated["E"] = _required_positive(
         validated,
         "E",
@@ -238,6 +266,7 @@ def resolve_section_properties(
     section_properties: Mapping[str, Any],
     *,
     baseline_properties: Mapping[str, Any] | None = None,
+    constitutive_model: str | None = None,
 ) -> ResolvedSectionProperties:
     """Resolve and validate one assignment without mutating its inputs."""
 
@@ -250,6 +279,7 @@ def resolve_section_properties(
     material_data = validate_material_properties(
         element_family,
         material_properties,
+        constitutive_model=constitutive_model,
     )
     orientation_in_baseline = BEAM_LOCAL_Y_REFERENCE_KEY in baseline
     element_orientation_in_baseline = (
@@ -582,7 +612,7 @@ def _beam_dimensions(section_type: str) -> tuple[str, ...]:
 def _element_capabilities(element_type: str) -> Any:
     """Query the catalog lazily to keep kernel/material imports acyclic."""
 
-    from ..elements import get_element_capabilities
+    from ...elements import get_element_capabilities
 
     return get_element_capabilities(element_type)
 

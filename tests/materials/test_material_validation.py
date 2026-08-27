@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from fem.boundary.condition import BoundaryCondition, ElementGravityLoad, ElementLoad
-from fem.boundary.loads import build_load_vector
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import get_element_kernel
+from fem.analysis.compilation.boundary.condition import BoundaryCondition, ElementGravityLoad, ElementLoad
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.materials import linear_elastic
 
 

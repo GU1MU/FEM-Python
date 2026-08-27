@@ -7,14 +7,14 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_matrix, diags
 
-from fem import solvers
-from fem.boundary.condition import BoundaryCondition
-from fem.boundary.constraints import apply_dirichlet
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
-from fem.core.model import AnalysisStep, DisplacementConstraint, NodalLoad
-from fem.core.result import ModelResult, ModelResults
-from fem.solvers import static_linear
+from fem import solver as solvers
+from fem.analysis.compilation.boundary.condition import BoundaryCondition
+from fem.analysis.compilation.boundary.constraints import apply_dirichlet
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.model import AnalysisStep, DisplacementConstraint, NodalLoad
+from fem.results import ModelResult, ModelResults
+from fem.analysis import linear_static as static_linear
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
     make_two_step_static_pull_truss_model,
@@ -92,7 +92,7 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
     expected = static_linear.solve(expected_model, steps="all")
     model = make_two_step_static_pull_truss_model()
     calls = {"materials": 0, "stiffness": 0, "factor": 0}
-    original_apply = static_linear.materials.apply_sections
+    original_apply = static_linear.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
     original_factor = static_linear.factorize_spd
 
@@ -108,11 +108,7 @@ def test_prepared_system_applies_sections_and_assembles_once_for_many_steps(
         calls["factor"] += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(
-        static_linear.materials,
-        "apply_sections",
-        apply_sections,
-    )
+    monkeypatch.setattr(static_linear, "apply_sections", apply_sections)
     monkeypatch.setattr(
         static_linear,
         "assemble_global_stiffness_sparse",
@@ -389,7 +385,7 @@ def test_all_plural_steps_validate_before_model_preparation(monkeypatch, invalid
         nonlocal preparation_calls
         preparation_calls += 1
 
-    monkeypatch.setattr(static_linear.materials, "apply_sections", track_preparation)
+    monkeypatch.setattr(static_linear, "apply_sections", track_preparation)
 
     with pytest.raises((KeyError, ValueError)):
         static_linear.solve(model, steps=("pull1", invalid_step))
@@ -408,7 +404,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
     }
     prepared = {}
 
-    original_apply_sections = static_linear.materials.apply_sections
+    original_apply_sections = static_linear.apply_sections
     original_boundary_for_step = static_linear._boundary_step.boundary_for_step
     original_assemble = static_linear.assemble_global_stiffness_sparse
     original_build_load = static_linear.build_load_vector
@@ -437,7 +433,7 @@ def test_plural_solve_prepares_once_and_runs_each_load_case_once(monkeypatch):
         calls["factor"] += 1
         return original_factor(stiffness)
 
-    monkeypatch.setattr(static_linear.materials, "apply_sections", apply_sections)
+    monkeypatch.setattr(static_linear, "apply_sections", apply_sections)
     monkeypatch.setattr(
         static_linear._boundary_step,
         "boundary_for_step",

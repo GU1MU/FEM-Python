@@ -5,15 +5,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.model import ElementSet, MaterialDefinition, SectionAssignment
-from ..elements.beam_frame import (
+from fem.model import ElementSet
+from ...model.beam_frame import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientationError,
     BeamOrientationInvalidError,
     BeamOrientationUnsupportedTargetError,
     resolve_beam_frame_field,
 )
-from ..elements.beam_section import parse_beam2_section
+from ...model.beam_section import parse_beam2_section
 from .sections import (
     MaterialPropertyError,
     SectionCompatibilityError,
@@ -171,32 +171,6 @@ class SectionResolution:
         raise ValueError(issue.message)
 
 
-def add(model: Any, material: MaterialDefinition) -> MaterialDefinition:
-    """Add a material definition to a model."""
-    model.materials[material.name] = material
-    return material
-
-
-def assign(
-    model: Any,
-    material: str | MaterialDefinition,
-    element_set: str | ElementSet,
-    section_type: str = "solid",
-    **properties: Any,
-) -> SectionAssignment:
-    """Assign material and section properties to an element set."""
-    material_name = material.name if isinstance(material, MaterialDefinition) else str(material)
-    element_set_name = element_set.name if isinstance(element_set, ElementSet) else str(element_set)
-    section = SectionAssignment(
-        element_set_name,
-        material_name,
-        section_type,
-        dict(properties),
-    )
-    model.sections.append(section)
-    return section
-
-
 def apply_sections(model: Any) -> None:
     """Apply the same pure last-match resolution used by validation."""
 
@@ -302,7 +276,10 @@ def resolve_sections(
         material_signature = (
             None
             if material is None
-            else _freeze_signature(material.properties)
+            else (
+                getattr(material, "constitutive_model", "linear_elastic"),
+                _freeze_signature(material.properties),
+            )
         )
         section_signature = _freeze_signature(section.properties)
         try:
@@ -399,6 +376,11 @@ def resolve_sections(
                         declared_type,
                         section.properties,
                         baseline_properties=baseline_properties,
+                        constitutive_model=getattr(
+                            material,
+                            "constitutive_model",
+                            None,
+                        ),
                     )
                 except (
                     MaterialPropertyError,
@@ -606,6 +588,11 @@ def _validate_declared_beam_frames(
                     element_id,
                     elem,
                 ),
+                constitutive_model=getattr(
+                    material,
+                    "constitutive_model",
+                    None,
+                ),
             )
             resolve_beam_frame_field(
                 model.mesh,
@@ -617,7 +604,7 @@ def _validate_declared_beam_frames(
 def _element_capabilities(element_type: str) -> Any:
     """Query lazily to preserve elements → materials import compatibility."""
 
-    from ..elements import get_element_capabilities
+    from ...elements import get_element_capabilities
 
     return get_element_capabilities(element_type)
 

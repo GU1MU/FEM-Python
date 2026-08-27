@@ -13,14 +13,15 @@ import numpy as np
 from scipy.sparse import diags, triu
 from scipy.sparse.linalg import eigsh
 
-from .. import materials
-from ..assemble import assemble_global_stiffness_sparse
-from ..boundary import step as _boundary_step
-from ..boundary.loads import build_load_vector
-from ..core.model import AnalysisStep
-from ..core.result import ModelResult, ModelResults
-from ..core.validation import validate_analysis_step, validate_model_structure
-from ._pardiso_spd import (
+from ..assembly import assemble_global_stiffness_sparse
+from .compilation.boundary import step as _boundary_step
+from .compilation.boundary.loads import build_load_vector
+from .resolution import is_nlgeom_enabled
+from .compilation.assignments import apply_sections
+from fem.model import AnalysisStep, AnalysisStepSnapshot, resolve_analysis_step
+from ..results import ModelResult, ModelResults
+from .validation import validate_analysis_step, validate_model_structure
+from ..solver._pardiso_spd import (
     _PardisoSPDError,
     _PardisoSPDMemoryError,
     factorize_spd,
@@ -30,7 +31,7 @@ from ._pardiso_spd import (
 __all__ = ["PreparedSystem", "prepare", "solve"]
 
 
-StepSelector = str | int | AnalysisStep
+StepSelector = str | int | AnalysisStep | AnalysisStepSnapshot
 _FACTOR_CACHE_MAX_ENTRIES = 1
 _PARDISO_MEMORY_FAILURE = "PARDISO SPD solver failed: insufficient memory"
 
@@ -212,12 +213,34 @@ class PreparedSystem:
             self._factor_cache,
         )
 
-    def _trusted_model_for_task(self) -> Any:
-        """Return this instance's model only to an owning task boundary."""
+    @property
+    def base_stiffness(self) -> Any:
+        """Return the immutable assembled base stiffness.
+
+        Problem adapters may read the matrix to expose the linear problem
+        contract.  The CSR storage is frozen when the ``PreparedSystem`` is
+        created, so this does not give callers a mutation path into the
+        linear factorization cache.
+        """
+
+        return self._base_stiffness
+
+    def model_for_task(self) -> Any:
+        """Return this instance's detached model to an owning task boundary."""
 
         return self._model
 
-    def _shares_base_stiffness_with(
+    def model_for_result(self) -> Any:
+        """Return the model whose effective properties built the stiffness."""
+
+        return self._model
+
+    def _trusted_model_for_task(self) -> Any:
+        """Return the prepared instance's detached task-owned model."""
+
+        return self._model
+
+    def shares_cache_with(
         self,
         other: PreparedSystem,
     ) -> bool:
@@ -375,7 +398,7 @@ def prepare(
     owned_model = deepcopy(model) if copy_model else model
 
     started = perf_counter()
-    materials.apply_sections(owned_model)
+    apply_sections(owned_model)
     _record_timing(timings, "分析准备", started)
 
     started = perf_counter()
@@ -426,7 +449,7 @@ def solve(
             raise TypeError(
                 "_prepared_system must be exactly PreparedSystem or None"
             )
-        if _prepared_system._trusted_model_for_task() is not model:
+        if _prepared_system.model_for_task() is not model:
             raise ValueError(
                 "_prepared_system must own the exact solve model"
             )
@@ -518,12 +541,26 @@ def _resolve_step(
     selector: StepSelector | None,
 ) -> AnalysisStep | None:
     """Resolve one valid scalar selector through the canonical step resolver."""
+    if isinstance(selector, AnalysisStepSnapshot):
+        matches = tuple(
+            candidate
+            for candidate in model.steps
+            if str(candidate.name) == selector.name
+        )
+        if len(matches) != 1:
+            raise KeyError(
+                f"analysis step snapshot {selector.name!r} is not unique"
+            )
+        return selector
     if selector is not None and (
         isinstance(selector, bool)
         or not isinstance(selector, (str, int, AnalysisStep))
     ):
-        raise TypeError("step selector must be a step name, index, or AnalysisStep")
-    return _boundary_step.get_step(model, selector)
+        raise TypeError(
+            "step selector must be a name, index, AnalysisStep, "
+            "or AnalysisStepSnapshot"
+        )
+    return resolve_analysis_step(model, selector)
 
 
 def _reject_duplicate_steps(steps: tuple[AnalysisStep | None, ...]) -> None:
@@ -555,6 +592,37 @@ def _validate_selection(
     for selected_step in steps:
         validate_analysis_step(model, selected_step)
         _validate_static_step(selected_step)
+    _reject_non_linear_execution_plans(model, steps)
+
+
+def _reject_non_linear_execution_plans(
+    model: Any,
+    steps: tuple[AnalysisStep | None, ...],
+) -> None:
+    """Prevent the direct kernel from silently discarding material history."""
+
+    # Import lazily because this module is imported while the public
+    # fem.analysis namespace is being built.
+    from .execution_plan import ExecutionStrategy, resolve_execution_plan
+    from .resolution import resolve_analysis_request
+
+    for selected_step in steps:
+        if selected_step is None:
+            continue
+        try:
+            request = resolve_analysis_request(selected_step)
+            plan = resolve_execution_plan(model, request)
+        except Exception:
+            # Preserve existing validation/assembly diagnostics for an
+            # otherwise invalid model. The unified executor reports the
+            # authoritative capability error at its own boundary.
+            continue
+        if plan.strategy is not ExecutionStrategy.DIRECT_LINEAR:
+            raise ValueError(
+                "static_linear solver only supports small-strain "
+                "linear_elastic execution; use the unified static executor "
+                "for material or geometric nonlinearity"
+            )
 
 
 def _solve_prepared_step(
@@ -875,6 +943,7 @@ def validate_problem(
     validate_model_structure(model)
     validate_analysis_step(model, selected_step)
     _validate_static_step(selected_step)
+    _reject_non_linear_execution_plans(model, (selected_step,))
     return selected_step
 
 
@@ -925,26 +994,5 @@ def _validate_static_step(step: AnalysisStep | None) -> None:
         raise ValueError(
             f"static_linear solver requires procedure 'static', got {step.procedure!r}"
         )
-    nlgeom = next(
-        (
-            value
-            for key, value in step.metadata.items()
-            if str(key).strip().lower() == "nlgeom"
-        ),
-        None,
-    )
-    if _truthy_option(nlgeom):
+    if is_nlgeom_enabled(step):
         raise ValueError("static_linear solver does not support nlgeom")
-
-
-def _truthy_option(value: Any) -> bool:
-    """Return semantic truth for common bool-like analysis options."""
-    if value is None:
-        return False
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"", "0", "false", "no", "off"}:
-            return False
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-    return bool(value)
