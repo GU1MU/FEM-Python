@@ -13,7 +13,7 @@ from fem.application import (
     SessionStateError,
     TokenStatus,
 )
-from fem.application.results import FieldPosition
+from fem.results import FieldPosition
 from tests.application.test_result_materialization_session import (
     _key,
     _materialize,
@@ -76,7 +76,7 @@ def test_prepare_reuses_acceptance_fingerprint_without_array_scan(
 ) -> None:
     session = _session()
     solve = _succeed(session, "Job-1", marker=1.0)
-    import fem.application.results.archive as archive_module
+    import fem.results.archive as archive_module
 
     monkeypatch.setattr(
         archive_module,

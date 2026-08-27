@@ -5,18 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from fem.application.revisions import SolveTaskSnapshot, TaskToken
-from fem.core.model import OutputRequest
-from fem.core.result import ModelResult
+from fem.model import OutputRequest
+from fem.results import ModelResult
 
-from ._materializers import check_cancellation
-from .data import ResultMaterializationSnapshot
-from .execution import (
+from fem.results._materializers import check_cancellation
+from fem.results.data import ResultMaterializationSnapshot
+from fem.results.execution import (
     OutputExecutionStatus,
     ResultExecutionReport,
     execute_output_requests,
 )
-from .fields import ResultSourceKey
-from .provider import ResultProvider, build_result_provider
+from fem.results.fields import ResultSourceKey, ResultVariable
+from fem.results.provider import ResultProvider, build_result_provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +126,23 @@ def build_solve_result_bundle(
         if variable.status is OutputExecutionStatus.EXECUTED
         for key in variable.field_keys
     }
-    published_provider = outcome.provider_draft.publish_fields(
+    provider_draft = outcome.provider_draft
+    finite_state_keys = tuple(
+        availability.key
+        for availability in provider_draft.catalog().fields
+        if availability.descriptor.field_id.variable
+        in {ResultVariable.E, ResultVariable.PEEQ}
+    )
+    if finite_state_keys:
+        check_cancellation(cancellation)
+        finite_state_patch = provider_draft.materialize(
+            finite_state_keys,
+            cancellation=cancellation,
+        )
+        provider_draft = provider_draft.apply(finite_state_patch)
+        published_keys.update(finite_state_keys)
+        check_cancellation(cancellation)
+    published_provider = provider_draft.publish_fields(
         published_keys
     )
     return SolveResultBundle._from_provider(

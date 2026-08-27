@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fem.application.results.archive import LoadedResultArchive, ResultArchiveSnapshot
+from fem.results.archive import LoadedResultArchive, ResultArchiveSnapshot
 
 from ._result_archive_errors import (
     ResultArchiveDecodeError,

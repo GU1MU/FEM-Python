@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from fem.application import ModelSession
-from fem.application.results.data import FieldData
+from fem.results.data import FieldData
 from fem.io import (
     ResultArchiveDecodeError,
     ResultArchiveEncodeError,

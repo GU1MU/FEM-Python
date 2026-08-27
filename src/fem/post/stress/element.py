@@ -3,8 +3,8 @@ from __future__ import annotations
 import csv
 from typing import Sequence
 
-from ...elements import get_element_kernel
-from ...core.mesh import Mesh2D, Mesh3D
+from ...physics.mechanics import get_recovery_service
+from fem.model import Mesh2D, Mesh3D
 from .._paths import prepare_output_path
 from . import dispatch, truss
 from ._common import (
@@ -217,7 +217,7 @@ def _solid(
         for elem in mesh.elements:
             if dispatch.type_key_from_name(elem.type) != type_key:
                 continue
-            stress = get_element_kernel(elem.type).stress_at(
+            stress = get_recovery_service(elem.type).stress_at(
                 mesh,
                 elem,
                 U,
@@ -293,7 +293,7 @@ def _solid_multi(
                 if type_key in {"hex8", "hex20"}
                 else TET_CENTROID
             )
-            stress = get_element_kernel(elem.type).stress_at(
+            stress = get_recovery_service(elem.type).stress_at(
                 mesh,
                 elem,
                 U,

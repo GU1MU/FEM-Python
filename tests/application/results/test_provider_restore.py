@@ -5,8 +5,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from fem.application.results import provider as provider_module
-from fem.application.results.data import (
+from fem.results import provider as provider_module
+from fem.results.data import (
     FieldData,
     FieldState,
     ResultMaterializationPatch,
@@ -14,7 +14,7 @@ from fem.application.results.data import (
     ResultTopologyProjection,
     advance_materialization,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,
@@ -23,13 +23,13 @@ from fem.application.results.fields import (
     ResultVariable,
     field_materialization_sort_key,
 )
-from fem.application.results.provider import (
+from fem.results.provider import (
     build_result_provider,
     restore_result_provider,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
-from fem.core.result import ModelResult
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
+from fem.results import ModelResult
 from fem.post.averaging import NodalAveragingPolicy
 
 

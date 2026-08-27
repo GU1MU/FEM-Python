@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     ResultCellKind,
     ResultQuery,
@@ -17,7 +17,7 @@ from fem.application.results import (
     prepare_result_export_snapshot,
     project_scalar_field_topology,
 )
-from fem.core.model import OutputRequest
+from fem.model import OutputRequest
 from fem.io.result_csv import (
     dumps_result_components_csv,
     dumps_result_csv,

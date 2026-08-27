@@ -10,7 +10,8 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from ...elements import canonical_element_type, get_element_kernel
+from ...elements import canonical_element_type
+from ...physics.mechanics import get_recovery_service
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +113,7 @@ def recover(
         raise TypeError("checkpoint must be callable or None")
     elements, nodes = _validated_truss_mesh(mesh)
     displacement = _owned_displacement(mesh, U)
-    kernel = get_element_kernel("Truss2")
+    kernel = get_recovery_service("Truss2")
     rows: list[TrussStressRow] = []
 
     for element in elements:

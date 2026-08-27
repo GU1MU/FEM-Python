@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import fem.application.results.topology as topology_module
-from fem.application.results import (
+import fem.results.topology as topology_module
+from fem.results import (
     FieldAssociation,
     FieldData,
     FieldDescriptor,

@@ -28,6 +28,10 @@ _CONTINUUM_COMPONENTS = {
     "plane_continuum": ("S11", "S22", "S33", "S12"),
     "solid_continuum": ("S11", "S22", "S33", "S12", "S23", "S13"),
 }
+_FINITE_STRAIN_COMPONENTS = {
+    "plane_continuum": ("E11", "E22", "E33", "E12"),
+    "solid_continuum": ("E11", "E22", "E33", "E12", "E23", "E13"),
+}
 _CONTINUUM_DERIVED_COMPONENTS = (
     "Mises",
     "MaxPrincipal",
@@ -51,6 +55,9 @@ class FieldRecoveryKind(str, Enum):
 
     PRIMARY = "primary"
     CONTINUUM_STRESS = "continuum_stress"
+    FINITE_STRAIN_TENSOR = "finite_strain_tensor"
+    FINITE_STRAIN_SCALAR = "finite_strain_scalar"
+    MATERIAL_STATE_SCALAR = "material_state_scalar"
     TRUSS_STRAIN = "truss_strain"
     TRUSS_STRESS = "truss_stress"
     BEAM_SECTION_END = "beam_section_end"
@@ -312,16 +319,49 @@ def catalog_diagnostics(
 
 def catalog_entries(
     profile: ElementResultProfile,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> tuple[FieldRegistryEntry, ...]:
-    """Return the sole ordered descriptor registry for one exact profile."""
+    """Return the ordered registry for one exact profile and result contract.
+
+    ``finite_strain`` is deliberately result-scoped rather than an element
+    capability. A continuum model can produce either the linear result
+    contract or captured finite-strain state fields, so the latter must be
+    enabled only by a result provider that has those outputs.
+    """
 
     if type(profile) is not ElementResultProfile:
         raise TypeError("profile must be ElementResultProfile")
+    if type(finite_strain) is not bool:
+        raise TypeError("finite_strain must be bool")
+    if type(material_state) is not bool:
+        raise TypeError("material_state must be bool")
     entries: list[FieldRegistryEntry] = []
     if profile.primary_compatible:
         entries.extend(_primary_entries(profile.dof_labels))
     if profile.stress_compatible:
-        entries.extend(_derived_entries(profile.family))
+        entries.extend(
+            _derived_entries(
+                profile.family,
+                finite_strain=(
+                    finite_strain
+                    and profile.family
+                    in {
+                        ResultModelFamily.PLANE_CONTINUUM,
+                        ResultModelFamily.SOLID_CONTINUUM,
+                    }
+                ),
+                material_state=(
+                    material_state
+                    and profile.family
+                    in {
+                        ResultModelFamily.PLANE_CONTINUUM,
+                        ResultModelFamily.SOLID_CONTINUUM,
+                    }
+                ),
+            )
+        )
     entries.sort(key=lambda entry: entry.descriptor.order)
     orders = tuple(entry.descriptor.order for entry in entries)
     if len(orders) != len(set(orders)):
@@ -335,12 +375,19 @@ def catalog_entries(
 def descriptor_for(
     profile: ElementResultProfile,
     field_id: ResultFieldId,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> FieldDescriptor:
     """Resolve one descriptor in its model-family context."""
 
     if type(field_id) is not ResultFieldId:
         raise TypeError("field_id must be ResultFieldId")
-    for entry in catalog_entries(profile):
+    for entry in catalog_entries(
+        profile,
+        finite_strain=finite_strain,
+        material_state=material_state,
+    ):
         if entry.descriptor.field_id == field_id:
             return entry.descriptor
     raise KeyError(field_id)
@@ -349,12 +396,19 @@ def descriptor_for(
 def registry_entry_for(
     profile: ElementResultProfile,
     field_id: ResultFieldId,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> FieldRegistryEntry:
     """Resolve one complete recovery entry in model-family context."""
 
     if type(field_id) is not ResultFieldId:
         raise TypeError("field_id must be ResultFieldId")
-    for entry in catalog_entries(profile):
+    for entry in catalog_entries(
+        profile,
+        finite_strain=finite_strain,
+        material_state=material_state,
+    ):
         if entry.descriptor.field_id == field_id:
             return entry
     raise KeyError(field_id)
@@ -470,12 +524,20 @@ def _primary_entries(
 
 def _derived_entries(
     family: ResultModelFamily,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> tuple[FieldRegistryEntry, ...]:
     if family in {
         ResultModelFamily.PLANE_CONTINUUM,
         ResultModelFamily.SOLID_CONTINUUM,
     }:
-        return _continuum_entries(family)
+        entries = list(_continuum_entries(family))
+        if finite_strain:
+            entries.extend(_finite_strain_entries(family))
+        elif material_state:
+            entries.extend(_material_state_entries(family))
+        return tuple(entries)
     if family is ResultModelFamily.TRUSS:
         return (
             _entry(
@@ -599,6 +661,99 @@ def _continuum_entries(
             )
         )
     return tuple(entries)
+
+
+def _finite_strain_entries(
+    family: ResultModelFamily,
+) -> tuple[FieldRegistryEntry, ...]:
+    components = _FINITE_STRAIN_COMPONENTS[family.value]
+    definitions = (
+        (
+            FieldPosition.INTEGRATION_POINT,
+            FieldAssociation.INTEGRATION_POINT,
+            30,
+        ),
+        (FieldPosition.CENTROID, FieldAssociation.ELEMENT, 31),
+        (FieldPosition.ELEMENT_NODAL, FieldAssociation.ELEMENT_NODE, 32),
+        (FieldPosition.NODE_REGION, FieldAssociation.NODE_REGION, 33),
+        (
+            FieldPosition.RESOLVED_NODAL,
+            FieldAssociation.RESOLVED_NODAL,
+            34,
+        ),
+    )
+    entries: list[FieldRegistryEntry] = []
+    for position, association, order in definitions:
+        averaging_policy = (
+            NodalAveragingPolicy()
+            if position is FieldPosition.RESOLVED_NODAL
+            else None
+        )
+        entries.append(
+            _entry(
+                ResultVariable.E,
+                position,
+                association,
+                PhysicalQuantity.STRAIN,
+                components,
+                (),
+                f"result.field.e.{position.value}",
+                components[0],
+                order,
+                FieldRecoveryKind.FINITE_STRAIN_TENSOR,
+                averaging_policy=averaging_policy,
+            )
+        )
+        entries.append(
+            _entry(
+                ResultVariable.PEEQ,
+                position,
+                association,
+                PhysicalQuantity.STRAIN,
+                ("PEEQ",),
+                (),
+                f"result.field.peeq.{position.value}",
+                "PEEQ",
+                order + 10,
+                FieldRecoveryKind.FINITE_STRAIN_SCALAR,
+                averaging_policy=averaging_policy,
+            )
+        )
+    return tuple(entries)
+
+
+def _material_state_entries(
+    family: ResultModelFamily,
+) -> tuple[FieldRegistryEntry, ...]:
+    """Return constitutive state fields independent of geometry measure."""
+
+    definitions = (
+        (FieldPosition.INTEGRATION_POINT, FieldAssociation.INTEGRATION_POINT, 40),
+        (FieldPosition.CENTROID, FieldAssociation.ELEMENT, 41),
+        (FieldPosition.ELEMENT_NODAL, FieldAssociation.ELEMENT_NODE, 42),
+        (FieldPosition.NODE_REGION, FieldAssociation.NODE_REGION, 43),
+        (FieldPosition.RESOLVED_NODAL, FieldAssociation.RESOLVED_NODAL, 44),
+    )
+    return tuple(
+        _entry(
+            ResultVariable.PEEQ,
+            position,
+            association,
+            PhysicalQuantity.STRAIN,
+            ("PEEQ",),
+            (),
+            f"result.field.peeq.{position.value}",
+            "PEEQ",
+            order,
+            FieldRecoveryKind.MATERIAL_STATE_SCALAR,
+            averaging_policy=(
+                NodalAveragingPolicy()
+                if position is FieldPosition.RESOLVED_NODAL
+                else None
+            ),
+        )
+        for position, association, order in definitions
+    )
 
 
 def _entry(

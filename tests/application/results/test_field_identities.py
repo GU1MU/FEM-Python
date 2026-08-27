@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -85,6 +85,8 @@ def test_enum_members_are_the_canonical_wire_values() -> None:
         "SM",
         "S",
         "LE",
+        "E",
+        "PEEQ",
     )
     assert tuple(item.value for item in FieldPosition) == (
         "node",

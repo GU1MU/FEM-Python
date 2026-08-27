@@ -16,9 +16,9 @@ from typing import Any
 
 import numpy as np
 
-from fem.elements.beam_section import BeamSectionPoint
+from fem.model.beam_section import BeamSectionPoint
 
-from fem.application.results.archive import (
+from fem.results.archive import (
     LoadedResultArchive,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
@@ -26,7 +26,7 @@ from fem.application.results.archive import (
     ResultArchiveSnapshot,
     archive_region_dictionary,
 )
-from fem.application.results.data import (
+from fem.results.data import (
     FieldAvailability,
     FieldData,
     FieldDescriptor,
@@ -37,16 +37,15 @@ from fem.application.results.data import (
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
     _LOCATION_IDENTITY_NAMES,
-    _field_location_identity_key,
     _location_identity_requirements,
 )
-from fem.application.results.execution import (
+from fem.results.execution import (
     OutputExecutionStatus,
     OutputRequestExecution,
     OutputVariableExecution,
     ResultExecutionReport,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -57,16 +56,16 @@ from fem.application.results.fields import (
     ResultVariable,
     ScalarFieldSelection,
 )
-from fem.application.results.output_requests import (
+from fem.results.output_requests import (
     ExecutableOutputRequest,
     OutputVariableProjection,
 )
-from fem.application.results.registry import (
+from fem.results.registry import (
     ElementResultProfile,
     ResultModelFamily,
     registry_entry_for,
 )
-from fem.application.units import UnitContext
+from fem.model.units import UnitContext
 from fem.io._atomic_binary import atomic_write_verified_binary
 from fem.io._result_archive_errors import (
     ResultArchiveDecodeError,
@@ -2154,7 +2153,7 @@ def _decode_field(
             # two-item tuple for every row while retaining exact duplicate
             # detection for all other associations.
             if identities is not None:
-                identity = _field_location_identity_key(location)
+                identity = location.identity_key()
                 if identity in identities:
                     raise ResultArchiveDecodeError(
                         f"invalid field[{field_id}] location {row}: duplicate identity"
@@ -2478,7 +2477,7 @@ def _decode_regions(topology: object) -> tuple[Any, ...]:
 
 
 def _field_sort(key: FieldMaterializationKey) -> tuple[object, ...]:
-    from fem.application.results.fields import field_materialization_sort_key
+    from fem.results.fields import field_materialization_sort_key
 
     return field_materialization_sort_key(key)
 

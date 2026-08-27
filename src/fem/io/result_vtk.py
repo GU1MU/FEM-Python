@@ -9,12 +9,12 @@ from numbers import Real
 from pathlib import Path
 from typing import Any
 
-from fem.elements.beam_section import BeamSectionPoint
-from fem.application.results.data import (
+from fem.model.beam_section import BeamSectionPoint
+from fem.results.data import (
     FieldLocation,
     ResultExportSnapshot,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -25,7 +25,7 @@ from fem.application.results.fields import (
     ResultVariable,
     ScalarFieldSelection,
 )
-from fem.application.results.topology import (
+from fem.results.topology import (
     ResultCellKind,
     ResultValueLayout,
     project_scalar_field_topology,
@@ -195,6 +195,26 @@ class ResultVtkLocationIdentity:
             section_point=location.section_point,
         )
 
+    def identity_key(
+        self,
+        association: FieldAssociation,
+    ) -> tuple[object, ...]:
+        """Return the canonical result-domain identity for this VTK row."""
+
+        location = FieldLocation(
+            association=association,
+            coordinates=(0.0, 0.0, 0.0),
+            displacement=None,
+            node_id=self.node_id,
+            element_id=self.element_id,
+            integration_point=self.integration_point,
+            local_node=self.local_node,
+            region_key=self.region_key,
+            averaged=self.averaged,
+            section_point=self.section_point,
+        )
+        return location.identity_key()
+
 
 @dataclass(frozen=True, slots=True)
 class ResultVtkReadback:
@@ -288,7 +308,11 @@ class ResultVtkReadback:
             raise ValueError(
                 "every selected scalar requires an exact location identity"
             )
-        if len(set(scalar_locations)) != len(scalar_locations):
+        scalar_identities = {
+            identity.identity_key(self.association)
+            for identity in scalar_locations
+        }
+        if len(scalar_identities) != len(scalar_locations):
             raise ValueError("selected scalar locations must use unique identities")
         _validate_region_table(
             self.region_table,

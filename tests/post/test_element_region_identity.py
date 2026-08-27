@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import fem.post as post
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.post.fields import (
     MATERIAL_SIGNATURE_KEY,
     SECTION_SIGNATURE_KEY,

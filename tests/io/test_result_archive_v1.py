@@ -12,7 +12,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldData,
     FieldAssociation,
     FieldLocation,
@@ -32,9 +32,9 @@ from fem.application.results import (
     build_result_provider,
     execute_output_requests,
 )
-import fem.application.results.archive as archive_contract
-from fem.application.units import UnitContext
-from fem.core.model import OutputRequest
+import fem.results.archive as archive_contract
+from fem.model.units import UnitContext
+from fem.model import OutputRequest
 from fem.io import (
     ResultArchiveDecodeError,
     UnsupportedResultArchiveSchemaError,

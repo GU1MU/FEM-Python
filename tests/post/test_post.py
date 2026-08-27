@@ -3,7 +3,7 @@ import csv
 import numpy as np
 import pytest
 
-from fem.core.mesh import (
+from fem.model.mesh import (
     Element2D,
     Element3D,
     Mesh2D,
@@ -11,7 +11,7 @@ from fem.core.mesh import (
     Node2D,
     Node3D,
 )
-from fem.elements import get_element_kernel
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.post import displacement, path, stress, vtk
 from fem.post.stress import dispatch
 from fem.post.polar import convert_nodal_solution_into_polar_coord

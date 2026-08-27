@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from fem.elements.beam_section import BeamSectionPoint
+from fem.model.beam_section import BeamSectionPoint
 from fem.post.fields import ResultRegionKey
 
 from .fields import (
@@ -24,6 +24,7 @@ from .fields import (
     ScalarFieldSelection,
     field_materialization_sort_key,
 )
+from .frames import ResultFrameKey
 
 
 class FieldState(str, Enum):
@@ -250,6 +251,54 @@ class FieldLocation:
         )
         _validate_location_identity(location)
         return location
+
+    def identity_key(self) -> tuple[object, ...]:
+        """Return the canonical identity used to distinguish this field row.
+
+        Coordinates and displacement are deliberately excluded.  Identity is
+        determined by the field association and its FEM location identifiers,
+        including section-point identity where the association permits it.
+        """
+
+        return _identity_key_for_location(self)
+
+    def identity_label(
+        self,
+        *,
+        region_labels: Mapping[ResultRegionKey, str] | None = None,
+    ) -> str:
+        """Return one stable human-readable label for GUI/query consumers."""
+
+        values: list[str] = []
+        if self.node_id is not None:
+            values.append(f"节点 {int(self.node_id)}")
+        if self.element_id is not None:
+            values.append(f"单元 {int(self.element_id)}")
+        if self.integration_point is not None:
+            values.append(f"积分点 {int(self.integration_point)}")
+        if self.local_node is not None:
+            values.append(f"局部节点 {int(self.local_node)}")
+        if self.section_point is not None:
+            position = _section_point_relative_position_label(self.section_point)
+            values.append(
+                position
+                if position.startswith("截面点 ")
+                else f"截面位置 {position}"
+            )
+            values.append(
+                "截面坐标 "
+                f"({self.section_point.local_y:.6g}, "
+                f"{self.section_point.local_z:.6g})"
+            )
+        if self.averaged is True:
+            values.append("区域内节点平均")
+        elif self.averaged is False:
+            values.append("未平均")
+        if self.region_key is not None:
+            values.append(
+                (region_labels or {}).get(self.region_key, "结果区域")
+            )
+        return "，".join(values)
 
 @dataclass(frozen=True, slots=True)
 class ResultDiagnostic:
@@ -567,7 +616,7 @@ class FieldData:
                     raise ValueError(
                         "section-point field locations must match the field point number"
                     )
-                identity = _field_location_identity_key(location)
+                identity = location.identity_key()
                 if identity in identities:
                     raise ValueError("field locations must have unique identities")
                 identities.add(identity)
@@ -681,6 +730,7 @@ class ResultMaterializationSnapshot:
     generation: int
     topology: ResultTopologyProjection
     fields: tuple[FieldData, ...]
+    frame_key: ResultFrameKey | None = None
 
     def __post_init__(self) -> None:
         if type(self.source) is not ResultSourceKey:
@@ -693,6 +743,11 @@ class ResultMaterializationSnapshot:
             raise TypeError("topology must be ResultTopologyProjection")
         if self.topology.source != self.source:
             raise ValueError("topology source must match snapshot source")
+        if self.frame_key is not None:
+            if type(self.frame_key) is not ResultFrameKey:
+                raise TypeError("frame_key must be ResultFrameKey or None")
+            if self.frame_key.source != self.source:
+                raise ValueError("frame key source must match snapshot source")
         _validate_field_tuple(
             self.fields,
             source=self.source,
@@ -709,6 +764,7 @@ class ResultExportSnapshot:
     topology: ResultTopologyProjection
     field: FieldData
     selection: ScalarFieldSelection
+    frame_key: ResultFrameKey | None
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError(
@@ -725,7 +781,19 @@ class ResultExportSnapshot:
         topology: ResultTopologyProjection,
         field_data: FieldData,
         selection: ScalarFieldSelection,
+        frame_key: ResultFrameKey | None = None,
     ) -> ResultExportSnapshot:
+        if type(source) is not ResultSourceKey:
+            raise TypeError("source must be ResultSourceKey")
+        if type(topology) is not ResultTopologyProjection:
+            raise TypeError("topology must be ResultTopologyProjection")
+        if topology.source != source:
+            raise ValueError("topology source must match export source")
+        if frame_key is not None:
+            if type(frame_key) is not ResultFrameKey:
+                raise TypeError("frame_key must be ResultFrameKey or None")
+            if frame_key.source != source:
+                raise ValueError("frame key source must match export source")
         instance = object.__new__(cls)
         object.__setattr__(instance, "source", source)
         object.__setattr__(
@@ -736,6 +804,7 @@ class ResultExportSnapshot:
         object.__setattr__(instance, "topology", topology)
         object.__setattr__(instance, "field", field_data)
         object.__setattr__(instance, "selection", selection)
+        object.__setattr__(instance, "frame_key", frame_key)
         return instance
 
 
@@ -744,6 +813,7 @@ def build_initial_materialization(
     topology: ResultTopologyProjection,
     base_fields: tuple[FieldData, ...],
     eager_patches: tuple[ResultMaterializationPatch, ...] = (),
+    frame_key: ResultFrameKey | None = None,
 ) -> ResultMaterializationSnapshot:
     """Combine base fields and successful eager patches at generation zero."""
 
@@ -753,6 +823,11 @@ def build_initial_materialization(
         raise TypeError("topology must be ResultTopologyProjection")
     if topology.source != source:
         raise ValueError("topology source must match materialization source")
+    if frame_key is not None:
+        if type(frame_key) is not ResultFrameKey:
+            raise TypeError("frame_key must be ResultFrameKey or None")
+        if frame_key.source != source:
+            raise ValueError("frame key source must match materialization source")
     _validate_field_tuple(
         base_fields,
         source=source,
@@ -784,6 +859,7 @@ def build_initial_materialization(
         generation=0,
         topology=topology,
         fields=ordered,
+        frame_key=frame_key,
     )
 
 
@@ -824,6 +900,7 @@ def advance_materialization(
         generation=current_snapshot.generation + 1,
         topology=current_snapshot.topology,
         fields=combined,
+        frame_key=current_snapshot.frame_key,
     )
 
 
@@ -861,6 +938,7 @@ def prepare_result_export_snapshot(
         topology=materialization.topology,
         field_data=field_data,
         selection=selection,
+        frame_key=materialization.frame_key,
     )
 
 
@@ -1087,6 +1165,16 @@ def _validate_location_identity(location: FieldLocation) -> None:
 def _field_location_identity_key(
     location: FieldLocation,
 ) -> tuple[object, ...]:
+    """Compatibility helper delegating to the public location contract."""
+
+    if type(location) is not FieldLocation:
+        raise TypeError("location must be FieldLocation")
+    return location.identity_key()
+
+
+def _identity_key_for_location(
+    location: FieldLocation,
+) -> tuple[object, ...]:
     if location.association is FieldAssociation.NODE:
         return location.association, location.node_id
     if location.association is FieldAssociation.ELEMENT:
@@ -1096,6 +1184,7 @@ def _field_location_identity_key(
             location.association,
             location.element_id,
             location.integration_point,
+            location.section_point,
         )
     if location.association is FieldAssociation.ELEMENT_NODE:
         return (
@@ -1122,6 +1211,16 @@ def _field_location_identity_key(
         location.element_id,
         location.local_node,
     )
+
+
+def _section_point_relative_position_label(point: BeamSectionPoint) -> str:
+    """Return the stable corner/point label shared by result consumers."""
+
+    if point.local_y != 0.0 and point.local_z != 0.0:
+        horizontal = "右" if point.local_y > 0.0 else "左"
+        vertical = "上" if point.local_z > 0.0 else "下"
+        return f"{horizontal}{vertical}"
+    return f"截面点 {point.number}"
 
 
 def _validate_field_tuple(

@@ -5,7 +5,7 @@ from typing import Sequence
 
 import numpy as np
 
-from ...elements import get_element_kernel
+from ...physics.mechanics import get_recovery_service
 from .._paths import prepare_output_path
 from ..averaging import NodalAveragingPolicy
 from . import dispatch
@@ -210,7 +210,7 @@ def _resolve_recovered(
         cached = plane_metadata.get(elem_id)
         if cached is None:
             elem = elements_by_id[elem_id]
-            cached = get_element_kernel(elem.type)._plane_data(elem)
+            cached = get_recovery_service(elem.type)._plane_data(elem)
             plane_metadata[elem_id] = cached
         return cached
 

@@ -18,12 +18,14 @@ from .data import (
     ResultExportSnapshot,
     ResultTopologyProjection,
 )
+from .display import ResultDisplayQuery
 from .fields import (
     FieldAssociation,
     FieldMaterializationKey,
     ResultSourceKey,
     ScalarFieldSelection,
 )
+from .frames import ResultFrameKey
 
 
 class ResultValueLayout(str, Enum):
@@ -56,6 +58,8 @@ class ResultFieldTopology:
     value_layout: ResultValueLayout
     point_locations: tuple[FieldLocation | None, ...]
     cell_locations: tuple[FieldLocation | None, ...]
+    frame_key: ResultFrameKey | None = None
+    display_query: ResultDisplayQuery | None = None
 
     def __init__(
         self,
@@ -72,6 +76,8 @@ class ResultFieldTopology:
         value_layout: ResultValueLayout,
         point_locations: tuple[FieldLocation | None, ...],
         cell_locations: tuple[FieldLocation | None, ...],
+        frame_key: ResultFrameKey | None = None,
+        display_query: ResultDisplayQuery | None = None,
     ) -> None:
         if type(source) is not ResultSourceKey:
             raise TypeError("source must be ResultSourceKey")
@@ -81,6 +87,17 @@ class ResultFieldTopology:
             raise ValueError("materialization_generation must be non-negative")
         if type(selection) is not ScalarFieldSelection:
             raise TypeError("selection must be ScalarFieldSelection")
+        if frame_key is not None:
+            if type(frame_key) is not ResultFrameKey:
+                raise TypeError("frame_key must be ResultFrameKey or None")
+            if frame_key.source != source:
+                raise ValueError("frame key source must match topology source")
+        _validate_topology_display_query(
+            display_query,
+            source=source,
+            selection=selection,
+            frame_key=frame_key,
+        )
         checked_scale = _finite_scale(deformation_scale)
         owned_points = _owned_points(points)
         checked_cells = _projected_cells(cells, point_count=len(owned_points))
@@ -137,6 +154,8 @@ class ResultFieldTopology:
             "cell_locations",
             checked_cell_locations,
         )
+        object.__setattr__(self, "frame_key", frame_key)
+        object.__setattr__(self, "display_query", display_query)
 
     @property
     def points(self) -> np.ndarray:
@@ -166,6 +185,8 @@ class ResultFieldTopology:
         value_layout: ResultValueLayout,
         point_locations: tuple[FieldLocation | None, ...],
         cell_locations: tuple[FieldLocation | None, ...],
+        frame_key: ResultFrameKey | None = None,
+        display_query: ResultDisplayQuery | None = None,
     ) -> "ResultFieldTopology":
         """Adopt arrays produced by the validated internal projector."""
 
@@ -211,6 +232,14 @@ class ResultFieldTopology:
         object.__setattr__(instance, "value_layout", value_layout)
         object.__setattr__(instance, "point_locations", point_locations)
         object.__setattr__(instance, "cell_locations", cell_locations)
+        object.__setattr__(instance, "frame_key", frame_key)
+        _validate_topology_display_query(
+            display_query,
+            source=source,
+            selection=selection,
+            frame_key=frame_key,
+        )
+        object.__setattr__(instance, "display_query", display_query)
         return instance
 
 
@@ -230,6 +259,8 @@ class ResultFieldTopologyTemplate:
     point_locations: tuple[FieldLocation | None, ...]
     cell_locations: tuple[FieldLocation | None, ...]
     _row_indices: np.ndarray = field(repr=False)
+    frame_key: ResultFrameKey | None = None
+    display_query: ResultDisplayQuery | None = None
 
     def __init__(
         self,
@@ -302,17 +333,30 @@ class ResultFieldTopologyTemplate:
             topology.cell_locations,
         )
         object.__setattr__(self, "_row_indices", row_indices)
+        object.__setattr__(self, "frame_key", topology.frame_key)
+        object.__setattr__(self, "display_query", topology.display_query)
 
     def matches(
         self,
         export: ResultExportSnapshot,
         deformation_scale: float,
+        display_query: ResultDisplayQuery | None = None,
     ) -> bool:
+        """Check geometry/field-row compatibility for template reuse.
+
+        A query is validated when supplied, but is not part of the template
+        identity: changing legend policy or another display-only option must
+        reuse the expensive geometry and row mapping.
+        """
+
+        if type(export) is not ResultExportSnapshot:
+            return False
+        _validate_export_display_query(export, display_query)
         return (
-            type(export) is ResultExportSnapshot
-            and self.source == export.source
+            self.source == export.source
             and self.materialization_generation
             == export.materialization_generation
+            and self.frame_key == export.frame_key
             and self.field_key == export.selection.field_key
             and self.deformation_scale == _finite_scale(deformation_scale)
         )
@@ -321,6 +365,8 @@ class ResultFieldTopologyTemplate:
 def project_scalar_field_topology(
     export: ResultExportSnapshot,
     deformation_scale: float = 0.0,
+    *,
+    display_query: ResultDisplayQuery | None = None,
 ) -> ResultFieldTopology:
     """Project one accepted scalar field into its sole neutral render layout."""
 
@@ -328,6 +374,7 @@ def project_scalar_field_topology(
         raise TypeError("export must be ResultExportSnapshot")
     scale = _finite_scale(deformation_scale)
     _validate_export_snapshot(export)
+    _validate_export_display_query(export, display_query)
     field_data = export.field
     scalar_values = _component_values_view(
         field_data,
@@ -385,6 +432,8 @@ def project_scalar_field_topology(
         materialization_generation=export.materialization_generation,
         selection=export.selection,
         deformation_scale=scale,
+        frame_key=export.frame_key,
+        display_query=display_query,
         **projected,
     )
 
@@ -400,12 +449,20 @@ def project_scalar_field_topology_from_template(
     export: ResultExportSnapshot,
     template: ResultFieldTopologyTemplate,
     deformation_scale: float,
+    *,
+    display_query: ResultDisplayQuery | None = None,
 ) -> ResultFieldTopology:
     if type(export) is not ResultExportSnapshot:
         raise TypeError("export must be ResultExportSnapshot")
     if type(template) is not ResultFieldTopologyTemplate:
         raise TypeError("template must be ResultFieldTopologyTemplate")
-    if not template.matches(export, deformation_scale):
+    effective_display_query = (
+        template.display_query
+        if display_query is None
+        else display_query
+    )
+    _validate_export_display_query(export, effective_display_query)
+    if not template.matches(export, deformation_scale, display_query):
         raise ValueError("template does not match the result export")
     field_data = export.field
     component_values = _component_values_view(
@@ -417,6 +474,7 @@ def project_scalar_field_topology_from_template(
         template,
         export.selection,
         values,
+        display_query=effective_display_query,
     )
 
 
@@ -424,12 +482,16 @@ def _topology_from_template(
     template: ResultFieldTopologyTemplate,
     selection: ScalarFieldSelection,
     values: np.ndarray,
+    *,
+    display_query: ResultDisplayQuery | None = None,
 ) -> ResultFieldTopology:
     return ResultFieldTopology._from_projected_arrays(
         source=template.source,
         materialization_generation=template.materialization_generation,
         selection=selection,
         deformation_scale=template.deformation_scale,
+        frame_key=template.frame_key,
+        display_query=display_query,
         points=template._points,
         cells=template.cells,
         cell_kinds=template.cell_kinds,
@@ -446,10 +508,50 @@ def _validate_export_snapshot(export: ResultExportSnapshot) -> None:
         raise ValueError("topology source must match export source")
     if export.field.source != export.source:
         raise ValueError("field source must match export source")
+    if export.frame_key is not None:
+        if type(export.frame_key) is not ResultFrameKey:
+            raise TypeError("export frame_key must be ResultFrameKey or None")
+        if export.frame_key.source != export.source:
+            raise ValueError("export frame key source must match export source")
     if export.selection.field_key != export.field.key:
         raise ValueError("selection field key must match export field key")
     if export.selection.component not in export.field.descriptor.columns:
         raise ValueError("selection component is not in the field descriptor")
+
+
+def _validate_export_display_query(
+    export: ResultExportSnapshot,
+    display_query: ResultDisplayQuery | None,
+) -> None:
+    if display_query is None:
+        return
+    if type(display_query) is not ResultDisplayQuery:
+        raise TypeError("display_query must be ResultDisplayQuery or None")
+    if display_query.frame.source != export.source:
+        raise ValueError("display query frame source must match export source")
+    if export.frame_key is not None and display_query.frame != export.frame_key:
+        raise ValueError("display query frame must match export frame")
+    if display_query.selection != export.selection:
+        raise ValueError("display query selection must match export selection")
+
+
+def _validate_topology_display_query(
+    display_query: ResultDisplayQuery | None,
+    *,
+    source: ResultSourceKey,
+    selection: ScalarFieldSelection,
+    frame_key: ResultFrameKey | None,
+) -> None:
+    if display_query is None:
+        return
+    if type(display_query) is not ResultDisplayQuery:
+        raise TypeError("display_query must be ResultDisplayQuery or None")
+    if display_query.frame.source != source:
+        raise ValueError("display query frame source must match topology source")
+    if frame_key is not None and display_query.frame != frame_key:
+        raise ValueError("display query frame must match topology frame")
+    if display_query.selection != selection:
+        raise ValueError("display query selection must match topology selection")
 
 
 def _component_values_view(

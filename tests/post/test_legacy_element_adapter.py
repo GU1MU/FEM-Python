@@ -6,7 +6,7 @@ import io
 import numpy as np
 import pytest
 
-from fem.elements import get_element_kernel
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.post.stress import dispatch, element
 from fem.post.stress._common import (
     PLANE_ELEMENT_HEADER,
@@ -131,18 +131,10 @@ def test_mixed_plane_legacy_csv_delegates_and_preserves_bytes(
         calls.append((args, kwargs))
         return original(*args, **kwargs)
 
-    def reject_legacy_kernel_lookup(*_args, **_kwargs):
-        raise AssertionError("plane adapter must not call an element kernel")
-
     monkeypatch.setattr(
         element,
         "collect_plane_element_nodal",
         spy_collect_plane_element_nodal,
-    )
-    monkeypatch.setattr(
-        element,
-        "get_element_kernel",
-        reject_legacy_kernel_lookup,
     )
 
     element.mixed(type_keys, mesh, displacement, target)

@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldAvailability,
     FieldData,

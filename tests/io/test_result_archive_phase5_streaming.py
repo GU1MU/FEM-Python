@@ -9,14 +9,14 @@ import zipfile
 import numpy as np
 import pytest
 
-import fem.application.results.archive as archive_contract
+import fem.results.archive as archive_contract
 import fem.io.result_archive_v1 as archive_codec
 from fem.io import (
     ResultArchiveDecodeError,
     encode_result_archive,
     load_result_archive,
 )
-from fem.application.results.data import FieldData, ResultTopologyProjection
+from fem.results.data import FieldData, ResultTopologyProjection
 from tests.helpers.phase8_result_characterization import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
@@ -192,7 +192,7 @@ def test_path_locations_reuse_matrix_finite_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import fem.application.results.data as result_data
+    import fem.results.data as result_data
 
     source = tmp_path / "validated-location-matrices.femres"
     source.write_bytes(encode_result_archive(archive_snapshot))

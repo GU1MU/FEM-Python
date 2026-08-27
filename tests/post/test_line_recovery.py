@@ -5,9 +5,10 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.model.mesh import Element3D, Mesh3D, Node3D
 from fem.post import stress
 from fem.post.stress import element, truss
+from fem.physics.mechanics import get_recovery_service
 
 
 class _RecoveryCancelled(RuntimeError):
@@ -117,7 +118,7 @@ def test_truss_recovery_is_invariant_to_reversed_connectivity() -> None:
     assert reversed_row.Mises == pytest.approx(forward.Mises)
 
 
-def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kernel(
+def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mesh = Mesh3D(
@@ -134,16 +135,16 @@ def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kern
     displacement = np.zeros(mesh.num_dofs)
     displacement[mesh.global_dof(20, 0)] = 0.1
     displacement[mesh.global_dof(30, 0)] = 0.5
-    kernel = truss.get_element_kernel("Truss2")
-    kernel_type = type(kernel)
-    original = kernel_type.element_stress
+    service = get_recovery_service("Truss2")
+    service_type = type(service)
+    original = service_type.element_stress
     calls: list[int] = []
 
     def counted(self, mesh_, element, values, lookup):
         calls.append(int(element.id))
         return original(self, mesh_, element, values, lookup)
 
-    monkeypatch.setattr(kernel_type, "element_stress", counted)
+    monkeypatch.setattr(service_type, "element_stress", counted)
 
     recovered = truss.recover(mesh, displacement)
 
@@ -185,8 +186,8 @@ def test_truss_recovery_cancels_after_one_element_and_retries_cleanly(
         ],
     )
     displacement = np.zeros(mesh.num_dofs)
-    kernel_type = type(truss.get_element_kernel("Truss2"))
-    original = kernel_type.element_stress
+    service_type = type(get_recovery_service("Truss2"))
+    original = service_type.element_stress
     completed_elements: list[int] = []
 
     def counted(self, mesh_, element_, values, lookup):
@@ -204,7 +205,7 @@ def test_truss_recovery_cancels_after_one_element_and_retries_cleanly(
         if completed_elements:
             raise _RecoveryCancelled("cancelled after one Truss2 element")
 
-    monkeypatch.setattr(kernel_type, "element_stress", counted)
+    monkeypatch.setattr(service_type, "element_stress", counted)
 
     with pytest.raises(_RecoveryCancelled, match="one Truss2 element"):
         truss.recover(

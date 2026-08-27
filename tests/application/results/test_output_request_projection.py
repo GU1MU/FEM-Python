@@ -5,21 +5,21 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldPosition,
     ResultFieldId,
     ResultVariable,
 )
-from fem.application.results.output_requests import (
+from fem.results.output_requests import (
     ResultCapabilityCatalog,
     project_output_request,
 )
-from fem.application.results.registry import (
+from fem.results.registry import (
     ElementResultProfile,
     ResultModelFamily,
     catalog_entries,
 )
-from fem.core.model import OutputRequest, OutputSourceEvidence
+from fem.model import OutputRequest, OutputSourceEvidence
 
 
 def _profile(family: ResultModelFamily) -> ElementResultProfile:
@@ -323,7 +323,7 @@ def test_stress_uses_deterministic_family_default(
         FieldPosition.ELEMENT_NODAL,
     ),
 )
-def test_continuum_stress_normalizes_explicit_positions_to_element_nodes(
+def test_continuum_stress_preserves_explicit_positions(
     position: FieldPosition,
 ) -> None:
     request = OutputRequest(
@@ -339,10 +339,7 @@ def test_continuum_stress_normalizes_explicit_positions_to_element_nodes(
     executable = projection.executable_request
     assert executable is not None
     assert len(executable.field_requests) == 1
-    assert (
-        executable.field_requests[0].field_id.position
-        is FieldPosition.ELEMENT_NODAL
-    )
+    assert executable.field_requests[0].field_id.position is position
     assert executable.variables[0].source_variable_indices == (0, 1)
     assert request.metadata == {"POSITION": position.value.upper()}
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.post.vtk import cells
 from fem.post.vtk.cells import (
     UnsupportedVTKCellTypeError,

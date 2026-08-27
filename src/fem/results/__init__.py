@@ -1,6 +1,19 @@
-"""Typed, headless result identities for application consumers."""
+"""Canonical result-domain objects and headless result services."""
 
 from fem.post.averaging import NodalAveragingPolicy
+from fem.post.fields import (
+    ResultRegionKey,
+    decode_result_region_key,
+    encode_result_region_key,
+    result_region_sort_key,
+)
+from .carrier import ModelResult, ModelResults, ResultFrame
+from .dynamics import (
+    DynamicDiagnostics,
+    DynamicEnergy,
+    DynamicFrameData,
+    dynamic_frame_data_from_outputs,
+)
 
 from .data import (
     FieldAvailability,
@@ -20,7 +33,6 @@ from .data import (
 )
 from .archive import (
     LoadedResultArchive,
-    ResultArchiveSaveSnapshot,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
     ResultArchiveRun,
@@ -42,6 +54,23 @@ from .fields import (
     ResultVariable,
     ScalarFieldSelection,
     field_materialization_sort_key,
+)
+from .frames import (
+    ResultFrameCatalog,
+    ResultFrameKey,
+    ResultFrameMetadata,
+    frame_catalog_from_model_result,
+)
+from .display import (
+    ResultAveragingOptions,
+    ResultDeformationMode,
+    ResultDisplayComputation,
+    ResultDisplayQuery,
+    ResultDisplayScope,
+    ResultDisplayScopeKind,
+    ResultLegendMode,
+    ResultLegendPolicy,
+    display_computation_for_position,
 )
 from .registry import (
     RECOVERY_CONTRACT,
@@ -79,6 +108,34 @@ from .query import (
     evaluate_result_query,
     validate_result_query_filters,
 )
+from .probe import (
+    ResultProbeKind,
+    ResultProbeRequest,
+    ResultProbeResult,
+    ResultProbeTarget,
+    ResultProbeValidationError,
+    probe_result,
+    probe_result_from_query_result,
+    result_query_for_probe,
+)
+from .xy_data import (
+    ResultXYAxis,
+    ResultXYPoint,
+    ResultXYRequest,
+    ResultXYSeries,
+    ResultXYValidationError,
+    build_result_xy_series,
+)
+from .xy_operations import difference as xy_difference
+from .xy_operations import derivative as xy_derivative
+from .xy_operations import envelope as xy_envelope
+from .xy_operations import integral as xy_integral
+from .path_query import (
+    ResultPathRequest,
+    ResultPathResult,
+    ResultPathSample,
+    build_result_path_result,
+)
 from .topology import (
     ResultCellKind,
     ResultFieldTopology,
@@ -104,15 +161,14 @@ from .execution import (
     ResultExecutionReport,
     execute_output_requests,
 )
-from .workflow import (
-    SolveResultBundle,
-    build_solve_result_bundle,
-    validate_solve_result_model_identity,
-)
-
 __all__ = [
     "ElementResultProfile",
     "LoadedResultArchive",
+    "ModelResult",
+    "ModelResults",
+    "DynamicDiagnostics",
+    "DynamicEnergy",
+    "DynamicFrameData",
     "ElementResultInspectionRequest",
     "ExecutableOutputRequest",
     "FieldAssociation",
@@ -140,13 +196,22 @@ __all__ = [
     "ResultArchiveModelProjection",
     "ResultArchiveOrigin",
     "ResultArchiveRun",
-    "ResultArchiveSaveSnapshot",
     "ResultArchiveSnapshot",
+    "ResultAveragingOptions",
     "ResultFileState",
     "ResultCapabilityCatalog",
     "ResultCellKind",
+    "ResultDeformationMode",
     "ResultDiagnostic",
+    "ResultDisplayComputation",
+    "ResultDisplayQuery",
+    "ResultDisplayScope",
+    "ResultDisplayScopeKind",
     "ResultExecutionReport",
+    "ResultFrameCatalog",
+    "ResultFrameKey",
+    "ResultFrameMetadata",
+    "ResultFrame",
     "ResultExportSnapshot",
     "ResultFieldTopology",
     "ResultFieldTopologyTemplate",
@@ -154,6 +219,10 @@ __all__ = [
     "ResultInspectionField",
     "ResultInspectionRequest",
     "ResultInspectionResult",
+    "ResultLegendMode",
+    "ResultLegendPolicy",
+    "display_computation_for_position",
+    "dynamic_frame_data_from_outputs",
     "ResultMaterializationPatch",
     "ResultMaterializationUnavailableError",
     "ResultMaterializationSnapshot",
@@ -163,21 +232,36 @@ __all__ = [
     "ResultQueryRecord",
     "ResultQueryResult",
     "ResultQueryValidationError",
+    "ResultRegionKey",
+    "ResultProbeKind",
+    "ResultProbeRequest",
+    "ResultProbeResult",
+    "ResultProbeTarget",
+    "ResultProbeValidationError",
+    "ResultXYAxis",
+    "ResultXYPoint",
+    "ResultXYRequest",
+    "ResultXYSeries",
+    "ResultXYValidationError",
+    "ResultPathRequest",
+    "ResultPathResult",
+    "ResultPathSample",
     "ResultSourceKey",
     "ResultTopologyProjection",
     "ResultValueLayout",
     "ResultVariable",
     "ScalarFieldSelection",
-    "SolveResultBundle",
     "advance_materialization",
     "archive_region_dictionary",
     "build_result_archive_snapshot",
     "rebind_result_archive_snapshot",
     "result_model_fingerprint",
+    "decode_result_region_key",
+    "encode_result_region_key",
+    "result_region_sort_key",
     "build_result_provider",
     "build_archived_result_provider",
     "build_result_field_topology_template",
-    "build_solve_result_bundle",
     "build_initial_materialization",
     "catalog_diagnostics",
     "catalog_entries",
@@ -187,14 +271,23 @@ __all__ = [
     "execute_output_requests",
     "evaluate_result_query",
     "field_materialization_sort_key",
+    "frame_catalog_from_model_result",
     "inspect_result_snapshot",
     "prepare_result_export_snapshot",
     "project_scalar_field_topology",
     "project_scalar_field_topology_from_template",
     "project_output_request",
     "project_output_requests",
+    "probe_result",
+    "probe_result_from_query_result",
     "registry_entry_for",
     "restore_result_provider",
+    "result_query_for_probe",
+    "build_result_xy_series",
+    "build_result_path_result",
+    "xy_difference",
+    "xy_derivative",
+    "xy_envelope",
+    "xy_integral",
     "validate_result_query_filters",
-    "validate_solve_result_model_identity",
 ]

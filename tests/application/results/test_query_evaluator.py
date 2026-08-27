@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,

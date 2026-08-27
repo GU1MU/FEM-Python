@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from fem.core.model import OutputRequest, OutputSourceEvidence
+from fem.model import OutputRequest, OutputSourceEvidence
 
 from .data import ResultDiagnostic
 from .fields import (
@@ -824,12 +824,6 @@ def _project_stress_variable(
                     request_index=request_index,
                 ),
             )
-
-    if family in {
-        ResultModelFamily.PLANE_CONTINUUM,
-        ResultModelFamily.SOLID_CONTINUUM,
-    }:
-        position = FieldPosition.ELEMENT_NODAL
 
     if family is ResultModelFamily.BEAM:
         beam_entries = tuple(

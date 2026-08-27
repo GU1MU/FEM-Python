@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Sequence
 
-from ...core.mesh import Mesh2D
+from fem.model import Mesh2D
 from .. import polar as _polar
 from .fields import NodalStressCsv, NodalStressCsvRow
 

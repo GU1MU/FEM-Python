@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from fem.core.model import OutputRequest
+from fem.model import OutputRequest
 
 from ._materializers import check_cancellation
 from .data import (

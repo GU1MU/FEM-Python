@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,
@@ -23,9 +23,9 @@ from fem.application.results import (
     ScalarFieldSelection,
     build_result_provider,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
-from fem.core.result import ModelResult
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
+from fem.results import ModelResult
 from fem_gui.visualization.result_renderer import (
     build_result_render_payload,
     validate_result_render_payload,

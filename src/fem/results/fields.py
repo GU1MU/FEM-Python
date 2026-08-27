@@ -41,6 +41,8 @@ class ResultVariable(str, Enum):
     SM = "SM"
     S = "S"
     LE = "LE"
+    E = "E"
+    PEEQ = "PEEQ"
 
 
 class FieldPosition(str, Enum):
@@ -77,6 +79,24 @@ _VARIABLE_POSITIONS = {
         }
     ),
     ResultVariable.LE: frozenset({FieldPosition.CENTROID}),
+    ResultVariable.E: frozenset(
+        {
+            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.CENTROID,
+            FieldPosition.ELEMENT_NODAL,
+            FieldPosition.NODE_REGION,
+            FieldPosition.RESOLVED_NODAL,
+        }
+    ),
+    ResultVariable.PEEQ: frozenset(
+        {
+            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.CENTROID,
+            FieldPosition.ELEMENT_NODAL,
+            FieldPosition.NODE_REGION,
+            FieldPosition.RESOLVED_NODAL,
+        }
+    ),
 }
 
 _CONTINUUM_STRESS_RECOVERY_POSITIONS = frozenset(
@@ -97,7 +117,9 @@ _FIELD_VARIABLE_SORT_ORDER = {
     ResultVariable.SF: 4,
     ResultVariable.SM: 5,
     ResultVariable.LE: 6,
-    ResultVariable.S: 7,
+    ResultVariable.E: 7,
+    ResultVariable.PEEQ: 8,
+    ResultVariable.S: 9,
 }
 _POSITION_ORDER = {
     value: index for index, value in enumerate(FieldPosition)
@@ -180,12 +202,13 @@ class FieldRequest:
         if self.gauss_order <= 0:
             raise ValueError("gauss_order must be positive")
         if (
-            self.field_id.variable is not ResultVariable.S
+            self.field_id.variable
+            not in {ResultVariable.S, ResultVariable.E, ResultVariable.PEEQ}
             or position not in _CONTINUUM_STRESS_RECOVERY_POSITIONS
         ):
             raise ValueError(
-                "gauss_order is only valid for continuum stress recovery "
-                "positions"
+                "gauss_order is only valid for continuum stress/state field "
+                "recovery positions"
             )
 
 

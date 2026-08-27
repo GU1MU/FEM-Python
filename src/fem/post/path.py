@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-from ..core.mesh import Mesh2D
+from fem.model import Mesh2D
 from ._csv import (
     _NODAL_STRESS_METADATA_FIELDS,
     parse_csv_integer,

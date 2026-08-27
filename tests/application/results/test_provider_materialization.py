@@ -5,12 +5,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from fem.application.results import _materializers
-from fem.application.results.data import (
+from fem.results import _materializers
+from fem.results.data import (
     FieldState,
     ResultMaterializationPatch,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -20,11 +20,12 @@ from fem.application.results.fields import (
     ResultVariable,
     field_materialization_sort_key,
 )
-from fem.application.results.provider import build_result_provider
-from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from fem.core.model import AnalysisStep, FEMModel, LineLoad
-from fem.core.result import ModelResult
-from fem.elements import get_element_capabilities, get_element_kernel
+from fem.results.provider import build_result_provider
+from fem.model.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import AnalysisStep, FEMModel, LineLoad
+from fem.results import ModelResult
+from fem.elements import Hex8Definition, get_element_capabilities
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.post.averaging import NodalAveragingPolicy
 from tests.helpers.mesh_builders import make_hex8_stiffness_mesh
 from tests.helpers.phase8_result_characterization import (
@@ -121,6 +122,76 @@ def _quad4_result() -> ModelResult:
     )
 
 
+def _shared_quad4_finite_strain_result() -> ModelResult:
+    mesh = Mesh2D(
+        nodes=[
+            Node2D(1, 0.0, 0.0),
+            Node2D(2, 1.0, 0.0),
+            Node2D(3, 1.0, 1.0),
+            Node2D(4, 0.0, 1.0),
+            Node2D(5, 2.0, 0.0),
+            Node2D(6, 2.0, 1.0),
+        ],
+        elements=[
+            Element2D(
+                1,
+                [1, 2, 3, 4],
+                "Quad4",
+                {
+                    "E": 100.0,
+                    "nu": 0.25,
+                    "plane_type": "stress",
+                    "thickness": 1.0,
+                },
+            ),
+            Element2D(
+                2,
+                [2, 5, 6, 3],
+                "Quad4",
+                {
+                    "E": 100.0,
+                    "nu": 0.25,
+                    "plane_type": "stress",
+                    "thickness": 1.0,
+                },
+            ),
+        ],
+    )
+    a = 1.0 / np.sqrt(3.0)
+    natural_coordinates = np.tile(
+        np.asarray(
+            ((-a, -a), (a, -a), (a, a), (-a, a)),
+            dtype=float,
+        ),
+        (2, 1),
+    )
+    element_ids = np.asarray((1, 1, 1, 1, 2, 2, 2, 2), dtype=int)
+    integration_points = np.tile(np.arange(1, 5, dtype=int), 2)
+    green_lagrange_strain = np.zeros((8, 3, 3), dtype=float)
+    green_lagrange_strain[:4, 0, 0] = 0.1
+    green_lagrange_strain[4:, 0, 0] = 0.3
+    equivalent_plastic_strain = np.asarray(
+        (0.1, 0.1, 0.1, 0.1, 0.3, 0.3, 0.3, 0.3),
+        dtype=float,
+    )
+    outputs = {
+        "integration_points": {
+            "element_id": element_ids,
+            "integration_point": integration_points,
+            "natural_coordinates": natural_coordinates,
+            "green_lagrange_strain": green_lagrange_strain,
+            "equivalent_plastic_strain": equivalent_plastic_strain,
+        }
+    }
+    return ModelResult(
+        FEMModel(mesh=mesh),
+        None,
+        np.zeros(mesh.num_dofs),
+        np.zeros(mesh.num_dofs),
+        outputs=outputs,
+    )
+
+
 def _hex8_result() -> ModelResult:
     mesh = make_hex8_stiffness_mesh()
     displacement = np.zeros(mesh.num_dofs)
@@ -133,6 +204,36 @@ def _hex8_result() -> ModelResult:
         None,
         displacement,
         np.zeros(mesh.num_dofs),
+    )
+
+
+def _hex8_finite_strain_result() -> ModelResult:
+    result = _hex8_result()
+    natural_coordinates = np.asarray(
+        [point[:-1] for point in Hex8Definition().gauss_points()],
+        dtype=float,
+    )
+    count = len(natural_coordinates)
+    cauchy_stress = np.tile(
+        np.diag((1.0, 2.0, 3.0))[None, :, :],
+        (count, 1, 1),
+    )
+    green_lagrange_strain = np.tile(
+        np.diag((0.01, 0.02, 0.03))[None, :, :],
+        (count, 1, 1),
+    )
+    return replace(
+        result,
+        outputs={
+            "integration_points": {
+                "element_id": np.ones(count, dtype=int),
+                "integration_point": np.arange(1, count + 1, dtype=int),
+                "natural_coordinates": natural_coordinates,
+                "cauchy_stress": cauchy_stress,
+                "green_lagrange_strain": green_lagrange_strain,
+                "equivalent_plastic_strain": np.full(count, 0.1),
+            },
+        },
     )
 
 
@@ -337,6 +438,36 @@ def test_continuum_materializes_every_position_as_one_atomic_ordered_patch() -> 
         )
 
 
+def test_finite_strain_node_region_collapses_shared_node_contributions() -> None:
+    provider = build_result_provider(
+        _source("finite-strain-shared-node"),
+        _shared_quad4_finite_strain_result(),
+    )
+    keys = tuple(
+        _key(provider, variable, FieldPosition.NODE_REGION)
+        for variable in (ResultVariable.E, ResultVariable.PEEQ)
+    )
+
+    patch = provider.materialize(keys)
+
+    assert len(patch.fields) == 2
+    for field in patch.fields:
+        identities = tuple(
+            (location.node_id, location.region_key)
+            for location in field.locations
+        )
+        assert len(identities) == 6
+        assert len(set(identities)) == len(identities)
+        assert {node_id for node_id, _region in identities} == {
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+        }
+
+
 def test_solid_continuum_materializes_every_position_with_six_components() -> None:
     provider = build_result_provider(_source("solid"), _hex8_result())
     keys = tuple(
@@ -391,6 +522,41 @@ def test_solid_continuum_materializes_every_position_with_six_components() -> No
             and len(location.displacement) == 3
             for location in field.locations
         )
+
+
+def test_solid_finite_strain_materializes_captured_hex8_fields() -> None:
+    provider = build_result_provider(
+        _source("solid-finite-strain"),
+        _hex8_finite_strain_result(),
+    )
+    finite_keys = tuple(
+        availability.key
+        for availability in provider.catalog().fields
+        if availability.descriptor.field_id.variable
+        in {ResultVariable.E, ResultVariable.PEEQ}
+    )
+
+    assert len(finite_keys) == 10
+    patch = provider.materialize(finite_keys)
+
+    assert len(patch.fields) == len(finite_keys)
+    assert all(np.isfinite(field.values).all() for field in patch.fields)
+    assert {
+        field.key.request.field_id.position for field in patch.fields
+    } == {
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
+        FieldPosition.NODE_REGION,
+        FieldPosition.RESOLVED_NODAL,
+    }
+    assert {
+        field.descriptor.components
+        for field in patch.fields
+        if field.key.request.field_id.variable is ResultVariable.E
+    } == {
+        ("E11", "E22", "E33", "E12", "E23", "E13")
+    }
 
 
 def test_apply_creates_same_generation_draft_and_leaves_old_provider_unchanged() -> None:

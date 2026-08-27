@@ -5,9 +5,9 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-import fem.application.results.provider as provider_module
-from fem.application.results.data import FieldState
-from fem.application.results.fields import (
+import fem.results.provider as provider_module
+from fem.results.data import FieldState
+from fem.results.fields import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,
@@ -15,9 +15,9 @@ from fem.application.results.fields import (
     ResultSourceKey,
     ResultVariable,
 )
-from fem.application.results.provider import build_result_provider
-from fem.application.results.registry import ResultModelFamily
-from fem.core.mesh import (
+from fem.results.provider import build_result_provider
+from fem.results.registry import ResultModelFamily
+from fem.model.mesh import (
     Element2D,
     Element3D,
     Mesh2D,
@@ -25,8 +25,8 @@ from fem.core.mesh import (
     Node2D,
     Node3D,
 )
-from fem.core.model import AnalysisStep, FEMModel, LineLoad
-from fem.core.result import ModelResult
+from fem.model import AnalysisStep, FEMModel, LineLoad
+from fem.results import ModelResult
 from fem.post.averaging import NodalAveragingPolicy
 from fem.post.fields import result_region_key_for_element
 

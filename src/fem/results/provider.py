@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import math
 from numbers import Integral, Real
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
         ResultArchiveSnapshot,
     )
 
-from fem.core.result import ModelResult
+from fem.results import ModelResult, ResultFrame
 from fem.elements import get_element_capabilities
 from fem.post.fields import ResultRegionKey, result_region_key_for_element
 
@@ -42,6 +42,11 @@ from .fields import (
     ResultVariable,
     ScalarFieldSelection,
     field_materialization_sort_key,
+)
+from .frames import (
+    ResultFrameCatalog,
+    ResultFrameKey,
+    frame_catalog_from_model_result,
 )
 from .registry import (
     ElementResultProfile,
@@ -102,6 +107,11 @@ class ResultProvider:
         repr=False,
         compare=False,
     )
+    _materialization_cache: dict[FieldMaterializationKey, FieldData] = field(
+        default_factory=dict,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if self._owned_result is not None and type(self._owned_result) is not ModelResult:
@@ -158,6 +168,17 @@ class ResultProvider:
         return self._snapshot.source
 
     @property
+    def frame_key(self) -> ResultFrameKey | None:
+        """Return this provider's explicit output-frame identity, if any.
+
+        The final-result provider remains frame-less during the migration.
+        Providers created for an individual captured increment carry the
+        corresponding key in their immutable materialization snapshot.
+        """
+
+        return self._snapshot.frame_key
+
+    @property
     def is_archived(self) -> bool:
         """Whether this provider is backed by a detached result archive."""
 
@@ -180,6 +201,156 @@ class ResultProvider:
         """Read-only archive model projection when this is result-only."""
 
         return self._archived_projection
+
+    @property
+    def frame_indices(self) -> tuple[int, ...]:
+        """Return the converged increment indices retained by this result."""
+
+        if self._owned_result is None:
+            return ()
+        return tuple(frame.frame_index for frame in self._owned_result.frames)
+
+    @property
+    def frame_catalog(self) -> ResultFrameCatalog:
+        """Return stable metadata for current live-result frames.
+
+        Archived providers return an empty transitional catalog until the
+        multi-frame archive format is introduced.  The property is additive;
+        the existing ``frame_indices`` and ``frame_provider`` APIs remain
+        available during migration.
+        """
+
+        if self._owned_result is None:
+            return ResultFrameCatalog(self.source, ())
+        return frame_catalog_from_model_result(self.source, self._owned_result)
+
+    def frame_provider(self, frame_index: int) -> ResultProvider:
+        """Build a display-local provider for one converged result frame.
+
+        The accepted Session provider remains bound to the final ``ModelResult``.
+        A frame provider is a detached, same-source projection used by result
+        displays; materializing fields on it must never advance Session state.
+        """
+
+        if self.is_archived or self._owned_result is None:
+            raise ValueError(
+                "archived result providers do not expose live result frames"
+            )
+        if isinstance(frame_index, bool) or not isinstance(frame_index, int):
+            raise TypeError("frame_index must be an integer")
+        frame = next(
+            (
+                candidate
+                for candidate in self._owned_result.frames
+                if candidate.frame_index == frame_index
+            ),
+            None,
+        )
+        if type(frame) is not ResultFrame:
+            raise KeyError(frame_index)
+        frame_result = ModelResult(
+            model=self._owned_result.model,
+            step=self._owned_result.step,
+            U=frame.U,
+            reactions=frame.reactions,
+            name=frame.name or self._owned_result.name,
+            outputs=frame.outputs,
+            load_factor=frame.load_factor,
+            iterations=frame.iterations,
+            residual_norm=frame.residual_norm,
+            compiled_model=self._owned_result.compiled_model,
+            dynamic_data=frame.dynamic_data,
+        )
+        frame_provider = build_result_provider(
+            self.source,
+            frame_result,
+            frame_key=ResultFrameKey(self.source, frame_index),
+            _detached_result=frame_result,
+        )
+        reusable_fields = self._reusable_single_frame_fields(frame)
+        if reusable_fields:
+            frame_provider = frame_provider.apply(
+                ResultMaterializationPatch(
+                    source=self.source,
+                    fields=reusable_fields,
+                )
+            )
+        return frame_provider
+
+    def _reusable_single_frame_fields(
+        self,
+        frame: ResultFrame,
+    ) -> tuple[FieldData, ...]:
+        """Return derived fields safe to reuse for an identical final frame.
+
+        A frame provider normally owns a frame-specific result and therefore
+        must not inherit fields from the final-result provider.  The terminal
+        frame is the one additional case where the final result and its frame
+        can be proven identical by comparing the complete state and output
+        payload.  Intermediate frames never inherit fields across the frame
+        boundary.
+        """
+
+        result = self._owned_result
+        if result is None or not result.frames:
+            return ()
+        # The terminal converged frame is the same physical state as the
+        # final ModelResult.  Reuse its already-published derived fields after
+        # verifying every state/output identity below.  Intermediate frames
+        # must remain isolated because their constitutive state can differ.
+        terminal_frame = max(
+            result.frames,
+            key=lambda candidate: candidate.frame_index,
+        )
+        if len(result.frames) != 1 and frame.frame_index != terminal_frame.frame_index:
+            return ()
+        if frame.model is not result.model or frame.step is not result.step:
+            return ()
+        if not np.array_equal(frame.U, result.U) or not np.array_equal(
+            frame.reactions,
+            result.reactions,
+        ):
+            return ()
+        if len(result.frames) == 1:
+            outputs_match = _result_values_equal(
+                frame.outputs,
+                result.outputs,
+            )
+        else:
+            # The final ModelResult adds aggregate attempt/cutback metadata
+            # around the terminal frame.  The frame's physical/output keys
+            # must still be an exact value-matching subset; summary-only keys
+            # are deliberately ignored.
+            outputs_match = (
+                set(frame.outputs).issubset(set(result.outputs))
+                and all(
+                    _result_values_equal(
+                        frame.outputs[key],
+                        result.outputs[key],
+                    )
+                    for key in frame.outputs
+                )
+            )
+        if not outputs_match:
+            return ()
+        if not _result_values_equal(frame.dynamic_data, result.dynamic_data):
+            return ()
+
+        reusable: list[FieldData] = []
+        for field_data in self._snapshot.fields:
+            try:
+                entry = _entry_for_key(
+                    self._profile,
+                    field_data.key,
+                    finite_strain=self._finite_strain_catalog_enabled,
+                    material_state=self._material_state_catalog_enabled,
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if entry.recovery_kind is FieldRecoveryKind.PRIMARY:
+                continue
+            reusable.append(field_data)
+        return tuple(reusable)
 
     @property
     def archive_origin(self) -> "ResultArchiveOrigin | None":
@@ -216,7 +387,12 @@ class ResultProvider:
 
         if type(request) is not FieldRequest:
             raise TypeError("request must be FieldRequest")
-        entry = _entry_for_request(self._profile, request)
+        entry = _entry_for_request(
+            self._profile,
+            request,
+            finite_strain=self._finite_strain_catalog_enabled,
+            material_state=self._material_state_catalog_enabled,
+        )
         return FieldMaterializationKey(
             request=request,
             recovery_contract=entry.recovery_contract,
@@ -233,7 +409,12 @@ class ResultProvider:
         for availability in self._catalog.fields:
             if availability.key == key:
                 return availability
-        entry = _entry_for_key(self._profile, key)
+        entry = _entry_for_key(
+            self._profile,
+            key,
+            finite_strain=self._finite_strain_catalog_enabled,
+            material_state=self._material_state_catalog_enabled,
+        )
         ready_keys = {
             field_data.key for field_data in self._snapshot.fields
         }
@@ -311,6 +492,7 @@ class ResultProvider:
             _archived_projection=self._archived_projection,
             _archive_origin=self._archive_origin,
             _archive_id=self._archive_id,
+            _materialization_cache=self._materialization_cache,
         )
 
     def field(self, key: FieldMaterializationKey) -> FieldData:
@@ -435,16 +617,40 @@ class ResultProvider:
         ready_keys = {
             field_data.key for field_data in self._snapshot.fields
         }
-        targets = tuple(
-            (key, _entry_for_key(self._profile, key))
+        target_entries = tuple(
+            (
+                key,
+                _entry_for_key(
+                    self._profile,
+                    key,
+                    finite_strain=self._finite_strain_catalog_enabled,
+                    material_state=self._material_state_catalog_enabled,
+                ),
+            )
             for key in unique
             if key not in ready_keys
+        )
+        if not target_entries:
+            check_cancellation(cancellation)
+            return ResultMaterializationPatch(
+                source=self.source,
+                fields=(),
+            )
+        cached = {
+            key: self._materialization_cache[key]
+            for key, _entry in target_entries
+            if key in self._materialization_cache
+        }
+        targets = tuple(
+            (key, entry)
+            for key, entry in target_entries
+            if key not in cached
         )
         if not targets:
             check_cancellation(cancellation)
             return ResultMaterializationPatch(
                 source=self.source,
-                fields=(),
+                fields=tuple(cached[key] for key in unique if key in cached),
             )
         if any(
             entry.recovery_kind is FieldRecoveryKind.PRIMARY
@@ -459,11 +665,15 @@ class ResultProvider:
             topology=self._snapshot.topology,
             profile=self._profile,
             targets=targets,
+            existing_fields=self._snapshot.fields,
             cancellation=cancellation,
         )
+        for field_data in fields:
+            self._materialization_cache[field_data.key] = field_data
+            cached[field_data.key] = field_data
         return ResultMaterializationPatch(
             source=self.source,
-            fields=fields,
+            fields=tuple(cached[key] for key in unique if key in cached),
         )
 
     def apply(
@@ -488,7 +698,12 @@ class ResultProvider:
         }
         checked: list[tuple[FieldData, FieldRegistryEntry]] = []
         for field_data in patch.fields:
-            entry = _entry_for_key(self._profile, field_data.key)
+            entry = _entry_for_key(
+                self._profile,
+                field_data.key,
+                finite_strain=self._finite_strain_catalog_enabled,
+                material_state=self._material_state_catalog_enabled,
+            )
             if field_data.key in existing_keys:
                 raise ValueError("patch cannot replace a READY field")
             if field_data.descriptor != entry.descriptor:
@@ -496,6 +711,8 @@ class ResultProvider:
                     "patch descriptor must match the contextual registry"
                 )
             checked.append((field_data, entry))
+        for field_data, _entry in checked:
+            self._materialization_cache[field_data.key] = field_data
 
         combined = tuple(
             sorted(
@@ -509,6 +726,7 @@ class ResultProvider:
             generation=self._snapshot.generation,
             topology=self._snapshot.topology,
             fields=combined,
+            frame_key=self._snapshot.frame_key,
         )
         draft_catalog = (
             self._catalog
@@ -526,7 +744,46 @@ class ResultProvider:
             _archived_projection=self._archived_projection,
             _archive_origin=self._archive_origin,
             _archive_id=self._archive_id,
+            _materialization_cache=self._materialization_cache,
         )
+
+    @property
+    def _finite_strain_catalog_enabled(self) -> bool:
+        """Whether this provider publishes captured finite-strain state fields."""
+
+        if self._owned_result is not None and _supports_finite_strain(
+            self._profile,
+            self._owned_result,
+        ):
+            return True
+        variables = {
+            field_data.key.request.field_id.variable
+            for field_data in self._snapshot.fields
+        }
+        variables.update(
+            availability.descriptor.field_id.variable
+            for availability in self._catalog.fields
+        )
+        return ResultVariable.E in variables
+
+    @property
+    def _material_state_catalog_enabled(self) -> bool:
+        """Whether this provider publishes captured constitutive state."""
+
+        if self._owned_result is not None and _supports_material_state(
+            self._profile,
+            self._owned_result,
+        ):
+            return True
+        variables = {
+            field_data.key.request.field_id.variable
+            for field_data in self._snapshot.fields
+        }
+        variables.update(
+            availability.descriptor.field_id.variable
+            for availability in self._catalog.fields
+        )
+        return ResultVariable.PEEQ in variables
 
     def advance(
         self,
@@ -555,7 +812,44 @@ class ResultProvider:
             _archived_projection=self._archived_projection,
             _archive_origin=self._archive_origin,
             _archive_id=self._archive_id,
+            _materialization_cache=self._materialization_cache,
         )
+
+
+def _result_values_equal(left: object, right: object) -> bool:
+    """Compare nested result metadata without ambiguous NumPy truth values."""
+
+    if left is right:
+        return True
+    if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+        if not isinstance(left, np.ndarray) or not isinstance(right, np.ndarray):
+            return False
+        return left.shape == right.shape and np.array_equal(left, right)
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        if set(left) != set(right):
+            return False
+        return all(_result_values_equal(left[key], right[key]) for key in left)
+    if isinstance(left, (tuple, list)) or isinstance(right, (tuple, list)):
+        if not isinstance(left, (tuple, list)) or not isinstance(
+            right,
+            (tuple, list),
+        ):
+            return False
+        return len(left) == len(right) and all(
+            _result_values_equal(item_left, item_right)
+            for item_left, item_right in zip(left, right)
+        )
+    try:
+        equal = left == right
+    except (TypeError, ValueError):
+        return False
+    if equal is NotImplemented:
+        return False
+    if isinstance(equal, np.ndarray):
+        return bool(np.all(equal))
+    return bool(equal)
 
 
 class ResultMaterializationUnavailableError(RuntimeError):
@@ -577,6 +871,9 @@ class ResultMaterializationUnavailableError(RuntimeError):
 def build_result_provider(
     source: ResultSourceKey,
     result: ModelResult,
+    *,
+    frame_key: ResultFrameKey | None = None,
+    _detached_result: ModelResult | None = None,
 ) -> ResultProvider:
     """Deep-own one solved result and build topology plus eager primary fields."""
 
@@ -584,15 +881,31 @@ def build_result_provider(
         raise TypeError("source must be ResultSourceKey")
     if type(result) is not ModelResult:
         raise TypeError("result must be ModelResult")
+    if _detached_result is not None:
+        if _detached_result is not result:
+            raise ValueError("_detached_result must be the supplied result")
+        owned_result = result
+    else:
+        owned_result = deep_owned_result(result)
+    if frame_key is not None:
+        if type(frame_key) is not ResultFrameKey:
+            raise TypeError("frame_key must be ResultFrameKey or None")
+        if frame_key.source != source:
+            raise ValueError("frame key source must match provider source")
 
-    owned_result = deep_owned_result(result)
     profile = classify_result_model(owned_result.model)
     if not profile.primary_compatible:
         raise ValueError(
             "result model does not have one exact common primary DOF profile"
         )
+    finite_strain = _supports_finite_strain(profile, owned_result)
     topology = _build_topology(source, owned_result, profile)
-    entries = catalog_entries(profile)
+    material_state = _supports_material_state(profile, owned_result)
+    entries = catalog_entries(
+        profile,
+        finite_strain=finite_strain,
+        material_state=material_state,
+    )
     base_fields = tuple(
         _primary_field(source, owned_result, topology, profile, entry)
         for entry in entries
@@ -604,6 +917,7 @@ def build_result_provider(
         source=source,
         topology=topology,
         base_fields=base_fields,
+        frame_key=frame_key,
     )
     catalog = _build_catalog(source, profile, entries, snapshot)
     return ResultProvider(
@@ -635,6 +949,7 @@ def restore_result_provider(
         raise ValueError(
             "result model does not have one exact common primary DOF profile"
         )
+    finite_strain = _supports_finite_strain(profile, owned_result)
 
     snapshot = deep_owned_materialization(materialization)
     expected_topology = _build_topology(
@@ -644,11 +959,18 @@ def restore_result_provider(
     )
     _require_exact_topology(snapshot.topology, expected_topology)
 
-    entries = catalog_entries(profile)
+    material_state = _supports_material_state(profile, owned_result)
+    entries = catalog_entries(
+        profile,
+        finite_strain=finite_strain,
+        material_state=material_state,
+    )
     checked = _validate_restored_fields(
         result=owned_result,
         profile=profile,
         entries=entries,
+        finite_strain=finite_strain,
+        material_state=material_state,
         snapshot=snapshot,
         expected_topology=expected_topology,
     )
@@ -723,12 +1045,19 @@ def _validate_restored_fields(
     result: ModelResult,
     profile: ElementResultProfile,
     entries: tuple[FieldRegistryEntry, ...],
+    finite_strain: bool,
+    material_state: bool,
     snapshot: ResultMaterializationSnapshot,
     expected_topology: ResultTopologyProjection,
 ) -> tuple[tuple[FieldData, FieldRegistryEntry], ...]:
     checked: list[tuple[FieldData, FieldRegistryEntry]] = []
     for field_data in snapshot.fields:
-        entry = _entry_for_request(profile, field_data.key.request)
+        entry = _entry_for_request(
+            profile,
+            field_data.key.request,
+            finite_strain=finite_strain,
+            material_state=material_state,
+        )
         if field_data.descriptor != entry.descriptor:
             raise ValueError(
                 "materialization field descriptor does not match the "
@@ -778,7 +1107,12 @@ def _build_topology(
     result: ModelResult,
     profile: ElementResultProfile,
 ) -> ResultTopologyProjection:
-    mesh = result.model.mesh
+    recovery_model = (
+        result.compiled_model
+        if result.compiled_model is not None
+        else result.model
+    )
+    mesh = recovery_model.mesh
     try:
         raw_nodes = tuple(mesh.nodes)
         raw_node_ids = tuple(mesh.node_ids)
@@ -1061,14 +1395,31 @@ def _catalog_with_ready_patch(
 def _entry_for_request(
     profile: ElementResultProfile,
     request: FieldRequest,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> FieldRegistryEntry:
+    if type(finite_strain) is not bool:
+        raise TypeError("finite_strain must be bool")
+    if type(material_state) is not bool:
+        raise TypeError("material_state must be bool")
     try:
-        entry = registry_entry_for(profile, request.field_id)
+        entry = registry_entry_for(
+            profile,
+            request.field_id,
+            finite_strain=finite_strain,
+            material_state=material_state,
+        )
     except KeyError as error:
         raise KeyError(request.field_id) from error
     if (
         request.gauss_order is not None
-        and entry.recovery_kind is not FieldRecoveryKind.CONTINUUM_STRESS
+        and entry.recovery_kind not in {
+            FieldRecoveryKind.CONTINUUM_STRESS,
+            FieldRecoveryKind.FINITE_STRAIN_TENSOR,
+            FieldRecoveryKind.FINITE_STRAIN_SCALAR,
+            FieldRecoveryKind.MATERIAL_STATE_SCALAR,
+        }
     ):
         raise ValueError(
             "gauss_order is unavailable for this contextual result family"
@@ -1095,13 +1446,78 @@ def _entry_for_request(
 def _entry_for_key(
     profile: ElementResultProfile,
     key: FieldMaterializationKey,
+    *,
+    finite_strain: bool = False,
+    material_state: bool = False,
 ) -> FieldRegistryEntry:
     if type(key) is not FieldMaterializationKey:
         raise TypeError("key must be FieldMaterializationKey")
-    entry = _entry_for_request(profile, key.request)
+    entry = _entry_for_request(
+        profile,
+        key.request,
+        finite_strain=finite_strain,
+        material_state=material_state,
+    )
     if key.recovery_contract != entry.recovery_contract:
         raise KeyError(key)
     return entry
+
+
+def _has_finite_strain_state_outputs(result: ModelResult) -> bool:
+    """Return whether a result contains the captured state-field contract."""
+
+    outputs = result.outputs
+    integration = outputs.get("integration_points")
+    return (
+        isinstance(integration, Mapping)
+        and "element_id" in integration
+        and "natural_coordinates" in integration
+        and "green_lagrange_strain" in integration
+        and "equivalent_plastic_strain" in integration
+    )
+
+
+def _supports_finite_strain(
+    profile: ElementResultProfile,
+    result: ModelResult,
+) -> bool:
+    geometry_mode = str(result.outputs.get("geometry_mode", "")).casefold()
+    if geometry_mode:
+        return (
+            geometry_mode == "finite_strain"
+            and profile.family
+            in {
+                ResultModelFamily.PLANE_CONTINUUM,
+                ResultModelFamily.SOLID_CONTINUUM,
+            }
+            and _has_finite_strain_state_outputs(result)
+        )
+    return (
+        profile.family
+        in {
+            ResultModelFamily.PLANE_CONTINUUM,
+            ResultModelFamily.SOLID_CONTINUUM,
+        }
+        and _has_finite_strain_state_outputs(result)
+    )
+
+
+def _supports_material_state(
+    profile: ElementResultProfile,
+    result: ModelResult,
+) -> bool:
+    integration = result.outputs.get("integration_points")
+    return (
+        profile.family
+        in {
+            ResultModelFamily.PLANE_CONTINUUM,
+            ResultModelFamily.SOLID_CONTINUUM,
+        }
+        and isinstance(integration, Mapping)
+        and "element_id" in integration
+        and "natural_coordinates" in integration
+        and "equivalent_plastic_strain" in integration
+    )
 
 
 def _common_gauss_orders(

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from fem.io.inp import read
-from fem.application.results import (
+from fem.results import (
     OutputExecutionStatus,
     ResultCapabilityCatalog,
     ResultSourceKey,
@@ -15,8 +15,8 @@ from fem.application.results import (
     execute_output_requests,
     project_output_request,
 )
-from fem.core.model import OutputRequest
-from fem.solvers import static_linear
+from fem.model import OutputRequest
+from fem.analysis import linear_static as static_linear
 
 
 _STANDARD = (
