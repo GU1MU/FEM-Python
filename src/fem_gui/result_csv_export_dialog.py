@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-from fem.application.results import (
+from fem.results import (
     FieldAvailability,
     FieldState,
     ResultCatalog,

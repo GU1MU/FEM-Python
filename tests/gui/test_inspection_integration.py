@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import os
 from pathlib import Path
@@ -9,8 +10,7 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 from fem.io.inp import read
 from fem.application import MeshEntityRef, NativePart, RegionRef
-from fem.application.results import build_solve_result_bundle
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -20,7 +20,7 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
 )
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem.geometry import BooleanGeometry, DiskGeometry, RectangleGeometry
 import fem_gui.main_window as main_window_module
 from fem_gui.analysis_definition_dialogs import (

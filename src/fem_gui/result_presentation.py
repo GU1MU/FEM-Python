@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import json
 from typing import Protocol
 
-from fem.application.results import (
+from fem.results import (
     FieldAvailability,
     FieldLocation,
     FieldPosition,
+    FieldState,
     ResultFieldId,
+    ResultDisplayComputation,
     ResultProvider,
+    ResultRegionKey,
     ResultVariable,
+    result_region_sort_key,
 )
 
 
@@ -26,7 +31,10 @@ class _SectionPointView(Protocol):
 _POSITION_LABELS = {
     FieldPosition.NODE: "节点",
     FieldPosition.INTEGRATION_POINT: "积分点",
-    FieldPosition.ELEMENT_NODAL: "节点",
+    FieldPosition.CENTROID: "质心",
+    FieldPosition.ELEMENT_NODAL: "单元节点（未平均）",
+    FieldPosition.NODE_REGION: "节点区域值（未跨区域平均）",
+    FieldPosition.RESOLVED_NODAL: "区域内节点平均",
     FieldPosition.SECTION_END: "截面",
 }
 _VARIABLE_LABELS = {
@@ -37,6 +45,8 @@ _VARIABLE_LABELS = {
     ResultVariable.SF: "截面力 SF",
     ResultVariable.SM: "截面矩 SM",
     ResultVariable.LE: "对数应变 LE",
+    ResultVariable.E: "应变 E",
+    ResultVariable.PEEQ: "塑性应变 PEEQ",
     ResultVariable.S: "应力 S",
 }
 _RECTANGLE_SECTION_POINT_LABELS = {
@@ -45,6 +55,84 @@ _RECTANGLE_SECTION_POINT_LABELS = {
     3: "左下",
     4: "右下",
 }
+_DISPLAY_COMPUTATION_LABELS = {
+    ResultDisplayComputation.INTEGRATION_POINT_MARKERS: "积分点标记",
+    ResultDisplayComputation.CENTROID_CELLS: "单元质心值",
+    ResultDisplayComputation.ELEMENT_NODAL_QUILT: "单元节点（未平均）",
+    ResultDisplayComputation.NODAL_AVERAGED: "区域内节点平均",
+}
+_TREE_POSITION_PRIORITY = {
+    # The result tree represents the physical variable.  When several
+    # storage/recovery positions exist, use the same default users see in
+    # the contour display: values averaged within each material region.
+    FieldPosition.RESOLVED_NODAL: 0,
+    FieldPosition.NODE: 0,
+    FieldPosition.CENTROID: 1,
+    FieldPosition.ELEMENT_NODAL: 2,
+    FieldPosition.INTEGRATION_POINT: 3,
+    FieldPosition.SECTION_END: 4,
+    FieldPosition.SECTION_POINT: 4,
+    FieldPosition.NODE_REGION: 9,
+}
+
+
+def result_region_display_labels(
+    region_keys: Iterable[ResultRegionKey],
+) -> dict[ResultRegionKey, str]:
+    """Return stable, human-readable labels for result-region identities.
+
+    The canonical JSON remains the machine identity and is intentionally not
+    used as the primary GUI label.  Ordering is deterministic so labels stay
+    stable across frames and across query/probe tables.
+    """
+
+    keys = tuple(region_keys)
+    if any(type(key) is not ResultRegionKey for key in keys):
+        raise TypeError("region_keys must contain ResultRegionKey values")
+    unique = sorted(set(keys), key=result_region_sort_key)
+    return {
+        key: (
+            f"区域 {index} · "
+            f"{_result_region_signature_caption(key, role='material')} · "
+            f"{_result_region_signature_caption(key, role='section')}"
+        )
+        for index, key in enumerate(unique, start=1)
+    }
+
+
+def _result_region_signature_caption(
+    region_key: ResultRegionKey,
+    *,
+    role: str,
+) -> str:
+    signature = (
+        region_key.material_signature
+        if role == "material"
+        else region_key.section_signature
+    )
+    fallback = "材料签名" if role == "material" else "截面签名"
+    try:
+        payload = json.loads(signature.canonical_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+    if not isinstance(payload, list) or not payload:
+        return fallback
+    kind = payload[0]
+    value = payload[1] if len(payload) > 1 else None
+    if role == "material":
+        if kind in {"material", "material_id"} and isinstance(
+            value,
+            (str, int, float),
+        ):
+            return f"材料 {value}"
+        if kind == "effective":
+            return "有效材料参数"
+        return fallback
+    if kind == "section":
+        if value is None:
+            return "截面未指定"
+        return f"截面 {value}"
+    return fallback
 
 
 def result_field_is_visible(availability: FieldAvailability) -> bool:
@@ -53,7 +141,11 @@ def result_field_is_visible(availability: FieldAvailability) -> bool:
     if type(availability) is not FieldAvailability:
         raise TypeError("availability must be FieldAvailability")
     field_id = availability.descriptor.field_id
-    if field_id.variable is not ResultVariable.S:
+    if field_id.variable not in {
+        ResultVariable.S,
+        ResultVariable.E,
+        ResultVariable.PEEQ,
+    }:
         return True
     if field_id.section_point_number is not None:
         return field_id.position in {
@@ -62,7 +154,12 @@ def result_field_is_visible(availability: FieldAvailability) -> bool:
         }
     if field_id.position is FieldPosition.SECTION_END:
         return True
-    return field_id.position is FieldPosition.ELEMENT_NODAL
+    return field_id.position in {
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
+        FieldPosition.RESOLVED_NODAL,
+    }
 
 
 def visible_result_fields(
@@ -101,6 +198,18 @@ def result_field_position_label(
                 return str(label)
         return f"截面点 {field_id.section_point_number}"
     return result_position_label(field_id.position)
+
+
+def result_display_computation_label(
+    computation: ResultDisplayComputation,
+) -> str | None:
+    """Return a concise user label for an explicit render computation."""
+
+    if type(computation) is not ResultDisplayComputation:
+        raise TypeError(
+            "computation must be ResultDisplayComputation"
+        )
+    return _DISPLAY_COMPUTATION_LABELS.get(computation)
 
 
 def section_point_relative_position_label(point: _SectionPointView) -> str:
@@ -185,6 +294,62 @@ def result_field_is_beam_section(field_id: ResultFieldId) -> bool:
         field_id.section_point_number is not None
         or field_id.position is FieldPosition.SECTION_END
     )
+
+
+def result_tree_fields(
+    fields: Iterable[FieldAvailability],
+) -> tuple[FieldAvailability, ...]:
+    """Return one concise result-tree item per user-facing variable.
+
+    A catalog retains every exact position because the result display,
+    Probe, XY data, and export paths need those identities.  The result tree
+    is a variable chooser, however, so exposing ``S`` or ``E`` once for every
+    position makes it look as though several different physical variables
+    exist.  This projection keeps the preferred nodal-average field when it
+    is available and leaves exact position selection to the display/query
+    controls.
+
+    Beam section-point fields are intentionally retained as a group: their
+    section-point number is a physical location within the beam section, not
+    another duplicate result-variable choice.
+    """
+
+    visible = visible_result_fields(fields)
+    selected: list[tuple[int, FieldAvailability]] = []
+    grouped: dict[ResultVariable, list[tuple[int, FieldAvailability]]] = {}
+    beam_variables: set[ResultVariable] = set()
+
+    for index, availability in enumerate(visible):
+        field_id = availability.descriptor.field_id
+        if result_field_is_beam_section(field_id):
+            selected.append((index, availability))
+            beam_variables.add(field_id.variable)
+            continue
+        grouped.setdefault(field_id.variable, []).append(
+            (index, availability)
+        )
+
+    for variable, candidates in grouped.items():
+        # If a beam exposes section-point stress, that grouped representation
+        # is the useful tree entry; do not add a second generic S entry.
+        if variable in beam_variables:
+            continue
+        selected.append(
+            min(
+                candidates,
+                key=lambda item: (
+                    item[1].state is FieldState.UNAVAILABLE,
+                    _TREE_POSITION_PRIORITY.get(
+                        item[1].descriptor.field_id.position,
+                        99,
+                    ),
+                    item[0],
+                ),
+            )
+        )
+
+    selected.sort(key=lambda item: item[0])
+    return tuple(availability for _index, availability in selected)
 
 
 def result_field_has_section_points(field_id: ResultFieldId) -> bool:

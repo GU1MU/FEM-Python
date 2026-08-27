@@ -9,7 +9,7 @@ import pyvista
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldLocation,
     FieldMaterializationKey,

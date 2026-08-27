@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from fem.application import RegionRef, SectionDefinition
 from fem.application.preprocessing import generate_fem_model
-from fem.core.model import MaterialDefinition
+from fem.model import MaterialDefinition
 from fem.geometry import (
     BoxGeometry,
     RectangleGeometry,

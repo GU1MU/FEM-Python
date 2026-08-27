@@ -69,6 +69,7 @@ def test_background_refresh_reuses_rendered_typed_payload(monkeypatch):
     rendered_payload = SimpleNamespace(dataset=rendered_grid)
     viewport._result_render_payload = rendered_payload
     viewport._result_grid = rendered_grid
+    viewport._active_display_source = "result"
     viewport._display = DisplayState("undeformed", True)
     viewport._contour["show_maximum"] = True
     calls = []
@@ -96,4 +97,23 @@ def test_viewport_shutdown_releases_native_backend_once() -> None:
 
     assert viewport._plotter is None
     assert closed == [True]
+    viewport.close()
+
+
+def test_render_transaction_restores_descendant_update_state() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport._ensure_plotter()
+
+    assert viewport._plotter is not None
+    assert viewport._stack_host.updatesEnabled()
+    assert viewport._plotter.updatesEnabled()
+
+    with viewport.render_transaction():
+        viewport._stack.setCurrentWidget(viewport._plotter)
+
+    assert viewport.updatesEnabled()
+    assert viewport._stack_host.updatesEnabled()
+    assert viewport._plotter.updatesEnabled()
+    assert viewport._stack.currentWidget() is viewport._plotter
     viewport.close()

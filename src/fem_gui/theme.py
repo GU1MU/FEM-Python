@@ -204,6 +204,7 @@ QStackedWidget#ribbonStack, QWidget#ribbonPage {{ background: {COLORS['chrome']}
 QFrame#ribbonGroup {{ background: {COLORS['chrome']}; border: none; border-right: 1px solid {COLORS['border']}; }}
 QLabel#ribbonGroupTitle {{ background: transparent; color: {COLORS['muted']}; font-size: 8pt; min-height: 14px; }}
 QToolButton#ribbonLargeButton {{ min-width: 64px; min-height: 52px; padding: 1px 6px; }}
+QToolButton#ribbonTileButton {{ min-width: 92px; max-width: 92px; min-height: 68px; max-height: 68px; padding: 1px 4px; }}
 QToolButton#ribbonSmallButton {{ min-height: 23px; padding: 0 5px; text-align: left; }}
 QToolButton#ribbonCompactButton {{ min-width: 0; max-width: 128px; min-height: 25px; padding: 0 5px; text-align: left; }}
 QWidget#navigationPanel {{ background: white; border-right: 1px solid {COLORS['border']}; }}
@@ -233,6 +234,8 @@ QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSp
 QComboBox {{ min-height: 22px; padding-right: 22px; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: top right; width: 20px; border-left: 1px solid {COLORS['soft_border']}; background: {COLORS['chrome']}; }}
 QComboBox::down-arrow {{ image: url("{_COMBO_DOWN_ARROW}"); width: 8px; height: 5px; }}
+QComboBox[resultRibbonCombo="true"] {{ padding-right: 17px; }}
+QComboBox[resultRibbonCombo="true"]::drop-down {{ width: 15px; border-left: none; background: transparent; }}
 QTableView {{ alternate-background-color: #fafbfc; gridline-color: {COLORS['soft_border']}; padding: 0; }}
 QTableView::item {{ padding: 2px 5px; border: none; }}
 QTableView::item:hover {{ background: {COLORS['hover']}; }}

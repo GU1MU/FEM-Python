@@ -17,7 +17,7 @@ from fem.application.preprocessing import (
     generate_fem_model,
 )
 from fem.application.recipe_compiler import compile_recipe
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import (
     BooleanGeometry,
@@ -80,6 +80,36 @@ def test_explicit_native_inputs_generate_canonical_models(
     assert not model.element_sets
     assert not model.edges
     assert not model.surfaces
+
+
+def test_structured_hexahedron_uses_directional_sizes_and_edge_refinement(
+    real_gmsh,
+) -> None:
+    del real_gmsh
+    recipe = BoxGeometry("directional-hexahedron", 100.0, 50.0, 20.0)
+
+    global_model = generate_fem_model(
+        recipe,
+        MeshSettings(4.0, cell_shape="hexahedron"),
+    )
+    assert len(global_model.mesh.nodes) == 26 * 14 * 6
+    assert len(global_model.mesh.elements) == 25 * 13 * 5
+
+    locally_refined = generate_fem_model(
+        recipe,
+        MeshSettings(
+            4.0,
+            cell_shape="hexahedron",
+            local_controls=(
+                LocalMeshControl(
+                    LogicalEntityRef("edge:top-right"),
+                    1.0,
+                ),
+            ),
+        ),
+    )
+    assert len(locally_refined.mesh.nodes) == 26 * 51 * 6
+    assert len(locally_refined.mesh.elements) == 25 * 50 * 5
 
 
 def test_mesh_task_snapshot_generates_before_installing_a_refined_mesh_scope(

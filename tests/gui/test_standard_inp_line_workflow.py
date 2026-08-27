@@ -20,7 +20,7 @@ from fem.application import (
     RegionRef,
     resolve_effective_beam_frames,
 )
-from fem.core.model import (
+from fem.model import (
     ElementSet,
     LineLoad,
     MaterialDefinition,

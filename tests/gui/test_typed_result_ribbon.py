@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle
 
 import ast
 import os
@@ -12,7 +13,7 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QComboBox
 
-from fem.application.results import (
+from fem.results import (
     FieldAvailability,
     FieldMaterializationKey,
     FieldState,
@@ -21,12 +22,10 @@ from fem.application.results import (
     ResultProvider,
     ResultVariable,
     ScalarFieldSelection,
-    SolveResultBundle,
     build_result_provider,
-    build_solve_result_bundle,
     field_materialization_sort_key,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui.commands import (
     GuiCommandOutcome,
     GuiCommandReceipt,

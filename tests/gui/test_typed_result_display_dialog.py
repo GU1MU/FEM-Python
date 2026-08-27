@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QDialog
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldAvailability,
     FieldDescriptor,
@@ -294,7 +294,7 @@ def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
     ) == (
         "位移 U（就绪）",
         "vendor.result.reaction（按需加载）",
-        "应力 S（节点）（不可用）",
+        "应力 S（单元节点，未平均）（不可用）",
     )
     assert all(
         type(dialog.field_combo.itemData(index)) is FieldMaterializationKey

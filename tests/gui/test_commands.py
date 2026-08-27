@@ -10,7 +10,7 @@ import weakref
 import pytest
 
 from fem.application import NativePart, SessionDelta, UNSET
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,

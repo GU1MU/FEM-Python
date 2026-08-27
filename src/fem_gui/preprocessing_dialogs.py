@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -911,12 +912,9 @@ class MeshControlsDialog(QDialog):
         self.clear_button.setEnabled(bool(self.local_controls))
 
     def settings(self) -> MeshSettings:
-        return MeshSettings(
-            self._settings.size,
-            self._settings.order,
-            self._settings.cell_shape,
+        return replace(
+            self._settings,
             local_controls=tuple(self.local_controls),
-            line_element_type=self._settings.line_element_type,
         )
 
 
@@ -1075,7 +1073,9 @@ class NamedRegionDialog(QDialog):
 
 
 class NamedRegionManagerDialog(QDialog):
-    """Rename or delete scopes without exposing a second tree."""
+    """Create, edit, rename, and delete scopes from one compact manager."""
+
+    editRequested = Signal(str)
 
     def __init__(
         self,
@@ -1101,14 +1101,18 @@ class NamedRegionManagerDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.name_edit = QLineEdit(self)
+        self.edit_button = QPushButton("编辑成员", self)
         self.rename_button = QPushButton("改名", self)
         self.delete_button = QPushButton("删除", self)
+        self._requested_edit_name: str | None = None
+        self.edit_button.clicked.connect(self._edit)
         self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         controls = QHBoxLayout()
         controls.addWidget(QLabel("作用域名称", self))
         controls.addWidget(self.name_edit, 1)
+        controls.addWidget(self.edit_button)
         controls.addWidget(self.rename_button)
         controls.addWidget(self.delete_button)
         buttons = QDialogButtonBox(
@@ -1131,8 +1135,8 @@ class NamedRegionManagerDialog(QDialog):
         self.table.setRowCount(0)
         type_names = {
             "node": "节点",
-            "edge": "Edge",
-            "face": "Surface",
+            "edge": "边",
+            "face": "面",
             "element": "单元",
         }
         for row, region in enumerate(self.regions.values()):
@@ -1158,15 +1162,30 @@ class NamedRegionManagerDialog(QDialog):
         self.name_edit.setText(name or "")
         enabled = name is not None
         self.name_edit.setEnabled(enabled)
+        self.edit_button.setEnabled(enabled)
         self.rename_button.setEnabled(enabled)
         self.delete_button.setEnabled(enabled)
+
+    def _edit(self) -> None:
+        name = self._selected_name()
+        if name is None:
+            return
+        self._requested_edit_name = name
+        self.editRequested.emit(name)
+        self.reject()
+
+    def requested_edit_name(self) -> str | None:
+        return self._requested_edit_name
 
     def _rename(self) -> None:
         old_name = self._selected_name()
         new_name = self.name_edit.text().strip()
         if old_name is None or not new_name or new_name == old_name:
             return
-        if new_name in self.regions:
+        if any(
+            existing.casefold() == new_name.casefold()
+            for existing in self.regions
+        ):
             return
         items = list(self.regions.items())
         row = self.table.currentRow()
@@ -1431,6 +1450,7 @@ class MeshSettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("网格设置")
+        self._settings = settings
         self._mesh_dimension = int(mesh_dimension)
         self._allow_hexahedron = bool(allow_hexahedron)
         current_size = (
@@ -1438,6 +1458,10 @@ class MeshSettingsDialog(QDialog):
         )
         self.size_spin = _mesh_size_spin_box(self, current_size)
         self._local_controls = () if settings is None else settings.local_controls
+        self._auto_level = None if settings is None else settings.auto_level
+        self._strict_cell_shape = (
+            False if settings is None else settings.strict_cell_shape
+        )
         if self._local_controls:
             self.size_spin.setMinimum(
                 max(control.size for control in self._local_controls) + 1.0e-9
@@ -1516,18 +1540,43 @@ class MeshSettingsDialog(QDialog):
                     "Truss2 uses one element per Wire member; remove local "
                     "mesh controls before switching formulations"
                 )
+            if self._settings is not None:
+                return replace(
+                    self._settings,
+                    size=self.size_spin.value(),
+                    order=1,
+                    cell_shape="line",
+                    local_controls=self._local_controls,
+                    line_element_type=str(formulation),
+                    auto_level=self._auto_level,
+                    strict_cell_shape=self._strict_cell_shape,
+                )
             return MeshSettings(
                 size=self.size_spin.value(),
                 order=1,
                 cell_shape="line",
                 local_controls=self._local_controls,
                 line_element_type=str(formulation),
+                auto_level=self._auto_level,
+                strict_cell_shape=self._strict_cell_shape,
+            )
+        if self._settings is not None:
+            return replace(
+                self._settings,
+                size=self.size_spin.value(),
+                order=int(self.order_combo.currentData()),
+                cell_shape=str(self.shape_combo.currentData()),
+                local_controls=self._local_controls,
+                auto_level=self._auto_level,
+                strict_cell_shape=self._strict_cell_shape,
             )
         return MeshSettings(
             size=self.size_spin.value(),
             order=int(self.order_combo.currentData()),
             cell_shape=str(self.shape_combo.currentData()),
             local_controls=self._local_controls,
+            auto_level=self._auto_level,
+            strict_cell_shape=self._strict_cell_shape,
         )
 
     def _refresh_line_acceptance(self) -> None:

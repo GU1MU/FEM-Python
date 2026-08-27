@@ -17,7 +17,7 @@ from typing import Any, overload
 from PySide6.QtCore import QCoreApplication, QThread
 
 from fem.application import NativePart, SessionDelta, UNSET, Unset
-from fem.application.results import ResultSourceKey, ScalarFieldSelection
+from fem.results import ResultSourceKey, ScalarFieldSelection
 from fem.geometry import NATIVE_GEOMETRY_TYPES, NativeGeometry
 from fem.mesh.settings import MeshSettings
 

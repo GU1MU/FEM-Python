@@ -11,7 +11,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QTreeWidgetItem
 import pytest
 
-from fem.application.results import (
+from fem.post.averaging import NodalAveragingPolicy
+from fem.results import (
     FieldAssociation,
     FieldAvailability,
     FieldDescriptor,
@@ -25,6 +26,7 @@ from fem.application.results import (
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
+    field_materialization_sort_key,
 )
 from fem_gui.widgets.result_tree import (
     ROLE_FIELD_STATE,
@@ -32,6 +34,7 @@ from fem_gui.widgets.result_tree import (
     ROLE_SELECTION,
     ResultTree,
 )
+from fem_gui.result_presentation import result_tree_fields, visible_result_fields
 
 
 def _application() -> QApplication:
@@ -148,6 +151,43 @@ def _catalog() -> ResultCatalog:
     )
 
 
+def _stress_availabilities() -> tuple[FieldAvailability, ...]:
+    associations = {
+        FieldPosition.INTEGRATION_POINT: FieldAssociation.INTEGRATION_POINT,
+        FieldPosition.CENTROID: FieldAssociation.ELEMENT,
+        FieldPosition.ELEMENT_NODAL: FieldAssociation.ELEMENT_NODE,
+        FieldPosition.NODE_REGION: FieldAssociation.NODE_REGION,
+        FieldPosition.RESOLVED_NODAL: FieldAssociation.RESOLVED_NODAL,
+    }
+    return tuple(
+        FieldAvailability(
+            key := FieldMaterializationKey(
+                FieldRequest(
+                    ResultFieldId(ResultVariable.S, position),
+                    averaging_policy=(
+                        NodalAveragingPolicy()
+                        if position is FieldPosition.RESOLVED_NODAL
+                        else None
+                    ),
+                ),
+                20 + index,
+            ),
+            _descriptor(
+                key,
+                association=association,
+                quantity=PhysicalQuantity.STRESS,
+                components=("S22", "S11"),
+                derived_components=("Mises",),
+                label_key=f"result.field.s.{position.value}",
+                default_component="Mises",
+                order=20 + index,
+            ),
+            FieldState.LAZY,
+        )
+        for index, (position, association) in enumerate(associations.items())
+    )
+
+
 def _step_item(tree: ResultTree) -> QTreeWidgetItem:
     return tree.topLevelItem(0).child(0)
 
@@ -164,7 +204,7 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
     assert step.text(0) == "Job-1 · Static-1"
     assert [step.child(index).text(0) for index in range(3)] == [
         "位移 U",
-        "vendor.result.reaction",
+        "反力 RF",
         "应力 S",
     ]
     assert [
@@ -179,6 +219,59 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
         step.child(2).child(index).text(0)
         for index in range(step.child(2).childCount())
     ] == ["S22", "S11", "Mises"]
+
+
+def test_result_tree_collapses_positions_but_keeps_exact_catalog_fields() -> None:
+    fields = _stress_availabilities()
+
+    assert tuple(
+        field.descriptor.field_id.position
+        for field in visible_result_fields(fields)
+    ) == (
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
+        FieldPosition.RESOLVED_NODAL,
+    )
+    tree_fields = result_tree_fields(fields)
+
+    assert len(tree_fields) == 1
+    assert (
+        tree_fields[0].descriptor.field_id.variable is ResultVariable.S
+    )
+    assert (
+        tree_fields[0].descriptor.field_id.position
+        is FieldPosition.RESOLVED_NODAL
+    )
+
+
+def test_result_tree_selects_collapsed_position_through_variable_representative() -> None:
+    base = _catalog()
+    catalog = ResultCatalog(
+        source=base.source,
+        fields=tuple(
+            sorted(
+                (*base.fields, *_stress_availabilities()),
+                key=lambda availability: field_materialization_sort_key(
+                    availability.key
+                ),
+            )
+        ),
+        default_selection=base.default_selection,
+    )
+    tree = ResultTree()
+    tree.set_catalog("Static-1", catalog)
+    integration_point = next(
+        field
+        for field in catalog.fields
+        if field.descriptor.field_id
+        == ResultFieldId(ResultVariable.S, FieldPosition.INTEGRATION_POINT)
+    )
+    selection = ScalarFieldSelection(integration_point.key, "Mises")
+
+    assert tree.has_selection(selection)
+    assert tree.select_selection(selection)
+    assert tree.currentItem().text(0) == "Mises"
 
 
 def test_catalog_items_keep_complete_typed_identity_and_default_selection() -> None:

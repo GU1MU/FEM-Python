@@ -12,7 +12,7 @@ from fem.application import (
     SectionDefinition,
     UnitContext,
 )
-from fem.core.model import AnalysisStep, GravityLoad, MaterialDefinition
+from fem.model import AnalysisStep, GravityLoad, MaterialDefinition
 from fem.geometry import LogicalEntityRef, namespace_part_reference
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import BoxGeometry, CylinderGeometry, RectangleGeometry

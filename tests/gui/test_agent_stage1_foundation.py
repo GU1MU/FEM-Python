@@ -1,9 +1,9 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from fem.application import ModelSession
-from fem.application.results import build_solve_result_bundle
-from fem.core.model import AnalysisStep
-from fem.solvers import static_linear
+from fem.model import AnalysisStep
+from fem.analysis import linear_static as static_linear
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_agent.workspace_catalog import WorkspaceCatalogBridge

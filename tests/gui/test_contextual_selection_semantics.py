@@ -14,8 +14,8 @@ from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
     NATIVE_SCOPE_CATALOG_KEY,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
 import fem_gui.scope_selection as scope_selection_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.scope_selection import build_mesh_selection_topology

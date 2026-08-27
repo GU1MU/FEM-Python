@@ -8,13 +8,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QLabel
 
-from fem.application.results import (
+from fem.results import (
     FieldState,
     ResultSourceKey,
     ScalarFieldSelection,
     build_result_provider,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui import result_csv_export_dialog as dialog_module
 from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
 from fem_gui.result_presentation import visible_result_fields

@@ -21,8 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from fem.application import AnalysisRun, ModelSession, RunStatus
+from fem.model import StaticFormulation
 from fem.io.inp import read
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
+import fem.application.preflight as preflight_module
+from fem.solver.newton import SolveCancelled
 from fem_gui.analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from fem_gui.commands import GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
@@ -73,14 +76,37 @@ def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
 
 def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
     _application()
-    dialog = JobSubmitDialog("作业-1", ("分析步-1",), "分析步-1")
+    dialog = JobSubmitDialog(
+        "作业-1",
+        {"分析步-1": StaticFormulation.LINEAR},
+        "分析步-1",
+    )
 
     assert dialog.job_name == "作业-1"
     assert dialog.step_name == "分析步-1"
+    assert dialog.solver_type.text() == "线性静力"
     buttons = dialog.findChild(QDialogButtonBox)
     assert buttons is not None
     assert buttons.button(QDialogButtonBox.StandardButton.Ok).text() == "创建"
     assert dialog.findChild(QLabel, "jobSessionNotice") is None
+    dialog.close()
+
+
+def test_job_submit_dialog_tracks_the_selected_typed_formulation() -> None:
+    _application()
+    dialog = JobSubmitDialog(
+        "作业-1",
+        {
+            "线性步": StaticFormulation.LINEAR,
+            "非线性步": StaticFormulation.NONLINEAR,
+        },
+        "线性步",
+    )
+
+    assert dialog.solver_type.text() == "线性静力"
+    dialog.step_combo.setCurrentIndex(1)
+    assert dialog.step_name == "非线性步"
+    assert dialog.solver_type.text() == "非线性静力"
     dialog.close()
 
 
@@ -287,7 +313,7 @@ def test_create_job_waits_for_job_manager_submission(gui_inp_path):
     assert not window.task_controller.busy
     manager = window.show_job_manager()
     assert manager is not None
-    assert manager.table.item(0, 2).text() == "已创建"
+    assert manager.table.item(0, 3).text() == "已创建"
     assert manager.submit_button.isEnabled()
 
     manager.submit_button.click()
@@ -324,16 +350,16 @@ def test_model_check_runs_the_shared_numerical_stiffness_preflight(
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
-    original = static_linear.validate_stiffness
+    original = preflight_module.DEFAULT_ANALYSIS_EXECUTOR.validate_prepared
     calls: list[str] = []
 
-    def tracked(model, step):
+    def tracked(model, step, request, prepared):
         calls.append(str(step.name))
-        return original(model, step)
+        return original(model, step, request, prepared)
 
     monkeypatch.setattr(
-        static_linear,
-        "validate_stiffness",
+        preflight_module.DEFAULT_ANALYSIS_EXECUTOR,
+        "validate_prepared",
         tracked,
     )
 
@@ -360,7 +386,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
         lambda title, message: errors.append((title, message)),
     )
     calls: list[tuple[str, bool]] = []
-    original_apply = static_linear.materials.apply_sections
+    original_apply = static_linear.apply_sections
     original_assemble = static_linear.assemble_global_stiffness_sparse
     original_factor = static_linear.factorize_spd
 
@@ -391,11 +417,7 @@ def test_preflight_and_repeated_runs_assemble_one_artifact_once(
         )
         return original_factor(stiffness)
 
-    monkeypatch.setattr(
-        static_linear.materials,
-        "apply_sections",
-        apply_sections,
-    )
+    monkeypatch.setattr(static_linear, "apply_sections", apply_sections)
     monkeypatch.setattr(
         static_linear,
         "assemble_global_stiffness_sparse",
@@ -895,7 +917,7 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
     manager = window.show_job_manager()
     assert manager is not None
     assert manager.table.rowCount() == 1
-    assert manager.table.item(0, 2).text() == "已完成"
+    assert manager.table.item(0, 3).text() == "已完成"
     assert manager.findChild(QLabel, "jobSessionNotice") is None
     assert all(
         manager.table.item(0, column).textAlignment()
@@ -941,7 +963,7 @@ def test_job_manager_terminate_button_tracks_selected_running_job():
     assert requested == ["Job-1"]
 
     manager.refresh((replace(running, cancellation_requested=True), completed))
-    assert manager.table.item(0, 2).text() == "终止中"
+    assert manager.table.item(0, 3).text() == "终止中"
     assert not manager.terminate_button.isEnabled()
 
     manager.table.selectRow(1)
@@ -1012,7 +1034,7 @@ def test_job_manager_terminates_the_selected_active_solve(
         cancelling = window.session.find_run(started.run_id)
         assert cancelling is not None and cancelling.cancellation_requested
         assert window.task_controller.cancel_requested
-        assert manager.table.item(0, 2).text() == "终止中"
+        assert manager.table.item(0, 3).text() == "终止中"
         assert not manager.terminate_button.isEnabled()
     finally:
         allow_solve_to_finish.set()
@@ -1022,8 +1044,67 @@ def test_job_manager_terminates_the_selected_active_solve(
     cancelled = window.session.find_run(started.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
     assert manager is not None
-    assert manager.table.item(0, 2).text() == "已取消"
+    assert manager.table.item(0, 3).text() == "已取消"
     assert "已取消" in window.status_panel.state_label.text()
+    manager.close()
+    window.close()
+
+
+def test_job_manager_terminates_an_active_nonlinear_solver_without_waiting(
+    monkeypatch,
+    gui_inp_path,
+):
+    _application()
+    window = FEMMainWindow()
+    model = read(gui_inp_path)
+    window._model_loaded(
+        gui_inp_path,
+        (model, build_model_geometry(model)),
+    )
+    assert window.check_current_model(show_success=False)
+    solve_entered = Event()
+    allow_solve_to_finish = Event()
+
+    def paused_nonlinear(*args, **kwargs):
+        del args
+        should_cancel = kwargs["should_cancel"]
+        solve_entered.set()
+        while not should_cancel():
+            if allow_solve_to_finish.wait(0.01):
+                raise RuntimeError("测试未能收到求解取消请求")
+        raise SolveCancelled("test nonlinear cancellation")
+
+    monkeypatch.setattr(
+        main_window_module,
+        "analysis_solver_kind",
+        lambda *_args, **_kwargs: "nonlinear_static",
+    )
+    monkeypatch.setattr(
+        main_window_module,
+        "execute_analysis",
+        paused_nonlinear,
+    )
+    manager = None
+    try:
+        started = window._submit_job("Job-1", "Static-1")
+        assert started is not None
+        assert solve_entered.wait(2.0)
+        manager = window.show_job_manager()
+        assert manager is not None
+        assert manager.terminate_button.isEnabled()
+
+        manager.terminate_button.click()
+        _wait_for_task(window)
+    finally:
+        allow_solve_to_finish.set()
+        if window.task_controller.busy:
+            window.cancel_current_task()
+            _wait_for_task(window)
+
+    cancelled = window.session.find_run(started.run_id)
+    assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
+    assert manager is not None
+    assert manager.table.item(0, 3).text() == "已取消"
     manager.close()
     window.close()
 

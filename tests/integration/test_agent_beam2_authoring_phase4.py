@@ -7,7 +7,7 @@ import pytest
 
 from fem.application import BeamOrientation, ModelSession
 from fem.application.preprocessing import generate_fem_model
-from fem.elements.beam_section import parse_beam2_section
+from fem.model.beam_section import parse_beam2_section
 from fem.io.project import load_project, save_project
 from fem_agent.authoring import ModelPatch, ProposalState
 from fem_agent.definition_action_authoring import create_definition_change

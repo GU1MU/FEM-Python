@@ -11,7 +11,7 @@ from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
-from fem.boundary.step import effective_step_boundaries
+from fem.model import effective_displacement_constraints
 
 from ..icons import icon
 
@@ -19,6 +19,43 @@ ROLE_KIND = int(Qt.ItemDataRole.UserRole)
 ROLE_KEY = ROLE_KIND + 1
 ROLE_INHERITED = ROLE_KEY + 1
 ROLE_DOCUMENT_ID = ROLE_INHERITED + 1
+
+
+class _TreeKey(tuple):
+    """Tuple identity that compares equal to Qt's list conversion."""
+
+    def __new__(cls, value: tuple[object, ...]):
+        return super().__new__(cls, value)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (tuple, list)):
+            return tuple(self) == tuple(other)
+        return NotImplemented
+
+    __hash__ = tuple.__hash__
+
+
+class _ModelTreeItem(QTreeWidgetItem):
+    """Tree item that preserves Python tuple keys across Qt QVariant."""
+
+    def __init__(self, strings: list[str]) -> None:
+        super().__init__(strings)
+        self._python_role_values: dict[tuple[int, int], object] = {}
+
+    def setData(self, column: int, role: int, value: object) -> None:
+        role_id = int(role)
+        if role_id == ROLE_KEY:
+            if isinstance(value, tuple) and not isinstance(value, _TreeKey):
+                value = _TreeKey(value)
+            self._python_role_values[(int(column), role_id)] = value
+        super().setData(column, role, value)
+
+    def data(self, column: int, role: int) -> object:
+        role_id = int(role)
+        key = (int(column), role_id)
+        if role_id == ROLE_KEY and key in self._python_role_values:
+            return self._python_role_values[key]
+        return super().data(column, role)
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +167,8 @@ _EDITABLE_KINDS = {
 
 _DELETABLE_KINDS = {
     "part",
+    "assignment",
+    "step",
     "boundary",
     "cload",
     "edge_load",
@@ -137,6 +176,7 @@ _DELETABLE_KINDS = {
     "line_load",
     "body_load",
     "gravity_load",
+    "output",
 }
 
 _NATIVE_RENAMABLE_KINDS = frozenset({
@@ -819,7 +859,7 @@ class ModelTree(QTreeWidget):
             step_item = self._item(step.name, "step", index)
             if first_step_item is None and step.name.lower() != "initial":
                 first_step_item = step_item
-            boundary_definitions = effective_step_boundaries(model, step)
+            boundary_definitions = effective_displacement_constraints(model, step)
             boundary_sources = tuple(
                 (
                     source_index,
@@ -1342,7 +1382,7 @@ class ModelTree(QTreeWidget):
         return item
 
     def _item(self, text: str, kind: str, key: object) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([text])
+        item = _ModelTreeItem([text])
         item.setData(0, ROLE_KIND, kind)
         item.setData(0, ROLE_KEY, key)
         item.setData(0, ROLE_DOCUMENT_ID, self._building_document_id)

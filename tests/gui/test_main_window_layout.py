@@ -81,19 +81,70 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
         for label in window.ribbon.stack.currentWidget().findChildren(QLabel)
         if label.objectName() == "ribbonGroupTitle"
     }
-    assert "设置" in result_group_titles
-    assert "显示设置" not in result_group_titles
+    assert result_group_titles == {
+        "形状与变形",
+        "场变量",
+        "显示",
+        "帧控制",
+        "查询",
+        "输出",
+    }
+    assert window.result_display_settings_button is not None
+    assert window.result_display_settings_button.text() == "显示设置"
+    assert not hasattr(window, "result_contour_options_button")
+    assert window.result_query_probe_button is not None
+    assert window.result_query_probe_button.text() == "结果查询"
+    assert window.result_xy_data_button is not None
+    assert window.result_xy_data_button.text() == "XY 曲线"
+    assert window.result_animation_button is not None
+    assert window.result_animation_button.text() == "动画设置"
+    assert not hasattr(window, "dynamic_result_data_action")
+    assert window.result_query_probe_button.menu() is None
+    assert not any(
+        button.text() == "动力学数据"
+        for button in window.ribbon.stack.currentWidget().findChildren(QToolButton)
+    )
+    for button, tooltip in (
+        (window.result_frame_first_button, "首帧"),
+        (window.result_frame_previous_button, "上一帧"),
+        (window.result_frame_play_button, "播放结果动画"),
+        (window.result_frame_next_button, "下一帧"),
+        (window.result_frame_last_button, "末帧"),
+    ):
+        assert button is not None
+        assert button.text() == ""
+        assert button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+        assert button.toolTip() == tooltip
+    for button in (
+        window.result_animation_button,
+        window.result_display_settings_button,
+        window.result_query_probe_button,
+        window.result_xy_data_button,
+    ):
+        assert button is not None
+        assert button.objectName() == "ribbonSmallButton"
+        assert not button.icon().isNull()
+        assert (
+            button.toolButtonStyle()
+            == Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
     variable_y = window.result_variable_combo.mapTo(
         window.ribbon, window.result_variable_combo.rect().topLeft()
     ).y()
     component_y = window.result_component_combo.mapTo(
         window.ribbon, window.result_component_combo.rect().topLeft()
     ).y()
-    position_y = window.result_position_combo.mapTo(
-        window.ribbon, window.result_position_combo.rect().topLeft()
-    ).y()
-    assert variable_y == component_y
-    assert position_y > variable_y
+    assert component_y > variable_y
+    assert window.result_position_combo.isHidden()
+    assert window.result_averaging_threshold.isHidden()
+    scale_text_width = max(
+        window.result_scale_combo.fontMetrics().horizontalAdvance(
+            window.result_scale_combo.itemText(index)
+        )
+        for index in range(window.result_scale_combo.count())
+    )
+    assert window.result_scale_combo.width() >= scale_text_width + 24
+    assert window.result_scale_combo.width() == window.result_scale_value.width()
     component_text_width = (
         window.result_component_combo.fontMetrics().horizontalAdvance(
             "MaxPrincipal"
@@ -101,12 +152,73 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     )
     assert (
         window.result_component_combo.minimumWidth()
-        >= component_text_width + 44
+        >= component_text_width + 28
     )
     assert (
         window.result_component_combo.view().minimumWidth()
         >= window.result_component_combo.minimumWidth()
     )
+    window.close()
+
+
+def test_result_ribbon_groups_do_not_overlap_at_default_width():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1280, 700)
+    window.ribbon.set_current("结果")
+    application.processEvents()
+
+    page = window.ribbon.stack.currentWidget()
+    groups = [
+        child
+        for child in page.children()
+        if child.findChild(QLabel, "ribbonGroupTitle") is not None
+    ]
+    assert groups
+    for left, right in zip(groups, groups[1:]):
+        assert left.geometry().right() < right.geometry().left()
+
+    frame_host = window.result_frame_combo.parent()
+    frame_group = next(
+        group
+        for group in groups
+        if group.findChild(QLabel, "ribbonGroupTitle").text() == "帧控制"
+    )
+    frame_host_right = frame_host.mapTo(frame_group, frame_host.rect().topRight()).x()
+    animation_left = window.result_animation_button.mapTo(
+        frame_group,
+        window.result_animation_button.rect().topLeft(),
+    ).x()
+    assert frame_host_right < animation_left
+    window.close()
+
+
+def test_result_ribbon_reserves_space_for_command_labels():
+    application = _application()
+    window = FEMMainWindow()
+    window.show()
+    window.resize(1600, 700)
+    window.ribbon.set_current("结果")
+    application.processEvents()
+
+    page = window.ribbon.stack.currentWidget()
+    buttons = [
+        button
+        for button in page.findChildren(QToolButton)
+        if button.defaultAction() is not None
+    ]
+    assert buttons
+    for button in buttons:
+        text_width = button.fontMetrics().horizontalAdvance(button.text())
+        text_gap = (
+            16
+            if button.toolButtonStyle()
+            == Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+            else 38
+        )
+        assert button.width() >= text_width + text_gap
+
     window.close()
 
 
@@ -413,6 +525,14 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     assert window.actions["export_vtk"] not in result_actions
     assert window.actions["display_settings"] in result_menu.actions()
     assert window.actions["display_settings"] in result_actions
+    assert window.actions["display_group_view_cut"] in result_menu.actions()
+    assert window.actions["display_group_view_cut"] in result_actions
+    assert window.actions["display_group_view_cut"].text() == "显示组"
+    assert window.actions["contour_options"] not in result_actions
+    assert window.actions["query_probe"] in result_menu.actions()
+    assert window.actions["query_probe"] in result_actions
+    assert window.actions["query"] not in result_menu.actions()
+    assert window.actions["query"] not in result_actions
     for name in ("undeformed", "deformed", "contour"):
         postprocessing_action = window.actions[name]
         assert postprocessing_action in result_menu.actions()

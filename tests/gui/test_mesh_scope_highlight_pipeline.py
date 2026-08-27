@@ -11,7 +11,7 @@ import pyvista
 from PySide6.QtWidgets import QApplication
 
 from fem.application import MeshEntityRef
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.widgets import viewport as viewport_module

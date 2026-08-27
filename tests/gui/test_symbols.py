@@ -7,6 +7,7 @@ from fem_gui.visualization.symbols import (
     SymbolSettings,
     arc_points,
     camera_facing_offset,
+    constraint_corner_indices,
     constraint_outward_direction,
     constraint_rotation_axes,
     constraint_sample_indices,
@@ -239,6 +240,29 @@ def test_line_support_sampling_follows_distance_on_a_graded_mesh():
     selected = points[constraint_sample_indices(points, "medium")]
 
     assert selected[:, 0] == pytest.approx(np.linspace(0.0, 1.0, 6), abs=0.004)
+
+
+def test_polygonal_constraint_layout_prefers_geometric_corners():
+    points = np.asarray((
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (2.0, 1.0, 0.0),
+        (2.0, 2.0, 0.0),
+        (1.0, 2.0, 0.0),
+        (0.0, 2.0, 0.0),
+        (0.0, 1.0, 0.0),
+    ))
+
+    selected = points[constraint_corner_indices(points, "low")]
+
+    assert selected.shape == (4, 3)
+    assert sorted(map(tuple, selected)) == [
+        (0.0, 0.0, 0.0),
+        (0.0, 2.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (2.0, 2.0, 0.0),
+    ]
 
 
 def test_symbol_length_uses_effective_sides_for_thin_models():

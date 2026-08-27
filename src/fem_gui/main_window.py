@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import logging
+import math
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable
@@ -17,18 +19,24 @@ from PySide6.QtCore import QSignalBlocker, QSize, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QGridLayout,
-    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QSizePolicy,
+    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox,
+    QToolButton,
+    QSizePolicy,
     QRubberBand, QSplitter,
     QVBoxLayout, QWidget,
 )
 
 from fem import geometry as geometry_runtime
+from fem.analysis import execution_plan_cache_scope
 from fem.io.inp import read_with_report as read_inp_with_report
 from fem.application import (
     AnalysisRun,
+    RunDiagnostics,
+    RunDiagnosticsSnapshot,
     AuthoringCapability,
     AuthoringStatus,
     BeamFrameReport,
+    CompressedMeshEntityRefs,
     DefinitionEditBatch,
     DeleteIntent,
     DefinitionRejected,
@@ -59,6 +67,8 @@ from fem.application import (
     TransitionEffect,
     describe_model_capabilities,
     describe_session_authoring,
+    analysis_solver_kind,
+    analysis_request_for_step,
     evaluate_authoring_candidate,
     evaluate_native_assignment_candidate,
     evaluate_native_line_load_candidate,
@@ -66,6 +76,8 @@ from fem.application import (
     resolve_effective_beam_frames,
     safe_static_preflight,
     safe_prepare_static_preflight,
+    prepare_linear_analysis,
+    solve_analysis as execute_analysis,
     compile_named_region_edit,
     prepare_part_boolean,
     prepare_strict_part_recipe_preview,
@@ -78,7 +90,7 @@ from fem.application.definitions import mesh_entity_ref_sort_key
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.changes import ChangeKind
-from fem.application.results import (
+from fem.results import (
     FieldAvailability,
     FieldMaterializationKey,
     FieldPosition,
@@ -88,38 +100,59 @@ from fem.application.results import (
     OutputRequestProjection,
     ResultCapabilityCatalog,
     ResultCatalog,
+    ResultAveragingOptions,
+    ResultDeformationMode,
+    ResultDisplayQuery,
+    ResultFrameKey,
+    ResultLegendMode,
+    ResultLegendPolicy,
     ResultQuery,
     ResultQueryResult,
     ResultQueryValidationError,
     ResultExportSnapshot,
     ResultFieldId,
+    ResultFieldTopology,
     ResultFieldTopologyTemplate,
     ResultMaterializationPatch,
     ResultProvider,
+    ResultProbeRequest,
+    ResultProbeResult,
+    ResultProbeKind,
+    ResultPathRequest,
+    ResultPathResult,
     ResultSourceKey,
     ResultVariable,
+    ResultXYRequest,
+    ResultXYSeries,
+    build_result_xy_series,
+    build_result_path_result,
     ScalarFieldSelection,
-    build_solve_result_bundle,
     build_result_field_topology_template,
     classify_result_model,
+    display_computation_for_position,
     prepare_result_export_snapshot,
     project_output_requests,
     project_scalar_field_topology,
     project_scalar_field_topology_from_template,
+    probe_result_from_query_result,
+    result_query_for_probe,
 )
-from fem.core.model import (
+from fem.application.result_workflow import build_solve_result_bundle
+from fem.model import (
     AnalysisStep,
     BodyForce,
     EdgeLoad,
     FEMModel,
+    GeometryMode,
     GravityLoad,
     LineLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
+    StaticFormulation,
 )
-from fem.core.mesh import Mesh2D
-from fem.core._constraint_targets import displacement_target_kind
+from fem.model import Mesh2D
+from fem.model.targets import displacement_target_kind
 from fem.geometry import (
     BooleanGeometry,
     BoxGeometry,
@@ -188,10 +221,11 @@ from fem.io.result_archive import (
 )
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
-from fem.solvers import static_linear
+from fem.analysis import AnalysisCancelled
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
+from .icons import icon
 from .agent_authoring import (
     AgentAuthoringBridge,
     AgentGeometryMutation,
@@ -209,6 +243,7 @@ from .agent_authoring import (
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController, planar_reference_points
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
+from .analysis_dialogs import JobMonitorDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
@@ -234,10 +269,16 @@ from .commands import (
     ResultVtkExportSpec,
 )
 from .dialogs import CompactDoubleSpinBox, show_information
+from .analysis_presentation import (
+    analysis_execution_label,
+    analysis_formulation_label,
+    analysis_step_label,
+)
 from .model_dialogs import (
     MaterialEditDialog,
     MaterialManagerDialog,
     RegionAssignmentDialog,
+    RegionAssignmentManagerDialog,
     SectionManagerDialog,
 )
 from .inspection_dialogs import EntityInfoDialog
@@ -277,13 +318,18 @@ from .scope_selection import (
     build_scope_selection_topology,
 )
 from .postprocessing_dialogs import (
-    ContourSettingsDialog,
-    DisplaySettingsDialog,
+    ResultAnimationDialog,
+    ResultProbeDialog,
+    ResultQueryProbeDialog,
+    ResultPathDialog,
+    DisplayGroupViewCutDialog,
+    VisualizationOptionsDialog,
     TypedResultDisplayDialog,
     TypedResultDisplaySettings,
     TypedResultQueryDialog,
 )
 from .result_presentation import (
+    result_display_computation_label,
     result_field_is_beam_section,
     result_field_position_label,
     result_provider_section_point_labels,
@@ -291,6 +337,7 @@ from .result_presentation import (
     visible_result_fields,
 )
 from .result_csv_export_dialog import ResultCsvExportDialog
+from .xy_data_dialog import XYDataDialog
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -323,6 +370,16 @@ from .workspace import (
     WorkspaceDocument,
     canonical_path,
 )
+from .presentation_persistence import (
+    apply_presentation_payload,
+    load_presentation_state,
+    save_presentation_state,
+)
+from .view_cut_state import (
+    default_view_cut_settings,
+    normalize_view_cut_settings,
+    view_cut_has_user_data,
+)
 from .viewport_background import (
     ViewportBackgroundSettings,
     load_background_settings,
@@ -332,11 +389,15 @@ from .viewport_background_dialog import ViewportBackgroundDialog
 from .viewport_image_export_dialog import ViewportImageExportDialog
 from .sketch_editor import SketchDraftController, SketchDraftValidationError
 from .wire_editor import WireDraftController, WireDraftValidationError
-from .visualization.colormaps import ABAQUS_RAINBOW
+from .visualization.colormaps import (
+    ABAQUS_RAINBOW,
+    DEFAULT_CUSTOM_COLOR_STOPS,
+)
 from .visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
     CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
+    CONTOUR_RENDER_HIDDEN_LINE,
     CONTOUR_RENDER_SHADED,
 )
 from .visualization.model_adapter import (
@@ -384,7 +445,29 @@ _RESULT_FIELD_STATE_LABELS = {
 }
 _NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
 _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
+# The full spectral rank probe is much more expensive than the rest of the
+# authoring check.  On the current reference machine model_2 (17,478 DOFs)
+# takes roughly 20 s for that probe, while the deterministic quick check is
+# about 1 s.  Keep the public safety limits above unchanged, but use this
+# smaller GUI policy to avoid making an ordinary model-check click feel hung.
+_FULL_NUMERICAL_MODEL_CHECK_DOF_LIMIT = 12_000
+_FULL_NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 20_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
+_GLOBAL_LEGEND_BACKGROUND_FRAME_THRESHOLD = 4
+_RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD = 2_000
+_RESULT_DISPLAY_TASK_NAMES = frozenset(
+    {
+        # These workers only prepare a field/frame for the next display
+        # commit. The last committed scene remains valid while they run, so
+        # changing the enabled state of the result ribbon here creates a
+        # visible grey -> bright flash for fast requests.
+        "结果字段按需加载",
+        "增量帧显示字段",
+        "结果显示拓扑准备",
+        "节点平均应力云图",
+        "统一云图范围",
+    }
+)
 _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS = 5.0
 # The Agent preflight dispatch holds the GUI owner until the background
 # model check is terminal; without this hold the provider burns its bounded
@@ -571,6 +654,23 @@ def should_run_numerical_model_check(model: object) -> bool:
     )
 
 
+def _should_run_full_numerical_model_check(model: object) -> bool:
+    """Apply the GUI latency budget on top of the broad safety policy."""
+
+    if not should_run_numerical_model_check(model):
+        return False
+    mesh = getattr(model, "mesh", None)
+    if mesh is None:
+        return True
+    try:
+        return (
+            len(mesh.elements) <= _FULL_NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT
+            and int(mesh.num_dofs) <= _FULL_NUMERICAL_MODEL_CHECK_DOF_LIMIT
+        )
+    except (AttributeError, TypeError, ValueError):
+        return True
+
+
 class _ExactDataComboBox(QComboBox):
     """Keep typed Python user data from being coerced by QVariant."""
 
@@ -664,6 +764,65 @@ class _LoadedProjectDisplayPayload:
 
     loaded: LoadedProject
     geometry: ModelGeometry | None
+
+
+@dataclass(frozen=True, slots=True)
+class _GlobalLegendRangeMaterialization:
+    """Worker result for one immutable multi-frame legend-range scan."""
+
+    cache_key: tuple[ResultSourceKey, int, ScalarFieldSelection, float]
+    value: tuple[float, float] | None
+    frame_patches: tuple[tuple[int, ResultMaterializationPatch], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ResultTopologyProjectionSpec:
+    """Immutable worker input for a large result-to-render projection."""
+
+    key: tuple[object, ...]
+    template_key: tuple[
+        ResultSourceKey,
+        int,
+        int,
+        FieldMaterializationKey,
+        float,
+    ]
+    provider: ResultProvider
+    selection: ScalarFieldSelection
+    render_provider: ResultProvider
+    render_selection: ScalarFieldSelection
+    export: ResultExportSnapshot
+    deformation_scale: float
+    display_query: ResultDisplayQuery
+    template: ResultFieldTopologyTemplate | None
+    shape_mode: str
+    contour_enabled: bool
+    previous_selection: ScalarFieldSelection | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingTypedResultDisplay:
+    """Worker-produced topology waiting for one GUI presentation commit."""
+
+    settings: TypedResultDisplaySettings
+    source: ResultSourceKey
+    generation: int
+    frame_index: int
+    base_selection: ScalarFieldSelection | None
+    base_shape_mode: str
+    base_contour_enabled: bool
+    base_scale_mode: str
+    base_scale_value: float
+    export: ResultExportSnapshot
+    render_selection: ScalarFieldSelection
+    template_key: tuple[
+        ResultSourceKey,
+        int,
+        int,
+        FieldMaterializationKey,
+        float,
+    ]
+    topology: ResultFieldTopology
 
 
 class AgentExportFacade:
@@ -804,6 +963,44 @@ class FEMMainWindow(QMainWindow):
         self._pending_result_selection: ScalarFieldSelection | None = None
         self._pending_result_source: ResultSourceKey | None = None
         self._pending_result_generation: int | None = None
+        self._pending_result_provider_projection: ResultProvider | None = None
+        self._queued_result_selection: (
+            tuple[ResultSourceKey, int, ScalarFieldSelection] | None
+        ) = None
+        self._pending_frame_display_materialization: (
+            tuple[
+                ResultSourceKey,
+                int,
+                int,
+                ScalarFieldSelection,
+            ]
+            | None
+        ) = None
+        self._pending_ready_result_selection: (
+            tuple[ResultSourceKey, int, ScalarFieldSelection] | None
+        ) = None
+        self._pending_result_display_apply = False
+        self._pending_typed_result_display_settings: (
+            tuple[TypedResultDisplaySettings, ResultSourceKey | None] | None
+        ) = None
+        self._active_typed_result_projection_key: tuple[object, ...] | None = None
+        self._pending_typed_result_projection: (
+            _PendingTypedResultDisplay | None
+        ) = None
+        self._active_result_topology_projection: (
+            _ResultTopologyProjectionSpec | None
+        ) = None
+        self._pending_result_topology_projection: (
+            tuple[_ResultTopologyProjectionSpec, ResultFieldTopology] | None
+        ) = None
+        self._pending_result_global_legend_range: (
+            tuple[ResultSourceKey, int, ScalarFieldSelection, float] | None
+        ) = None
+        # Keep the previous result-view state stable for the complete
+        # background->GUI commit window.  A worker can finish before its
+        # deferred projection callback runs, so the ordinary ``busy`` flag
+        # alone is too short-lived to prevent a grey->enabled flash.
+        self._result_display_transition_active = False
         self._pending_result_query: ResultQuery | None = None
         self._pending_result_query_source: ResultSourceKey | None = None
         self._pending_result_query_generation: int | None = None
@@ -831,6 +1028,7 @@ class FEMMainWindow(QMainWindow):
             ]
             | None
         ) = None
+        self._pending_named_region_edit_name: str | None = None
         self._scope_selection_overlay_active = False
         self._scope_selection_topology_cache: (
             ScopeSelectionTopology | None
@@ -898,6 +1096,8 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._command_counter = 0
         self._job_manager: JobManagerDialog | None = None
+        self._job_monitor: JobMonitorDialog | None = None
+        self._run_diagnostics: dict[str, RunDiagnostics] = {}
         self._viewport_fit_pending = False
         self._display = DisplayState()
         self._show_suppressed_part_ghosts = False
@@ -905,6 +1105,9 @@ class FEMMainWindow(QMainWindow):
         self._scale_mode = "auto"
         self._scale_value = 1.0
         self._overlay_undeformed = False
+        self._display_groups: dict[str, dict[str, object]] = {}
+        self._active_display_group: str | None = None
+        self._view_cut_settings: dict[str, object] = default_view_cut_settings()
         self._symbol_settings = SymbolSettings()
         self._application_settings = QSettings("fem-project", "fem-gui")
         self._background_settings, self._remember_background = load_background_settings(
@@ -912,7 +1115,10 @@ class FEMMainWindow(QMainWindow):
         )
         self._default_contour_options: dict[str, Any] = {
             "manual": False, "minimum": 0.0, "maximum": 1.0,
+            "range_mode": "per_frame",
             "levels": 12, "colormap": ABAQUS_RAINBOW,
+            "colormap_reverse": False,
+            "custom_color_stops": DEFAULT_CUSTOM_COLOR_STOPS,
             "style": "segmented", "legend": True,
             "render_mode": CONTOUR_RENDER_SHADED,
             "edge_mode": CONTOUR_EDGE_GEOMETRY,
@@ -921,13 +1127,30 @@ class FEMMainWindow(QMainWindow):
             "orientation": "vertical", "show_minimum": False,
             "show_maximum": False, "show_ids": False,
             "legend_font": "Arial", "legend_font_size": 14,
+            "legend_position": "auto", "legend_label_count": "auto",
+            "legend_title": True,
             "show_coordinate_system": True,
+            "show_node_labels": False,
+            "show_element_labels": False,
             "edges": True,
             "averaging_threshold": 75.0,
+            "face_color": "auto",
+            "edge_color": "auto",
+            "model_opacity": 1.0,
+            "deformed_color": "auto",
+            "deformed_line_style": "solid",
+            "deformed_opacity": 1.0,
+            "undeformed_color": "auto",
+            "undeformed_line_style": "solid",
+            "undeformed_opacity": 0.65,
         }
         self._contour_options: dict[str, Any] = dict(
             self._default_contour_options
         )
+        # Keep the automatic multi-frame default distinct from an explicit
+        # user choice.  This lets a fresh nonlinear result use one shared
+        # legend while preserving a deliberate “每帧自动” selection.
+        self._contour_range_mode_user_selected = False
         self._result_visualization_provider_cache: (
             tuple[
                 ResultSourceKey,
@@ -937,12 +1160,69 @@ class FEMMainWindow(QMainWindow):
             ]
             | None
         ) = None
-        self._result_topology_template_cache: (
-            tuple[object, ResultFieldTopologyTemplate] | None
-        ) = None
+        self._result_topology_template_cache: dict[
+            tuple[
+                ResultSourceKey,
+                int,
+                int,
+                FieldMaterializationKey,
+                float,
+            ],
+            tuple[object, ResultFieldTopologyTemplate],
+        ] = {}
         self._result_deformation_scale_cache: (
             tuple[object, str, str, float, float] | None
         ) = None
+        self._result_global_legend_range_cache: dict[
+            tuple[ResultSourceKey, int, ScalarFieldSelection, float],
+            tuple[float, float] | None,
+        ] = {}
+        self._result_frame_index = 0
+        self._queued_result_frame_request: (
+            tuple[ResultSourceKey, int, int] | None
+        ) = None
+        self._result_frame_provider_cache: dict[
+            tuple[ResultSourceKey, int, int], ResultProvider
+        ] = {}
+        self._result_probe_markers: list[
+            tuple[str, tuple[float, float, float]]
+        ] = []
+        self._result_probe_pick_previous_mode: str | None = None
+        self._result_probe_pick_active = False
+        self._result_frame_timer = QTimer(self)
+        self._result_frame_timer.setInterval(250)
+        self._result_frame_timer.timeout.connect(
+            self._advance_result_animation
+        )
+        self._result_animation_start_frame: int | None = None
+        self._result_animation_end_frame: int | None = None
+        self._result_animation_loop = True
+        self._result_animation_frame_step = 1
+        self._result_animation_sampling_mode = "frame"
+        self._result_animation_time_interval = 0.0
+        self._result_animation_playback_mode = "loop"
+        self._result_animation_speed = 1.0
+        self._result_animation_interval_ms = 250
+        self._result_animation_first_hold_ms = 0
+        self._result_animation_last_hold_ms = 0
+        self._result_animation_lock_deformation = False
+        self._result_animation_lock_contour = False
+        self._result_animation_sync_annotations = True
+        self._result_animation_direction = 1
+        self._result_animation_hold_until = 0.0
+        self._animation_lock_snapshot: dict[str, object] | None = None
+        self.result_frame_combo: _ExactDataComboBox | None = None
+        self.result_frame_first_button: QToolButton | None = None
+        self.result_frame_previous_button: QToolButton | None = None
+        self.result_frame_play_button: QToolButton | None = None
+        self.result_frame_next_button: QToolButton | None = None
+        self.result_frame_last_button: QToolButton | None = None
+        self.result_frame_info_label: QLabel | None = None
+        self.result_frame_speed_combo: QComboBox | None = None
+        self.result_animation_button: QToolButton | None = None
+        self.result_display_settings_button: QToolButton | None = None
+        self.result_query_probe_button: QToolButton | None = None
+        self.result_xy_data_button: QToolButton | None = None
         self._step_combos: list[QComboBox] = []
         self._agent_proposal_preview_id: str | None = None
         self._closing = False
@@ -971,6 +1251,54 @@ class FEMMainWindow(QMainWindow):
     @property
     def busy(self) -> bool:
         return self.task_controller.busy
+
+    def _result_display_task_active(self) -> bool:
+        """Return whether the running task only prepares a result view.
+
+        Result topology/materialization workers keep the last complete scene
+        visible and already coalesce newer display requests. They should not
+        dim the result ribbon for a short worker interval; model-edit and
+        analysis tasks still use the normal global busy lock.
+        """
+
+        return bool(
+            self.busy
+            and self.task_controller.current_task_name
+            in _RESULT_DISPLAY_TASK_NAMES
+        )
+
+    def _result_display_request_pending(self) -> bool:
+        """Return whether a display-only transition is being coalesced.
+
+        A lazy field request sets its pending marker just before starting the
+        worker. ``busy_changed(True)`` is emitted synchronously by the task
+        controller, so without this check there is one event-loop turn in
+        which the result controls are disabled before the task name is
+        visible. Keeping the previous enabled state for that short interval
+        removes the remaining fast-task flicker without opening model/solve
+        actions.
+        """
+
+        return bool(
+            self._result_display_transition_active
+            or self._result_display_task_active()
+            or self._pending_result_selection is not None
+            or self._pending_frame_display_materialization is not None
+            or self._pending_result_global_legend_range is not None
+            or self._pending_typed_result_display_settings is not None
+            or self._active_typed_result_projection_key is not None
+            or self._pending_typed_result_projection is not None
+            or self._active_result_topology_projection is not None
+            or self._pending_result_topology_projection is not None
+            or self._pending_result_display_apply
+            or self._queued_result_selection is not None
+            or self._pending_ready_result_selection is not None
+        )
+
+    def _result_display_controls_enabled(self) -> bool:
+        """Return whether result-view controls may accept a queued request."""
+
+        return bool(not self.busy or self._result_display_request_pending())
 
     def _task_context_or_active(self) -> WorkspaceDocument | None:
         return self._task_callback_context or self._active_workspace_context()
@@ -1150,6 +1478,10 @@ class FEMMainWindow(QMainWindow):
             "inspection_service": self.inspection_service,
             "result_provider": self.result_provider,
             "result_selection": self.result_selection,
+            "result_frame_index": self._result_frame_index,
+            "result_frame_provider_cache": dict(
+                self._result_frame_provider_cache
+            ),
             "display": self._display,
             "step_name": self._current_step_name,
             "legacy_project_extension": self._legacy_project_extension,
@@ -1318,6 +1650,12 @@ class FEMMainWindow(QMainWindow):
         self.inspection_service = previous_aliases["inspection_service"]
         self.result_provider = previous_aliases["result_provider"]
         self.result_selection = previous_aliases["result_selection"]
+        self._result_frame_index = int(
+            previous_aliases["result_frame_index"]
+        )
+        self._result_frame_provider_cache = dict(
+            previous_aliases["result_frame_provider_cache"]
+        )
         self._display = previous_aliases["display"]
         self._current_step_name = previous_aliases["step_name"]
         self._legacy_project_extension = previous_aliases[
@@ -1405,6 +1743,54 @@ class FEMMainWindow(QMainWindow):
         except Exception:
             logging.exception("failed to repaint previous viewport after activation failure")
 
+    @staticmethod
+    def _presentation_state_has_user_data(
+        state: DocumentPresentationState,
+    ) -> bool:
+        """Tell whether a context already has in-memory presentation state."""
+
+        return bool(
+            state.result_selection is not None
+            or int(state.result_frame_index) != 0
+            or isinstance(state.display_state, DisplayState)
+            or state.camera_state is not None
+            or state.selection_mode is not None
+            or str(state.result_scale_mode) != "auto"
+            or float(state.result_scale_value) != 1.0
+            or bool(state.contour_options)
+            or bool(state.overlay_undeformed)
+            or bool(state.display_groups)
+            or state.active_display_group is not None
+            or view_cut_has_user_data(state.view_cut_settings)
+            or bool(state.animation_settings)
+        )
+
+    def _load_persisted_document_presentation(
+        self,
+        context: WorkspaceDocument,
+    ) -> None:
+        """Load only a side-store state when this context is still pristine."""
+
+        if self._presentation_state_has_user_data(context.presentation_state):
+            return
+        path = context.source_path or getattr(
+            context.projection,
+            "project_path",
+            None,
+        )
+        if path is None:
+            return
+        payload = load_presentation_state(self._application_settings, path)
+        if payload is None:
+            return
+        try:
+            apply_presentation_payload(context.presentation_state, payload)
+        except (TypeError, ValueError):
+            logging.warning(
+                "ignored invalid persisted presentation state for %s",
+                path,
+            )
+
     def _capture_document_presentation(
         self,
         context: WorkspaceDocument,
@@ -1417,16 +1803,66 @@ class FEMMainWindow(QMainWindow):
         state.module_name = self._current_module_name() or None
         state.step_name = self._current_step_name
         state.result_selection = self.result_selection
+        state.result_frame_index = int(self._result_frame_index)
         state.display_state = self._display
         state.selection_mode = getattr(self.viewport, "_selection_mode", None)
         state.result_scale_mode = str(self._scale_mode)
         state.result_scale_value = float(self._scale_value)
         state.contour_options = dict(self._contour_options)
+        state.contour_options["_range_mode_user_selected"] = bool(
+            self._contour_range_mode_user_selected
+        )
         state.overlay_undeformed = bool(self._overlay_undeformed)
+        # Display groups contain only immutable IDs and a boolean flag.  Keep
+        # the state detached without invoking a deep copy here: this method
+        # runs on the GUI close/switch path and must not copy the model or any
+        # user-owned session payload.
+        state.display_groups = {
+            str(name): {
+                "element_ids": tuple(
+                    int(element_id)
+                    for element_id in group.get("element_ids", ())
+                ),
+                "exclude": bool(group.get("exclude", False)),
+            }
+            for name, group in self._display_groups.items()
+            if isinstance(group, Mapping)
+        }
+        state.active_display_group = self._active_display_group
+        state.view_cut_settings = normalize_view_cut_settings(
+            self._view_cut_settings
+        )
+        state.animation_settings = {
+            "start_frame": self._result_animation_start_frame,
+            "end_frame": self._result_animation_end_frame,
+            "interval_ms": self._result_animation_interval_ms,
+            "loop": self._result_animation_loop,
+            "frame_step": self._result_animation_frame_step,
+            "sampling_mode": self._result_animation_sampling_mode,
+            "time_interval": self._result_animation_time_interval,
+            "playback_mode": self._result_animation_playback_mode,
+            "playback_speed": self._result_animation_speed,
+            "first_hold_ms": self._result_animation_first_hold_ms,
+            "last_hold_ms": self._result_animation_last_hold_ms,
+            "lock_deformation_scale": self._result_animation_lock_deformation,
+            "lock_contour_range": self._result_animation_lock_contour,
+            "sync_annotations": self._result_animation_sync_annotations,
+        }
         plotter = getattr(self.viewport, "_plotter", None)
         state.camera_state = (
             _capture_camera_state(plotter) if plotter is not None else None
         )
+        path = context.source_path or getattr(
+            context.projection,
+            "project_path",
+            None,
+        )
+        if path is not None:
+            save_presentation_state(
+                self._application_settings,
+                path,
+                state,
+            )
 
         cache = context.presentation_cache
         artifact = context.projection.artifact
@@ -1452,6 +1888,7 @@ class FEMMainWindow(QMainWindow):
     def _prepare_document_presentation(self, context: WorkspaceDocument) -> None:
         """Seed window aliases from ``context`` before projection callbacks run."""
 
+        self._load_persisted_document_presentation(context)
         state = context.presentation_state
         names = context.session.runnable_step_names()
         self._current_step_name = (
@@ -1467,6 +1904,11 @@ class FEMMainWindow(QMainWindow):
             if isinstance(state.result_selection, ScalarFieldSelection)
             else None
         )
+        try:
+            self._result_frame_index = int(state.result_frame_index)
+        except (AttributeError, TypeError, ValueError):
+            self._result_frame_index = 0
+        self._result_frame_provider_cache.clear()
         scale_mode = state.result_scale_mode
         self._scale_mode = (
             scale_mode
@@ -1483,9 +1925,94 @@ class FEMMainWindow(QMainWindow):
             and state.contour_options
             else self._default_contour_options
         )
+        self._contour_range_mode_user_selected = bool(
+            saved_contour_options.get("_range_mode_user_selected", False)
+        )
         self._contour_options = dict(self._default_contour_options)
         self._contour_options.update(saved_contour_options)
+        self._contour_options.pop("_range_mode_user_selected", None)
+        if "range_mode" not in saved_contour_options:
+            self._contour_options.pop("range_mode", None)
+        self._contour_options["range_mode"] = self._contour_range_mode(
+            self._contour_options
+        )
+        self._contour_options["manual"] = (
+            self._contour_options["range_mode"] == "manual"
+        )
         self._overlay_undeformed = bool(state.overlay_undeformed)
+        self._display_groups = deepcopy(
+            state.display_groups
+            if isinstance(state.display_groups, dict)
+            else {}
+        )
+        active_group = state.active_display_group
+        self._active_display_group = (
+            active_group
+            if isinstance(active_group, str)
+            and active_group in self._display_groups
+            else None
+        )
+        self._view_cut_settings = normalize_view_cut_settings(
+            state.view_cut_settings
+        )
+        saved_animation = state.animation_settings
+        if isinstance(saved_animation, dict):
+            self._result_animation_start_frame = saved_animation.get("start_frame")
+            self._result_animation_end_frame = saved_animation.get("end_frame")
+            try:
+                self._result_animation_interval_ms = int(
+                    saved_animation.get("interval_ms", 250)
+                )
+                self._result_animation_frame_step = max(
+                    1,
+                    int(saved_animation.get("frame_step", 1)),
+                )
+                self._result_animation_time_interval = max(
+                    0.0,
+                    float(saved_animation.get("time_interval", 0.0)),
+                )
+                self._result_animation_speed = min(
+                    10.0,
+                    max(0.1, float(saved_animation.get("playback_speed", 1.0))),
+                )
+            except (TypeError, ValueError):
+                self._result_animation_interval_ms = 250
+                self._result_animation_frame_step = 1
+                self._result_animation_time_interval = 0.0
+                self._result_animation_speed = 1.0
+            self._result_animation_loop = bool(saved_animation.get("loop", True))
+            self._result_animation_sampling_mode = str(
+                saved_animation.get("sampling_mode", "frame")
+            )
+            if self._result_animation_sampling_mode not in {"frame", "time"}:
+                self._result_animation_sampling_mode = "frame"
+            self._result_animation_playback_mode = str(
+                saved_animation.get("playback_mode", "loop")
+            )
+            if self._result_animation_playback_mode not in {
+                "once",
+                "loop",
+                "pingpong",
+                "reverse",
+            }:
+                self._result_animation_playback_mode = "loop"
+            self._result_animation_first_hold_ms = max(
+                0,
+                int(saved_animation.get("first_hold_ms", 0)),
+            )
+            self._result_animation_last_hold_ms = max(
+                0,
+                int(saved_animation.get("last_hold_ms", 0)),
+            )
+            self._result_animation_lock_deformation = bool(
+                saved_animation.get("lock_deformation_scale", False)
+            )
+            self._result_animation_lock_contour = bool(
+                saved_animation.get("lock_contour_range", False)
+            )
+            self._result_animation_sync_annotations = bool(
+                saved_animation.get("sync_annotations", True)
+            )
         selection_mode = state.selection_mode
         if isinstance(selection_mode, str):
             if selection_mode.startswith("geometry_"):
@@ -1549,14 +2076,16 @@ class FEMMainWindow(QMainWindow):
                 overlay_action.setChecked(self._overlay_undeformed)
         try:
             self.viewport.set_undeformed_overlay_visible(
-                self._overlay_undeformed
+                self._overlay_undeformed,
+                render=False,
             )
             self.viewport.set_contour_options(
-                {
-                    key: value
-                    for key, value in self._contour_options.items()
-                    if key != "averaging_threshold"
-                }
+                self._effective_contour_options_for_viewport(
+                    self._current_result_provider(),
+                    self.result_selection,
+                ),
+                render=False,
+                update=False,
             )
             self.viewport.set_contour_metadata(
                 {
@@ -1565,6 +2094,29 @@ class FEMMainWindow(QMainWindow):
                     )
                 }
             )
+            group = self._display_groups.get(self._active_display_group)
+            self.viewport.set_display_group(
+                None if group is None else group.get("element_ids", ()),
+                exclude=False
+                if group is None
+                else bool(group.get("exclude", False)),
+                render=False,
+                update=False,
+            )
+            self.viewport.set_view_cut(
+                self._view_cut_settings,
+                render=False,
+                update=False,
+            )
+            if (
+                self._current_result_provider() is not None
+                and self.viewport._result_render_payload is not None
+            ):
+                self.viewport.set_display(
+                    self._display.shape_mode,
+                    self._display.contour_enabled,
+                    render=render,
+                )
         except (AttributeError, TypeError, ValueError):
             pass
         selection_mode = state.selection_mode
@@ -1591,6 +2143,16 @@ class FEMMainWindow(QMainWindow):
         self._pending_analysis_requested_scope_kind = None
         self._pending_scope_kind = None
         self._scope_selection_overlay_active = False
+        self._pending_ready_result_selection = None
+        self._pending_result_display_apply = False
+        self._queued_result_selection = None
+        self._queued_result_frame_request = None
+        self._pending_typed_result_display_settings = None
+        self._active_typed_result_projection_key = None
+        self._pending_typed_result_projection = None
+        self._active_result_topology_projection = None
+        self._pending_result_topology_projection = None
+        self._result_display_transition_active = False
         self.selection.clear()
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
@@ -2711,7 +3273,14 @@ class FEMMainWindow(QMainWindow):
                 "mesh.generate.unavailable",
                 "native geometry and mesh settings are required",
             )
-        if self.document.model is not None:
+        has_mesh_scoped_regions = any(
+            isinstance(
+                getattr(region, "references", ()),
+                CompressedMeshEntityRefs,
+            )
+            for region in self.document.named_regions.values()
+        )
+        if self.document.model is not None or has_mesh_scoped_regions:
             cleared = self.clear_generated_mesh(
                 self.document.session_revision
             )
@@ -3010,6 +3579,7 @@ class FEMMainWindow(QMainWindow):
             task = self.session.prepare_result_materialization(
                 provider.source.run_id,
                 field_keys,
+                detach_record=False,
             )
             completion = GuiCommandCompletion(command_id)
             accepted_delta: SessionDelta | None = None
@@ -3240,6 +3810,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_result_selection = None
         self._pending_result_source = None
         self._pending_result_generation = None
+        self._pending_result_provider_projection = None
 
     def query_result(
         self,
@@ -3254,6 +3825,7 @@ class FEMMainWindow(QMainWindow):
         query: ResultQuery,
         *,
         expected_source: ResultSourceKey | None = None,
+        provider_override: ResultProvider | None = None,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
         if type(query) is not ResultQuery:
@@ -3271,6 +3843,15 @@ class FEMMainWindow(QMainWindow):
                 "command.type.invalid",
                 "expected_source must be a ResultSourceKey or None",
             )
+        if (
+            provider_override is not None
+            and type(provider_override) is not ResultProvider
+        ):
+            return self._rejected_command(
+                command_id,
+                "command.type.invalid",
+                "provider_override must be a ResultProvider or None",
+            )
         provider = self._current_result_provider()
         if provider is None:
             return self._rejected_command(
@@ -3287,6 +3868,41 @@ class FEMMainWindow(QMainWindow):
                 "result.query.source.stale",
                 "the query dialog source is no longer current",
             )
+        if provider_override is not None:
+            if (
+                provider_override.source != provider.source
+                or (
+                    provider_override.frame_key is None
+                    and provider_override.snapshot.generation
+                    != provider.snapshot.generation
+                )
+            ):
+                return self._rejected_command(
+                    command_id,
+                    "result.query.provider.stale",
+                    "the query provider is no longer current",
+                )
+            if provider_override.frame_key is not None:
+                try:
+                    current_frame_provider = (
+                        self._result_frame_provider_for_query(provider)
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    return self._rejected_command(
+                        command_id,
+                        "result.frame.query.stale",
+                        "the query frame is no longer current",
+                    )
+                if (
+                    current_frame_provider.frame_key
+                    != provider_override.frame_key
+                ):
+                    return self._rejected_command(
+                        command_id,
+                        "result.frame.query.stale",
+                        "the query frame is no longer current",
+                    )
+            provider = provider_override
         if self.busy:
             return self._rejected_command(
                 command_id,
@@ -3310,6 +3926,12 @@ class FEMMainWindow(QMainWindow):
             )
 
         if availability.state is FieldState.LAZY:
+            if provider.frame_key is not None:
+                return self._begin_frame_result_query_materialization(
+                    command_id,
+                    provider,
+                    query,
+                )
             return self._begin_result_query_materialization(
                 command_id,
                 provider,
@@ -3349,6 +3971,114 @@ class FEMMainWindow(QMainWindow):
             outcome=outcome,
         )
 
+    def _begin_frame_result_query_materialization(
+        self,
+        command_id: int,
+        provider: ResultProvider,
+        query: ResultQuery,
+    ) -> GuiCommandReceipt:
+        """Recover a lazy field locally for one live increment frame.
+
+        Frame providers are detached projections.  Their derived values must
+        stay in the frame-provider cache instead of going through the Session
+        CAS path, whose accepted snapshot represents the final result.
+        """
+
+        completion = GuiCommandCompletion(command_id)
+        accepted_result: ResultQueryResult | None = None
+        materialized_provider: ResultProvider | None = None
+
+        def workload(context: TaskContext) -> object:
+            context.report("正在按需加载当前增量查询字段……")
+            return provider.materialize(
+                (query.field_key,),
+                cancellation=context,
+            )
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            nonlocal accepted_result, materialized_provider
+            if type(value) is not ResultMaterializationPatch:
+                raise TypeError(
+                    "frame result query worker must return "
+                    "ResultMaterializationPatch"
+                )
+            current = self._current_result_provider()
+            if current is None:
+                return TaskApplyOutcome.stale("当前结果已失效")
+            try:
+                current_frame_provider = (
+                    self._result_frame_provider_for_query(current)
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                return TaskApplyOutcome.stale("当前结果帧已失效")
+            if current_frame_provider.frame_key != provider.frame_key:
+                return TaskApplyOutcome.stale("当前结果帧已切换")
+            local_provider = provider.apply(value)
+            result = local_provider.query(query)
+            self._validate_result_query_result(
+                local_provider,
+                query,
+                result,
+            )
+            materialized_provider = local_provider
+            accepted_result = result
+            cache_key = (
+                provider.source,
+                current.snapshot.generation,
+                provider.frame_key.frame_index
+                if provider.frame_key is not None
+                else 0,
+            )
+            self._result_frame_provider_cache[cache_key] = local_provider
+            return TaskApplyOutcome.accepted(
+                self._result_query_outcome(result)
+            )
+
+        def succeeded(value: object) -> None:
+            if (
+                type(value) is not GuiCommandOutcome
+                or accepted_result is None
+                or materialized_provider is None
+            ):
+                raise RuntimeError(
+                    "accepted frame query has no typed result"
+                )
+            current = self._current_result_provider()
+            if current is not None:
+                try:
+                    current_frame_provider = (
+                        self._result_frame_provider_for_query(current)
+                    )
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    current_frame_provider = None
+                if (
+                    current_frame_provider is not None
+                    and current_frame_provider.frame_key
+                    == materialized_provider.frame_key
+                ):
+                    self.resultQueryCompleted.emit(accepted_result)
+            self.status_panel.set_state("当前增量结果查询完成", 4000)
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "当前增量结果查询失败",
+            task_name="当前增量结果查询",
+            on_cancelled=lambda: self.status_panel.set_state(
+                "当前增量结果查询已取消",
+                4000,
+            ),
+            apply_result=apply_result,
+            completion=completion,
+        )
+        if not started:
+            return self._rejected_command(
+                command_id,
+                "task.start.rejected",
+                "the frame result query task could not be started",
+            )
+        return GuiCommandReceipt.pending(command_id, completion)
+
     def _begin_result_query_materialization(
         self,
         command_id: int,
@@ -3362,6 +4092,7 @@ class FEMMainWindow(QMainWindow):
             task = self.session.prepare_result_materialization(
                 provider.source.run_id,
                 (query.field_key,),
+                detach_record=False,
             )
             completion = GuiCommandCompletion(command_id)
             accepted_delta: SessionDelta | None = None
@@ -3531,6 +4262,7 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         self._clear_pending_result_query_materialization()
+        self._refresh_result_controls()
         self._update_action_states()
 
     def _clear_pending_result_query_materialization(self) -> None:
@@ -4162,6 +4894,7 @@ class FEMMainWindow(QMainWindow):
             viewport_payload = self.viewport._result_render_payload
             viewport_is_current = (
                 type(viewport_payload) is ResultRenderPayload
+                and self.viewport.active_display_source == "result"
                 and viewport_payload.topology.source == provider.source
                 and viewport_payload.topology.materialization_generation
                 == provider.snapshot.generation
@@ -4280,6 +5013,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
+        self._pending_named_region_edit_name = None
         self._pending_local_mesh_selection = False
         self._temporary_selection_context = None
         self._temporary_selection_owner = None
@@ -4295,6 +5029,7 @@ class FEMMainWindow(QMainWindow):
         self.result_provider = None
         self.result_selection = None
         self._result_visualization_provider_cache = None
+        self._reset_result_frame_state()
         self.selection.clear()
         self._display = DisplayState()
         if clear_tree:
@@ -4324,6 +5059,7 @@ class FEMMainWindow(QMainWindow):
         self.result_provider = None
         self.result_selection = None
         self._result_visualization_provider_cache = None
+        self._reset_result_frame_state()
         self._display = DisplayState()
         active_context = self.workspace.active_document()
         if active_context is not None:
@@ -4337,7 +5073,11 @@ class FEMMainWindow(QMainWindow):
         self.selection.clear()
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
-        self.viewport.clear_selection()
+        # Result teardown is part of the same visible scene transaction as
+        # the model-scene restore below.  A default ``clear_selection``
+        # render exposes the half-torn-down (often grey) viewport for one
+        # frame before the replacement scene is ready.
+        self.viewport.clear_selection(render=False)
         if self.document.source_kind == "result":
             self.viewport.clear_model()
             return
@@ -4345,6 +5085,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.set_model(
                 self.document.artifact.model,
                 self.geometry,
+                preserve_result_cache=False,
                 refresh_symbols=False,
                 render=False,
                 mesh_selection_topology_provider=(
@@ -4362,11 +5103,21 @@ class FEMMainWindow(QMainWindow):
     def _install_result_provider_projection(
         self,
         provider: ResultProvider,
+        *,
+        _defer_payload: bool = False,
     ) -> None:
         """Install one exact provider across the typed GUI consumers."""
 
         if type(provider) is not ResultProvider:
             raise TypeError("provider must be exactly ResultProvider")
+        # A solve/materialization completion can call this method while the
+        # task controller is still in its terminal callback.  Keep the typed
+        # provider/tree projection synchronous so the remainder of that
+        # callback sees the accepted result, but defer the expensive payload
+        # construction until the task slot is idle.  Returning before setting
+        # ``result_provider`` breaks the activation path and leaves the GUI in
+        # a transient "no result" state.
+        defer_payload = bool(_defer_payload or self.busy)
         identity = self.session.current_result_identity()
         if (
             identity is None
@@ -4382,10 +5133,14 @@ class FEMMainWindow(QMainWindow):
             type(previous_provider) is ResultProvider
             and previous_provider.source != provider.source
         ):
+            self._reset_result_frame_state()
             self.selection.clear()
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
-            self.viewport.clear_selection()
+            # Keep the previous result frame visible until the replacement
+            # provider/payload has been committed.  Rendering here would
+            # briefly paint an empty intermediate scene during a run switch.
+            self.viewport.clear_selection(render=False)
         cached = self._result_visualization_provider_cache
         if (
             cached is not None
@@ -4397,6 +5152,7 @@ class FEMMainWindow(QMainWindow):
             self._result_visualization_provider_cache = None
 
         catalog = provider.catalog()
+        self._ensure_multiframe_contour_defaults(provider)
         if not catalog.fields:
             inspection = self.inspection_service
             self._clear_result_projection()
@@ -4424,14 +5180,82 @@ class FEMMainWindow(QMainWindow):
             )
             else catalog.default_selection
         )
-        render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+        if type(selection) is not ScalarFieldSelection:
+            raise RuntimeError("result catalog has no default selection")
+        # A presentation state can carry a lazy field from an earlier run.
+        # Do not recover it while accepting a new result: that callback runs
+        # on the GUI thread.  Use the ready catalog default for the first
+        # paint; the user can request the lazy field through the normal
+        # asynchronous selection path afterwards.
+        selected_availability = self._catalog_availability_for_selection(
+            provider,
+            selection,
         )
-        payload = self._build_result_render_payload(
+        if selected_availability.state is not FieldState.READY:
+            fallback = catalog.default_selection
+            if type(fallback) is not ScalarFieldSelection:
+                raise RuntimeError("result catalog has no ready selection")
+            fallback_availability = self._catalog_availability_for_selection(
+                provider,
+                fallback,
+            )
+            if fallback_availability.state is not FieldState.READY:
+                raise RuntimeError("result catalog has no ready default field")
+            selection = fallback
+        frame_provider = self._frame_result_provider_for_display(
+            provider,
+            selection,
+        )
+        frame_availability = self._catalog_availability_for_selection(
+            frame_provider,
+            selection,
+        )
+        if frame_availability.state is not FieldState.READY:
+            fallback = catalog.default_selection
+            if type(fallback) is not ScalarFieldSelection:
+                raise RuntimeError("result frame has no ready selection")
+            fallback_availability = self._catalog_availability_for_selection(
+                frame_provider,
+                fallback,
+            )
+            if fallback_availability.state is not FieldState.READY:
+                raise RuntimeError("result frame has no ready default field")
+            selection = fallback
+        render_provider, render_selection = self._result_visualization_provider(
+            frame_provider,
+            selection,
+        )
+        render_field_ready = self._result_field_is_ready(
             render_provider,
             render_selection,
         )
-        self._prepare_viewport_for_result_source(source)
+        try:
+            topology_size = (
+                max(
+                    len(getattr(render_provider.snapshot.topology, "element_ids", ())),
+                    len(render_provider.field(render_selection.field_key).locations),
+                )
+                if render_field_ready
+                else 0
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            topology_size = 0
+        # The initial provider projection used to build this topology on the
+        # GUI thread.  Keep the first paint asynchronous for the same large
+        # result sizes already covered by field-switch projection.
+        defer_payload = bool(
+            defer_payload
+            or not render_field_ready
+            or topology_size >= _RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD
+        )
+        payload = (
+            None
+            if defer_payload
+            else self._build_result_render_payload(
+                render_provider,
+                render_selection,
+            )
+        )
         previous_catalog = self.result_tree.catalog
         previous_selection = self.result_selection
         inspection = self.inspection_service
@@ -4457,11 +5281,25 @@ class FEMMainWindow(QMainWindow):
                 )
             if inspection is not None:
                 inspection.update_result_provider(provider)
-            self._install_viewport_result_payload(
-                payload,
-                shape_mode=self._display.shape_mode,
-                contour_enabled=self._display.contour_enabled,
-            )
+            if payload is not None:
+                self._install_viewport_result_payload(
+                    payload,
+                    shape_mode=self._display.shape_mode,
+                    contour_enabled=self._display.contour_enabled,
+                    range_provider=provider,
+                    range_selection=selection,
+                    # A global-step legend may scan/materialize every frame.
+                    # Keep the historical immediate range only for a tiny
+                    # frame set. Large ranges stay out of the GUI thread and
+                    # use the dedicated worker.
+                    allow_sync_range=(
+                        not self.busy
+                        and self._small_global_legend_range_can_run_synchronously(
+                            provider,
+                            topology_size,
+                        )
+                    ),
+                )
         except Exception:
             try:
                 if previous_catalog is None:
@@ -4500,7 +5338,14 @@ class FEMMainWindow(QMainWindow):
             raise
         self.result_provider = provider
         self.result_selection = selection
+        self._refresh_result_frame_controls(provider)
         self.status_panel.set_result(self._result_status_text())
+        if defer_payload:
+            self._pending_result_display_apply = True
+            self.status_panel.set_state("正在后台准备结果显示……")
+            if not self.busy:
+                self._defer_ui(self._apply_display)
+            return
         visual_selection = self._result_averaging_visual_selection(
             provider,
             selection,
@@ -4583,9 +5428,8 @@ class FEMMainWindow(QMainWindow):
             for name in (
                 "overlay",
                 "display_settings",
-                "scale",
-                "contour_options",
-                "query",
+                "display_group_view_cut",
+                "query_probe",
                 "export_csv",
                 "export_vtk",
                 "screenshot",
@@ -4711,16 +5555,67 @@ class FEMMainWindow(QMainWindow):
 
     def _build_result_ribbon_page(self) -> None:
         page = self.ribbon.add_page("结果")
-        shape_group = page.add_group("形状")
+        shape_group = page.add_group("形状与变形")
         for name in ("undeformed", "deformed"):
             shape_group.add_action(self.actions[name])
-        contour_group = page.add_group("云图")
-        contour_group.add_action(self.actions["contour"], large=True)
 
-        field_group = page.add_group("主变量")
-        field_host = _PreferredWidthHost(312, 246, field_group)
+        scale_host = QWidget(shape_group)
+        scale_layout = QGridLayout(scale_host)
+        scale_layout.setContentsMargins(0, 0, 0, 0)
+        scale_layout.setHorizontalSpacing(3)
+        scale_layout.setVerticalSpacing(2)
+        self.result_scale_combo = QComboBox(scale_host)
+        self.result_scale_combo.setObjectName("resultScaleCombo")
+        self.result_scale_combo.setProperty("resultRibbonCombo", True)
+        self.result_scale_combo.addItem("自动", "auto")
+        self.result_scale_combo.addItem("真实", "real")
+        self.result_scale_combo.addItem("自定义", "custom")
+        self.result_scale_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        scale_text_width = max(
+            self.result_scale_combo.fontMetrics().horizontalAdvance(
+                self.result_scale_combo.itemText(index)
+            )
+            for index in range(self.result_scale_combo.count())
+        )
+        scale_width = max(78, scale_text_width + 42)
+        self.result_scale_combo.setFixedWidth(scale_width)
+        self.result_scale_combo.setToolTip(
+            "变形比例：自动、真实或自定义"
+        )
+        self.result_scale_value = CompactDoubleSpinBox(
+            scale_host,
+            display_decimals=2,
+        )
+        self.result_scale_value.setObjectName("resultScaleValue")
+        self.result_scale_value.setRange(0.0, 1.0e12)
+        self.result_scale_value.setDecimals(12)
+        self.result_scale_value.setValue(self._scale_value)
+        self.result_scale_value.setFixedWidth(scale_width)
+        self.result_scale_value.setToolTip(
+            "当前变形显示比例；选择自定义后可以编辑"
+        )
+        self.result_scale_value.setEnabled(False)
+        scale_layout.addWidget(self.result_scale_combo, 0, 0)
+        scale_layout.addWidget(self.result_scale_value, 1, 0)
+        shape_group.add_widget(scale_host)
+        shape_group.add_action(self.actions["overlay"])
+        self.result_scale_combo.activated.connect(
+            self._result_scale_mode_changed
+        )
+        self.result_scale_value.valueChanged.connect(
+            self._result_scale_value_changed
+        )
+
+        field_group = page.add_group("场变量")
+        field_host = _PreferredWidthHost(225, 205, field_group)
         field_host.setObjectName("resultFieldControls")
-        field_host.setMaximumWidth(390)
+        field_host.setMaximumWidth(300)
+        field_host.setToolTip(
+            "选择要显示的场变量和分量。元素结果默认采用区域内节点平均，"
+            "节点结果直接使用节点值；高级平均设置位于显示与云图设置。"
+        )
         field_host.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Preferred,
@@ -4731,10 +5626,19 @@ class FEMMainWindow(QMainWindow):
         field_layout.setVerticalSpacing(4)
         self.result_variable_combo = _ExactDataComboBox(field_host)
         self.result_variable_combo.setObjectName("resultVariableCombo")
+        self.result_variable_combo.setProperty("resultRibbonCombo", True)
         self.result_component_combo = _ExactDataComboBox(field_host)
         self.result_component_combo.setObjectName("resultComponentCombo")
+        self.result_component_combo.setProperty("resultRibbonCombo", True)
+        self.result_variable_combo.setToolTip("选择当前结果场变量")
+        self.result_component_combo.setToolTip("选择当前结果场变量的分量")
+
+        # Keep the complete position model internally for Probe, XY and
+        # exact-result compatibility, but do not expose it as a Ribbon
+        # selector.  Display position is resolved automatically below.
         self.result_position_combo = _ExactDataComboBox(field_host)
         self.result_position_combo.setObjectName("resultPositionCombo")
+        self.result_position_combo.hide()
         self.result_averaging_threshold = CompactDoubleSpinBox(
             field_host,
             minimum_display_decimals=0,
@@ -4752,23 +5656,20 @@ class FEMMainWindow(QMainWindow):
         self.result_averaging_threshold.setFixedHeight(24)
         self.result_averaging_threshold.setFixedWidth(58)
         self.result_averaging_threshold.setToolTip(
-            "仅控制平均节点应力云图；不改变查询或 CSV 导出的结果数据。"
+            "仅控制连续体节点平均云图；不改变查询或 CSV 导出的结果数据。"
         )
-        for combo in (
-            self.result_variable_combo,
-            self.result_component_combo,
-            self.result_position_combo,
-        ):
+        self.result_averaging_threshold.hide()
+        for combo in (self.result_variable_combo, self.result_component_combo):
             combo.setFixedHeight(24)
             combo.setEnabled(False)
-        self.result_variable_combo.setMinimumWidth(76)
+        self.result_variable_combo.setMinimumWidth(64)
         component_minimum_width = max(
-            138,
+            120,
             (
                 self.result_component_combo.fontMetrics().horizontalAdvance(
                     "MaxPrincipal"
                 )
-                + 44
+                + 28
             ),
         )
         self.result_component_combo.setMinimumWidth(
@@ -4777,12 +5678,8 @@ class FEMMainWindow(QMainWindow):
         self.result_component_combo.view().setMinimumWidth(
             component_minimum_width
         )
-        self.result_position_combo.setMinimumWidth(90)
-        for combo in (
-            self.result_variable_combo,
-            self.result_component_combo,
-            self.result_position_combo,
-        ):
+        self.result_position_combo.setMinimumWidth(78)
+        for combo in (self.result_variable_combo, self.result_component_combo):
             combo.setSizePolicy(
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Fixed,
@@ -4791,7 +5688,7 @@ class FEMMainWindow(QMainWindow):
         component_label = QLabel("分量", field_host)
         position_label = QLabel("位置", field_host)
         self.result_averaging_threshold_label = QLabel(
-            "阈值（%）",
+            "阈值",
             field_host,
         )
         for label in (variable_label, component_label, position_label):
@@ -4801,19 +5698,12 @@ class FEMMainWindow(QMainWindow):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
         self.result_averaging_threshold_label.setFixedHeight(24)
-        position_host = QWidget(field_host)
-        position_layout = QHBoxLayout(position_host)
-        position_layout.setContentsMargins(0, 0, 0, 0)
-        position_layout.setSpacing(5)
-        position_layout.addWidget(self.result_position_combo, 1)
-        position_layout.addWidget(self.result_averaging_threshold_label)
-        position_layout.addWidget(self.result_averaging_threshold)
+        position_label.hide()
+        self.result_averaging_threshold_label.hide()
         field_layout.addWidget(variable_label, 0, 0)
-        field_layout.addWidget(self.result_variable_combo, 0, 1)
-        field_layout.addWidget(component_label, 0, 2)
-        field_layout.addWidget(self.result_component_combo, 0, 3)
-        field_layout.addWidget(position_label, 1, 0)
-        field_layout.addWidget(position_host, 1, 1, 1, 3)
+        field_layout.addWidget(self.result_variable_combo, 0, 1, 1, 3)
+        field_layout.addWidget(component_label, 1, 0)
+        field_layout.addWidget(self.result_component_combo, 1, 1, 1, 3)
         field_layout.setColumnStretch(1, 1)
         field_layout.setColumnStretch(3, 2)
         field_group.add_widget(field_host)
@@ -4825,37 +5715,138 @@ class FEMMainWindow(QMainWindow):
         )
         self._sync_result_averaging_threshold_control()
 
-        deformation_group = page.add_group("变形")
-        scale_host = QWidget(deformation_group)
-        scale_layout = QGridLayout(scale_host)
-        scale_layout.setContentsMargins(0, 0, 0, 0)
-        scale_layout.setHorizontalSpacing(3)
-        scale_layout.setVerticalSpacing(2)
-        self.result_scale_combo = QComboBox(scale_host)
-        self.result_scale_combo.setObjectName("resultScaleCombo")
-        self.result_scale_combo.addItem("自动比例", "auto")
-        self.result_scale_combo.addItem("真实比例", "real")
-        self.result_scale_combo.addItem("自定义比例", "custom")
-        self.result_scale_combo.setFixedWidth(100)
-        self.result_scale_value = CompactDoubleSpinBox(scale_host)
-        self.result_scale_value.setObjectName("resultScaleValue")
-        self.result_scale_value.setRange(0.0, 1.0e12)
-        self.result_scale_value.setDecimals(2)
-        self.result_scale_value.setValue(self._scale_value)
-        self.result_scale_value.setFixedWidth(100)
-        self.result_scale_value.setEnabled(False)
-        scale_layout.addWidget(self.result_scale_combo, 0, 0)
-        scale_layout.addWidget(self.result_scale_value, 1, 0)
-        deformation_group.add_widget(scale_host)
-        deformation_group.add_action(self.actions["overlay"], large=True)
-        self.result_scale_combo.activated.connect(self._result_scale_mode_changed)
-        self.result_scale_value.valueChanged.connect(self._result_scale_value_changed)
+        display_group = page.add_group("显示")
+        display_group.add_action(self.actions["contour"])
+        self.result_display_settings_button = display_group.add_action(
+            self.actions["display_settings"],
+        )
+        display_group.add_action(self.actions["display_group_view_cut"])
 
-        display_group = page.add_group("设置")
-        display_group.add_action(self.actions["display_settings"])
-        display_group.add_action(self.actions["contour_options"])
-        output_group = page.add_group("查询与导出")
-        output_group.add_action(self.actions["query"], large=True)
+        frame_group = page.add_group("帧控制")
+        frame_host = _PreferredWidthHost(220, 190, frame_group)
+        frame_host.setObjectName("resultFrameControls")
+        frame_layout = QGridLayout(frame_host)
+        frame_layout.setContentsMargins(4, 0, 4, 0)
+        frame_layout.setHorizontalSpacing(3)
+        frame_layout.setVerticalSpacing(3)
+        frame_label = QLabel("增量", frame_host)
+        frame_label.setFixedWidth(36)
+        frame_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.result_frame_combo = _ExactDataComboBox(frame_host)
+        self.result_frame_combo.setObjectName("resultFrameCombo")
+        self.result_frame_combo.setProperty("resultRibbonCombo", True)
+        self.result_frame_combo.setMinimumWidth(170)
+        self.result_frame_combo.setFixedHeight(24)
+        self.result_frame_combo.activated.connect(self._result_frame_changed)
+        frame_layout.addWidget(frame_label, 0, 0)
+        frame_layout.addWidget(self.result_frame_combo, 0, 1, 1, 5)
+        self.result_frame_first_button = QToolButton(frame_host)
+        self.result_frame_first_button.setObjectName("resultFrameFirst")
+        self.result_frame_first_button.setText("")
+        self.result_frame_first_button.setIcon(icon("first_frame"))
+        self.result_frame_first_button.setToolTip("首帧")
+        self.result_frame_first_button.setAccessibleName("首帧")
+        self.result_frame_previous_button = QToolButton(frame_host)
+        self.result_frame_previous_button.setObjectName("resultFramePrevious")
+        self.result_frame_previous_button.setText("")
+        self.result_frame_previous_button.setIcon(icon("previous_frame"))
+        self.result_frame_previous_button.setToolTip("上一帧")
+        self.result_frame_previous_button.setAccessibleName("上一帧")
+        self.result_frame_play_button = QToolButton(frame_host)
+        self.result_frame_play_button.setObjectName("resultFramePlay")
+        self.result_frame_play_button.setText("")
+        self.result_frame_play_button.setIcon(icon("play"))
+        self.result_frame_play_button.setToolTip("播放结果动画")
+        self.result_frame_play_button.setAccessibleName("播放结果动画")
+        self.result_frame_next_button = QToolButton(frame_host)
+        self.result_frame_next_button.setObjectName("resultFrameNext")
+        self.result_frame_next_button.setText("")
+        self.result_frame_next_button.setIcon(icon("next_frame"))
+        self.result_frame_next_button.setToolTip("下一帧")
+        self.result_frame_next_button.setAccessibleName("下一帧")
+        self.result_frame_last_button = QToolButton(frame_host)
+        self.result_frame_last_button.setObjectName("resultFrameLast")
+        self.result_frame_last_button.setText("")
+        self.result_frame_last_button.setIcon(icon("last_frame"))
+        self.result_frame_last_button.setToolTip("末帧")
+        self.result_frame_last_button.setAccessibleName("末帧")
+        for button in (
+            self.result_frame_first_button,
+            self.result_frame_previous_button,
+            self.result_frame_play_button,
+            self.result_frame_next_button,
+            self.result_frame_last_button,
+        ):
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setIconSize(QSize(18, 18))
+            button.setFixedSize(28, 25)
+        for column, button in enumerate(
+            (
+                self.result_frame_first_button,
+                self.result_frame_previous_button,
+                self.result_frame_play_button,
+                self.result_frame_next_button,
+                self.result_frame_last_button,
+            ),
+            start=1,
+        ):
+            frame_layout.addWidget(button, 1, column)
+            frame_layout.setColumnStretch(column, 1)
+
+        # These two widgets remain as compatibility/state mirrors for the
+        # existing animation implementation.  They are intentionally not
+        # placed in the Ribbon: diagnostics and playback speed belong to the
+        # frame tooltip and the animation settings dialog, respectively.
+        self.result_frame_info_label = QLabel("—", frame_host)
+        self.result_frame_info_label.setObjectName("resultFrameInfo")
+        self.result_frame_info_label.setMinimumWidth(180)
+        self.result_frame_info_label.setToolTip(
+            "显示当前增量的载荷因子、Newton 迭代次数和残差。"
+        )
+        self.result_frame_info_label.hide()
+        self.result_frame_speed_combo = QComboBox(frame_host)
+        self.result_frame_speed_combo.setObjectName("resultFrameSpeed")
+        self.result_frame_speed_combo.addItem("慢", 500)
+        self.result_frame_speed_combo.addItem("正常", 250)
+        self.result_frame_speed_combo.addItem("快", 100)
+        self.result_frame_speed_combo.setCurrentIndex(1)
+        self.result_frame_speed_combo.setFixedWidth(54)
+        self.result_frame_speed_combo.setFixedHeight(24)
+        self.result_frame_speed_combo.setToolTip("动画播放速度")
+        self.result_frame_speed_combo.hide()
+        frame_group.add_widget(frame_host)
+        self.result_animation_button = frame_group.add_action(
+            self.actions["animation_settings"],
+        )
+        self.result_frame_first_button.clicked.connect(
+            lambda: self._jump_result_frame("first")
+        )
+        self.result_frame_previous_button.clicked.connect(
+            lambda: self._step_result_frame(-1)
+        )
+        self.result_frame_play_button.clicked.connect(
+            self._toggle_result_animation
+        )
+        self.result_frame_next_button.clicked.connect(
+            lambda: self._step_result_frame(1)
+        )
+        self.result_frame_last_button.clicked.connect(
+            lambda: self._jump_result_frame("last")
+        )
+        self.result_frame_speed_combo.activated.connect(
+            self._result_frame_speed_changed
+        )
+
+        query_group = page.add_group("查询")
+        self.result_query_probe_button = query_group.add_action(
+            self.actions["query_probe"],
+        )
+        self.result_xy_data_button = query_group.add_action(
+            self.actions["xy_data"],
+        )
+        output_group = page.add_group("输出")
         for name in ("export_csv", "screenshot"):
             output_group.add_action(self.actions[name])
 
@@ -5131,8 +6122,18 @@ class FEMMainWindow(QMainWindow):
             self.navigation.show_result()
         elif module_name in {"项目", "几何", "网格", "模型", "分析"}:
             self.navigation.show_model()
-        self._project_viewport_for_module(module_name)
-        self._apply_module_symbol_policy(module_name)
+        # Module switches touch the scene and the symbol policy together.
+        # Rendering after each sub-operation briefly exposes a half-switched
+        # scene (for example, an empty result layer followed by the model
+        # layer), which is perceived as a grey/bright flash.  Keep both
+        # changes inside one viewport transaction and paint once.
+        factory = getattr(self.viewport, "render_transaction", None)
+        transaction = factory() if callable(factory) else nullcontext()
+        with transaction:
+            self._project_viewport_for_module(module_name, render=False)
+            self._apply_module_symbol_policy(module_name, render=False)
+        if not self._workspace_activation:
+            self.viewport.render()
         self._update_action_states()
 
     def _apply_module_symbol_policy(
@@ -5183,15 +6184,12 @@ class FEMMainWindow(QMainWindow):
             if provider is not None and type(selection) is ScalarFieldSelection:
                 if self._viewport_result_scene_is_current(provider, selection):
                     return
-                artifact = self.document.artifact
-                if (
-                    artifact is not None
-                    and artifact.artifact_id == provider.source.artifact_id
-                ):
-                    self._restore_viewport_model_scene(
-                        render=False,
-                        reset_camera=reset_camera,
-                    )
+                # Do not restore the base model as a placeholder while a
+                # result topology is being prepared. That replacement is
+                # visible immediately after this method returns and creates
+                # the grey/model -> bright/contour flash reported during a
+                # fast result switch. _apply_display keeps the last complete
+                # scene until its payload commit is ready.
                 self._apply_display(render=render)
             else:
                 self._project_mesh_or_geometry_fallback(
@@ -5226,7 +6224,10 @@ class FEMMainWindow(QMainWindow):
         reset_camera: bool = True,
     ) -> None:
         if self.document.artifact is not None and self.geometry is not None:
-            self.actions["edges"].setChecked(self._model_edges_visible)
+            # Keep the shared ribbon action synchronized without routing a
+            # result scene update back into the model-scene preference.
+            with QSignalBlocker(self.actions["edges"]):
+                self.actions["edges"].setChecked(self._model_edges_visible)
             self._restore_viewport_model_scene(
                 render=render,
                 reset_camera=reset_camera,
@@ -5247,8 +6248,15 @@ class FEMMainWindow(QMainWindow):
         provider: ResultProvider,
         selection: ScalarFieldSelection,
     ) -> bool:
-        render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+        if self._result_frame_index != 0:
+            return False
+        frame_provider = self._frame_result_provider_for_display(
+            provider,
+            selection,
+        )
+        render_provider, render_selection = self._result_visualization_provider(
+            frame_provider,
+            selection,
         )
         return self.viewport.result_scene_is_current(
             render_provider.source,
@@ -5372,7 +6380,13 @@ class FEMMainWindow(QMainWindow):
                     combo.addItem(name, name)
                 index = combo.findData(selected)
                 combo.setCurrentIndex(index if index >= 0 else 0)
-            combo.setEnabled(bool(names) and not self.busy)
+            combo.setEnabled(
+                bool(names)
+                and (
+                    not self.busy
+                    or self._result_display_request_pending()
+                )
+            )
             combo.blockSignals(False)
 
     def _set_current_step(
@@ -5395,8 +6409,1141 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state(f"已选择分析步：{name}", 4000)
         self._update_action_states()
 
+    def _result_frame_sequence(
+        self,
+        provider: ResultProvider | None,
+    ) -> tuple[int, ...]:
+        if provider is None:
+            return ()
+        frame_indices = provider.frame_indices
+        return frame_indices if frame_indices else (0,)
+
+    def _result_animation_sequence(
+        self,
+        provider: ResultProvider,
+    ) -> tuple[int, ...]:
+        """Return the configured frame/time-sampled animation sequence."""
+
+        frame_indices = tuple(provider.frame_indices)
+        if not frame_indices:
+            return ()
+        start = self._result_animation_start_frame
+        end = self._result_animation_end_frame
+        if start not in frame_indices:
+            start = frame_indices[0]
+        if end not in frame_indices:
+            end = frame_indices[-1]
+        start_position = frame_indices.index(start)
+        end_position = frame_indices.index(end)
+        if start_position > end_position:
+            start_position, end_position = end_position, start_position
+        selected = frame_indices[start_position : end_position + 1]
+        if self._result_animation_sampling_mode == "time":
+            interval = float(self._result_animation_time_interval)
+            if interval > 0.0:
+                sampled: list[int] = []
+                start_time = self._result_frame_time_value(provider, selected[0])
+                if start_time is not None:
+                    next_time = start_time
+                    for frame_index in selected:
+                        frame_time = self._result_frame_time_value(
+                            provider,
+                            frame_index,
+                        )
+                        if frame_time is None:
+                            continue
+                        if frame_time + 1.0e-12 >= next_time:
+                            sampled.append(frame_index)
+                            next_time += interval
+                    if selected[-1] not in sampled:
+                        sampled.append(selected[-1])
+                    if sampled:
+                        return tuple(dict.fromkeys(sampled))
+        stride = max(1, int(self._result_animation_frame_step))
+        sampled = list(selected[::stride])
+        if selected[-1] not in sampled:
+            sampled.append(selected[-1])
+        return tuple(sampled)
+
+    @staticmethod
+    def _result_frame_time_value(
+        provider: ResultProvider,
+        frame_index: int,
+    ) -> float | None:
+        frame = FEMMainWindow._result_frame_for_index(provider, frame_index)
+        if frame is None:
+            return None
+        dynamic_data = getattr(frame, "dynamic_data", None)
+        raw = (
+            getattr(dynamic_data, "step_time", None)
+            if dynamic_data is not None
+            else None
+        )
+        outputs = getattr(frame, "outputs", {})
+        if raw is None and hasattr(outputs, "get"):
+            raw = outputs.get("time", outputs.get("step_time"))
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if np.isfinite(value) else None
+
+    @staticmethod
+    def _result_frame_for_index(
+        provider: ResultProvider,
+        frame_index: int,
+    ) -> object | None:
+        result = provider.model_result
+        if result is None:
+            return None
+        if frame_index == 0:
+            return result
+        return next(
+            (
+                frame
+                for frame in result.frames
+                if frame.frame_index == frame_index
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _result_frame_info_text(
+        provider: ResultProvider | None,
+        frame_index: int,
+    ) -> str:
+        if provider is None:
+            return "—"
+        frame = FEMMainWindow._result_frame_for_index(provider, frame_index)
+        if frame is None:
+            return "—"
+        if str(getattr(getattr(frame, "step", None), "procedure", "")).casefold() == "dynamic":
+            outputs = getattr(frame, "outputs", {})
+            if not isinstance(outputs, dict):
+                outputs = dict(outputs) if hasattr(outputs, "items") else {}
+            if frame_index == 0:
+                prefix = "最终结果"
+            elif provider.frame_indices and frame_index == provider.frame_indices[-1]:
+                prefix = f"增量 {frame_index}（最终结果）"
+            else:
+                prefix = f"增量 {frame_index}"
+            time = outputs.get("time", outputs.get("step_time"))
+            increment = outputs.get("time_increment")
+            velocity = FEMMainWindow._result_output_max(outputs, "velocity")
+            acceleration = FEMMainWindow._result_output_max(
+                outputs,
+                "acceleration",
+            )
+            total_energy = outputs.get("total_energy")
+            details = [
+                prefix,
+                f"t={float(time):.6g}" if time is not None else "t=—",
+                f"Δt={float(increment):.3e}"
+                if increment is not None
+                else "Δt=—",
+                f"max|V|={velocity:.3e}" if velocity is not None else "max|V|=—",
+                f"max|A|={acceleration:.3e}"
+                if acceleration is not None
+                else "max|A|=—",
+                f"E={float(total_energy):.3e}"
+                if total_energy is not None
+                else "E=—",
+            ]
+            return " · ".join(details)
+        load_factor = getattr(frame, "load_factor", None)
+        iterations = getattr(frame, "iterations", None)
+        residual_norm = getattr(frame, "residual_norm", None)
+        if frame_index == 0:
+            prefix = "最终结果"
+        elif provider.frame_indices and frame_index == provider.frame_indices[-1]:
+            prefix = f"增量 {frame_index}（最终结果）"
+        else:
+            prefix = f"增量 {frame_index}"
+        details = [
+            prefix,
+            f"λ={float(load_factor):.6g}"
+            if load_factor is not None
+            else "λ=—",
+            f"Newton={int(iterations)}"
+            if iterations is not None
+            else "Newton=—",
+            f"‖R‖={float(residual_norm):.3e}"
+            if residual_norm is not None
+            else "‖R‖=—",
+        ]
+        return " · ".join(details)
+
+    @staticmethod
+    def _result_output_max(outputs: object, name: str) -> float | None:
+        if not hasattr(outputs, "get"):
+            return None
+        raw = outputs.get(name)
+        if raw is None:
+            return None
+        try:
+            values = np.asarray(raw, dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if values.size == 0 or not np.all(np.isfinite(values)):
+            return None
+        return float(np.max(np.abs(values)))
+
+    def _reset_result_frame_state(self, *, reset_index: bool = True) -> None:
+        self._stop_result_animation(refresh=False)
+        if self.result_frame_play_button is not None:
+            self.result_frame_play_button.setIcon(icon("play"))
+            self.result_frame_play_button.setToolTip("播放结果动画")
+            self.result_frame_play_button.setAccessibleName("播放结果动画")
+        if reset_index:
+            self._result_frame_index = 0
+        self._result_animation_start_frame = None
+        self._result_animation_end_frame = None
+        self._result_animation_loop = True
+        self._result_animation_frame_step = 1
+        self._result_animation_sampling_mode = "frame"
+        self._result_animation_time_interval = 0.0
+        self._result_animation_playback_mode = "loop"
+        self._result_animation_speed = 1.0
+        self._result_animation_interval_ms = 250
+        self._result_animation_first_hold_ms = 0
+        self._result_animation_last_hold_ms = 0
+        self._result_animation_direction = 1
+        self._result_animation_hold_until = 0.0
+        self._animation_lock_snapshot = None
+        self._result_probe_markers.clear()
+        self._result_probe_pick_active = False
+        self._result_probe_pick_previous_mode = None
+        self._result_frame_timer.setInterval(250)
+        self._result_frame_provider_cache.clear()
+        self._result_topology_template_cache.clear()
+        self._result_global_legend_range_cache.clear()
+        self._pending_result_provider_projection = None
+        self._queued_result_selection = None
+        self._queued_result_frame_request = None
+        self._pending_frame_display_materialization = None
+        self._pending_ready_result_selection = None
+        self._pending_result_display_apply = False
+        self._pending_typed_result_display_settings = None
+        self._active_typed_result_projection_key = None
+        self._pending_typed_result_projection = None
+        self._active_result_topology_projection = None
+        self._pending_result_topology_projection = None
+        self._pending_result_global_legend_range = None
+        self.viewport.set_result_probe_markers((), render=False)
+
+    def _result_frame_speed_changed(self, _index: int) -> None:
+        combo = self.result_frame_speed_combo
+        if combo is None:
+            return
+        interval = combo.currentData()
+        if isinstance(interval, bool) or not isinstance(interval, int):
+            return
+        self._result_animation_interval_ms = interval
+        self._result_frame_timer.setInterval(
+            max(20, round(interval / max(0.1, self._result_animation_speed)))
+        )
+
+    def _begin_animation_locks(self, provider: ResultProvider) -> None:
+        if self._animation_lock_snapshot is not None:
+            return
+        if not (
+            self._result_animation_lock_deformation
+            or self._result_animation_lock_contour
+        ):
+            return
+        snapshot: dict[str, object] = {
+            "scale_mode": self._scale_mode,
+            "scale_value": self._scale_value,
+            "contour_options": dict(self._contour_options),
+        }
+        self._animation_lock_snapshot = snapshot
+        if self._result_animation_lock_deformation:
+            try:
+                locked_scale = self._result_deformation_scale(provider)
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                locked_scale = None
+            if locked_scale is not None:
+                self._scale_mode = "custom"
+                self._scale_value = float(locked_scale)
+        if self._result_animation_lock_contour:
+            contour_range = self.viewport.current_contour_range()
+            if contour_range is not None:
+                self._contour_options["range_mode"] = "manual"
+                self._contour_options["manual"] = True
+                self._contour_options["minimum"] = float(contour_range[0])
+                self._contour_options["maximum"] = float(contour_range[1])
+        try:
+            self._apply_display(render=False)
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            pass
+
+    def _end_animation_locks(self) -> None:
+        snapshot = self._animation_lock_snapshot
+        if snapshot is None:
+            return
+        self._animation_lock_snapshot = None
+        self._scale_mode = str(snapshot["scale_mode"])
+        self._scale_value = float(snapshot["scale_value"])
+        self._contour_options = dict(snapshot["contour_options"])
+        provider = self._current_result_provider()
+        if provider is not None:
+            try:
+                self._apply_display(render=False)
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                pass
+
+    def _stop_result_animation(self, *, refresh: bool = True) -> None:
+        self._result_frame_timer.stop()
+        self._end_animation_locks()
+        self._result_animation_direction = 1
+        self._result_animation_hold_until = 0.0
+        if refresh:
+            self._refresh_result_frame_controls(self._current_result_provider())
+
+    def _apply_result_animation_settings(self, settings: object) -> None:
+        if type(settings) is not dict:
+            return
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        start = settings.get("start_frame")
+        end = settings.get("end_frame")
+        interval = settings.get("interval_ms")
+        loop = settings.get("loop")
+        frame_step = settings.get("frame_step", 1)
+        sampling_mode = settings.get("sampling_mode", "frame")
+        time_interval = settings.get("time_interval", 0.0)
+        playback_mode = settings.get(
+            "playback_mode",
+            "loop" if loop is True else "once",
+        )
+        playback_speed = settings.get("playback_speed", 1.0)
+        first_hold_ms = settings.get("first_hold_ms", 0)
+        last_hold_ms = settings.get("last_hold_ms", 0)
+        lock_deformation = settings.get("lock_deformation_scale", False)
+        lock_contour = settings.get("lock_contour_range", False)
+        sync_annotations = settings.get("sync_annotations", True)
+        frame_indices = tuple(provider.frame_indices)
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or start not in frame_indices
+            or end not in frame_indices
+            or frame_indices.index(start) > frame_indices.index(end)
+            or type(interval) is not int
+            or interval < 20
+            or interval > 5000
+            or type(loop) is not bool
+            or type(frame_step) is not int
+            or frame_step < 1
+            or sampling_mode not in {"frame", "time"}
+            or isinstance(time_interval, bool)
+            or float(time_interval) < 0.0
+            or not np.isfinite(float(time_interval))
+            or playback_mode not in {"once", "loop", "pingpong", "reverse"}
+            or isinstance(playback_speed, bool)
+            or not 0.1 <= float(playback_speed) <= 10.0
+            or type(first_hold_ms) is not int
+            or first_hold_ms < 0
+            or type(last_hold_ms) is not int
+            or last_hold_ms < 0
+            or type(lock_deformation) is not bool
+            or type(lock_contour) is not bool
+            or type(sync_annotations) is not bool
+        ):
+            return
+        if self._result_frame_timer.isActive():
+            self._stop_result_animation()
+        self._result_animation_start_frame = start
+        self._result_animation_end_frame = end
+        self._result_animation_loop = loop
+        self._result_animation_interval_ms = interval
+        self._result_animation_frame_step = frame_step
+        self._result_animation_sampling_mode = str(sampling_mode)
+        self._result_animation_time_interval = float(time_interval)
+        self._result_animation_playback_mode = str(playback_mode)
+        self._result_animation_speed = float(playback_speed)
+        self._result_animation_first_hold_ms = first_hold_ms
+        self._result_animation_last_hold_ms = last_hold_ms
+        self._result_animation_lock_deformation = lock_deformation
+        self._result_animation_lock_contour = lock_contour
+        self._result_animation_sync_annotations = sync_annotations
+        self._result_animation_direction = (
+            -1 if playback_mode == "reverse" else 1
+        )
+        self._result_animation_hold_until = 0.0
+        self._result_frame_timer.setInterval(
+            max(20, round(interval / max(0.1, self._result_animation_speed)))
+        )
+        if self.result_frame_speed_combo is not None:
+            speed_index = self.result_frame_speed_combo.findData(interval)
+            if speed_index >= 0:
+                self.result_frame_speed_combo.setCurrentIndex(speed_index)
+        if self._result_frame_index not in self._result_animation_sequence(
+            provider
+        ):
+            self._set_result_frame(start)
+        self._refresh_result_frame_controls(provider)
+
+    def show_result_animation_dialog(self) -> None:
+        """Open the independent result animation settings dialog."""
+
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        frame_indices = tuple(provider.frame_indices)
+        current_frame = (
+            self._result_frame_index
+            if self._result_frame_index in frame_indices
+            else frame_indices[0]
+        )
+        dialog = ResultAnimationDialog(
+            frame_indices,
+            current_frame_index=current_frame,
+            start_frame=self._result_animation_start_frame,
+            end_frame=self._result_animation_end_frame,
+            interval_ms=self._result_animation_interval_ms,
+            loop=self._result_animation_loop,
+            frame_step=self._result_animation_frame_step,
+            sampling_mode=self._result_animation_sampling_mode,
+            time_interval=self._result_animation_time_interval,
+            playback_mode=self._result_animation_playback_mode,
+            playback_speed=self._result_animation_speed,
+            first_hold_ms=self._result_animation_first_hold_ms,
+            last_hold_ms=self._result_animation_last_hold_ms,
+            lock_deformation_scale=self._result_animation_lock_deformation,
+            lock_contour_range=self._result_animation_lock_contour,
+            sync_annotations=self._result_animation_sync_annotations,
+            parent=self,
+        )
+        dialog.applyRequested.connect(self._apply_result_animation_settings)
+        dialog.exportRequested.connect(self._export_result_animation)
+        self._exec_view_dialog(dialog)
+
+    def _export_animation_frame_sequence(
+        self,
+        provider: ResultProvider,
+    ) -> tuple[int, ...]:
+        """Build one finite export sequence from the current animation state."""
+
+        sequence = list(self._result_animation_sequence(provider))
+        mode = self._result_animation_playback_mode
+        if mode == "reverse":
+            sequence.reverse()
+        elif mode == "pingpong" and len(sequence) > 1:
+            sequence.extend(sequence[-2:0:-1])
+        if not sequence:
+            return ()
+        interval = max(
+            20,
+            round(
+                self._result_animation_interval_ms
+                / max(0.1, self._result_animation_speed)
+            ),
+        )
+        first_hold = max(0, math.ceil(self._result_animation_first_hold_ms / interval))
+        last_hold = max(0, math.ceil(self._result_animation_last_hold_ms / interval))
+        if first_hold:
+            sequence[0:0] = [sequence[0]] * first_hold
+        if last_hold:
+            sequence.extend([sequence[-1]] * last_hold)
+        return tuple(sequence)
+
+    def _export_result_animation(self, settings: object) -> None:
+        """Export the configured result frames as PNGs, GIF, or video."""
+
+        if type(settings) is not dict:
+            return
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        # Export should use the settings currently visible in the dialog,
+        # even when the user pressed Export before Apply.
+        self._apply_result_animation_settings(settings)
+        sequence = self._export_animation_frame_sequence(provider)
+        if not sequence:
+            self._show_error("导出动画", "当前帧范围没有可导出的结果帧")
+            return
+        export_kind, accepted = QInputDialog.getItem(
+            self,
+            "导出动画",
+            "导出格式：",
+            ("PNG 帧序列", "GIF 动画", "MP4 视频"),
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        target: Path | None = None
+        output_directory: Path | None = None
+        if export_kind == "PNG 帧序列":
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                "选择帧序列目录",
+            )
+            if not directory:
+                return
+            output_directory = Path(directory)
+            output_directory.mkdir(parents=True, exist_ok=True)
+        else:
+            suffix = ".gif" if export_kind == "GIF 动画" else ".mp4"
+            default = (
+                (self.document.path.stem if self.document.path else "result")
+                + "_animation"
+                + suffix
+            )
+            filename, _filter = QFileDialog.getSaveFileName(
+                self,
+                "保存动画文件",
+                default,
+                f"{export_kind} (*{suffix})",
+            )
+            if not filename:
+                return
+            target = Path(filename).with_suffix(suffix)
+
+        old_frame = self._result_frame_index
+        self._stop_result_animation(refresh=False)
+        self.status_panel.set_state(f"正在导出动画（{len(sequence)} 帧）……")
+        interval = max(
+            20,
+            round(
+                self._result_animation_interval_ms
+                / max(0.1, self._result_animation_speed)
+            ),
+        )
+        writer_open = False
+        try:
+            if target is not None:
+                self.viewport.begin_animation_export(
+                    str(target),
+                    fps=1000.0 / interval,
+                )
+                writer_open = True
+            for position, frame_index in enumerate(sequence, start=1):
+                if self._result_frame_index != frame_index:
+                    self._set_result_frame(frame_index)
+                if self._result_frame_index != frame_index:
+                    raise RuntimeError(f"增量 {frame_index} 无法显示")
+                QApplication.processEvents()
+                if output_directory is not None:
+                    self.viewport.save_screenshot(
+                        str(output_directory / f"frame_{position:05d}.png")
+                    )
+                else:
+                    self.viewport.write_animation_frame()
+                self.status_panel.set_state(
+                    f"正在导出动画：{position}/{len(sequence)}",
+                    1000,
+                )
+            if target is not None:
+                self.status_panel.set_state(f"动画已导出：{target.name}", 5000)
+            else:
+                self.status_panel.set_state(
+                    f"帧序列已导出：{output_directory}",
+                    5000,
+                )
+        except (OSError, RuntimeError, TypeError, ValueError, ModuleNotFoundError) as error:
+            self._show_error("导出动画失败", str(error))
+        finally:
+            if writer_open:
+                self.viewport.end_animation_export()
+            if old_frame in provider.frame_indices:
+                self._set_result_frame(old_frame)
+
+    def _refresh_result_frame_controls(
+        self,
+        provider: ResultProvider | None = None,
+    ) -> None:
+        combo = self.result_frame_combo
+        if combo is None:
+            return
+        if provider is None:
+            provider = self._current_result_provider()
+        sequence = self._result_frame_sequence(provider)
+        if provider is None or not provider.frame_indices:
+            self._result_animation_start_frame = None
+            self._result_animation_end_frame = None
+        else:
+            frame_indices = tuple(provider.frame_indices)
+            if self._result_animation_start_frame not in frame_indices:
+                self._result_animation_start_frame = frame_indices[0]
+            if self._result_animation_end_frame not in frame_indices:
+                self._result_animation_end_frame = frame_indices[-1]
+            if frame_indices.index(self._result_animation_start_frame) > frame_indices.index(
+                self._result_animation_end_frame
+            ):
+                self._result_animation_start_frame = frame_indices[0]
+                self._result_animation_end_frame = frame_indices[-1]
+        if self._result_frame_index not in sequence:
+            self._result_frame_index = sequence[-1] if sequence else 0
+        combo.blockSignals(True)
+        combo.clear()
+        if not sequence:
+            combo.addItem("—", None)
+        else:
+            if provider is not None and provider.frame_indices:
+                total = len(provider.frame_indices)
+                for frame_index in provider.frame_indices:
+                    label = f"增量 {frame_index}/{total}"
+                    combo.addItem(label, frame_index)
+                    item_index = combo.count() - 1
+                    combo.setItemData(
+                        item_index,
+                        self._result_frame_info_text(
+                            provider,
+                            frame_index,
+                        ),
+                        Qt.ItemDataRole.ToolTipRole,
+                    )
+            else:
+                combo.addItem("最终结果", 0)
+            selected = combo.findData(self._result_frame_index)
+            combo.setCurrentIndex(selected if selected >= 0 else 0)
+        combo.blockSignals(False)
+        combo.setToolTip(
+            "选择当前结果增量。\n"
+            + self._result_frame_info_text(
+                provider,
+                self._result_frame_index,
+            )
+        )
+        has_frames = bool(provider is not None and provider.frame_indices)
+        # A frame materialization worker keeps the previous complete frame
+        # visible. Do not grey the frame bar while that replacement is being
+        # prepared; frame clicks are coalesced by ``_set_result_frame``.
+        enabled = has_frames and self._result_display_controls_enabled()
+        combo.setEnabled(enabled)
+        for button in (
+            self.result_frame_first_button,
+            self.result_frame_previous_button,
+            self.result_frame_play_button,
+            self.result_frame_next_button,
+            self.result_frame_last_button,
+            self.result_frame_speed_combo,
+        ):
+            if button is not None:
+                button.setEnabled(enabled)
+        if self.result_frame_play_button is not None:
+            is_playing = self._result_frame_timer.isActive()
+            self.result_frame_play_button.setIcon(
+                icon("stop" if is_playing else "play")
+            )
+            play_tooltip = "停止结果动画" if is_playing else "播放结果动画"
+            self.result_frame_play_button.setToolTip(play_tooltip)
+            self.result_frame_play_button.setAccessibleName(play_tooltip)
+        if self.result_frame_info_label is not None:
+            self.result_frame_info_label.setText(
+                self._result_frame_info_text(
+                    provider,
+                    self._result_frame_index,
+                )
+            )
+
+    def _frame_result_provider_for_display(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> ResultProvider:
+        """Return the selected increment provider without doing recovery.
+
+        Result display is called from several GUI callbacks.  It must remain
+        a read-only provider lookup: field recovery belongs to the explicit
+        background materialization paths below.  Keeping this helper free of
+        ``materialize`` prevents a frame switch from silently moving a large
+        NumPy/material calculation back onto the Qt event loop.
+        """
+
+        frame_provider = self._result_frame_provider_for_query(provider)
+        cache_key = (
+            provider.source,
+            provider.snapshot.generation,
+            frame_provider.frame_key.frame_index
+            if frame_provider.frame_key is not None
+            else 0,
+        )
+        self._result_frame_provider_cache[cache_key] = frame_provider
+        self._trim_result_frame_provider_cache(current_key=cache_key)
+        return frame_provider
+
+    def _frame_display_materialization_inputs(
+        self,
+        frame_provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> tuple[
+        ScalarFieldSelection,
+        tuple[FieldMaterializationKey, ...],
+    ]:
+        """Return the display fields still lazy for one detached frame."""
+
+        visual_selection = self._result_averaging_visual_selection(
+            frame_provider,
+            selection,
+        )
+        required_keys = tuple(
+            dict.fromkeys(
+                (
+                    selection.field_key,
+                    visual_selection.field_key,
+                )
+            )
+        )
+        pending = tuple(
+            key
+            for key in required_keys
+            if frame_provider.field_status(key).state is not FieldState.READY
+        )
+        return visual_selection, pending
+
+    @staticmethod
+    def _result_averaging_visual_selection_for_threshold(
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        threshold: float,
+    ) -> ScalarFieldSelection:
+        """Resolve the display averaging key without reading GUI state."""
+
+        request = selection.field_key.request
+        field_id = request.field_id
+        if (
+            field_id.variable not in {
+                ResultVariable.S,
+                ResultVariable.E,
+                ResultVariable.PEEQ,
+            }
+            or field_id.position is not FieldPosition.RESOLVED_NODAL
+        ):
+            return selection
+        visual_request = FieldRequest(
+            field_id=ResultFieldId(
+                field_id.variable,
+                FieldPosition.RESOLVED_NODAL,
+            ),
+            averaging_policy=NodalAveragingPolicy(
+                threshold_percent=float(threshold)
+            ),
+            gauss_order=request.gauss_order,
+        )
+        return ScalarFieldSelection(
+            provider.resolve_request(visual_request),
+            selection.component,
+        )
+
+    def _begin_frame_result_display_materialization(
+        self,
+        provider: ResultProvider,
+        frame_provider: ResultProvider,
+        frame_index: int,
+        selection: ScalarFieldSelection,
+        pending: tuple[FieldMaterializationKey, ...],
+    ) -> bool:
+        """Materialize one lazy frame display outside the Qt GUI thread."""
+
+        if self.busy:
+            return False
+        request = (
+            provider.source,
+            provider.snapshot.generation,
+            int(frame_index),
+            selection,
+        )
+        self._pending_frame_display_materialization = request
+        completion = GuiCommandCompletion(self._next_command_id())
+
+        def is_current() -> bool:
+            current = self._current_result_provider()
+            return bool(
+                current is not None
+                and current.source == provider.source
+                and current.snapshot.generation == provider.snapshot.generation
+                and self._result_frame_index == frame_index
+                and self.result_selection == selection
+            )
+
+        def clear_pending() -> None:
+            if self._pending_frame_display_materialization == request:
+                self._pending_frame_display_materialization = None
+                self._refresh_result_controls()
+                self._update_action_states()
+
+        def workload(context: TaskContext) -> ResultMaterializationPatch:
+            context.report("正在后台加载当前增量显示字段……")
+            return frame_provider.materialize(
+                pending,
+                cancellation=context,
+            )
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not ResultMaterializationPatch:
+                raise TypeError(
+                    "frame display materialization must return "
+                    "ResultMaterializationPatch"
+                )
+            if not is_current():
+                return TaskApplyOutcome.stale("当前结果帧已切换")
+            local_provider = frame_provider.apply(value)
+            cache_key = (
+                provider.source,
+                provider.snapshot.generation,
+                frame_index,
+            )
+            self._result_frame_provider_cache[cache_key] = local_provider
+            self._trim_result_frame_provider_cache(current_key=cache_key)
+            return TaskApplyOutcome.accepted()
+
+        def succeeded(_value: object) -> None:
+            clear_pending()
+            if not is_current():
+                return
+            try:
+                self._apply_display()
+                self._prefetch_result_frame_providers(provider)
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self.status_panel.set_state(
+                    f"增量帧显示失败：{error}",
+                    5000,
+                )
+                return
+            self.status_panel.set_state(
+                "当前增量显示字段加载完成",
+                3000,
+            )
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "增量帧显示字段加载失败",
+            lambda message: (
+                clear_pending(),
+                self.status_panel.set_state(message, 5000),
+            ),
+            task_name="增量帧显示字段",
+            on_cancelled=lambda: (
+                clear_pending(),
+                self.status_panel.set_state("增量帧显示字段加载已取消", 4000),
+            ),
+            on_inactive_failure=lambda _message: clear_pending(),
+            on_inactive_cancelled=clear_pending,
+            apply_result=apply_result,
+            completion=completion,
+        )
+        if not started:
+            clear_pending()
+            return False
+
+        completion.observe(
+            lambda terminal: (
+                clear_pending()
+                if terminal.state is not BackgroundTaskState.SUCCEEDED
+                else None
+            )
+        )
+        return True
+
+    def _result_frame_provider_for_query(
+        self,
+        provider: ResultProvider,
+    ) -> ResultProvider:
+        """Return the selected increment provider without recovering fields.
+
+        Query and inspection consumers must read the same frame as the
+        viewport.  This helper intentionally does not call ``materialize``;
+        frame-specific derived-field recovery is not yet part of the Session
+        materialization contract and must not write a frame's values into the
+        accepted final-result snapshot.
+        """
+
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if self._result_frame_index == 0 and not provider.frame_indices:
+            return provider
+        frame_index = self._result_frame_index
+        if frame_index == 0 and provider.frame_indices:
+            frame_index = provider.frame_indices[-1]
+        if frame_index not in provider.frame_indices:
+            raise KeyError(frame_index)
+        return self._result_frame_provider_at(provider, frame_index)
+
+    def _result_frame_provider_at(
+        self,
+        provider: ResultProvider,
+        frame_index: int,
+    ) -> ResultProvider:
+        """Return one cached live frame provider without changing the view."""
+
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if frame_index not in provider.frame_indices:
+            raise KeyError(frame_index)
+        cache_key = (
+            provider.source,
+            provider.snapshot.generation,
+            frame_index,
+        )
+        frame_provider = self._result_frame_provider_cache.get(cache_key)
+        if frame_provider is None:
+            frame_provider = provider.frame_provider(frame_index)
+        self._result_frame_provider_cache[cache_key] = frame_provider
+        self._trim_result_frame_provider_cache(
+            current_key=cache_key,
+        )
+        return frame_provider
+
+    def _trim_result_frame_provider_cache(
+        self,
+        *,
+        current_key: tuple[ResultSourceKey, int, int] | None = None,
+        limit: int = 12,
+    ) -> None:
+        """Keep detached frame providers bounded during long animations."""
+
+        if type(limit) is not int or limit < 1:
+            raise ValueError("frame provider cache limit must be positive")
+        while len(self._result_frame_provider_cache) > limit:
+            candidate = next(
+                (
+                    key
+                    for key in self._result_frame_provider_cache
+                    if key != current_key
+                ),
+                None,
+            )
+            if candidate is None:
+                break
+            self._result_frame_provider_cache.pop(candidate, None)
+
+    def _prefetch_result_frame_providers(
+        self,
+        provider: ResultProvider | None,
+    ) -> None:
+        """Warm only adjacent detached frame adapters for the next repaint."""
+
+        if provider is None or not provider.frame_indices:
+            return
+        sequence = self._result_animation_sequence(provider)
+        if not sequence or self._result_frame_index not in sequence:
+            return
+        position = sequence.index(self._result_frame_index)
+        candidates = []
+        for offset in (1, -1, 2, -2):
+            target = position + offset
+            if 0 <= target < len(sequence):
+                candidates.append(sequence[target])
+        for frame_index in candidates:
+            try:
+                self._result_frame_provider_at(provider, frame_index)
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                continue
+
+    def _result_frame_changed(self, index: int) -> None:
+        combo = self.result_frame_combo
+        if combo is None:
+            return
+        value = combo.itemData(index)
+        if type(value) is not int:
+            return
+        self._set_result_frame(value)
+
+    def _set_result_frame(self, frame_index: int) -> None:
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        if frame_index not in self._result_frame_sequence(provider):
+            return
+        if self.busy:
+            if self._result_display_request_pending():
+                self._queued_result_frame_request = (
+                    provider.source,
+                    int(provider.snapshot.generation),
+                    int(frame_index),
+                )
+                # Keep the user's latest selection visible while the previous
+                # display worker is being retired. The actual viewport commit
+                # is still deferred until the worker slot is idle.
+                self._result_frame_index = int(frame_index)
+                self._refresh_result_frame_controls(provider)
+                self.status_panel.set_state(
+                    "当前结果显示完成后切换增量……",
+                    3000,
+                )
+            return
+        previous = self._result_frame_index
+        self._result_frame_index = frame_index
+        if previous != frame_index and self._result_probe_markers:
+            self._result_probe_markers.clear()
+            self.viewport.set_result_probe_markers((), render=False)
+        self._result_visualization_provider_cache = None
+        self._result_deformation_scale_cache = None
+        try:
+            self._refresh_result_frame_controls(provider)
+            selection = self.result_selection
+            if (
+                provider.frame_indices
+                and type(selection) is ScalarFieldSelection
+                and self._contour_range_mode(self._contour_options)
+                == "global_step"
+                and self._global_legend_range_requires_background(provider)
+                and self._result_global_legend_range_cache_key(
+                    provider,
+                    selection,
+                )
+                not in self._result_global_legend_range_cache
+            ):
+                if self._begin_result_global_legend_range_materialization(
+                    provider,
+                    selection,
+                ):
+                    self.status_panel.set_state(
+                        "正在后台计算所有增量的统一云图范围……"
+                    )
+                    return
+            if (
+                provider.frame_indices
+                and type(selection) is ScalarFieldSelection
+                and (
+                    self._contour_range_mode(self._contour_options)
+                    != "global_step"
+                    or self._global_legend_range_requires_background(provider)
+                )
+            ):
+                frame_provider = self._result_frame_provider_at(
+                    provider,
+                    frame_index,
+                )
+                _visual_selection, pending = (
+                    self._frame_display_materialization_inputs(
+                        frame_provider,
+                        selection,
+                    )
+                )
+                if pending:
+                    if self._begin_frame_result_display_materialization(
+                        provider,
+                        frame_provider,
+                        frame_index,
+                        selection,
+                        pending,
+                    ):
+                        self.status_panel.set_state(
+                            "正在后台加载当前增量显示字段……"
+                        )
+                        return
+                    raise RuntimeError("增量帧显示任务未能启动")
+            self._apply_display()
+            self._prefetch_result_frame_providers(provider)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._result_frame_index = previous
+            self._result_visualization_provider_cache = None
+            self._result_deformation_scale_cache = None
+            self._refresh_result_frame_controls(provider)
+            self.status_panel.set_state(
+                f"增量帧显示失败：{error}",
+                5000,
+            )
+
+    def _step_result_frame(self, delta: int) -> None:
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        sequence = self._result_frame_sequence(provider)
+        try:
+            current = sequence.index(self._result_frame_index)
+        except ValueError:
+            current = 0
+        target = max(0, min(len(sequence) - 1, current + int(delta)))
+        self._set_result_frame(sequence[target])
+
+    def _jump_result_frame(self, position: str) -> None:
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        sequence = self._result_frame_sequence(provider)
+        if not sequence:
+            return
+        target = sequence[0] if position == "first" else sequence[-1]
+        self._set_result_frame(target)
+
+    def _toggle_result_animation(self) -> None:
+        provider = self._current_result_provider()
+        if provider is None or not provider.frame_indices:
+            return
+        if self._result_frame_timer.isActive():
+            self._stop_result_animation()
+            return
+        animation_sequence = self._result_animation_sequence(provider)
+        if not animation_sequence:
+            return
+        self._begin_animation_locks(provider)
+        if self._result_animation_playback_mode == "reverse":
+            self._result_animation_direction = -1
+            initial = animation_sequence[-1]
+        else:
+            self._result_animation_direction = 1
+            initial = animation_sequence[0]
+        if self._result_frame_index not in animation_sequence:
+            self._set_result_frame(initial)
+        self._result_animation_hold_until = 0.0
+        self._result_frame_timer.start(
+            max(
+                20,
+                round(
+                    self._result_animation_interval_ms
+                    / max(0.1, self._result_animation_speed)
+                ),
+            )
+        )
+        self._refresh_result_frame_controls(provider)
+
+    def _advance_result_animation(self) -> None:
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or self.busy
+            or not provider.frame_indices
+        ):
+            self._stop_result_animation()
+            return
+        frame_indices = self._result_animation_sequence(provider)
+        if not frame_indices:
+            self._stop_result_animation()
+            return
+        if self._result_frame_index not in frame_indices:
+            target = frame_indices[-1] if self._result_animation_direction < 0 else frame_indices[0]
+        else:
+            current = frame_indices.index(self._result_frame_index)
+            direction = -1 if self._result_animation_playback_mode == "reverse" else self._result_animation_direction
+            target_position = current + direction
+            at_boundary = target_position < 0 or target_position >= len(frame_indices)
+            if at_boundary:
+                hold_ms = (
+                    self._result_animation_first_hold_ms
+                    if current == 0
+                    else self._result_animation_last_hold_ms
+                )
+                now = perf_counter()
+                if hold_ms > 0 and self._result_animation_hold_until <= 0.0:
+                    self._result_animation_hold_until = now + hold_ms / 1000.0
+                    return
+                if hold_ms > 0 and now < self._result_animation_hold_until:
+                    return
+                self._result_animation_hold_until = 0.0
+                mode = self._result_animation_playback_mode
+                if mode == "pingpong":
+                    self._result_animation_direction *= -1
+                    target_position = current + self._result_animation_direction
+                    if target_position < 0 or target_position >= len(frame_indices):
+                        target_position = max(0, min(len(frame_indices) - 1, target_position))
+                elif mode == "loop" or (mode not in {"once", "reverse"} and self._result_animation_loop):
+                    target_position = 0 if direction > 0 else len(frame_indices) - 1
+                else:
+                    self._stop_result_animation()
+                    return
+            target = frame_indices[target_position]
+        self._set_result_frame(target)
+
     def _refresh_result_controls(self) -> None:
         provider = self._current_result_provider()
+        self._refresh_result_frame_controls(provider)
         selection = (
             self.result_selection
             if (
@@ -5425,9 +7572,7 @@ class FEMMainWindow(QMainWindow):
             return
 
         variables: list[ResultVariable] = []
-        for availability in visible_result_fields(
-            provider.catalog().fields
-        ):
+        for availability in self._result_gui_availabilities(provider):
             if availability.state is FieldState.UNAVAILABLE:
                 continue
             variable = availability.descriptor.field_id.variable
@@ -5455,21 +7600,82 @@ class FEMMainWindow(QMainWindow):
         )
         self._sync_result_averaging_threshold_control()
 
+    def _result_gui_availabilities(
+        self,
+        provider: ResultProvider,
+    ) -> tuple[FieldAvailability, ...]:
+        """Return visible catalog fields plus live lazy display positions.
+
+        A solve may request only one element-output position, while the
+        result provider can still recover the other supported continuum positions
+        on demand.  Keep the published catalog authoritative, but expose
+        those recoverable positions in the GUI as LAZY choices.  Archived
+        providers do not advertise fields that are absent from their payload.
+        """
+
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        visible = list(visible_result_fields(provider.catalog().fields))
+        if provider.is_archived:
+            return tuple(visible)
+
+        known_keys = {availability.key for availability in visible}
+        candidate_positions = (
+            FieldPosition.INTEGRATION_POINT,
+            FieldPosition.CENTROID,
+            FieldPosition.ELEMENT_NODAL,
+            FieldPosition.RESOLVED_NODAL,
+        )
+        for variable in (
+            ResultVariable.S,
+            ResultVariable.E,
+            ResultVariable.PEEQ,
+        ):
+            for position in candidate_positions:
+                try:
+                    request = FieldRequest(
+                        ResultFieldId(variable, position),
+                        averaging_policy=(
+                            NodalAveragingPolicy()
+                            if position is FieldPosition.RESOLVED_NODAL
+                            else None
+                        ),
+                    )
+                    key = provider.resolve_request(request)
+                    availability = provider.field_status(key)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if (
+                    availability.state is not FieldState.UNAVAILABLE
+                    and availability.key not in known_keys
+                ):
+                    visible.append(availability)
+                    known_keys.add(availability.key)
+        return tuple(visible)
+
     def _sync_result_averaging_threshold_control(self) -> None:
+        """Keep averaging state internal; expose it through contour settings."""
         variable = self.result_variable_combo.currentData()
         field_id = self.result_position_combo.currentData()
         visible = (
-            variable is ResultVariable.S
+            variable in {
+                ResultVariable.S,
+                ResultVariable.E,
+                ResultVariable.PEEQ,
+            }
             and type(field_id) is ResultFieldId
             and field_id.position is FieldPosition.RESOLVED_NODAL
         )
         enabled = (
             visible
             and self._current_result_provider() is not None
-            and not self.busy
+            and self._result_display_controls_enabled()
         )
-        self.result_averaging_threshold_label.setVisible(visible)
-        self.result_averaging_threshold.setVisible(visible)
+        # Position and threshold are deliberately not Ribbon controls.  The
+        # hidden widgets remain as compatibility/state mirrors for the typed
+        # result selection and are edited by the result display dialogs.
+        self.result_averaging_threshold_label.setVisible(False)
+        self.result_averaging_threshold.setVisible(False)
         self.result_averaging_threshold.setEnabled(enabled)
 
     def _populate_result_positions(
@@ -5490,9 +7696,7 @@ class FEMMainWindow(QMainWindow):
 
         field_ids: list[ResultFieldId] = []
         section_point_labels = result_provider_section_point_labels(provider)
-        for availability in visible_result_fields(
-            provider.catalog().fields
-        ):
+        for availability in self._result_gui_availabilities(provider):
             if availability.state is FieldState.UNAVAILABLE:
                 continue
             field_id = availability.descriptor.field_id
@@ -5501,13 +7705,26 @@ class FEMMainWindow(QMainWindow):
                 and field_id not in field_ids
             ):
                 field_ids.append(field_id)
-                self.result_position_combo.addItem(
-                    result_field_position_label(
-                        field_id,
-                        section_point_labels=section_point_labels,
-                    ),
+        position_order = {
+            FieldPosition.INTEGRATION_POINT: 0,
+            FieldPosition.CENTROID: 1,
+            FieldPosition.ELEMENT_NODAL: 2,
+            FieldPosition.RESOLVED_NODAL: 3,
+        }
+        field_ids.sort(
+            key=lambda field_id: (
+                position_order.get(field_id.position, 99),
+                field_id.section_point_number or 0,
+            )
+        )
+        for field_id in field_ids:
+            self.result_position_combo.addItem(
+                result_field_position_label(
                     field_id,
-                )
+                    section_point_labels=section_point_labels,
+                ),
+                field_id,
+            )
         preferred_field_id = None
         if (
             type(preferred_selection) is ScalarFieldSelection
@@ -5515,6 +7732,24 @@ class FEMMainWindow(QMainWindow):
             is variable
         ):
             preferred_field_id = preferred_selection.field_key.request.field_id
+        if preferred_field_id is None:
+            preferred_field_id = next(
+                (
+                    field_id
+                    for field_id in field_ids
+                    if field_id.position is FieldPosition.RESOLVED_NODAL
+                ),
+                None,
+            )
+        if preferred_field_id is None:
+            preferred_field_id = next(
+                (
+                    field_id
+                    for field_id in field_ids
+                    if field_id.position is FieldPosition.ELEMENT_NODAL
+                ),
+                None,
+            )
         position_index = self.result_position_combo.findData(
             preferred_field_id
         )
@@ -5545,9 +7780,7 @@ class FEMMainWindow(QMainWindow):
 
         availabilities = tuple(
             availability
-            for availability in visible_result_fields(
-                provider.catalog().fields
-            )
+            for availability in self._result_gui_availabilities(provider)
             if (
                 availability.state is not FieldState.UNAVAILABLE
                 and availability.descriptor.field_id.variable is variable
@@ -5640,9 +7873,10 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         self._contour_options["averaging_threshold"] = threshold
-        self.viewport.set_contour_metadata(
-            {"averaging_threshold": threshold}
-        )
+        if self._current_result_provider() is None:
+            self.viewport.set_contour_metadata(
+                {"averaging_threshold": threshold}
+            )
         self._apply_result_averaging_threshold()
 
     def _result_scale_mode_changed(self, _index: int) -> None:
@@ -5668,7 +7902,9 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value.setValue(displayed_value)
         self.result_scale_value.blockSignals(False)
         self.result_scale_value.setEnabled(
-            provider is not None and self._scale_mode == "custom"
+            provider is not None
+            and self._scale_mode == "custom"
+            and self._result_display_controls_enabled()
         )
 
     def _face_sketch_selection_is_valid(self) -> bool:
@@ -5781,6 +8017,10 @@ class FEMMainWindow(QMainWindow):
                 provider is not None
                 and bool(provider.catalog().fields)
             ),
+            result_frames_available=(
+                provider is not None
+                and bool(provider.frame_indices)
+            ),
             selected_field_exists=selected_availability is not None,
             selected_field_state=(
                 None
@@ -5795,6 +8035,7 @@ class FEMMainWindow(QMainWindow):
                 self._pending_result_selection is not None
                 or self._pending_result_query is not None
             ),
+            result_display_task_busy=self._result_display_request_pending(),
             viewport_scene_available=self.viewport.can_capture,
             wire_editor_active=self._wire_editor_controller is not None,
             sketch_editor_active=self._sketch_editor_controller is not None,
@@ -5836,13 +8077,17 @@ class FEMMainWindow(QMainWindow):
             )
         self._sync_selection_action_state()
         has_result = provider is not None
-        self.result_variable_combo.setEnabled(has_result and not self.busy)
-        self.result_component_combo.setEnabled(has_result and not self.busy)
-        self.result_position_combo.setEnabled(has_result and not self.busy)
-        self.result_scale_combo.setEnabled(has_result)
+        result_display_controls_enabled = (
+            has_result and self._result_display_controls_enabled()
+        )
+        self.result_variable_combo.setEnabled(result_display_controls_enabled)
+        self.result_component_combo.setEnabled(result_display_controls_enabled)
+        self.result_position_combo.setEnabled(result_display_controls_enabled)
+        self.result_scale_combo.setEnabled(result_display_controls_enabled)
         self._sync_result_scale_control()
         self._sync_result_averaging_threshold_control()
         self._sync_step_combos()
+        self._refresh_result_frame_controls(provider)
         self._update_window_title()
 
     def _update_window_title(self) -> None:
@@ -5882,11 +8127,12 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _set_action_available(self, name: str, available: bool, _reason: str) -> None:
-        """Apply availability while keeping the command's plain label."""
+        """Apply availability while keeping the canonical command tooltip."""
         action = self.actions[name]
         action.setEnabled(bool(available))
-        action.setToolTip(action.text())
-        action.setStatusTip(action.text())
+        tooltip = action.property("_canonical_tooltip") or action.text()
+        action.setToolTip(str(tooltip))
+        action.setStatusTip(str(tooltip))
 
     def start_wire_geometry(self) -> None:
         """Start a detached Wire draft from the Geometry ribbon."""
@@ -9460,6 +11706,9 @@ class FEMMainWindow(QMainWindow):
             self,
         )
         if not self._exec_dialog(dialog):
+            requested_edit = dialog.requested_edit_name()
+            if requested_edit is not None:
+                self._begin_named_region_membership_edit(requested_edit)
             return
         updated = dialog.values()
         try:
@@ -9480,6 +11729,54 @@ class FEMMainWindow(QMainWindow):
             "作用域已更新",
             5000,
         )
+
+    def _begin_named_region_membership_edit(self, name: str) -> None:
+        """Replace one named-region membership using the normal viewport picker."""
+
+        region = self.document.named_regions.get(str(name))
+        if region is None:
+            return
+        if self.document.model is None:
+            self._pending_named_region_edit_name = None
+            self._show_error(
+                "编辑作用域",
+                "当前模型尚未生成网格，无法重新选择成员。",
+            )
+            return
+        self._pending_named_region_edit_name = region.name
+        self._request_analysis_geometry_selection(
+            "scope_edit",
+            region.entity_kind,
+        )
+        bar = self.viewport_panel.scope_creation_bar
+        bar.name_edit.setText(region.name)
+        bar.name_edit.setEnabled(False)
+        bar.create_button.setText("更新")
+
+    def _commit_named_region_membership_edit(
+        self,
+        name: str,
+        references: tuple[MeshEntityRef, ...],
+    ) -> bool:
+        region = self.document.named_regions.get(str(name))
+        if region is None:
+            return False
+        regions = dict(self.document.named_regions)
+        try:
+            regions[region.name] = NamedRegion(region.name, references)
+            batch = NamedRegionEditBatch(
+                base_session_revision=self.document.session_revision,
+                regions=tuple(regions.values()),
+            )
+        except (TypeError, ValueError) as error:
+            self._show_error("编辑作用域", str(error))
+            return False
+        receipt = self.apply_named_region_edit(batch)
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("编辑作用域", receipt)
+            return False
+        self.status_panel.set_state("作用域成员已更新", 5000)
+        return True
 
     def _scope_authoring_targets(
         self,
@@ -9656,6 +11953,7 @@ class FEMMainWindow(QMainWindow):
             self._pending_analysis_requested_scope_kind = None
             self._pending_analysis_dialog_state = None
             self._pending_analysis_edit = None
+            self._pending_named_region_edit_name = None
             return
         requested_kind = {
             "node": "node",
@@ -9683,6 +11981,7 @@ class FEMMainWindow(QMainWindow):
             self._pending_analysis_requested_scope_kind = None
             self._pending_analysis_dialog_state = None
             self._pending_analysis_edit = None
+            self._pending_named_region_edit_name = None
             return
         self._pending_scope_kind = default_kind
         if default_kind in {"edge", "face", "body"}:
@@ -9765,6 +12064,14 @@ class FEMMainWindow(QMainWindow):
         if not references:
             self.status_panel.set_state("请先选择至少一个对象", 3000)
             return
+        if self._pending_analysis_selection == "scope_edit":
+            name = self._pending_named_region_edit_name
+            if name is None:
+                return
+            if not self._commit_named_region_membership_edit(name, references):
+                return
+            self._finish_scope_creation_from_bar(name)
+            return
         bar = self.viewport_panel.scope_creation_bar
         name = self._create_region_from_current_mesh_selection(
             requested_name=bar.scope_name(),
@@ -9782,6 +12089,7 @@ class FEMMainWindow(QMainWindow):
         if operation is None:
             return
         bar = self.viewport_panel.scope_creation_bar
+        self._pending_named_region_edit_name = None
         resumed_edit = self._pending_analysis_edit
         dialog_state = getattr(
             self,
@@ -9812,6 +12120,12 @@ class FEMMainWindow(QMainWindow):
             self.viewport.hide_geometry_selection_overlay()
             self._scope_selection_overlay_active = False
         bar.finish()
+        name_edit = getattr(bar, "name_edit", None)
+        if name_edit is not None:
+            name_edit.setEnabled(True)
+        create_button = getattr(bar, "create_button", None)
+        if create_button is not None:
+            create_button.setText("创建")
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         self.viewport.clear_selection()
@@ -9879,9 +12193,11 @@ class FEMMainWindow(QMainWindow):
                 self.assign_section_to_region(name)
 
             callback = resume_section_assignment
+        elif operation == "scope_edit":
+            self.status_panel.set_state("作用域成员已更新", 5000)
         if callback is not None:
             self._defer_ui(callback)
-        elif operation != "scope":
+        elif operation not in {"scope", "scope_edit"}:
             raise RuntimeError(
                 f"unsupported guided scope operation: {operation}"
             )
@@ -11403,6 +13719,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_model(
             model,
             geometry,
+            preserve_result_cache=False,
             refresh_symbols=False,
             render=False,
             reset_camera=reset_camera,
@@ -11879,7 +14196,8 @@ class FEMMainWindow(QMainWindow):
             self._show_error("编辑材料", str(error))
             return
         if any(
-            index != row and material.name == updated.name
+            index != row
+            and material.name.casefold() == updated.name.casefold()
             for index, material in enumerate(
                 self.document.materials
             )
@@ -11930,6 +14248,13 @@ class FEMMainWindow(QMainWindow):
                 and section_authoring.status
                 in {AuthoringStatus.ENABLED, AuthoringStatus.LIMITED}
             ),
+            assignment_usage={
+                section.name: sum(
+                    assignment.section_name == section.name
+                    for assignment in self.document.assignments
+                )
+                for section in self.document.sections
+            },
         )
         if not self._exec_dialog(dialog):
             return
@@ -11940,6 +14265,40 @@ class FEMMainWindow(QMainWindow):
             base_session_revision=base_revision,
             section_renames=dialog.rename_intents(),
             section_deletes=dialog.delete_intents(),
+        )
+
+    def show_section_assignment_manager(self) -> None:
+        """Manage every section-to-element-region association together."""
+
+        if not self.document.sections:
+            self._show_error("截面分配", "请先创建至少一个截面。")
+            return
+        manager = RegionAssignmentManagerDialog(
+            self.document.sections,
+            self.document.assignments,
+            lambda current, index: self._region_assignment_dialog(
+                current,
+                assignment_index=index,
+            ),
+            self,
+        )
+        manager.locateRequested.connect(
+            lambda name: self.highlight_entity("element_set", name)
+        )
+        if not self._exec_dialog(manager):
+            requested_scope_kind = manager.requested_scope_kind()
+            if requested_scope_kind is not None:
+                self._request_analysis_geometry_selection(
+                    "section",
+                    requested_scope_kind,
+                )
+            return
+        values = tuple(manager.values())
+        if values == tuple(self.document.assignments):
+            return
+        self._apply_model_definition_changes(
+            "截面分配已修改，模型需要重新检查",
+            assignments=values,
         )
 
     def assign_section_to_region(
@@ -12018,6 +14377,23 @@ class FEMMainWindow(QMainWindow):
         assignments[index] = updated
         self._apply_model_definition_changes(
             "截面分配已修改，模型需要重新检查",
+            assignments=assignments,
+        )
+
+    def delete_region_assignment(self, assignment_index: int) -> None:
+        """Delete one section association without touching its section."""
+
+        try:
+            index = int(assignment_index)
+        except (TypeError, ValueError):
+            return
+        assignments = list(deepcopy(self.document.assignments))
+        if not 0 <= index < len(assignments):
+            self._show_error("截面分配", f"截面分配不存在：{assignment_index}")
+            return
+        removed = assignments.pop(index)
+        self._apply_model_definition_changes(
+            f"已删除截面分配：{removed.section_name} → {removed.region_name}",
             assignments=assignments,
         )
 
@@ -12847,6 +15223,21 @@ class FEMMainWindow(QMainWindow):
 
     def delete_analysis_definition(self, kind: str, key: object) -> None:
         """Delete one supported definition selected in the model tree."""
+        if kind == "step":
+            try:
+                step_index = int(key)
+                definitions = list(deepcopy(self.document.steps))
+                step = definitions[step_index]
+            except (IndexError, TypeError, ValueError):
+                return
+            if step.name.strip().casefold() == "initial":
+                return
+            del definitions[step_index]
+            self._analysis_definitions_changed(
+                "分析步已删除，模型需要重新检查",
+                definitions,
+            )
+            return
         collection_name = {
             "boundary": "boundaries",
             "cload": "cloads",
@@ -12855,6 +15246,7 @@ class FEMMainWindow(QMainWindow):
             "line_load": "line_loads",
             "body_load": "body_loads",
             "gravity_load": "gravity_loads",
+            "output": "outputs",
         }.get(kind)
         if collection_name is None:
             return
@@ -12873,16 +15265,49 @@ class FEMMainWindow(QMainWindow):
         collection = tuple(getattr(step, collection_name))
         if not 0 <= item_index < len(collection):
             return
+        if kind == "output":
+            if step.name.strip().casefold() == "initial":
+                return
+            output = collection[item_index]
+            required_output = (
+                output.kind.strip().casefold() == "field"
+                and output.target.strip().casefold() == "node"
+                and any(
+                    variable.strip().casefold() == "u"
+                    for variable in output.variables
+                )
+            )
+            if required_output:
+                self._show_error(
+                    "删除输出请求",
+                    "位移场 U 是当前分析的必需输出，不能删除。",
+                )
+                return
+            capability = self._session_authoring_projection().operation(
+                "output_request.delete"
+            )
+            if not capability.can_submit:
+                self._show_authoring_decision_error(
+                    "删除输出请求",
+                    capability,
+                )
+                return
         setattr(
             step,
             collection_name,
             collection[:item_index] + collection[item_index + 1:],
         )
+        if kind == "output":
+            self._warn_imported_output_overlay()
         self._analysis_definitions_changed(
             (
                 "边界条件已删除，模型需要重新检查"
                 if kind == "boundary"
-                else "载荷已删除，模型需要重新检查"
+                else (
+                    "输出请求已删除，模型需要重新检查"
+                    if kind == "output"
+                    else "载荷已删除，模型需要重新检查"
+                )
             ),
             definitions,
         )
@@ -12904,7 +15329,12 @@ class FEMMainWindow(QMainWindow):
                 return None
             self._show_information("分析步信息", [
                 ("名称", step.name),
-                ("过程", "线性静力" if step.procedure == "static" else step.procedure),
+                (
+                    "过程",
+                    analysis_step_label(step)
+                    if step.procedure == "static"
+                    else step.procedure,
+                ),
                 ("边界条件", len(step.boundaries)),
                 (
                     "载荷",
@@ -12925,6 +15355,15 @@ class FEMMainWindow(QMainWindow):
 
     def check_current_model(self, show_success: bool = True) -> bool:
         """Run the same structured static preflight used by background checks."""
+        step_name = self._current_step_name
+        if step_name is None:
+            return False
+        cached = self._reuse_current_model_check(
+            step_name,
+            show_success=show_success,
+        )
+        if cached is not None:
+            return cached
         task = self._prepare_model_check()
         if task is None:
             return False
@@ -12962,6 +15401,12 @@ class FEMMainWindow(QMainWindow):
         step_name = self._current_step_name
         if step_name is None:
             return False
+        cached = self._reuse_current_model_check(
+            step_name,
+            show_success=True,
+        )
+        if cached is not None:
+            return cached
         receipt = self.check_step(step_name)
         if receipt.diagnostic is not None:
             self._show_command_rejection("模型检查失败", receipt)
@@ -12978,6 +15423,43 @@ class FEMMainWindow(QMainWindow):
             completion.observe(show_report)
         return receipt.completion is not None
 
+    def _reuse_current_model_check(
+        self,
+        step_name: str,
+        *,
+        show_success: bool,
+    ) -> bool | None:
+        """Reuse a validation report while its session/model stamp is current.
+
+        A model check is immutable with respect to the current session
+        revision.  Re-running the full preflight after every click used to
+        repeat section compilation, stiffness assembly and factorization even
+        though the accepted report was still valid.  Return ``None`` when no
+        current report exists so the caller can start the normal task.
+        """
+
+        validation = self.session.validation_for(step_name)
+        if validation is None:
+            return None
+        report = validation.report
+        if not report.passed:
+            message = self._render_diagnostics(report.errors)
+            self._show_error(
+                "模型检查失败",
+                message or "模型检查未通过",
+            )
+            self.status_panel.set_state("模型检查未通过", 5000)
+            return False
+        if show_success:
+            self._show_model_check_report(report)
+        self.status_panel.set_state(
+            "模型检查通过（有警告）"
+            if report.warnings
+            else "模型检查通过",
+            4000,
+        )
+        return True
+
     def _begin_model_check(
         self,
         step_name: str,
@@ -12993,7 +15475,9 @@ class FEMMainWindow(QMainWindow):
         )
         if task is None:
             raise RuntimeError(f"step cannot be checked: {step_name}")
-        full_numerical_check = should_run_numerical_model_check(task.model)
+        full_numerical_check = _should_run_full_numerical_model_check(
+            task.model
+        )
 
         def workload(context: TaskContext):
             context.report(
@@ -13189,7 +15673,7 @@ class FEMMainWindow(QMainWindow):
         step_name: str,
         token: object | None = None,
     ) -> PreparedPreflight:
-        full_numerical_check = should_run_numerical_model_check(model)
+        full_numerical_check = _should_run_full_numerical_model_check(model)
         options = {
             "token": token,
             "check_numerical_stability": full_numerical_check,
@@ -13264,6 +15748,35 @@ class FEMMainWindow(QMainWindow):
 
     def _show_model_check_report(self, report: PreflightReport) -> None:
         facts = report.facts
+        checked_step = next(
+            (
+                step
+                for step in getattr(self.document.model, "steps", ())
+                if step.name == facts.step_name
+            ),
+            None,
+        )
+        formulation = getattr(facts, "formulation", None)
+        analysis_type = None
+        if checked_step is not None and self.document.model is not None:
+            try:
+                analysis_type = analysis_execution_label(
+                    self.document.model,
+                    checked_step,
+                )
+            except Exception:
+                analysis_type = None
+        if analysis_type is None:
+            analysis_type = (
+                analysis_formulation_label(formulation)
+                if isinstance(formulation, StaticFormulation)
+                else (
+                    analysis_step_label(checked_step)
+                    if checked_step is not None
+                    and checked_step.procedure == "static"
+                    else facts.procedure or "—"
+                )
+            )
         stiffness_skipped = any(
             item.code == "static.stiffness.skipped_large_model"
             for item in report.warnings
@@ -13273,7 +15786,7 @@ class FEMMainWindow(QMainWindow):
             for item in report.warnings
         ))
         self._show_information("模型检查", [
-            ("分析类型", facts.procedure or "线性静力"),
+            ("分析类型", analysis_type),
             ("节点数", facts.node_count),
             ("单元数", facts.element_count),
             ("总自由度数", facts.dof_count),
@@ -13370,7 +15883,7 @@ class FEMMainWindow(QMainWindow):
             return
         dialog = JobSubmitDialog(
             self.workspace.next_job_name(),
-            self.session.runnable_step_names(),
+            self._runnable_step_descriptions(),
             self._current_step_name,
             self,
         )
@@ -13399,7 +15912,7 @@ class FEMMainWindow(QMainWindow):
             return
         dialog = JobSubmitDialog(
             self.workspace.next_job_name(),
-            self.session.runnable_step_names(),
+            self._runnable_step_descriptions(),
             source.step_name,
             self,
         )
@@ -13410,6 +15923,33 @@ class FEMMainWindow(QMainWindow):
             )
             if receipt.diagnostic is not None:
                 self._show_command_rejection("复制作业失败", receipt)
+
+    def _runnable_step_formulations(self) -> dict[str, StaticFormulation]:
+        """Return the typed formulation for every runnable analysis step."""
+
+        model = self.document.model
+        if model is None:
+            return {}
+        runnable = set(self.session.runnable_step_names())
+        return {
+            step.name: analysis_request_for_step(model, step.name).formulation
+            for step in model.steps
+            if step.name in runnable
+        }
+
+    def _runnable_step_descriptions(self) -> dict[str, str]:
+        """Return the actual compiled geometry/material plan for each step."""
+
+        model = self.document.model
+        if model is None:
+            return {}
+        runnable = set(self.session.runnable_step_names())
+        with execution_plan_cache_scope():
+            return {
+                step.name: analysis_execution_label(model, step.name)
+                for step in model.steps
+                if step.name in runnable
+            }
 
     def _submit_job(
         self,
@@ -13473,6 +16013,43 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_state(f"正在分析：{job.name}")
         self._refresh_job_manager()
         stage = {"name": "模型验证"}
+        # The request, solver kind and diagnostic label all resolve the same
+        # immutable material/section plan.  Keep them in one short-lived
+        # cache scope so submit does not compile that table three times.
+        with execution_plan_cache_scope():
+            analysis_request = analysis_request_for_step(
+                task.model,
+                task.step_name,
+            )
+            solver_kind = analysis_solver_kind(
+                task.model,
+                task.step_name,
+                request=analysis_request,
+            )
+            analysis_label = analysis_execution_label(
+                task.model,
+                task.step_name,
+            )
+        linear_static_run = solver_kind == "linear_static"
+        run_monitor = RunDiagnostics(
+            job.run_id,
+            job.name,
+            job.step_name,
+            analysis_type=analysis_label,
+            model_name=str(
+                self.document.model_name
+                or getattr(task.model, "name", "")
+                or "—"
+            ).strip(),
+            procedure=(
+                "Static, General"
+                if analysis_request.step.procedure == "static"
+                else analysis_request.step.procedure
+            ),
+            nlgeom=(analysis_request.geometry_mode is GeometryMode.FINITE_STRAIN),
+        )
+        run_monitor.start()
+        self._run_diagnostics[job.run_id] = run_monitor
 
         def workload(
             context: TaskContext,
@@ -13480,21 +16057,38 @@ class FEMMainWindow(QMainWindow):
             timings: dict[str, float] = {}
             solve_model = task.model
             stage["name"] = "求解"
+            run_monitor.stage_changed("装配并求解")
             context.report("正在装配并求解……")
-            run_prepared = task.prepared_system
-            if run_prepared is None:
-                run_prepared = static_linear.prepare(
+            # Only the direct linear-static procedure owns the Session's
+            # reusable prepared-stiffness cache.  A linear-dynamic step also
+            # has a preparation object, but it is a CompiledAnalysis owned by
+            # that execution and must not be routed through the static cache
+            # acceptance contract.
+            run_prepared = task.prepared_system if linear_static_run else None
+            try:
+                if linear_static_run and run_prepared is None:
+                    run_prepared = prepare_linear_analysis(
+                        solve_model,
+                        timings=timings,
+                    )
+                result = execute_analysis(
                     solve_model,
-                    copy_model=False,
+                    task.step_name,
+                    name=task.run_name,
+                    prepared_system=(
+                        run_prepared if linear_static_run else None
+                    ),
                     timings=timings,
+                    monitor=run_monitor,
+                    should_cancel=lambda: context.is_cancelled,
                 )
-            result = static_linear.solve(
-                solve_model,
-                task.step_name,
-                name=task.run_name,
-                _prepared_system=run_prepared,
-                timings=timings,
-            )
+            except AnalysisCancelled as error:
+                # The numerical layer deliberately does not import GUI task
+                # types. Convert its cooperative signal at this boundary so
+                # TaskWorker publishes the normal cancelled lifecycle.
+                context.checkpoint()
+                raise error
+            run_monitor.stage_changed("执行输出请求")
             context.report("正在执行输出请求……")
             started = perf_counter()
             bundle = build_solve_result_bundle(
@@ -13505,7 +16099,7 @@ class FEMMainWindow(QMainWindow):
             timings["输出请求与初始结果"] = perf_counter() - started
             cache_candidate = (
                 run_prepared.clone()
-                if task.prepared_system is None
+                if linear_static_run and task.prepared_system is None
                 else None
             )
             context.checkpoint()
@@ -13513,13 +16107,24 @@ class FEMMainWindow(QMainWindow):
 
         def apply_result(value: object) -> TaskApplyOutcome:
             bundle, timings, run_prepared, cache_candidate = value
-            delta = self.session.accept_run_succeeded_with_prepared_system(
-                task.token,
-                bundle,
-                run_prepared,
-                cache_candidate=cache_candidate,
-                timings=timings,
-            )
+            if linear_static_run:
+                if run_prepared is None:
+                    raise RuntimeError(
+                        "linear analysis completed without a prepared system"
+                    )
+                delta = self.session.accept_run_succeeded_with_prepared_system(
+                    task.token,
+                    bundle,
+                    run_prepared,
+                    cache_candidate=cache_candidate,
+                    timings=timings,
+                )
+            else:
+                delta = self.session.accept_run_succeeded(
+                    task.token,
+                    bundle,
+                    timings=timings,
+                )
             return self._session_task_outcome(
                 delta,
                 timings,
@@ -13534,6 +16139,7 @@ class FEMMainWindow(QMainWindow):
                 raise RuntimeError("已接受的分析作业不存在")
             activation_started = perf_counter()
             self._activate_job_result(completed, completion=True)
+            run_monitor.succeeded()
             timings["首次结果显示"] = perf_counter() - activation_started
             self._refresh_job_manager()
             self.status_panel.set_state(f"分析完成：{completed.name}", 5000)
@@ -13572,6 +16178,7 @@ class FEMMainWindow(QMainWindow):
                 "analysis task could not be started",
             )
         )
+        run_monitor.failed("analysis task could not be started")
         return None
 
     def _begin_agent_solve(
@@ -13698,6 +16305,9 @@ class FEMMainWindow(QMainWindow):
         self._apply_session_delta(
             self.session.accept_run_failed(token, message)
         )
+        monitor = self._run_diagnostics.get(str(token.run_id))
+        if monitor is not None:
+            monitor.failed(message)
         job = self.session.find_run(token.run_id)
         if job is None:
             return
@@ -13718,6 +16328,9 @@ class FEMMainWindow(QMainWindow):
         self._apply_session_delta(
             self.session.accept_run_cancelled(token)
         )
+        monitor = self._run_diagnostics.get(str(token.run_id))
+        if monitor is not None:
+            monitor.cancelled()
         job = self.session.find_run(token.run_id)
         if job is None:
             return
@@ -13784,6 +16397,7 @@ class FEMMainWindow(QMainWindow):
                 "current result selection is missing from the result tree"
             )
         self._refresh_result_controls()
+        self._update_action_states()
         self._sync_step_combos()
         self.status_panel.set_result(self._result_status_text())
         if not completion:
@@ -13794,10 +16408,21 @@ class FEMMainWindow(QMainWindow):
         if self.document.model is None:
             return None
         if self._job_manager is None:
-            dialog = JobManagerDialog(self.document.runs, self)
+            dialog = JobManagerDialog(
+                self.document.runs,
+                self,
+                diagnostics=self._run_diagnostic_snapshots(),
+                diagnostics_provider=self._run_diagnostic_snapshots,
+                model_name_provider=lambda: self.document.model_name,
+            )
             dialog.submitRequested.connect(self.submit_job)
             dialog.terminateRequested.connect(self.terminate_job)
             dialog.openResultRequested.connect(self.open_job_result)
+            dialog.monitorRequested.connect(self.show_job_monitor)
+            dialog.createRequested.connect(self.create_job)
+            dialog.copyRequested.connect(self.copy_job)
+            dialog.renameRequested.connect(self.rename_job)
+            dialog.deleteRequested.connect(self.delete_job)
             self._fit_viewport_when_dialog_finishes(dialog)
             dialog.destroyed.connect(
                 lambda _object=None, target=dialog: self._forget_job_manager(target)
@@ -13812,17 +16437,177 @@ class FEMMainWindow(QMainWindow):
         return self._job_manager
 
     def _refresh_job_manager(self) -> None:
+        diagnostics = self._run_diagnostic_snapshots()
         if self._job_manager is not None:
-            self._job_manager.refresh(self.document.runs)
+            self._job_manager.refresh(
+                self.document.runs,
+                diagnostics=diagnostics,
+            )
+        if self._job_monitor is not None:
+            job = self.session.find_run(self._job_monitor.job_id)
+            if job is None:
+                self._job_monitor.close()
+            else:
+                snapshot = diagnostics.get(job.run_id)
+                self._job_monitor.refresh(job, snapshot)
+
+    def copy_job(self, name: str) -> bool:
+        """Create a new pending job with the selected job's analysis step."""
+
+        source = self.session.find_run(name)
+        if source is None:
+            return False
+        new_name = self.workspace.next_job_name()
+        receipt = self.create_run(new_name, source.step_name)
+        if receipt.diagnostic is not None:
+            self._show_command_rejection("复制作业失败", receipt)
+            return False
+        return True
+
+    def rerun_job(self, name: str) -> bool:
+        """Create and submit a fresh run using a terminal run's step.
+
+        A completed, failed, or cancelled run remains an immutable history
+        record.  Rerun creates a new job identity so diagnostics and result
+        provenance cannot overwrite the previous run.
+        """
+
+        source = self.session.find_run(name)
+        if source is None or source.status is RunStatus.RUNNING:
+            return False
+        new_name = self.workspace.next_job_name()
+        created = self.create_run(new_name, source.step_name)
+        if created.diagnostic is not None:
+            self._show_command_rejection("重新提交作业失败", created)
+            return False
+        submitted = self.submit_created_run(new_name)
+        if submitted.diagnostic is not None:
+            self._show_command_rejection("重新提交作业失败", submitted)
+            self._refresh_job_manager()
+            return False
+        self.status_panel.set_state(f"已重新提交作业：{new_name}", 5000)
+        self._refresh_job_manager()
+        return True
+
+    def rename_job(self, name: str) -> bool:
+        """Rename a terminal job while preserving its result provenance."""
+
+        job = self.session.find_run(name)
+        if job is None:
+            return False
+        value, accepted = QInputDialog.getText(
+            self,
+            "重命名作业",
+            "作业名称：",
+            text=job.name,
+        )
+        if not accepted:
+            return False
+        new_name = str(value).strip()
+        if not new_name or new_name == job.name:
+            return False
+        try:
+            delta = self.session.rename_run(
+                job.run_id,
+                new_name,
+                expected_session_revision=self.document.session_revision,
+            )
+            self.workspace.rename_job_name(job.name, new_name)
+            self._apply_session_delta(delta)
+        except (KeyError, RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("重命名作业", str(error))
+            return False
+        self.status_panel.set_state(f"作业已重命名：{new_name}", 5000)
+        self._refresh_job_manager()
+        return True
+
+    def delete_job(self, name: str) -> bool:
+        """Delete a terminal job record without deleting external files."""
+
+        job = self.session.find_run(name)
+        if job is None or job.status is RunStatus.RUNNING:
+            return False
+        answer = QMessageBox.question(
+            self,
+            "删除作业",
+            f"确定删除作业“{job.name}”吗？\n结果记录也会从当前会话中移除。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            delta = self.session.delete_run(
+                job.run_id,
+                expected_session_revision=self.document.session_revision,
+            )
+            self.workspace.forget_job_name(job.name)
+            self._apply_session_delta(delta)
+        except (KeyError, RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("删除作业", str(error))
+            return False
+        self._run_diagnostics.pop(job.run_id, None)
+        self.status_panel.set_state(f"已删除作业：{job.name}", 5000)
+        self._refresh_job_manager()
+        return True
+
+    def _run_diagnostic_snapshots(self) -> dict[str, RunDiagnosticsSnapshot]:
+        return {
+            run_id: monitor.snapshot()
+            for run_id, monitor in self._run_diagnostics.items()
+        }
+
+    def _current_job_monitor_snapshot(self) -> RunDiagnosticsSnapshot | None:
+        if self._job_monitor is None:
+            return None
+        monitor = self._run_diagnostics.get(self._job_monitor.job_id)
+        return None if monitor is None else monitor.snapshot()
+
+    def show_job_monitor(self, name: str) -> JobMonitorDialog | None:
+        """Open the Abaqus-style monitor for one session job."""
+
+        job = self.session.find_run(name)
+        if job is None:
+            return None
+        monitor = self._run_diagnostics.get(job.run_id)
+        snapshot = None if monitor is None else monitor.snapshot()
+        if self._job_monitor is None:
+            dialog = JobMonitorDialog(
+                job,
+                snapshot,
+                self,
+                snapshot_provider=self._current_job_monitor_snapshot,
+            )
+            dialog.cancelRequested.connect(self.terminate_job)
+            dialog.rerunRequested.connect(self.rerun_job)
+            dialog.openResultRequested.connect(self.open_job_result)
+            dialog.resultFrameRequested.connect(self.jump_job_result)
+            dialog.destroyed.connect(
+                lambda _object=None, target=dialog: self._forget_job_monitor(target)
+            )
+            self._job_monitor = dialog
+        else:
+            self._job_monitor.refresh(job, snapshot)
+        self._job_monitor.show()
+        self._job_monitor.raise_()
+        self._job_monitor.activateWindow()
+        return self._job_monitor
 
     def _close_job_manager(self) -> None:
         if self._job_manager is not None:
             self._job_manager.close()
             self._job_manager = None
+        if self._job_monitor is not None:
+            self._job_monitor.close()
+            self._job_monitor = None
 
     def _forget_job_manager(self, dialog: JobManagerDialog) -> None:
         if self._job_manager is dialog:
             self._job_manager = None
+
+    def _forget_job_monitor(self, dialog: JobMonitorDialog) -> None:
+        if self._job_monitor is dialog:
+            self._job_monitor = None
 
     def submit_job(self, name: str) -> bool:
         """Submit the pending job selected in the job manager."""
@@ -13862,6 +16647,32 @@ class FEMMainWindow(QMainWindow):
             return
         self._refresh_job_manager()
         self.ribbon.set_current("结果")
+
+    def jump_job_result(self, name: str, increment: int) -> None:
+        """打开作业结果并跳转到监视器选中的保留增量。"""
+
+        if type(increment) is not int or increment <= 0:
+            return
+        job = self.session.find_run(name)
+        if job is None or not job.has_result:
+            return
+        if self.document.displayed_result_run_id != job.run_id:
+            self.open_job_result(name)
+        provider = self._current_result_provider()
+        if provider is None or provider.source.run_id != job.run_id:
+            return
+        if increment not in provider.frame_indices:
+            self.status_panel.set_state(
+                f"结果中没有保留增量：{increment}",
+                5000,
+            )
+            return
+        self.ribbon.set_current("结果")
+        self._set_result_frame(increment)
+        self.status_panel.set_state(
+            f"已跳转到作业 {job.name} 的增量 {increment}",
+            4000,
+        )
 
     def _session_task_failed(
         self,
@@ -13977,6 +16788,8 @@ class FEMMainWindow(QMainWindow):
         on_cancelled: Callable[[], None] | None = None,
         on_inactive_failure: Callable[[str], None] | None = None,
         on_inactive_cancelled: Callable[[], None] | None = None,
+        on_discarded: Callable[[str], None] | None = None,
+        on_inactive_discarded: Callable[[str], None] | None = None,
         apply_result: Callable[[object], TaskApplyOutcome] | None = None,
         completion: GuiCommandCompletion | None = None,
         on_progress: Callable[[str], None] | None = None,
@@ -14003,6 +16816,19 @@ class FEMMainWindow(QMainWindow):
                     4000,
                 )
             return False
+        display_transition_started = bool(
+            task_name in _RESULT_DISPLAY_TASK_NAMES
+            and (
+                target_context is None
+                or self._task_context_is_active(target_context)
+            )
+        )
+        if display_transition_started:
+            # Set this before ``start``: BackgroundTaskController emits
+            # busy_changed synchronously, and a fast worker can otherwise
+            # expose one disabled/grey GUI state before the task name and
+            # pending projection marker become observable.
+            self._result_display_transition_active = True
         result_applier = apply_result or TaskApplyOutcome.accepted
 
         def apply(value: object) -> TaskApplyOutcome:
@@ -14070,6 +16896,22 @@ class FEMMainWindow(QMainWindow):
                         4000,
                     )
             elif record.state is BackgroundTaskState.DISCARDED:
+                discarded_callback = (
+                    on_discarded
+                    if active_target
+                    else on_inactive_discarded
+                )
+                if discarded_callback is not None:
+                    try:
+                        self._invoke_task_callback(
+                            target_context,
+                            discarded_callback,
+                            record.message or "任务结果已过期，未应用",
+                        )
+                    except Exception:
+                        logging.exception(
+                            "GUI background task discarded callback failed"
+                        )
                 if active_target:
                     self.status_panel.set_state(
                         record.message or "任务结果已过期，未应用",
@@ -14108,6 +16950,13 @@ class FEMMainWindow(QMainWindow):
                 target_context,
             ),
         )
+        if task_id is None and display_transition_started:
+            # The controller rejected the start after the marker was set.
+            # Do not leave the result ribbon permanently in its transition
+            # state.
+            self._result_display_transition_active = False
+            self._refresh_result_controls()
+            self._update_action_states()
         if task_id is not None and completion is not None:
             completion.bind_task_id(task_id)
         return task_id is not None
@@ -14151,7 +17000,151 @@ class FEMMainWindow(QMainWindow):
 
     def _task_busy_changed(self, busy: bool) -> None:
         self.status_panel.set_task_active(bool(busy))
+        # Result projection callbacks run while the task controller is still
+        # busy. Refresh the result widgets again after the controller reaches
+        # idle so frame playback is immediately available.
+        self._refresh_result_controls()
         self._update_action_states()
+        if not busy:
+            # Worker completion callbacks intentionally do not build VTK
+            # payloads while the controller is still marked busy.  Finish
+            # deferred result-selection/display work only after the worker
+            # thread has fully released the task slot.
+            self._flush_pending_result_provider_projection()
+            if self.busy:
+                return
+            self._flush_queued_result_selection()
+            if self.busy:
+                return
+            self._flush_queued_result_frame()
+            if self.busy:
+                return
+            self._flush_pending_ready_result_selection()
+            if self.busy:
+                return
+            self._flush_pending_typed_result_display_settings()
+            if self.busy:
+                return
+            self._flush_pending_typed_result_projection()
+            if self.busy:
+                return
+            if self._pending_result_display_apply:
+                self._pending_result_display_apply = False
+                self._apply_display()
+            if self.busy:
+                return
+            self._flush_pending_result_topology_projection()
+            # A very fast display worker may have already emitted its
+            # terminal signal before the deferred GUI commit starts.  Keep
+            # the stable-result presentation marker until every coalesced
+            # display request above has either committed or launched its
+            # successor; only then allow the ribbon/viewport to leave the
+            # display-transition state.
+            if not self.busy and self._result_display_transition_active:
+                self._result_display_transition_active = False
+                self._refresh_result_controls()
+                self._update_action_states()
+
+    def _queue_result_selection_while_busy(
+        self,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        """Remember the latest valid field request during another task.
+
+        The result tree remains interactive while a solve/materialization or
+        large topology projection is finishing.  Rejecting its double-click
+        leaves the tree on one field while the viewport still shows another,
+        which is the source of the apparent "only displacement" state.  Keep
+        one source/generation-bound request and apply it after the task slot
+        becomes idle; newer clicks replace older ones.
+        """
+
+        provider = self._current_result_provider()
+        if provider is None or self.result_selection == selection:
+            return False
+        try:
+            availability = self._catalog_availability_for_selection(
+                provider,
+                selection,
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        if availability.state is FieldState.UNAVAILABLE:
+            return False
+        self._queued_result_selection = (
+            provider.source,
+            int(provider.snapshot.generation),
+            selection,
+        )
+        current = self.result_selection
+        active_context = self.workspace.active_document()
+        if type(current) is ScalarFieldSelection:
+            self.result_tree.select_selection(
+                current,
+                document_id=(
+                    None
+                    if active_context is None
+                    else active_context.document_id
+                ),
+                source=provider.source,
+            )
+        self.status_panel.set_state(
+            "当前任务完成后切换结果字段……",
+            4000,
+        )
+        return True
+
+    def _flush_queued_result_selection(self) -> None:
+        """Apply the newest field request once no task owns the GUI slot."""
+
+        queued = self._queued_result_selection
+        if queued is None or self.busy:
+            return
+        self._queued_result_selection = None
+        source, generation, selection = queued
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or provider.source != source
+            or int(provider.snapshot.generation) != generation
+        ):
+            return
+        self._activate_result_selection(selection)
+
+    def _flush_queued_result_frame(self) -> None:
+        """Apply the newest frame click after a display worker becomes idle."""
+
+        request = self._queued_result_frame_request
+        if request is None or self.busy:
+            return
+        self._queued_result_frame_request = None
+        source, generation, frame_index = request
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or provider.source != source
+            or int(provider.snapshot.generation) != generation
+        ):
+            return
+        self._set_result_frame(frame_index)
+
+    def _flush_pending_result_provider_projection(self) -> None:
+        """Install a worker result after the task slot has become idle."""
+
+        provider = self._pending_result_provider_projection
+        if provider is None or self.busy:
+            return
+        self._pending_result_provider_projection = None
+        try:
+            self._install_result_provider_projection(
+                provider,
+                _defer_payload=True,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self.status_panel.set_state(
+                f"结果接收失败：{error}",
+                5000,
+            )
 
     def _task_cancelling_changed(self, cancelling: bool) -> None:
         if cancelling:
@@ -14431,7 +17424,7 @@ class FEMMainWindow(QMainWindow):
 
     def _toggle_edges(self, checked: bool) -> None:
         if (
-            self._current_module_name() == "结果"
+            self.viewport.active_display_source == "result"
             and self._display.contour_enabled
         ):
             self._contour_options["edges"] = bool(checked)
@@ -14802,6 +17795,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
+        self._pending_named_region_edit_name = None
         self.viewport_panel.scope_creation_bar.finish()
         if self._scope_selection_overlay_active:
             self.viewport.hide_geometry_selection_overlay()
@@ -14838,7 +17832,7 @@ class FEMMainWindow(QMainWindow):
             f"{'节点' if kind == 'node' else '单元'} {key}",
             self._entity_coordinates(kind, key),
         )
-        self.actions["selected_info"].setEnabled(True)
+        self._update_action_states()
 
     def _on_geometry_entity_pick(
         self,
@@ -15285,7 +18279,10 @@ class FEMMainWindow(QMainWindow):
         self._pending_analysis_dialog_state = None
         self._pending_scope_kind = None
         self._pending_analysis_edit = None
+        self._pending_named_region_edit_name = None
         self.viewport_panel.scope_creation_bar.finish()
+        self.viewport_panel.scope_creation_bar.name_edit.setEnabled(True)
+        self.viewport_panel.scope_creation_bar.create_button.setText("创建")
         if self._scope_selection_overlay_active:
             self.viewport.hide_geometry_selection_overlay()
             self._scope_selection_overlay_active = False
@@ -15692,10 +18689,24 @@ class FEMMainWindow(QMainWindow):
             if mode == "custom"
             else 0.0
         )
+        scale_provider = provider
+        accepted_provider = self.result_provider
+        if (
+            getattr(provider, "frame_key", None) is not None
+            and type(accepted_provider) is ResultProvider
+            and accepted_provider.source == provider.source
+            and accepted_provider.snapshot.generation
+            == provider.snapshot.generation
+        ):
+            # Animation frames share one visual scale.  Use the accepted
+            # result snapshot as the stable reference instead of recomputing
+            # an auto scale from every increment's displacement magnitude.
+            scale_provider = accepted_provider
+        scale_snapshot = scale_provider.snapshot
         cache = self._result_deformation_scale_cache
         if (
             cache is not None
-            and cache[0] is provider.snapshot
+            and cache[0] is scale_snapshot
             and cache[1] == shape
             and cache[2] == mode
             and cache[3] == requested_value
@@ -15712,7 +18723,7 @@ class FEMMainWindow(QMainWindow):
         elif mode != "auto":
             raise ValueError("unknown deformation scale mode")
         else:
-            topology = provider.snapshot.topology
+            topology = scale_snapshot.topology
             coordinates = getattr(topology, "_node_coordinates", None)
             if coordinates is None:
                 coordinates = topology.node_coordinates
@@ -15732,13 +18743,455 @@ class FEMMainWindow(QMainWindow):
                     else 0.1 * span / maximum
                 )
         self._result_deformation_scale_cache = (
-            provider.snapshot,
+            scale_snapshot,
             shape,
             mode,
             requested_value,
             scale,
         )
         return scale
+
+    @staticmethod
+    def _contour_range_mode(options: dict[str, Any]) -> str:
+        """Normalize legacy contour range settings to one explicit mode."""
+
+        mode = str(options.get("range_mode", "")).strip().casefold()
+        if mode in {"per_frame", "global_step", "manual"}:
+            return mode
+        return "manual" if bool(options.get("manual", False)) else "per_frame"
+
+    def _ensure_multiframe_contour_defaults(
+        self,
+        provider: ResultProvider,
+    ) -> None:
+        """Use one legend range for a fresh multi-increment result.
+
+        Per-frame automatic ranges are still available as an explicit user
+        choice.  They are not a good first view for a proportional load
+        history, however: every increment is independently normalized and
+        the animation can appear frozen even though the field values change.
+        """
+
+        if (
+            not provider.frame_indices
+            or self._contour_range_mode_user_selected
+            or self._contour_range_mode(self._contour_options) != "per_frame"
+        ):
+            return
+        self._contour_options["range_mode"] = "global_step"
+        self._contour_options["manual"] = False
+
+    def _result_global_legend_range_cache_key(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> tuple[ResultSourceKey, int, ScalarFieldSelection, float]:
+        """Build the exact cache identity for one multi-frame legend scan."""
+
+        return (
+            provider.source,
+            provider.snapshot.generation,
+            selection,
+            float(self._contour_options.get("averaging_threshold", 75.0)),
+        )
+
+    @staticmethod
+    def _global_legend_range_requires_background(
+        provider: ResultProvider,
+    ) -> bool:
+        """Keep every multi-frame legend scan off the Qt event loop."""
+
+        # A small frame count is not a safe proxy for work size: one frame can
+        # still contain hundreds of thousands of integration-point values.
+        # The old threshold allowed those values to be recovered synchronously
+        # during a frame switch.  All-frame scans now use the same background
+        # path; the constant remains for compatibility with saved settings.
+        return bool(provider.frame_indices)
+
+    def _small_global_legend_range_can_run_synchronously(
+        self,
+        provider: ResultProvider,
+        topology_size: int,
+    ) -> bool:
+        """Allow only a tiny frame scan on the GUI thread.
+
+        Initial result projection historically populated the global legend
+        range synchronously for small nonlinear results. Preserve that visible
+        state for the small case, but never let a large mesh turn the
+        provider-install callback into an all-frame materialization job. A
+        lazy field is acceptable here only because the topology and frame
+        count limits bound the work to a small result.
+        """
+
+        frame_indices = tuple(provider.frame_indices)
+        if not frame_indices:
+            return False
+        if len(frame_indices) > _GLOBAL_LEGEND_BACKGROUND_FRAME_THRESHOLD:
+            return False
+        if int(topology_size) >= _RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD:
+            return False
+        return True
+
+    def _begin_result_global_legend_range_materialization(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        """Scan and materialize a large multi-frame legend off the GUI thread."""
+
+        if self.busy or not provider.frame_indices:
+            return False
+        cache_key = self._result_global_legend_range_cache_key(
+            provider,
+            selection,
+        )
+        if cache_key in self._result_global_legend_range_cache:
+            return False
+        if self._pending_result_global_legend_range == cache_key:
+            return True
+
+        self._pending_result_global_legend_range = cache_key
+        target_frame_index = self._result_frame_index
+        completion = GuiCommandCompletion(self._next_command_id())
+
+        def is_current() -> bool:
+            current = self._current_result_provider()
+            return bool(
+                current is not None
+                and current.source == provider.source
+                and current.snapshot.generation == provider.snapshot.generation
+                and self.result_selection == selection
+            )
+
+        def clear_pending() -> None:
+            if self._pending_result_global_legend_range == cache_key:
+                self._pending_result_global_legend_range = None
+                self._refresh_result_controls()
+                self._update_action_states()
+
+        def workload(context: TaskContext) -> _GlobalLegendRangeMaterialization:
+            context.report("正在后台计算所有增量的统一云图范围……")
+            threshold = cache_key[3]
+            minimum = float("inf")
+            maximum = float("-inf")
+            found = False
+            frame_patches: list[tuple[int, ResultMaterializationPatch]] = []
+            for frame_index in provider.frame_indices:
+                context.checkpoint()
+                frame_provider = provider.frame_provider(frame_index)
+                visual_selection = (
+                    self._result_averaging_visual_selection_for_threshold(
+                        frame_provider,
+                        selection,
+                        threshold,
+                    )
+                )
+                required_keys = tuple(
+                    dict.fromkeys(
+                        (
+                            selection.field_key,
+                            visual_selection.field_key,
+                        )
+                    )
+                )
+                pending = tuple(
+                    key
+                    for key in required_keys
+                    if frame_provider.field_status(key).state
+                    is not FieldState.READY
+                )
+                if pending:
+                    patch = frame_provider.materialize(
+                        pending,
+                        cancellation=context,
+                    )
+                    frame_provider = frame_provider.apply(patch)
+                    if frame_index == target_frame_index:
+                        frame_patches.append((frame_index, patch))
+                values = frame_provider.field(
+                    visual_selection.field_key
+                ).component_values(visual_selection.component)
+                finite = values[np.isfinite(values)]
+                if finite.size == 0:
+                    continue
+                minimum = min(minimum, float(np.min(finite)))
+                maximum = max(maximum, float(np.max(finite)))
+                found = True
+            return _GlobalLegendRangeMaterialization(
+                cache_key=cache_key,
+                value=None if not found else (minimum, maximum),
+                frame_patches=tuple(frame_patches),
+            )
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not _GlobalLegendRangeMaterialization:
+                raise TypeError(
+                    "global legend materialization returned an invalid payload"
+                )
+            if value.cache_key != cache_key:
+                raise ValueError("global legend materialization key changed")
+            if not is_current():
+                return TaskApplyOutcome.stale("当前结果已切换")
+            current_frame_cache_key = (
+                provider.source,
+                provider.snapshot.generation,
+                self._result_frame_index,
+            )
+            for frame_index, patch in value.frame_patches:
+                frame_provider = self._result_frame_provider_at(
+                    provider,
+                    frame_index,
+                )
+                new_fields = tuple(
+                    field_data
+                    for field_data in patch.fields
+                    if frame_provider.field_status(field_data.key).state
+                    is not FieldState.READY
+                )
+                if new_fields:
+                    frame_provider = frame_provider.apply(
+                        ResultMaterializationPatch(
+                            source=patch.source,
+                            fields=new_fields,
+                            diagnostics=patch.diagnostics,
+                        )
+                    )
+                frame_cache_key = (
+                    provider.source,
+                    provider.snapshot.generation,
+                    frame_index,
+                )
+                self._result_frame_provider_cache[frame_cache_key] = frame_provider
+                self._trim_result_frame_provider_cache(
+                    current_key=current_frame_cache_key,
+                )
+            self._result_global_legend_range_cache[cache_key] = value.value
+            return TaskApplyOutcome.accepted()
+
+        def succeeded(_value: object) -> None:
+            clear_pending()
+            if not is_current():
+                return
+            try:
+                self._apply_display()
+                self._prefetch_result_frame_providers(provider)
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self.status_panel.set_state(
+                    f"统一云图范围应用失败：{error}",
+                    5000,
+                )
+                return
+            self.status_panel.set_state(
+                "统一云图范围加载完成",
+                3000,
+            )
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "统一云图范围计算失败",
+            lambda message: (
+                clear_pending(),
+                self.status_panel.set_state(message, 5000),
+            ),
+            task_name="统一云图范围",
+            on_cancelled=lambda: (
+                clear_pending(),
+                self.status_panel.set_state("统一云图范围计算已取消", 4000),
+            ),
+            on_inactive_failure=lambda _message: clear_pending(),
+            on_inactive_cancelled=clear_pending,
+            apply_result=apply_result,
+            completion=completion,
+        )
+        if not started:
+            clear_pending()
+            return False
+
+        completion.observe(
+            lambda terminal: (
+                clear_pending()
+                if terminal.state is not BackgroundTaskState.SUCCEEDED
+                else None
+            )
+        )
+        return True
+
+    def _result_global_legend_range(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        *,
+        allow_sync: bool = True,
+    ) -> tuple[float, float] | None:
+        """Return a previously computed scalar range without blocking.
+
+        Global-range scans can touch every result frame.  They are populated by
+        ``_begin_result_global_legend_range_materialization`` and must never
+        recover a lazy frame synchronously from a paint/display callback.
+
+        ``allow_sync`` remains available for the direct diagnostic/query
+        helper used by existing callers.  GUI display paths pass ``False``;
+        this keeps compatibility for explicit inspection while ensuring that
+        a render callback cannot start an all-frame recovery pass.
+        """
+
+        if type(provider) is not ResultProvider:
+            raise TypeError("provider must be exactly ResultProvider")
+        if type(selection) is not ScalarFieldSelection:
+            raise TypeError("selection must be a ScalarFieldSelection")
+        if not provider.frame_indices:
+            return None
+        threshold = float(
+            self._contour_options.get("averaging_threshold", 75.0)
+        )
+        cache_key = self._result_global_legend_range_cache_key(
+            provider,
+            selection,
+        )
+        if cache_key in self._result_global_legend_range_cache:
+            return self._result_global_legend_range_cache[cache_key]
+        if not allow_sync:
+            # The missing value is intentional.  The caller will use the
+            # per-frame range until the background scan publishes this key.
+            return None
+
+        minimum = float("inf")
+        maximum = float("-inf")
+        found = False
+        for frame_index in provider.frame_indices:
+            frame_provider = self._result_frame_provider_at(
+                provider,
+                frame_index,
+            )
+            visual_selection = self._result_averaging_visual_selection_for_threshold(
+                frame_provider,
+                selection,
+                threshold,
+            )
+            if (
+                frame_provider.field_status(visual_selection.field_key).state
+                is not FieldState.READY
+            ):
+                frame_provider = frame_provider.apply(
+                    frame_provider.materialize((visual_selection.field_key,))
+                )
+                self._result_frame_provider_cache[
+                    (
+                        provider.source,
+                        provider.snapshot.generation,
+                        frame_index,
+                    )
+                ] = frame_provider
+            values = frame_provider.field(
+                visual_selection.field_key
+            ).component_values(visual_selection.component)
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                continue
+            minimum = min(minimum, float(np.min(finite)))
+            maximum = max(maximum, float(np.max(finite)))
+            found = True
+
+        result = None if not found else (minimum, maximum)
+        self._result_global_legend_range_cache[cache_key] = result
+        return result
+
+    def _effective_contour_options_for_viewport(
+        self,
+        provider: ResultProvider | None = None,
+        selection: ScalarFieldSelection | None = None,
+        *,
+        allow_sync_range: bool = False,
+    ) -> dict[str, Any]:
+        """Project persisted range intent into the viewport's old API."""
+
+        options = dict(self._contour_options)
+        mode = self._contour_range_mode(options)
+        if mode == "manual":
+            options["manual"] = True
+        elif mode == "global_step" and (
+            provider is not None
+            and selection is not None
+        ):
+            shared_range = self._result_global_legend_range(
+                provider,
+                selection,
+                allow_sync=allow_sync_range,
+            )
+            if shared_range is None:
+                options["manual"] = False
+            else:
+                options["manual"] = True
+                options["minimum"], options["maximum"] = shared_range
+        else:
+            options["manual"] = False
+        options.pop("range_mode", None)
+        options.pop("global_minimum", None)
+        options.pop("global_maximum", None)
+        options.pop("averaging_threshold", None)
+        return options
+
+    def _result_display_query(
+        self,
+        export: ResultExportSnapshot,
+        *,
+        shape_mode: str | None,
+        deformation_scale: float,
+    ) -> ResultDisplayQuery:
+        """Build the single display intent used by the current result view.
+
+        A legacy single-frame provider has no stored frame key.  It receives
+        an internal frame-0 identity so the render topology still carries an
+        explicit query; this is not exposed as an additional GUI frame.
+        """
+
+        actual_shape_mode = (
+            self._display.shape_mode
+            if shape_mode is None
+            else shape_mode
+        )
+        frame = export.frame_key or ResultFrameKey(export.source, 0)
+        range_mode = self._contour_range_mode(self._contour_options)
+        minimum = float(self._contour_options.get("minimum", 0.0))
+        maximum = float(self._contour_options.get("maximum", 1.0))
+        if (
+            range_mode == "manual"
+            and np.isfinite(minimum)
+            and np.isfinite(maximum)
+            and minimum < maximum
+        ):
+            legend = ResultLegendPolicy(
+                ResultLegendMode.MANUAL,
+                minimum,
+                maximum,
+            )
+        elif range_mode == "global_step" and export.frame_key is not None:
+            legend = ResultLegendPolicy(ResultLegendMode.GLOBAL_STEP)
+        else:
+            legend = ResultLegendPolicy(ResultLegendMode.PER_FRAME)
+        return ResultDisplayQuery(
+            frame=frame,
+            selection=export.selection,
+            computation=display_computation_for_position(
+                export.selection.field_key.request.field_id.position
+            ),
+            deformation=(
+                ResultDeformationMode.DEFORMED
+                if actual_shape_mode == "deformed"
+                else ResultDeformationMode.UNDEFORMED
+            ),
+            deformation_scale=deformation_scale,
+            averaging=ResultAveragingOptions(
+                threshold_percent=float(
+                    self._contour_options.get(
+                        "averaging_threshold",
+                        75.0,
+                    )
+                )
+            ),
+            legend=legend,
+        )
 
     def _build_result_render_payload(
         self,
@@ -15754,7 +19207,11 @@ class FEMMainWindow(QMainWindow):
             selection,
         )
         if availability.state is not FieldState.READY:
-            raise KeyError("only a READY catalog field can be rendered")
+            # Callers normally guard this at the task/commit boundary.  Keep
+            # the builder defensive as well, but never leak the internal
+            # catalog-state wording into the user-facing status bar if a
+            # materialization completion races a render request.
+            raise RuntimeError("结果字段正在准备，暂时不能渲染")
         export = prepare_result_export_snapshot(
             provider.snapshot,
             selection,
@@ -15765,6 +19222,11 @@ class FEMMainWindow(QMainWindow):
             scale_mode=scale_mode,
             scale_value=scale_value,
         )
+        display_query = self._result_display_query(
+            export,
+            shape_mode=shape_mode,
+            deformation_scale=deformation_scale,
+        )
         current_payload = self.viewport._result_render_payload
         if current_payload is not None:
             current_topology = current_payload.topology
@@ -15772,33 +19234,54 @@ class FEMMainWindow(QMainWindow):
                 current_topology.source == export.source
                 and current_topology.materialization_generation
                 == export.materialization_generation
+                and current_topology.frame_key == export.frame_key
                 and current_topology.selection == export.selection
                 and current_topology.deformation_scale == deformation_scale
+                and current_topology.display_query == display_query
             ):
                 return current_payload
-        cache = self._result_topology_template_cache
+        frame_index = (
+            0
+            if export.frame_key is None
+            else int(export.frame_key.frame_index)
+        )
+        template_cache_key = (
+            export.source,
+            int(export.materialization_generation),
+            frame_index,
+            export.selection.field_key,
+            float(deformation_scale),
+        )
+        cache = self._result_topology_template_cache.get(template_cache_key)
         if (
             cache is not None
             and cache[0] is provider.snapshot
-            and cache[1].matches(export, deformation_scale)
+            and cache[1].matches(
+                export,
+                deformation_scale,
+                display_query,
+            )
         ):
             topology = project_scalar_field_topology_from_template(
                 export,
                 cache[1],
                 deformation_scale,
+                display_query=display_query,
             )
         else:
             topology = project_scalar_field_topology(
                 export,
                 deformation_scale=deformation_scale,
+                display_query=display_query,
             )
-            self._result_topology_template_cache = (
+            self._result_topology_template_cache[template_cache_key] = (
                 provider.snapshot,
-                build_result_field_topology_template(
-                    topology,
-                    export.field,
-                ),
+                build_result_field_topology_template(topology, export.field),
             )
+            while len(self._result_topology_template_cache) > 12:
+                self._result_topology_template_cache.pop(
+                    next(iter(self._result_topology_template_cache))
+                )
         return build_result_render_payload(
             topology,
             reusable=self.viewport._result_render_payload,
@@ -15809,31 +19292,10 @@ class FEMMainWindow(QMainWindow):
         provider: ResultProvider,
         selection: ScalarFieldSelection,
     ) -> ScalarFieldSelection:
-        request = selection.field_key.request
-        field_id = request.field_id
-        if (
-            field_id.variable is not ResultVariable.S
-            or field_id.position not in {
-                FieldPosition.ELEMENT_NODAL,
-                FieldPosition.RESOLVED_NODAL,
-            }
-        ):
-            return selection
-        visual_request = FieldRequest(
-            field_id=ResultFieldId(
-                ResultVariable.S,
-                FieldPosition.RESOLVED_NODAL,
-            ),
-            averaging_policy=NodalAveragingPolicy(
-                threshold_percent=float(
-                    self._contour_options["averaging_threshold"]
-                )
-            ),
-            gauss_order=request.gauss_order,
-        )
-        return ScalarFieldSelection(
-            provider.resolve_request(visual_request),
-            selection.component,
+        return self._result_averaging_visual_selection_for_threshold(
+            provider,
+            selection,
+            float(self._contour_options["averaging_threshold"]),
         )
 
     def _result_visualization_provider(
@@ -15879,6 +19341,18 @@ class FEMMainWindow(QMainWindow):
             provider is None
             or type(selection) is not ScalarFieldSelection
         ):
+            return
+        if self._result_frame_index != 0:
+            self._result_visualization_provider_cache = None
+            self._result_frame_provider_cache.clear()
+            self._result_deformation_scale_cache = None
+            try:
+                self._apply_display()
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                self.status_panel.set_state(
+                    f"增量帧节点平均显示失败：{error}",
+                    5000,
+                )
             return
         visual_selection = self._result_averaging_visual_selection(
             provider,
@@ -16030,16 +19504,41 @@ class FEMMainWindow(QMainWindow):
         self,
         provider: ResultProvider,
         selection: ScalarFieldSelection,
+        *,
+        _after_idle: bool = False,
     ) -> None:
         if provider is not self._current_result_provider():
             raise RuntimeError("provider is no longer current")
-        render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+        if not self._result_field_is_ready(provider, selection):
+            self.status_panel.set_state(
+                "结果字段尚未准备完成，保持当前显示",
+                4000,
+            )
+            return
+        if self.busy and not _after_idle:
+            self._pending_ready_result_selection = (
+                provider.source,
+                int(provider.snapshot.generation),
+                selection,
+            )
+            return
+        frame_provider = self._frame_result_provider_for_display(
+            provider,
+            selection,
         )
-        payload = self._build_result_render_payload(
+        render_provider, render_selection = self._result_visualization_provider(
+            frame_provider,
+            selection,
+        )
+        if not self._result_field_is_ready(
             render_provider,
             render_selection,
-        )
+        ):
+            self.status_panel.set_state(
+                "结果显示字段尚未准备完成，保持当前显示",
+                4000,
+            )
+            return
         active_context = self.workspace.active_document()
         if not self.result_tree.has_selection(
             selection,
@@ -16051,10 +19550,56 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError(
                 "selected field is missing from the result tree"
             )
+        projection_spec = self._result_topology_projection_spec(
+            provider,
+            selection,
+            render_provider,
+            render_selection,
+            previous_selection=self.result_selection,
+        )
+        if projection_spec is not None:
+            previous_selection = self.result_selection
+            self.result_selection = selection
+            if not self.result_tree.select_selection(
+                selection,
+                document_id=(
+                    None
+                    if active_context is None
+                    else active_context.document_id
+                ),
+                source=provider.source,
+            ):
+                self.result_selection = previous_selection
+                raise RuntimeError(
+                    "selected field disappeared from the result tree"
+                )
+            self._refresh_result_controls()
+            self.status_panel.set_result(self._result_status_text())
+            self._update_action_states()
+            if self._begin_result_topology_projection(projection_spec):
+                self.status_panel.set_state("正在后台准备结果显示……")
+                return
+            self.result_selection = previous_selection
+            if previous_selection is not None:
+                self.result_tree.select_selection(
+                    previous_selection,
+                    document_id=(
+                        None
+                        if active_context is None
+                        else active_context.document_id
+                    ),
+                    source=provider.source,
+                )
+        payload = self._build_result_render_payload(
+            render_provider,
+            render_selection,
+        )
         self._install_viewport_result_payload(
             payload,
             shape_mode=self._display.shape_mode,
             contour_enabled=self._display.contour_enabled,
+            range_provider=provider,
+            range_selection=selection,
         )
         self.result_selection = selection
         if not self.result_tree.select_selection(
@@ -16080,50 +19625,140 @@ class FEMMainWindow(QMainWindow):
         ):
             self._defer_ui(self._apply_result_averaging_threshold)
 
+    def _flush_pending_ready_result_selection(self) -> None:
+        """Apply a field selection deferred out of a task callback."""
+
+        pending = self._pending_ready_result_selection
+        if pending is None or self.busy:
+            return
+        self._pending_ready_result_selection = None
+        source, generation, selection = pending
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or provider.source != source
+            or int(provider.snapshot.generation) != generation
+        ):
+            return
+        try:
+            self._install_ready_result_selection(
+                provider,
+                selection,
+                _after_idle=True,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self.status_panel.set_state(
+                f"结果字段显示失败：{error}",
+                5000,
+            )
+
     def _install_viewport_result_payload(
         self,
         payload: ResultRenderPayload,
         *,
         shape_mode: str,
         contour_enabled: bool,
+        range_provider: ResultProvider | None = None,
+        range_selection: ScalarFieldSelection | None = None,
+        allow_sync_range: bool = False,
+        show_edges: bool | None = None,
+        render: bool = True,
     ) -> None:
         """Install one payload and restore the prior scene on renderer failure."""
 
         previous_payload = self.viewport._result_render_payload
+        previous_source = self.viewport.active_display_source
         previous_display = self.viewport._display
+        previous_show_edges = bool(self.viewport._show_edges)
+        previous_contour = self.viewport.contour_display_state
+        if range_provider is None:
+            range_provider = self._current_result_provider()
+        if range_selection is None:
+            range_selection = payload.topology.selection
+        render_requested = bool(render and not self._workspace_activation)
+
+        def render_transaction():
+            factory = getattr(self.viewport, "render_transaction", None)
+            return factory() if callable(factory) else nullcontext()
+
         try:
-            if payload is not previous_payload:
-                self.viewport.set_result_render_payload(payload)
-            self.viewport.set_display(
-                shape_mode,
-                contour_enabled,
-                render=not self._workspace_activation,
-            )
+            with render_transaction():
+                # Detaching a different artifact is part of the same visible
+                # commit as the replacement payload. Doing this before the
+                # transaction switches the stacked viewport to the empty
+                # message page and exposes a grey/blank intermediate frame.
+                self._prepare_viewport_for_result_source(
+                    payload.topology.source,
+                )
+                if (
+                    payload is not previous_payload
+                    or previous_source != "result"
+                ):
+                    self.viewport.set_result_render_payload(payload)
+                if show_edges is not None:
+                    self.viewport.set_edges_visible(
+                        bool(show_edges),
+                        render=False,
+                    )
+                self.viewport.set_contour_options(
+                    self._effective_contour_options_for_viewport(
+                        range_provider,
+                        range_selection,
+                        allow_sync_range=allow_sync_range,
+                    ),
+                    render=False,
+                    update=False,
+                )
+                # The transaction owns the final paint.  Never render between
+                # removal of the previous actor and installation of the new
+                # result actor.
+                self.viewport.set_display(
+                    shape_mode,
+                    contour_enabled,
+                    render=False,
+                )
         except Exception:
-            if previous_payload is not None:
+            if previous_payload is not None and previous_source == "result":
                 try:
-                    FEMViewport.set_result_render_payload(
-                        self.viewport,
-                        previous_payload,
-                    )
-                    FEMViewport.set_display(
-                        self.viewport,
-                        previous_display.shape_mode,
-                        previous_display.contour_enabled,
-                        render=not self._workspace_activation,
-                    )
+                    with render_transaction():
+                        FEMViewport.set_result_render_payload(
+                            self.viewport,
+                            previous_payload,
+                        )
+                        self.viewport.set_edges_visible(
+                            previous_show_edges,
+                            render=False,
+                        )
+                        self.viewport.set_contour_options(
+                            previous_contour,
+                            render=False,
+                            update=False,
+                        )
+                        FEMViewport.set_display(
+                            self.viewport,
+                            previous_display.shape_mode,
+                            previous_display.contour_enabled,
+                            render=False,
+                        )
+                    if render_requested:
+                        self.viewport.render()
                 except Exception:
                     logging.exception(
                         "failed to restore viewport result payload"
                     )
             else:
                 try:
-                    self._restore_viewport_model_scene()
+                    with render_transaction():
+                        self._restore_viewport_model_scene(render=False)
+                    if render_requested:
+                        self.viewport.render()
                 except Exception:
                     logging.exception(
                         "failed to restore the model viewport scene"
                     )
             raise
+        if render_requested:
+            self.viewport.render()
 
     def _restore_viewport_model_scene(
         self,
@@ -16190,6 +19825,8 @@ class FEMMainWindow(QMainWindow):
         self,
         selection: ScalarFieldSelection,
     ) -> None:
+        if self.busy and self._queue_result_selection_while_busy(selection):
+            return
         provider = self._current_result_provider()
         receipt = self.select_result_field(selection)
         if receipt.diagnostic is not None:
@@ -16237,11 +19874,17 @@ class FEMMainWindow(QMainWindow):
                 self._display,
                 contour_enabled=True,
             )
-            self.actions["contour"].setChecked(True)
-            self.viewport.set_display(
-                self._display.shape_mode,
-                True,
-            )
+            # The materialization completion can arrive in the same Qt turn
+            # as the provider/tree projection.  Do not render the old
+            # payload synchronously here: it can race the READY commit and
+            # briefly expose an empty/grey scene (or hand a non-READY field
+            # to the renderer).  Queue one display application through the
+            # normal idle/busy ordering instead.
+            with QSignalBlocker(self.actions["contour"]):
+                self.actions["contour"].setChecked(True)
+            self._pending_result_display_apply = True
+            if not self.busy:
+                self._defer_ui(self._apply_display)
         self.status_panel.set_result(self._result_status_text())
 
     def _activate_routed_result_selection(
@@ -16341,11 +19984,15 @@ class FEMMainWindow(QMainWindow):
                 self._display,
                 contour_enabled=True,
             )
-            self.actions["contour"].setChecked(True)
-            self.viewport.set_display(
-                self._display.shape_mode,
-                True,
-            )
+            # Keep lazy-field completion on the same coalesced display path
+            # as ordinary field/frame changes.  A direct set_display here
+            # can paint an intermediate payload while the worker result is
+            # only just being committed.
+            with QSignalBlocker(self.actions["contour"]):
+                self.actions["contour"].setChecked(True)
+            self._pending_result_display_apply = True
+            if not self.busy:
+                self._defer_ui(self._apply_display)
         self.status_panel.set_result(self._result_status_text())
 
     def set_shape_mode(self, shape_mode: str) -> None:
@@ -16364,9 +20011,375 @@ class FEMMainWindow(QMainWindow):
 
     def _toggle_undeformed_overlay(self, checked: bool) -> None:
         self._overlay_undeformed = bool(checked)
-        self.viewport.set_undeformed_overlay_visible(checked)
+        factory = getattr(self.viewport, "render_transaction", None)
+        transaction = factory() if callable(factory) else nullcontext()
+        with transaction:
+            self.viewport.set_undeformed_overlay_visible(
+                checked,
+                render=False,
+            )
+        if (
+            not self._workspace_activation
+            and (
+                not self.busy
+                or self._result_display_request_pending()
+            )
+        ):
+            self.viewport.render()
+
+    def _result_topology_projection_spec(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        render_provider: ResultProvider,
+        render_selection: ScalarFieldSelection,
+        *,
+        previous_selection: ScalarFieldSelection | None,
+    ) -> _ResultTopologyProjectionSpec | None:
+        """Prepare a detached large-result projection without doing the loop."""
+
+        if self._workspace_activation or self._closing:
+            return None
+        availability = self._catalog_availability_for_selection(
+            render_provider,
+            render_selection,
+        )
+        if availability.state is not FieldState.READY:
+            return None
+        export = prepare_result_export_snapshot(
+            render_provider.snapshot,
+            render_selection,
+        )
+        topology_size = max(
+            len(export.topology.element_ids),
+            len(export.field.locations),
+        )
+        if topology_size < _RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD:
+            return None
+        deformation_scale = self._result_deformation_scale(
+            render_provider,
+            shape_mode=self._display.shape_mode,
+        )
+        display_query = self._result_display_query(
+            export,
+            shape_mode=self._display.shape_mode,
+            deformation_scale=deformation_scale,
+        )
+        current_payload = self.viewport._result_render_payload
+        if current_payload is not None:
+            current_topology = current_payload.topology
+            if (
+                current_topology.source == export.source
+                and current_topology.materialization_generation
+                == export.materialization_generation
+                and current_topology.frame_key == export.frame_key
+                and current_topology.selection == export.selection
+                and current_topology.deformation_scale == deformation_scale
+                and current_topology.display_query == display_query
+            ):
+                return None
+        frame_index = (
+            0
+            if export.frame_key is None
+            else int(export.frame_key.frame_index)
+        )
+        template_key = (
+            export.source,
+            int(export.materialization_generation),
+            frame_index,
+            export.selection.field_key,
+            float(deformation_scale),
+        )
+        cached = self._result_topology_template_cache.get(template_key)
+        template = (
+            cached[1]
+            if cached is not None
+            and cached[0] is render_provider.snapshot
+            and cached[1].matches(
+                export,
+                deformation_scale,
+                display_query,
+            )
+            else None
+        )
+        key = (
+            provider.source,
+            int(provider.snapshot.generation),
+            int(self._result_frame_index),
+            selection,
+            render_provider.source,
+            int(render_provider.snapshot.generation),
+            render_selection,
+            self._display.shape_mode,
+            bool(self._display.contour_enabled),
+            float(deformation_scale),
+            display_query,
+        )
+        return _ResultTopologyProjectionSpec(
+            key=key,
+            template_key=template_key,
+            provider=provider,
+            selection=selection,
+            render_provider=render_provider,
+            render_selection=render_selection,
+            export=export,
+            deformation_scale=deformation_scale,
+            display_query=display_query,
+            template=template,
+            shape_mode=self._display.shape_mode,
+            contour_enabled=bool(self._display.contour_enabled),
+            previous_selection=previous_selection,
+        )
+
+    def _result_topology_projection_is_current(
+        self,
+        spec: _ResultTopologyProjectionSpec,
+    ) -> bool:
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or provider.source != spec.provider.source
+            or int(provider.snapshot.generation)
+            != int(spec.provider.snapshot.generation)
+            or self.result_selection != spec.selection
+            or self._result_frame_index
+            != int(spec.template_key[2])
+            or self._display.shape_mode != spec.shape_mode
+            or bool(self._display.contour_enabled) != spec.contour_enabled
+        ):
+            return False
+        return (
+            self._result_averaging_visual_selection(
+                provider,
+                spec.selection,
+            )
+            == spec.render_selection
+        )
+
+    def _begin_result_topology_projection(
+        self,
+        spec: _ResultTopologyProjectionSpec,
+    ) -> bool:
+        """Project large neutral result topology in the task worker."""
+
+        if self.busy:
+            return False
+        active = self._active_result_topology_projection
+        if active is not None and active.key == spec.key:
+            return True
+        self._active_result_topology_projection = spec
+
+        def workload(context: TaskContext) -> ResultFieldTopology:
+            context.report("正在后台准备结果显示拓扑……")
+            context.checkpoint()
+            if spec.template is not None:
+                topology = project_scalar_field_topology_from_template(
+                    spec.export,
+                    spec.template,
+                    spec.deformation_scale,
+                    display_query=spec.display_query,
+                )
+            else:
+                topology = project_scalar_field_topology(
+                    spec.export,
+                    deformation_scale=spec.deformation_scale,
+                    display_query=spec.display_query,
+                )
+            context.checkpoint()
+            return topology
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not ResultFieldTopology:
+                raise TypeError(
+                    "result topology worker must return ResultFieldTopology"
+                )
+            if not self._result_topology_projection_is_current(spec):
+                return TaskApplyOutcome.stale("当前结果显示请求已过期")
+            return TaskApplyOutcome.accepted(value)
+
+        def succeeded(value: object) -> None:
+            if type(value) is not ResultFieldTopology:
+                raise TypeError("accepted result topology has an invalid type")
+            if not self._result_topology_projection_is_current(spec):
+                self._active_result_topology_projection = None
+                return
+            # Keep the GUI callback bounded: VTK dataset construction and the
+            # final actor update are performed after the controller becomes
+            # idle, not inside the worker's success signal.
+            self._pending_result_topology_projection = (spec, value)
+
+        def clear_pending() -> None:
+            if self._active_result_topology_projection is spec:
+                self._active_result_topology_projection = None
+            pending = self._pending_result_topology_projection
+            if pending is not None and pending[0] is spec:
+                self._pending_result_topology_projection = None
+
+        def failed(message: str) -> None:
+            clear_pending()
+            self._restore_failed_result_selection(spec)
+            self.status_panel.set_state(
+                f"结果显示准备失败：{message}",
+                5000,
+            )
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "结果显示准备失败",
+            failed,
+            task_name="结果显示拓扑准备",
+            on_cancelled=lambda: (
+                clear_pending(),
+                self._restore_failed_result_selection(spec),
+                self.status_panel.set_state("结果显示准备已取消", 4000),
+            ),
+            on_inactive_failure=lambda _message: clear_pending(),
+            on_inactive_cancelled=clear_pending,
+            on_discarded=lambda _message: clear_pending(),
+            on_inactive_discarded=lambda _message: clear_pending(),
+            apply_result=apply_result,
+        )
+        if not started:
+            clear_pending()
+        return started
+
+    def _restore_failed_result_selection(
+        self,
+        spec: _ResultTopologyProjectionSpec,
+    ) -> None:
+        """Restore the previous field if an asynchronous display failed."""
+
+        if self.result_selection != spec.selection:
+            return
+        self.result_selection = spec.previous_selection
+        if spec.previous_selection is not None:
+            active_context = self.workspace.active_document()
+            self.result_tree.select_selection(
+                spec.previous_selection,
+                document_id=(
+                    None
+                    if active_context is None
+                    else active_context.document_id
+                ),
+                source=spec.provider.source,
+            )
+        self._refresh_result_controls()
+        self._update_action_states()
+
+    def _flush_pending_result_topology_projection(self) -> None:
+        """Install a worker-produced topology after the task is fully idle."""
+
+        pending = self._pending_result_topology_projection
+        if pending is None or self.busy:
+            return
+        self._pending_result_topology_projection = None
+        spec, topology = pending
+        self._active_result_topology_projection = None
+        if not self._result_topology_projection_is_current(spec):
+            return
+        # A materialization completion and a topology-worker completion can
+        # arrive in adjacent Qt turns. Re-check the immutable field state at
+        # the commit boundary so a non-READY field never reaches the renderer.
+        if not self._result_field_is_ready(
+            spec.render_provider,
+            spec.render_selection,
+        ):
+            self.status_panel.set_state(
+                "结果显示字段尚未准备完成，保持当前显示",
+                4000,
+            )
+            return
+        try:
+            if spec.template is None:
+                self._result_topology_template_cache[spec.template_key] = (
+                    spec.render_provider.snapshot,
+                    build_result_field_topology_template(
+                        topology,
+                        spec.export.field,
+                    ),
+                )
+                while len(self._result_topology_template_cache) > 12:
+                    self._result_topology_template_cache.pop(
+                        next(iter(self._result_topology_template_cache))
+                    )
+            payload = build_result_render_payload(
+                topology,
+                reusable=self.viewport._result_render_payload,
+            )
+            self._apply_built_result_display_payload(
+                payload,
+                provider=spec.provider,
+                selection=spec.selection,
+            )
+            self.status_panel.set_state("结果显示已更新", 3000)
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._restore_failed_result_selection(spec)
+            self.status_panel.set_state(
+                f"结果显示失败：{error}",
+                5000,
+            )
+
+    def _apply_built_result_display_payload(
+        self,
+        payload: ResultRenderPayload,
+        *,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+        render: bool = True,
+    ) -> None:
+        """Apply one built payload with a single coalesced viewport update."""
+
+        if not self._result_field_is_ready(provider, selection):
+            self.status_panel.set_state(
+                "结果字段尚未准备完成，保持当前显示",
+                4000,
+            )
+            return
+
+        show_edges = (
+            bool(self._contour_options["edges"])
+            if self._display.contour_enabled
+            else self._model_edges_visible
+        )
+        with QSignalBlocker(self.actions["edges"]):
+            self.actions["edges"].setChecked(show_edges)
+        self._install_viewport_result_payload(
+            payload,
+            shape_mode=self._display.shape_mode,
+            contour_enabled=self._display.contour_enabled,
+            range_provider=provider,
+            range_selection=selection,
+            show_edges=show_edges,
+            render=render,
+        )
+        if render:
+            self.status_panel.set_result(self._result_status_text())
+
+    def _result_field_is_ready(
+        self,
+        provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> bool:
+        """Return whether a field is safe to hand to the render builder."""
+
+        try:
+            return (
+                self._catalog_availability_for_selection(
+                    provider,
+                    selection,
+                ).state
+                is FieldState.READY
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
 
     def _apply_display(self, *, render: bool = True) -> None:
+        if self.busy or self._workspace_activation:
+            # Do not let a worker success callback or a task-driven frame
+            # switch execute a full result projection on the Qt event loop.
+            self._pending_result_display_apply = True
+            return
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -16374,29 +20387,50 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return
-        render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+        if not self._result_field_is_ready(provider, selection):
+            self.status_panel.set_state(
+                "结果字段正在准备，保持当前显示",
+                4000,
+            )
+            return
+        frame_provider = self._frame_result_provider_for_display(
+            provider,
+            selection,
         )
+        render_provider, render_selection = self._result_visualization_provider(
+            frame_provider,
+            selection,
+        )
+        if not self._result_field_is_ready(
+            render_provider,
+            render_selection,
+        ):
+            self.status_panel.set_state(
+                "结果显示字段正在准备，保持当前显示",
+                4000,
+            )
+            return
+        spec = self._result_topology_projection_spec(
+            provider,
+            selection,
+            render_provider,
+            render_selection,
+            previous_selection=selection,
+        )
+        if spec is not None:
+            if self._begin_result_topology_projection(spec):
+                self.status_panel.set_state("正在后台准备结果显示……")
+                return
         payload = self._build_result_render_payload(
             render_provider,
             render_selection,
         )
-        show_edges = (
-            bool(self._contour_options["edges"])
-            if self._display.contour_enabled
-            else self._model_edges_visible
-        )
-        self.actions["edges"].setChecked(show_edges)
-        self._prepare_viewport_for_result_source(render_provider.source)
-        self.viewport.set_edges_visible(show_edges, render=False)
-        if payload is not self.viewport._result_render_payload:
-            self.viewport.set_result_render_payload(payload)
-        self.viewport.set_display(
-            self._display.shape_mode,
-            self._display.contour_enabled,
+        self._apply_built_result_display_payload(
+            payload,
+            provider=provider,
+            selection=selection,
             render=render,
         )
-        self.status_panel.set_result(self._result_status_text())
 
     def _result_status_text(self) -> str:
         provider = self._current_result_provider()
@@ -16421,11 +20455,24 @@ class FEMMainWindow(QMainWindow):
             field_id,
             section_point_labels=result_provider_section_point_labels(provider),
         )
+        payload = self.viewport._result_render_payload
+        if payload is not None and payload.topology.display_query is not None:
+            display_label = result_display_computation_label(
+                payload.topology.display_query.effective_computation
+            )
+            if display_label is not None:
+                position_label = display_label
         result_name = (
             f"{field_id.variable.value} {selection.component}"
             f"（{position_label}）"
         )
-        return f"{shape} / {result_name}"
+        frame_suffix = ""
+        if provider.frame_indices and self._result_frame_index in provider.frame_indices:
+            frame_suffix = " / " + self._result_frame_info_text(
+                provider,
+                self._result_frame_index,
+            )
+        return f"{shape} / {result_name}{frame_suffix}"
 
     def show_result_display_dialog(self) -> None:
         provider = self._current_result_provider()
@@ -16457,12 +20504,295 @@ class FEMMainWindow(QMainWindow):
         )
         self._exec_view_dialog(dialog)
 
+    def _flush_pending_typed_result_display_settings(self) -> None:
+        """Retry the latest display-dialog request after a task becomes idle."""
+
+        pending = self._pending_typed_result_display_settings
+        if pending is None or self.busy:
+            return
+        self._pending_typed_result_display_settings = None
+        settings, source = pending
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or source is not None
+            and provider.source != source
+        ):
+            return
+        self._apply_typed_result_display_settings(
+            settings,
+            expected_source=source,
+        )
+
+    def _typed_result_projection_is_current(
+        self,
+        pending: _PendingTypedResultDisplay,
+    ) -> bool:
+        """Reject a completed display projection after the user changed context."""
+
+        provider = self._current_result_provider()
+        return bool(
+            provider is not None
+            and provider.source == pending.source
+            and int(provider.snapshot.generation) == pending.generation
+            and self._result_frame_index == pending.frame_index
+            and self.result_selection == pending.base_selection
+            and self._display.shape_mode == pending.base_shape_mode
+            and bool(self._display.contour_enabled)
+            == pending.base_contour_enabled
+            and self._scale_mode == pending.base_scale_mode
+            and float(self._scale_value) == pending.base_scale_value
+            and not self._closing
+        )
+
+    def _begin_typed_result_display_projection(
+        self,
+        settings: TypedResultDisplaySettings,
+        provider: ResultProvider,
+        render_provider: ResultProvider,
+        render_selection: ScalarFieldSelection,
+    ) -> bool:
+        """Prepare a large display-dialog projection outside the Qt event loop."""
+
+        if self.busy or self._workspace_activation or self._closing:
+            return False
+        availability = self._catalog_availability_for_selection(
+            render_provider,
+            render_selection,
+        )
+        if availability.state is not FieldState.READY:
+            return False
+        export = prepare_result_export_snapshot(
+            render_provider.snapshot,
+            render_selection,
+        )
+        topology_size = max(
+            len(export.topology.element_ids),
+            len(export.field.locations),
+        )
+        if topology_size < _RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD:
+            return False
+        deformation_scale = self._result_deformation_scale(
+            render_provider,
+            shape_mode=settings.shape_mode,
+            scale_mode=settings.scale_mode,
+            scale_value=settings.scale_value,
+        )
+        display_query = self._result_display_query(
+            export,
+            shape_mode=settings.shape_mode,
+            deformation_scale=deformation_scale,
+        )
+        frame_index = (
+            0
+            if export.frame_key is None
+            else int(export.frame_key.frame_index)
+        )
+        template_key = (
+            export.source,
+            int(export.materialization_generation),
+            frame_index,
+            export.selection.field_key,
+            float(deformation_scale),
+        )
+        cached = self._result_topology_template_cache.get(template_key)
+        template = (
+            cached[1]
+            if cached is not None
+            and cached[0] is render_provider.snapshot
+            and cached[1].matches(
+                export,
+                deformation_scale,
+                display_query,
+            )
+            else None
+        )
+        key = (
+            provider.source,
+            int(provider.snapshot.generation),
+            frame_index,
+            settings,
+            render_selection,
+            float(deformation_scale),
+            display_query,
+        )
+        if self._active_typed_result_projection_key == key:
+            return True
+        self._active_typed_result_projection_key = key
+        base_selection = self.result_selection
+        base_shape_mode = self._display.shape_mode
+        base_contour_enabled = bool(self._display.contour_enabled)
+        base_scale_mode = self._scale_mode
+        base_scale_value = float(self._scale_value)
+
+        def is_current() -> bool:
+            pending = _PendingTypedResultDisplay(
+                settings=settings,
+                source=provider.source,
+                generation=int(provider.snapshot.generation),
+                frame_index=frame_index,
+                base_selection=base_selection,
+                base_shape_mode=base_shape_mode,
+                base_contour_enabled=base_contour_enabled,
+                base_scale_mode=base_scale_mode,
+                base_scale_value=base_scale_value,
+                export=export,
+                render_selection=render_selection,
+                template_key=template_key,
+                topology=export.topology,
+            )
+            return self._typed_result_projection_is_current(pending)
+
+        def workload(context: TaskContext) -> ResultFieldTopology:
+            context.report("正在后台准备结果显示拓扑……")
+            context.checkpoint()
+            if template is not None:
+                topology = project_scalar_field_topology_from_template(
+                    export,
+                    template,
+                    deformation_scale,
+                    display_query=display_query,
+                )
+            else:
+                topology = project_scalar_field_topology(
+                    export,
+                    deformation_scale=deformation_scale,
+                    display_query=display_query,
+                )
+            context.checkpoint()
+            return topology
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not ResultFieldTopology:
+                raise TypeError(
+                    "typed result display worker must return "
+                    "ResultFieldTopology"
+                )
+            if not is_current():
+                return TaskApplyOutcome.stale("当前结果显示请求已过期")
+            return TaskApplyOutcome.accepted(value)
+
+        def succeeded(value: object) -> None:
+            if type(value) is not ResultFieldTopology or not is_current():
+                self._active_typed_result_projection_key = None
+                return
+            self._active_typed_result_projection_key = None
+            self._pending_typed_result_projection = _PendingTypedResultDisplay(
+                settings=settings,
+                source=provider.source,
+                generation=int(provider.snapshot.generation),
+                frame_index=frame_index,
+                base_selection=base_selection,
+                base_shape_mode=base_shape_mode,
+                base_contour_enabled=base_contour_enabled,
+                base_scale_mode=base_scale_mode,
+                base_scale_value=base_scale_value,
+                export=export,
+                render_selection=render_selection,
+                template_key=template_key,
+                topology=value,
+            )
+
+        def clear_pending() -> None:
+            if self._active_typed_result_projection_key == key:
+                self._active_typed_result_projection_key = None
+            pending = self._pending_typed_result_projection
+            if pending is not None and pending.source == provider.source:
+                self._pending_typed_result_projection = None
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "结果显示准备失败",
+            lambda message: (
+                clear_pending(),
+                self.status_panel.set_state(
+                    f"结果显示准备失败：{message}",
+                    5000,
+                ),
+            ),
+            task_name="结果显示拓扑准备",
+            on_cancelled=lambda: (
+                clear_pending(),
+                self.status_panel.set_state("结果显示准备已取消", 4000),
+            ),
+            on_inactive_failure=lambda _message: clear_pending(),
+            on_inactive_cancelled=clear_pending,
+            on_discarded=lambda _message: clear_pending(),
+            on_inactive_discarded=lambda _message: clear_pending(),
+            apply_result=apply_result,
+        )
+        if not started:
+            clear_pending()
+        return started
+
+    def _flush_pending_typed_result_projection(self) -> None:
+        """Build VTK and commit one typed display transaction after worker idle."""
+
+        pending = self._pending_typed_result_projection
+        if pending is None or self.busy:
+            return
+        self._pending_typed_result_projection = None
+        if not self._typed_result_projection_is_current(pending):
+            return
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        if not self._result_field_is_ready(
+            provider,
+            pending.render_selection,
+        ):
+            self.status_panel.set_state(
+                "结果显示字段尚未准备完成，保持当前显示",
+                4000,
+            )
+            return
+        try:
+            cached = self._result_topology_template_cache.get(
+                pending.template_key
+            )
+            if not (
+                cached is not None
+                and cached[0] is provider.snapshot
+                and cached[1].matches(
+                    pending.export,
+                    pending.topology.deformation_scale,
+                    pending.topology.display_query,
+                )
+            ):
+                self._result_topology_template_cache[pending.template_key] = (
+                    provider.snapshot,
+                    build_result_field_topology_template(
+                        pending.topology,
+                        pending.export.field,
+                    ),
+                )
+                while len(self._result_topology_template_cache) > 12:
+                    self._result_topology_template_cache.pop(
+                        next(iter(self._result_topology_template_cache))
+                    )
+            payload = build_result_render_payload(
+                pending.topology,
+                reusable=self.viewport._result_render_payload,
+            )
+            self._apply_typed_result_display_settings(
+                pending.settings,
+                expected_source=pending.source,
+                _prebuilt_payload=payload,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self.status_panel.set_state(
+                f"结果显示失败：{error}",
+                5000,
+            )
+
     def _apply_typed_result_display_settings(
         self,
         settings: TypedResultDisplaySettings,
         *,
         expected_source: ResultSourceKey | None = None,
         _materialization_completion: bool = False,
+        _prebuilt_payload: ResultRenderPayload | None = None,
     ) -> None:
         if type(settings) is not TypedResultDisplaySettings:
             raise TypeError(
@@ -16475,9 +20805,13 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "expected_source must be ResultSourceKey or None"
             )
-        if self.busy and not _materialization_completion:
+        if self.busy:
+            self._pending_typed_result_display_settings = (
+                settings,
+                expected_source,
+            )
             self.status_panel.set_state(
-            "结果任务中，完成后应用设置",
+                "结果任务中，完成后应用设置",
                 5000,
             )
             return
@@ -16523,21 +20857,27 @@ class FEMMainWindow(QMainWindow):
                 )
             return
         try:
+            frame_provider = self._frame_result_provider_for_display(
+                provider,
+                settings.selection,
+            )
             render_provider, render_selection = (
                 self._result_visualization_provider(
-                    provider,
+                    frame_provider,
                     settings.selection,
                 )
             )
-            payload = self._build_result_render_payload(
-                render_provider,
-                render_selection,
-                shape_mode=settings.shape_mode,
-                scale_mode=settings.scale_mode,
-                scale_value=settings.scale_value,
-            )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._show_error("结果显示失败", str(error))
+            return
+        if not self._result_field_is_ready(
+            render_provider,
+            render_selection,
+        ):
+            self.status_panel.set_state(
+                "结果显示字段正在准备，保持当前显示",
+                4000,
+            )
             return
         active_context = self.workspace.active_document()
         if not self.result_tree.has_selection(
@@ -16553,11 +20893,41 @@ class FEMMainWindow(QMainWindow):
             )
             return
 
+        if _prebuilt_payload is None and self._begin_typed_result_display_projection(
+            settings,
+            provider,
+            render_provider,
+            render_selection,
+        ):
+            self.status_panel.set_state("正在后台准备结果显示……")
+            return
+
+        try:
+            payload = (
+                _prebuilt_payload
+                if _prebuilt_payload is not None
+                else self._build_result_render_payload(
+                    render_provider,
+                    render_selection,
+                    shape_mode=settings.shape_mode,
+                    scale_mode=settings.scale_mode,
+                    scale_value=settings.scale_value,
+                )
+            )
+            if payload.topology.selection != render_selection:
+                raise RuntimeError("结果显示 payload 与当前字段不匹配")
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("结果显示失败", str(error))
+            return
+
         try:
             self._install_viewport_result_payload(
                 payload,
                 shape_mode=settings.shape_mode,
                 contour_enabled=settings.contour_enabled,
+                range_provider=provider,
+                range_selection=settings.selection,
+                render=False,
             )
         except (RuntimeError, TypeError, ValueError) as error:
             self._show_error("结果显示失败", str(error))
@@ -16582,7 +20952,8 @@ class FEMMainWindow(QMainWindow):
                 "selected field disappeared from the result tree"
             )
         self.viewport.set_undeformed_overlay_visible(
-            settings.overlay_undeformed
+            settings.overlay_undeformed,
+            render=False,
         )
         self.viewport.set_edges_visible(
             settings.show_edges,
@@ -16625,6 +20996,8 @@ class FEMMainWindow(QMainWindow):
             and render_selection != visual_selection
         ):
             self._defer_ui(self._apply_result_averaging_threshold)
+        if not self._workspace_activation:
+            self.viewport.render()
 
     def _finish_typed_result_display_materialization(
         self,
@@ -16647,30 +21020,356 @@ class FEMMainWindow(QMainWindow):
             return
         self._apply_display()
 
-    def show_contour_dialog(self) -> None:
-        if self._current_result_provider() is None:
-            return
+    def _result_display_options_snapshot(self) -> dict[str, Any]:
+        """Build one synchronized options snapshot for display settings."""
+
+        provider = self._current_result_provider()
+        if provider is None:
+            return dict(self._contour_options)
         options = dict(self._contour_options)
         automatic_range = self.viewport.current_contour_range()
         if automatic_range is not None:
             options["automatic_minimum"] = automatic_range[0]
             options["automatic_maximum"] = automatic_range[1]
-        dialog = ContourSettingsDialog(options, self)
-        dialog.applyRequested.connect(self._set_contour_options)
-        self._exec_view_dialog(dialog)
+        selection = self.result_selection
+        if (
+            self._contour_range_mode(options) == "global_step"
+            and type(selection) is ScalarFieldSelection
+        ):
+            global_range = self._result_global_legend_range(
+                provider,
+                selection,
+                allow_sync=False,
+            )
+            if global_range is not None:
+                options["global_minimum"] = global_range[0]
+                options["global_maximum"] = global_range[1]
+        return options
+
+    def show_contour_dialog(self) -> None:
+        self._show_visualization_options_dialog("云图显示")
 
     def show_display_settings_dialog(self) -> None:
-        if self._current_result_provider() is None:
+        self._show_visualization_options_dialog("通用显示")
+
+    def show_display_group_view_cut(self) -> None:
+        provider = self._current_result_provider()
+        if provider is None:
             return
-        dialog = DisplaySettingsDialog(dict(self._contour_options), self)
-        dialog.applyRequested.connect(self._set_contour_options)
+        options = {
+            "display_groups": deepcopy(self._display_groups),
+            "active_display_group": self._active_display_group,
+            "view_cut": deepcopy(self._view_cut_settings),
+            "view_cut_bounds": self.viewport.view_cut_motion_ranges(),
+        }
+        source = provider.source if type(provider) is ResultProvider else None
+        dialog = DisplayGroupViewCutDialog(options, parent=self)
+
+        committed = deepcopy(options)
+
+        def apply_settings(settings: object) -> None:
+            nonlocal committed
+            self._apply_display_group_view_cut_settings(
+                settings,
+                expected_source=source,
+            )
+            if isinstance(settings, Mapping):
+                committed = deepcopy(settings)
+
+        def preview_settings(settings: object) -> None:
+            self._preview_display_group_view_cut_settings(
+                settings,
+                expected_source=source,
+            )
+
+        def restore_settings() -> None:
+            self._preview_display_group_view_cut_settings(
+                committed,
+                expected_source=source,
+            )
+
+        dialog.applyRequested.connect(
+            apply_settings
+        )
+        dialog.previewRequested.connect(preview_settings)
+        dialog.rejected.connect(restore_settings)
         self._exec_view_dialog(dialog)
 
-    def _set_contour_options(self, options: dict[str, Any]) -> None:
+    def _show_visualization_options_dialog(self, category: str) -> None:
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        options = self._result_display_options_snapshot()
+        options.update(
+            {
+                "shape_mode": self._display.shape_mode,
+                "contour_enabled": self._display.contour_enabled,
+                "scale_mode": self._scale_mode,
+                "scale_value": self._scale_value,
+                "overlay_undeformed": self._overlay_undeformed,
+                "show_edges": self.actions["edges"].isChecked(),
+                "show_symbols": self.actions["symbols"].isChecked(),
+                "maximum_displacement": self._maximum_result_displacement(
+                    provider
+                ),
+                "state_info": (
+                    f"{provider.source.step_name} / "
+                    f"{self._result_frame_info_text(provider, self._result_frame_index)}"
+                    if type(provider) is ResultProvider
+                    else "当前分析步 / 当前帧"
+                ),
+                "palette": self.viewport._visual_palette(),
+            }
+        )
+        source = (
+            provider.source
+            if type(provider) is ResultProvider
+            else None
+        )
+        dialog = VisualizationOptionsDialog(
+            options,
+            initial_category=category,
+            parent=self,
+        )
+        dialog.applyRequested.connect(
+            lambda settings, source=source: (
+                self._apply_visualization_options(
+                    settings,
+                    expected_source=source,
+                )
+            )
+        )
+        self._exec_view_dialog(dialog)
+
+    @staticmethod
+    def _maximum_result_displacement(provider: ResultProvider) -> float:
+        if type(provider) is not ResultProvider:
+            return 0.0
+        topology = provider.snapshot.topology
+        displacements = np.asarray(topology.nodal_displacements, dtype=float)
+        if displacements.size == 0:
+            return 0.0
+        return float(np.max(np.linalg.norm(displacements, axis=1)))
+
+    def _apply_visualization_options(
+        self,
+        settings: object,
+        *,
+        expected_source: ResultSourceKey | None,
+    ) -> None:
+        if type(settings) is not dict:
+            raise TypeError("visualization settings must be a dict")
+        provider = self._current_result_provider()
+        if provider is None or provider.source != expected_source:
+            self.status_panel.set_state(
+                "结果已切换，请重新打开显示选项",
+                5000,
+            )
+            return
+        selection = self.result_selection
+        if type(selection) is not ScalarFieldSelection:
+            selection = provider.catalog().default_selection
+        if type(selection) is not ScalarFieldSelection:
+            self._show_error("结果显示失败", "当前结果没有可显示的场变量")
+            return
+
+        contour_keys = set(self._default_contour_options)
+        self._set_contour_options(
+            {
+                key: value
+                for key, value in settings.items()
+                if key in contour_keys
+            },
+            apply=False,
+        )
+        self._apply_typed_result_display_settings(
+            TypedResultDisplaySettings(
+                shape_mode=str(settings.get("shape_mode", "undeformed")),
+                contour_enabled=bool(settings.get("contour_enabled", True)),
+                selection=selection,
+                scale_mode=str(settings.get("scale_mode", "auto")),
+                scale_value=float(settings.get("scale_value", 1.0)),
+                overlay_undeformed=bool(
+                    settings.get("overlay_undeformed", False)
+                ),
+                show_edges=bool(settings.get("show_edges", True)),
+            ),
+            expected_source=expected_source,
+        )
+        show_symbols = bool(settings.get("show_symbols", False))
+        self.actions["symbols"].setChecked(show_symbols)
+        self.viewport.set_symbols_visible(show_symbols, render=False)
+
+    def _apply_display_group_view_cut_settings(
+        self,
+        settings: object,
+        *,
+        expected_source: ResultSourceKey | None,
+    ) -> None:
+        if not isinstance(settings, Mapping):
+            raise TypeError("display group and view cut settings must be a mapping")
+        provider = self._current_result_provider()
+        if provider is None or provider.source != expected_source:
+            self.status_panel.set_state(
+                "结果已切换，请重新打开显示组",
+                5000,
+            )
+            return
+        factory = getattr(self.viewport, "render_transaction", None)
+        transaction = factory() if callable(factory) else nullcontext()
+        with transaction:
+            self._apply_display_group_settings(
+                settings.get("display_groups", self._display_groups),
+                settings.get("active_display_group"),
+            )
+            self._view_cut_settings = normalize_view_cut_settings(
+                settings.get("view_cut", self._view_cut_settings)
+            )
+            self.viewport.set_view_cut(
+                self._view_cut_settings,
+                render=False,
+                update=False,
+            )
+            self.viewport.set_display(
+                self._display.shape_mode,
+                self._display.contour_enabled,
+                render=False,
+            )
+        if not self._workspace_activation:
+            self.viewport.render()
+
+    def _preview_display_group_view_cut_settings(
+        self,
+        settings: object,
+        *,
+        expected_source: ResultSourceKey | None,
+    ) -> None:
+        """Preview manager changes without committing document presentation state."""
+
+        if not isinstance(settings, Mapping):
+            return
+        provider = self._current_result_provider()
+        if provider is None or provider.source != expected_source:
+            return
+
+        groups = settings.get("display_groups", self._display_groups)
+        active_name = settings.get(
+            "active_display_group",
+            self._active_display_group,
+        )
+        group = None
+        if isinstance(groups, Mapping) and active_name is not None:
+            candidate = groups.get(str(active_name).strip())
+            if isinstance(candidate, Mapping):
+                try:
+                    element_ids = tuple(
+                        sorted(
+                            {
+                                int(value)
+                                for value in candidate.get("element_ids", ())
+                            }
+                        )
+                    )
+                except (TypeError, ValueError):
+                    element_ids = ()
+                if element_ids and all(value > 0 for value in element_ids):
+                    group = (element_ids, bool(candidate.get("exclude", False)))
+        factory = getattr(self.viewport, "render_transaction", None)
+        transaction = factory() if callable(factory) else nullcontext()
+        with transaction:
+            self.viewport.set_display_group(
+                None if group is None else group[0],
+                exclude=False if group is None else group[1],
+                render=False,
+                update=False,
+            )
+            self.viewport.set_view_cut(
+                normalize_view_cut_settings(
+                    settings.get("view_cut", self._view_cut_settings)
+                ),
+                render=False,
+                update=False,
+            )
+            self.viewport.set_display(
+                self._display.shape_mode,
+                self._display.contour_enabled,
+                render=False,
+            )
+        if not self._workspace_activation:
+            self.viewport.render()
+
+    def _apply_display_group_settings(
+        self,
+        groups: object,
+        active_name: object = None,
+    ) -> None:
+        """Install dialog-owned reusable display groups into the viewport."""
+
+        normalized: dict[str, dict[str, object]] = {}
+        if isinstance(groups, dict):
+            for raw_name, raw_group in groups.items():
+                name = str(raw_name).strip()
+                if not name or not isinstance(raw_group, dict):
+                    continue
+                try:
+                    element_ids = tuple(
+                        sorted(
+                            {
+                                int(value)
+                                for value in raw_group.get("element_ids", ())
+                            }
+                        )
+                    )
+                except (TypeError, ValueError):
+                    continue
+                if not element_ids or any(value <= 0 for value in element_ids):
+                    continue
+                normalized[name] = {
+                    "element_ids": element_ids,
+                    "exclude": bool(raw_group.get("exclude", False)),
+                }
+        self._display_groups = normalized
+        selected = str(active_name).strip() if active_name else None
+        if selected not in normalized:
+            selected = None
+        self._active_display_group = selected
+        group = normalized.get(selected) if selected is not None else None
+        self.viewport.set_display_group(
+            None if group is None else group["element_ids"],
+            exclude=False if group is None else bool(group.get("exclude", False)),
+            render=False,
+            update=False,
+        )
+
+    def _set_contour_options(
+        self,
+        options: dict[str, Any],
+        *,
+        apply: bool = True,
+    ) -> None:
+        if "range_mode" in options or "manual" in options:
+            self._contour_range_mode_user_selected = True
         previous_threshold = float(
             self._contour_options["averaging_threshold"]
         )
         updated_options = dict(options)
+        if "range_mode" not in updated_options:
+            if "manual" in updated_options:
+                updated_options["range_mode"] = (
+                    "manual"
+                    if bool(updated_options["manual"])
+                    else "per_frame"
+                )
+            else:
+                updated_options["range_mode"] = self._contour_range_mode(
+                    self._contour_options
+                )
+        else:
+            range_mode = self._contour_range_mode(updated_options)
+            updated_options["range_mode"] = range_mode
+        updated_options["manual"] = (
+            updated_options["range_mode"] == "manual"
+        )
         if "edge_mode" in updated_options:
             updated_options["edges"] = (
                 updated_options["edge_mode"] != CONTOUR_EDGE_NONE
@@ -16680,30 +21379,68 @@ class FEMMainWindow(QMainWindow):
             and self._contour_options["edge_mode"]
             == CONTOUR_EDGE_NONE
         ):
-            updated_options["edge_mode"] = CONTOUR_EDGE_ALL
+                updated_options["edge_mode"] = CONTOUR_EDGE_ALL
         self._contour_options.update(updated_options)
+        # A result display request may still be preparing a replacement
+        # topology. Keep viewport-owned contour/edge actors on the last
+        # committed scene; the payload commit below applies the new options in
+        # the same transaction as the new scalar field. Model-only views keep
+        # the historical immediate update path.
+        defer_result_viewport = self._current_result_provider() is not None
+        if (
+            "show_node_labels" in updated_options
+            or "show_element_labels" in updated_options
+        ):
+            node_labels = bool(
+                self._contour_options.get("show_node_labels", False)
+            )
+            element_labels = bool(
+                self._contour_options.get("show_element_labels", False)
+            )
+            self.actions["node_labels"].setChecked(node_labels)
+            self.actions["element_labels"].setChecked(element_labels)
+            if not defer_result_viewport:
+                self.viewport.set_labels_visible(
+                    node_labels,
+                    element_labels,
+                    render=False,
+                )
         threshold = float(
             self._contour_options["averaging_threshold"]
         )
+        if threshold != previous_threshold:
+            self._result_global_legend_range_cache.clear()
         self.result_averaging_threshold.blockSignals(True)
         self.result_averaging_threshold.setValue(threshold)
         self.result_averaging_threshold.blockSignals(False)
         if self._display.contour_enabled:
             show_edges = bool(self._contour_options["edges"])
             self.actions["edges"].setChecked(show_edges)
-            self.viewport.set_edges_visible(show_edges, render=False)
-        self.viewport.set_contour_metadata(
-            {"averaging_threshold": threshold}
-        )
-        self.viewport.set_contour_options(
-            {
-                key: value
-                for key, value in self._contour_options.items()
-                if key != "averaging_threshold"
-            }
-        )
-        if threshold != previous_threshold:
+            if not defer_result_viewport:
+                self.viewport.set_edges_visible(show_edges, render=False)
+        if not defer_result_viewport:
+            self.viewport.set_contour_metadata(
+                {"averaging_threshold": threshold}
+            )
+            self.viewport.set_contour_options(
+                self._effective_contour_options_for_viewport(
+                    self._current_result_provider(),
+                    self.result_selection,
+                ),
+                render=False,
+                update=False,
+            )
+        if threshold != previous_threshold and apply:
             self._apply_result_averaging_threshold()
+        elif (
+            apply
+            and self._current_result_provider() is not None
+            and not self.busy
+        ):
+            # Legend/manual-range changes are also part of DisplayQuery.  The
+            # viewport can repaint immediately, but rebuild the typed payload
+            # so its stored display intent remains authoritative.
+            self._apply_display()
 
     def show_symbol_settings_dialog(self) -> None:
         if self.document.model is None:
@@ -16751,14 +21488,16 @@ class FEMMainWindow(QMainWindow):
         self.status_panel.set_step(self._current_step_name)
         self._update_action_states()
 
-    def show_result_query_dialog(self) -> None:
-        """Open a catalog-only query dialog without eager recovery."""
+    def _bind_result_query_dialog(
+        self,
+        dialog: TypedResultQueryDialog,
+        query_provider: ResultProvider,
+        *,
+        source: ResultSourceKey,
+        query_frame_key: ResultFrameKey | None,
+    ) -> Callable[[], None]:
+        """Bind one query page to the shared asynchronous result channel."""
 
-        provider = self._current_result_provider()
-        if provider is None:
-            return
-        source = provider.source
-        dialog = TypedResultQueryDialog(provider, parent=self)
         closed = False
         active_query: ResultQuery | None = None
 
@@ -16770,13 +21509,22 @@ class FEMMainWindow(QMainWindow):
             ):
                 return
             current = self._current_result_provider()
-            if (
-                current is None
-                or current.source != source
-                or result.source != source
-                or current.snapshot.generation
-                != result.materialization_generation
-            ):
+            if current is None or current.source != source or result.source != source:
+                return
+            try:
+                current_frame_provider = self._result_frame_provider_for_query(
+                    current
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                return
+            if current_frame_provider.frame_key != query_frame_key:
+                return
+            expected_generation = (
+                current_frame_provider.snapshot.generation
+                if query_frame_key is not None
+                else current.snapshot.generation
+            )
+            if result.materialization_generation != expected_generation:
                 return
             dialog.set_query_result(result)
 
@@ -16786,9 +21534,27 @@ class FEMMainWindow(QMainWindow):
                 return
             active_query = query
             dialog.set_query_pending(True)
+            current = self._current_result_provider()
+            if current is None:
+                dialog.set_query_pending(False)
+                dialog.set_query_message("当前结果已失效")
+                return
+            try:
+                current_frame_key = self._result_frame_provider_for_query(
+                    current
+                ).frame_key
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                dialog.set_query_pending(False)
+                dialog.set_query_message("当前结果帧已失效")
+                return
+            if current_frame_key != query_frame_key:
+                dialog.set_query_pending(False)
+                dialog.set_query_message("结果帧已切换，请重新打开查询")
+                return
             receipt = self._submit_result_query(
                 query,
                 expected_source=source,
+                provider_override=query_provider,
             )
             if receipt.status is GuiCommandStatus.REJECTED:
                 dialog.set_query_pending(False)
@@ -16822,12 +21588,646 @@ class FEMMainWindow(QMainWindow):
 
         self.resultQueryCompleted.connect(deliver_result)
         dialog.queryRequested.connect(submit_query)
+
+        def disconnect() -> None:
+            nonlocal closed
+            closed = True
+            try:
+                self.resultQueryCompleted.disconnect(deliver_result)
+            except (RuntimeError, TypeError):
+                pass
+
+        return disconnect
+
+    def show_result_query_dialog(self) -> None:
+        """Open a catalog-only query dialog without eager recovery."""
+
+        provider = self._current_result_provider()
+        if provider is None:
+            return
+        query_provider = self._result_frame_provider_for_query(provider)
+        dialog = TypedResultQueryDialog(query_provider, parent=self)
+        disconnect = self._bind_result_query_dialog(
+            dialog,
+            query_provider,
+            source=provider.source,
+            query_frame_key=query_provider.frame_key,
+        )
+        try:
+            self._exec_dialog(dialog)
+        finally:
+            disconnect()
+
+    def _bind_result_probe_dialog(
+        self,
+        dialog: ResultProbeDialog,
+        query_provider: ResultProvider,
+        *,
+        source: ResultSourceKey,
+        probe_frame_key: ResultFrameKey | None,
+    ) -> Callable[[], None]:
+        """Bind one Probe page to the shared asynchronous result channel."""
+
+        closed = False
+        active_request: ResultProbeRequest | None = None
+
+        def deliver_result(result: object) -> None:
+            if (
+                closed
+                or active_request is None
+                or type(result) is not ResultQueryResult
+            ):
+                return
+            try:
+                expected_query = result_query_for_probe(active_request)
+            except (TypeError, ValueError):
+                return
+            if result.query != expected_query:
+                return
+            current = self._current_result_provider()
+            if current is None or current.source != source:
+                return
+            try:
+                current_frame_provider = self._result_frame_provider_for_query(
+                    current
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                return
+            if current_frame_provider.frame_key != probe_frame_key:
+                return
+            expected_generation = (
+                current_frame_provider.snapshot.generation
+                if probe_frame_key is not None
+                else current.snapshot.generation
+            )
+            if (
+                result.source != source
+                or result.materialization_generation != expected_generation
+            ):
+                return
+            try:
+                probe = probe_result_from_query_result(
+                    result,
+                    active_request,
+                    frame_key=probe_frame_key,
+                )
+                dialog.set_probe_result(probe)
+            except (TypeError, ValueError):
+                return
+            dialog.set_probe_pending(False)
+
+        def submit_probe(request: object) -> None:
+            nonlocal active_request
+            if type(request) is not ResultProbeRequest:
+                return
+            active_request = request
+            dialog.set_probe_pending(True)
+            current = self._current_result_provider()
+            if current is None:
+                dialog.set_probe_pending(False)
+                dialog.set_probe_message("当前结果已失效")
+                return
+            try:
+                current_frame_key = self._result_frame_provider_for_query(
+                    current
+                ).frame_key
+                query = result_query_for_probe(request)
+            except (KeyError, RuntimeError, TypeError, ValueError) as error:
+                dialog.set_probe_pending(False)
+                dialog.set_probe_message(str(error))
+                return
+            if current_frame_key != probe_frame_key:
+                dialog.set_probe_pending(False)
+                dialog.set_probe_message("结果帧已切换，请重新打开探针")
+                return
+            receipt = self._submit_result_query(
+                query,
+                expected_source=source,
+                provider_override=query_provider,
+            )
+            if receipt.status is GuiCommandStatus.REJECTED:
+                dialog.set_probe_pending(False)
+                diagnostic = receipt.diagnostic
+                if diagnostic is not None:
+                    dialog.set_probe_message(diagnostic.message)
+                    self.status_panel.set_state(
+                        diagnostic.message,
+                        5000,
+                    )
+                return
+            if receipt.status is GuiCommandStatus.ACCEPTED:
+                # READY queries emit resultQueryCompleted synchronously.  Keep
+                # this fallback for a provider that completes without an
+                # emitted result (for example an empty legacy catalog).
+                dialog.set_probe_pending(False)
+                return
+
+            completion = receipt.completion
+            if completion is None:
+                dialog.set_probe_pending(False)
+                return
+
+            def probe_finished(terminal: TaskCompletion) -> None:
+                if closed:
+                    return
+                if terminal.state is not BackgroundTaskState.SUCCEEDED:
+                    dialog.set_probe_message(
+                        terminal.message or "结果探针未完成"
+                    )
+                    dialog.set_probe_pending(False)
+
+            completion.observe(probe_finished)
+
+        self.resultQueryCompleted.connect(deliver_result)
+        dialog.probeRequested.connect(submit_probe)
+
+        def disconnect() -> None:
+            nonlocal closed
+            closed = True
+            try:
+                self.resultQueryCompleted.disconnect(deliver_result)
+            except (RuntimeError, TypeError):
+                pass
+
+        return disconnect
+
+    def _result_probe_ready(self, result: object) -> None:
+        """Project accepted Probe locations into persistent viewport markers."""
+
+        if type(result) is not ResultProbeResult:
+            return
+        current = self._current_result_provider()
+        if current is None or current.source != result.source:
+            return
+        target = result.request.target
+        if target.kind is ResultProbeKind.NODE:
+            target_text = f"节点 {target.node_id}"
+        elif target.kind is ResultProbeKind.ELEMENT:
+            target_text = f"单元 {target.element_id}"
+        elif target.kind is ResultProbeKind.INTEGRATION_POINT:
+            target_text = (
+                f"单元 {target.element_id} · 积分点 {target.integration_point}"
+            )
+        else:
+            target_text = (
+                f"单元 {target.element_id} · 局部节点 {target.local_node}"
+            )
+        for record in result.records:
+            coordinates = tuple(float(value) for value in record.location.coordinates)
+            label = (
+                f"P{len(self._result_probe_markers) + 1} · "
+                f"{result.request.selection.component} · {target_text}"
+            )
+            self._result_probe_markers.append((label, coordinates))
+        self.viewport.set_result_probe_markers(
+            tuple(self._result_probe_markers),
+            render=True,
+        )
+
+    def _attach_result_probe_interaction(
+        self,
+        dialog: ResultProbeDialog,
+    ) -> Callable[[], None]:
+        """Bind optional viewport picking to a result Probe dialog."""
+
+        closed = False
+        pick_active = False
+        previous_mode: str | None = None
+
+        def arm(kind: object) -> None:
+            nonlocal pick_active, previous_mode
+            if closed:
+                return
+            normalized = kind
+            if isinstance(normalized, ResultProbeKind):
+                normalized = normalized.value
+            mode = (
+                "result_probe_node"
+                if normalized in {ResultProbeKind.NODE.value, "node"}
+                else "result_probe_element"
+                if normalized in {ResultProbeKind.ELEMENT.value, "element"}
+                else None
+            )
+            if mode is None:
+                dialog.set_probe_message("视口拾取只支持节点或单元。")
+                return
+            if previous_mode is None:
+                previous_mode = self.viewport._selection_mode
+            pick_active = True
+            self.viewport.set_selection_mode(mode)
+            dialog.set_probe_message("请在结果视口中单击要探测的节点或单元。")
+
+        def picked(kind: str, key: int) -> None:
+            nonlocal pick_active
+            if closed or not pick_active or kind not in {"node", "element"}:
+                return
+            pick_active = False
+            if previous_mode is not None:
+                self.viewport.set_selection_mode(previous_mode)
+            try:
+                dialog.set_target_from_pick(kind, key)
+                dialog.request_probe()
+            except (RuntimeError, TypeError, ValueError) as error:
+                dialog.set_probe_message(str(error))
+
+        dialog.pickRequested.connect(arm)
+        self.viewport.entityPicked.connect(picked)
+        dialog.probeResultReady.connect(self._result_probe_ready)
+
+        def disconnect() -> None:
+            nonlocal closed, pick_active
+            closed = True
+            pick_active = False
+            try:
+                dialog.pickRequested.disconnect(arm)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                self.viewport.entityPicked.disconnect(picked)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                dialog.probeResultReady.disconnect(self._result_probe_ready)
+            except (RuntimeError, TypeError):
+                pass
+            if previous_mode is not None:
+                self.viewport.set_selection_mode(previous_mode)
+
+        return disconnect
+
+    def show_result_probe_dialog(self) -> None:
+        """Open an exact current-frame result-location probe."""
+
+        provider = self._current_result_provider()
+        if provider is None or not provider.catalog().fields:
+            return
+        try:
+            query_provider = self._result_frame_provider_for_query(provider)
+            dialog = ResultProbeDialog(
+                query_provider,
+                current_selection=self.result_selection,
+                parent=self,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("打开结果探针失败", str(error))
+            return
+
+        disconnect = self._bind_result_probe_dialog(
+            dialog,
+            query_provider,
+            source=provider.source,
+            probe_frame_key=query_provider.frame_key,
+        )
+        interaction_disconnect = self._attach_result_probe_interaction(dialog)
+        try:
+            self._exec_dialog(dialog)
+        finally:
+            disconnect()
+            interaction_disconnect()
+
+    def show_result_query_probe_dialog(self) -> None:
+        """Open the independent query-and-Probe dialog."""
+
+        provider = self._current_result_provider()
+        if provider is None or not provider.catalog().fields:
+            return
+        try:
+            query_provider = self._result_frame_provider_for_query(provider)
+            query_dialog = TypedResultQueryDialog(
+                query_provider,
+                parent=self,
+            )
+            probe_dialog = ResultProbeDialog(
+                query_provider,
+                current_selection=self.result_selection,
+                parent=self,
+            )
+            dialog = ResultQueryProbeDialog(
+                query_dialog,
+                probe_dialog,
+                frame_provider=query_provider,
+                parent=self,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("打开结果查询失败", str(error))
+            return
+
+        query_disconnect = self._bind_result_query_dialog(
+            query_dialog,
+            query_provider,
+            source=provider.source,
+            query_frame_key=query_provider.frame_key,
+        )
+        probe_disconnect = self._bind_result_probe_dialog(
+            probe_dialog,
+            query_provider,
+            source=provider.source,
+            probe_frame_key=query_provider.frame_key,
+        )
+        interaction_disconnect = self._attach_result_probe_interaction(
+            probe_dialog
+        )
+        try:
+            self._exec_dialog(dialog)
+        finally:
+            query_disconnect()
+            probe_disconnect()
+            interaction_disconnect()
+
+    def _start_result_xy_data(
+        self,
+        dialog: XYDataDialog,
+        provider: ResultProvider,
+        request: ResultXYRequest,
+        *,
+        is_open: Callable[[], bool],
+    ) -> None:
+        """Extract one exact result location across all retained frames."""
+
+        if type(request) is not ResultXYRequest:
+            return
+        if provider is not self._current_result_provider():
+            dialog.set_message("当前结果已变化，请重新打开 XY 数据")
+            return
+        frame_indices = tuple(provider.frame_indices)
+        if not frame_indices:
+            dialog.set_message("当前结果没有可用于 XY 数据的增量帧")
+            return
+        frame_catalog = provider.frame_catalog
+        dialog.set_pending(True)
+
+        def workload(context: TaskContext) -> ResultXYSeries:
+            frame_providers: list[tuple[int, ResultProvider]] = []
+            for position, frame_index in enumerate(frame_indices, start=1):
+                context.report(
+                    f"正在读取 XY 数据：增量 {frame_index} "
+                    f"（{position}/{len(frame_indices)}）……"
+                )
+                frame_provider = provider.frame_provider(frame_index)
+                availability = frame_provider.field_status(
+                    request.selection.field_key
+                )
+                if availability.state is FieldState.UNAVAILABLE:
+                    raise ValueError(
+                        f"增量 {frame_index} 的场变量不可用"
+                    )
+                if availability.state is FieldState.LAZY:
+                    patch = frame_provider.materialize(
+                        (request.selection.field_key,),
+                        cancellation=context,
+                    )
+                    frame_provider = frame_provider.apply(patch)
+                frame_providers.append((frame_index, frame_provider))
+            return build_result_xy_series(
+                frame_providers,
+                request,
+                frame_catalog=frame_catalog,
+            )
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not ResultXYSeries:
+                return TaskApplyOutcome.rejected(
+                    "XY 数据任务返回了无效的曲线数据"
+                )
+            return TaskApplyOutcome.accepted(value)
+
+        def succeeded(value: object) -> None:
+            if not is_open():
+                return
+            current = self._current_result_provider()
+            if (
+                current is None
+                or current.source != provider.source
+                or current.snapshot.generation != provider.snapshot.generation
+            ):
+                dialog.set_pending(False)
+                dialog.set_message("结果已变化，当前曲线未应用")
+                return
+            if type(value) is not ResultXYSeries:
+                dialog.set_pending(False)
+                dialog.set_message("XY 数据未生成")
+                return
+            dialog.set_pending(False)
+            dialog.set_series(value)
+
+        def failed(message: str) -> None:
+            if not is_open():
+                return
+            dialog.set_pending(False)
+            dialog.set_message(f"XY 数据生成失败：{message}")
+
+        def cancelled() -> None:
+            if not is_open():
+                return
+            dialog.set_pending(False)
+            dialog.set_message("XY 数据生成已取消")
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "生成 XY 数据失败",
+            failed,
+            task_name="生成 XY 数据",
+            on_cancelled=cancelled,
+            on_progress=(
+                lambda message: dialog.set_message(message)
+                if is_open()
+                else None
+            ),
+            apply_result=apply_result,
+        )
+        if not started:
+            dialog.set_pending(False)
+            dialog.set_message("当前已有后台任务正在运行")
+
+    def show_result_xy_data_dialog(self) -> None:
+        """Open the independent increment-history XY data dialog."""
+
+        provider = self._current_result_provider()
+        if (
+            provider is None
+            or not provider.frame_indices
+            or not provider.catalog().fields
+        ):
+            return
+        try:
+            topology = provider.snapshot.topology
+            dialog = XYDataDialog(
+                provider.catalog(),
+                frame_catalog=provider.frame_catalog,
+                current_selection=self.result_selection,
+                node_ids=topology.node_ids,
+                element_ids=topology.element_ids,
+                section_point_labels=result_provider_section_point_labels(
+                    provider
+                ),
+                parent=self,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("打开 XY 数据失败", str(error))
+            return
+
+        closed = False
+
+        def generate(request: object) -> None:
+            if type(request) is not ResultXYRequest:
+                return
+            self._start_result_xy_data(
+                dialog,
+                provider,
+                request,
+                is_open=lambda: not closed,
+            )
+
+        dialog.generateRequested.connect(generate)
+        dialog.pathRequested.connect(
+            lambda: self._show_result_path_dialog(provider)
+        )
         try:
             self._exec_dialog(dialog)
         finally:
             closed = True
+            if (
+                self.task_controller.busy
+                and self.task_controller.current_task_name == "生成 XY 数据"
+            ):
+                self.task_controller.request_cancel()
             try:
-                self.resultQueryCompleted.disconnect(deliver_result)
+                dialog.generateRequested.disconnect(generate)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _start_result_path_data(
+        self,
+        dialog: ResultPathDialog,
+        provider: ResultProvider,
+        request: ResultPathRequest,
+        *,
+        is_open: Callable[[], bool],
+    ) -> None:
+        """Materialize and extract one current-frame spatial result path."""
+
+        if type(request) is not ResultPathRequest:
+            return
+        if provider is not self._current_result_provider() and provider.source != (
+            self._current_result_provider().source
+            if self._current_result_provider() is not None
+            else None
+        ):
+            dialog.set_message("当前结果已变化，请重新打开路径提取")
+            return
+        dialog.set_pending(True)
+
+        def workload(context: TaskContext) -> ResultPathResult:
+            frame_provider = provider
+            availability = frame_provider.field_status(
+                request.selection.field_key
+            )
+            if availability.state is FieldState.UNAVAILABLE:
+                raise ValueError("当前路径场变量不可用")
+            if availability.state is FieldState.LAZY:
+                context.report("正在物化路径场变量……")
+                frame_provider = frame_provider.apply(
+                    frame_provider.materialize(
+                        (request.selection.field_key,),
+                        cancellation=context,
+                    )
+                )
+            context.report("正在提取结果路径……")
+            return build_result_path_result(frame_provider, request)
+
+        def apply_result(value: object) -> TaskApplyOutcome:
+            if type(value) is not ResultPathResult:
+                return TaskApplyOutcome.rejected("路径任务返回了无效结果")
+            return TaskApplyOutcome.accepted(value)
+
+        def succeeded(value: object) -> None:
+            if not is_open():
+                return
+            current = self._current_result_provider()
+            if (
+                current is None
+                or current.source != provider.source
+                or current.snapshot.generation != provider.snapshot.generation
+            ):
+                dialog.set_pending(False)
+                dialog.set_message("结果已变化，当前路径未应用")
+                return
+            dialog.set_pending(False)
+            if type(value) is ResultPathResult:
+                dialog.set_path_result(value)
+            else:
+                dialog.set_message("结果路径未生成")
+
+        def failed(message: str) -> None:
+            if is_open():
+                dialog.set_pending(False)
+                dialog.set_message(f"结果路径提取失败：{message}")
+
+        def cancelled() -> None:
+            if is_open():
+                dialog.set_pending(False)
+                dialog.set_message("结果路径提取已取消")
+
+        started = self._start_task(
+            workload,
+            succeeded,
+            "结果路径提取失败",
+            failed,
+            task_name="提取结果路径",
+            on_cancelled=cancelled,
+            on_progress=(
+                lambda message: dialog.set_message(message)
+                if is_open()
+                else None
+            ),
+            apply_result=apply_result,
+        )
+        if not started:
+            dialog.set_pending(False)
+            dialog.set_message("当前已有后台任务正在运行")
+
+    def _show_result_path_dialog(self, root_provider: ResultProvider) -> None:
+        """Open path extraction from the current result frame context."""
+
+        if type(root_provider) is not ResultProvider:
+            return
+        current = self._current_result_provider()
+        if current is None or current.source != root_provider.source:
+            return
+        try:
+            frame_provider = self._result_frame_provider_for_query(root_provider)
+            dialog = ResultPathDialog(
+                frame_provider,
+                current_selection=self.result_selection,
+                parent=self,
+            )
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("打开结果路径失败", str(error))
+            return
+        closed = False
+
+        def extract(request: object) -> None:
+            if type(request) is ResultPathRequest:
+                self._start_result_path_data(
+                    dialog,
+                    frame_provider,
+                    request,
+                    is_open=lambda: not closed,
+                )
+
+        dialog.pathRequested.connect(extract)
+        try:
+            self._exec_dialog(dialog)
+        finally:
+            closed = True
+            if (
+                self.task_controller.busy
+                and self.task_controller.current_task_name == "提取结果路径"
+            ):
+                self.task_controller.request_cancel()
+            try:
+                dialog.pathRequested.disconnect(extract)
             except (RuntimeError, TypeError):
                 pass
 
@@ -17394,12 +22794,39 @@ class FEMMainWindow(QMainWindow):
                 return
             self.delete_geometry()
             return
+        if kind == "assignment":
+            self.delete_region_assignment(key)
+            return
         self.delete_analysis_definition(kind, key)
 
     def show_entity_information(self, kind: str, key: object) -> EntityInfoDialog | None:
         if self.inspection_service is None:
             return
-        dialog = EntityInfoDialog(self.inspection_service.inspect(kind, key), self)
+        inspection_service = self.inspection_service
+        previous_provider = inspection_service.result_provider
+        frame_provider = None
+        current_provider = self._current_result_provider()
+        if current_provider is not None:
+            try:
+                frame_provider = self._result_frame_provider_for_query(
+                    current_provider
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError):
+                frame_provider = None
+        if (
+            frame_provider is not None
+            and frame_provider is not previous_provider
+        ):
+            inspection_service.update_result_provider(frame_provider)
+        try:
+            inspection = inspection_service.inspect(kind, key)
+        finally:
+            if (
+                frame_provider is not None
+                and frame_provider is not previous_provider
+            ):
+                inspection_service.update_result_provider(previous_provider)
+        dialog = EntityInfoDialog(inspection, self)
         dialog.highlightRequested.connect(self.highlight_entity)
         dialog.locateRequested.connect(self.locate_entity)
         dialog.entityRequested.connect(self.show_entity_information)
@@ -17617,6 +23044,7 @@ class FEMMainWindow(QMainWindow):
         self._exit_pending = False
         self._closing = True
         self._deferred_ui_timer.stop()
+        self._result_frame_timer.stop()
         self._deferred_ui_callbacks.clear()
         self._close_inspection_windows()
         self._close_job_manager()
@@ -17631,6 +23059,8 @@ class FEMMainWindow(QMainWindow):
 
         if context.task_controller.busy:
             return False
+        if context is self._active_workspace_context():
+            self._capture_document_presentation(context)
         if context.projection.is_open:
             try:
                 context.session.close(

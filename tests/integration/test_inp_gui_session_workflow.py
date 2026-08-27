@@ -21,8 +21,8 @@ from fem.application import (
     describe_session_authoring,
     evaluate_authoring_candidate,
 )
-from fem.application.results import OutputExecutionStatus, ResultVariable
-from fem.core.model import LineLoad
+from fem.results import OutputExecutionStatus, ResultVariable
+from fem.model import LineLoad
 from fem_gui.commands import CloseSessionCommand
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.task_controller import BackgroundTaskState

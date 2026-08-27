@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from dataclasses import replace
 from math import isfinite
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -15,8 +17,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -35,10 +39,20 @@ from fem.application import (
     SectionDefinition,
     require_region_kind,
 )
-from fem.core.model import MaterialDefinition
-from fem.materials import (
+from fem.model import MaterialBehavior, MaterialDefinition
+from fem.analysis import (
     resolve_section_preset_properties,
     section_type_for_preset,
+)
+from fem.materials import (
+    DENSITY_BEHAVIOR_ID,
+    ELASTIC_BEHAVIOR_ID,
+    NEO_HOOKEAN_BEHAVIOR_ID,
+    PLASTIC_BEHAVIOR_ID,
+    behavior_summary,
+    material_behavior_diagnostics,
+    material_behavior_spec,
+    material_behavior_specs,
 )
 
 from .dialogs import AdaptivePrecisionDoubleSpinBox, configure_form_layout
@@ -165,6 +179,69 @@ class ElasticBehaviorDialog(QDialog):
         }
 
 
+class PlasticBehaviorDialog(QDialog):
+    """Parameters for the public plastic material behavior.
+
+    The current constitutive implementation is J2 plasticity, but that is an
+    implementation detail rather than a user-facing material choice.
+    """
+
+    def __init__(self, properties: dict[str, object], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("塑性")
+        has_yield_stress = "yield_stress" in properties
+        self.yield_stress_spin = _number(
+            self,
+            float(properties["yield_stress"])
+            if has_yield_stress
+            else 1.0,
+            minimum=0.0,
+        )
+        if not has_yield_stress:
+            self.yield_stress_spin.clear()
+        self.hardening_spin = _number(
+            self,
+            float(properties.get("hardening_modulus", 0.0)),
+            minimum=0.0,
+        )
+        form = QFormLayout()
+        configure_form_layout(form)
+        form.addRow("屈服应力 σᵧ", self.yield_stress_spin)
+        form.addRow("各向同性硬化模量 H", self.hardening_spin)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.yield_stress_spin.textChanged.connect(self._update_ok_button)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setMinimumWidth(360)
+        self._update_ok_button()
+
+    def _update_ok_button(self) -> None:
+        self.ok_button.setEnabled(bool(self.yield_stress_spin.text().strip()))
+
+    def values(self) -> dict[str, float]:
+        if not self.ok_button.isEnabled():
+            raise ValueError("屈服应力不能为空")
+        return {
+            "yield_stress": self.yield_stress_spin.value(),
+            "hardening_modulus": self.hardening_spin.value(),
+        }
+
+
+# Compatibility name for callers written before the public behavior was
+# renamed to simply "塑性".  The persisted material properties are unchanged.
+J2PlasticityBehaviorDialog = PlasticBehaviorDialog
+
+
 class DensityBehaviorDialog(QDialog):
     def __init__(self, properties: dict[str, object], parent=None) -> None:
         super().__init__(parent)
@@ -195,17 +272,133 @@ class DensityBehaviorDialog(QDialog):
         return self.density_spin.value()
 
 
+class NeoHookeanBehaviorDialog(QDialog):
+    """Abaqus-style scalar editor for the first hyperelastic model."""
+
+    def __init__(self, properties: dict[str, object], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("超弹性（Neo Hooke）")
+        self.c10_spin = _number(
+            self,
+            float(properties.get("C10", 1.0)),
+            minimum=1.0e-15,
+        )
+        self.d1_spin = _number(
+            self,
+            float(properties.get("D1", 1.0)),
+            minimum=1.0e-15,
+        )
+        if "C10" not in properties:
+            self.c10_spin.clear()
+        if "D1" not in properties:
+            self.d1_spin.clear()
+        form = QFormLayout()
+        configure_form_layout(form)
+        form.addRow("材料类型", QLabel("各向同性"))
+        form.addRow("应变能势", QLabel("Neo-Hookean"))
+        form.addRow("C10", self.c10_spin)
+        form.addRow("D1", self.d1_spin)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.ok_button.setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.c10_spin.textChanged.connect(self._update_ok_button)
+        self.d1_spin.textChanged.connect(self._update_ok_button)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setMinimumWidth(380)
+        self._update_ok_button()
+
+    def _update_ok_button(self) -> None:
+        self.ok_button.setEnabled(
+            bool(self.c10_spin.text().strip())
+            and bool(self.d1_spin.text().strip())
+        )
+
+    def values(self) -> dict[str, float]:
+        if not self.ok_button.isEnabled():
+            raise ValueError("C10 和 D1 不能为空")
+        return {
+            "C10": self.c10_spin.value(),
+            "D1": self.d1_spin.value(),
+        }
+
+
 class MaterialEditDialog(QDialog):
+    """A compact Abaqus-style material behavior editor."""
+
+    _ALIASES = {
+        "elastic": ELASTIC_BEHAVIOR_ID,
+        "plastic": PLASTIC_BEHAVIOR_ID,
+        "j2": PLASTIC_BEHAVIOR_ID,
+        "density": DENSITY_BEHAVIOR_ID,
+        "neo_hookean": NEO_HOOKEAN_BEHAVIOR_ID,
+    }
+    _PARAMETER_KEYS = {
+        ELASTIC_BEHAVIOR_ID: ("E", "nu"),
+        PLASTIC_BEHAVIOR_ID: ("yield_stress", "hardening_modulus"),
+        DENSITY_BEHAVIOR_ID: ("rho",),
+        NEO_HOOKEAN_BEHAVIOR_ID: ("C10", "D1"),
+    }
+    _REQUIRED_PARAMETER_KEYS = {
+        ELASTIC_BEHAVIOR_ID: ("E", "nu"),
+        # Perfect plasticity is valid; hardening_modulus defaults to zero in
+        # the constitutive compiler and therefore remains optional here.
+        PLASTIC_BEHAVIOR_ID: ("yield_stress",),
+        DENSITY_BEHAVIOR_ID: ("rho",),
+        NEO_HOOKEAN_BEHAVIOR_ID: ("C10", "D1"),
+    }
+    _KNOWN_PROPERTY_KEYS = frozenset(
+        key for values in _PARAMETER_KEYS.values() for key in values
+    )
+
     def __init__(self, material: MaterialDefinition | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("编辑材料" if material else "新建材料")
         current = material or MaterialDefinition("Material-1", {})
+        self._original_material = current
         self._properties = dict(current.properties)
+        self._behaviors: dict[str, dict[str, object]] = {
+            item.behavior_id: dict(item.parameters)
+            for item in current.behaviors
+        }
         self._row_kinds: list[str] = []
+        self._active_behavior_id: str | None = None
+        self._editor_widgets: dict[str, AdaptivePrecisionDoubleSpinBox] = {}
+
         self.name_edit = QLineEdit(current.name, self)
+        self.description_edit = QLineEdit(current.description, self)
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("名称", self.name_edit)
+        form.addRow("描述", self.description_edit)
+
+        # Kept as a non-visible data proxy for older callers.  The user-facing
+        # editor no longer exposes a second constitutive-model selector.
+        self.model_combo = QComboBox(self)
+        self.model_combo.addItem("线弹性", "linear_elastic")
+        self.model_combo.addItem("J2 塑性", "j2_plasticity")
+        self.model_combo.addItem("Neo-Hookean 超弹性", "neo_hookean")
+        model_index = self.model_combo.findData(current.constitutive_model)
+        if model_index < 0:
+            self.model_combo.addItem(
+                f"{current.constitutive_model}（当前模型）",
+                current.constitutive_model,
+            )
+            model_index = self.model_combo.findData(current.constitutive_model)
+        self.model_combo.setCurrentIndex(model_index)
+        self.model_combo.setVisible(False)
+
+        self.menu_bar = QMenuBar(self)
+        self._build_behavior_menus()
+
         self.behavior_table = QTableWidget(0, 2, self)
         self.behavior_table.setHorizontalHeaderLabels(("材料行为", "状态"))
         self.behavior_table.setSelectionBehavior(
@@ -222,136 +415,346 @@ class MaterialEditDialog(QDialog):
         header = self.behavior_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.behavior_combo = QComboBox(self)
-        self.behavior_combo.addItem("线弹性", "elastic")
-        self.behavior_combo.addItem("密度", "density")
-        self.add_behavior_button = QPushButton("添加", self)
-        self.edit_behavior_button = QPushButton("编辑参数", self)
-        self.delete_behavior_button = QPushButton("删除", self)
-        self.add_behavior_button.clicked.connect(self._add_behavior)
-        self.edit_behavior_button.clicked.connect(self._edit_behavior)
-        self.delete_behavior_button.clicked.connect(self._delete_behavior)
         self.behavior_table.itemDoubleClicked.connect(
             lambda _item: self._edit_behavior()
         )
-        self.behavior_table.itemSelectionChanged.connect(self._update_buttons)
-        self.behavior_combo.currentIndexChanged.connect(self._update_buttons)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("添加行为", self))
-        controls.addWidget(self.behavior_combo)
-        controls.addWidget(self.add_behavior_button)
-        controls.addSpacing(12)
-        controls.addWidget(self.edit_behavior_button)
-        controls.addWidget(self.delete_behavior_button)
-        controls.addStretch(1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        self.behavior_table.itemSelectionChanged.connect(
+            self._show_selected_behavior
+        )
+
+        # Compatibility controls remain available to programmatic callers but
+        # are not part of the Abaqus-style visible workflow.
+        self.behavior_combo = QComboBox(self)
+        self.behavior_combo.addItem("线弹性", "elastic")
+        self.behavior_combo.addItem("塑性", "plastic")
+        self.behavior_combo.addItem("密度", "density")
+        self.behavior_combo.addItem("超弹性（Neo Hooke）", "neo_hookean")
+        self.behavior_combo.setVisible(False)
+        self.add_behavior_button = QPushButton("添加", self)
+        self.edit_behavior_button = QPushButton("编辑参数", self)
+        self.delete_behavior_button = QPushButton("删除行为", self)
+        self.add_behavior_button.setVisible(False)
+        self.add_behavior_button.clicked.connect(self._add_behavior)
+        self.edit_behavior_button.clicked.connect(self._edit_behavior)
+        self.delete_behavior_button.clicked.connect(self._delete_behavior)
+
+        self.behavior_editor = QWidget(self)
+        self.behavior_editor_layout = QVBoxLayout(self.behavior_editor)
+        self.behavior_editor_layout.setContentsMargins(12, 8, 12, 8)
+        self.status_label = QLabel(self)
+        self.status_label.setWordWrap(True)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+
+        editor_row = QVBoxLayout()
+        editor_row.addWidget(self.behavior_table, 1)
+        behavior_actions = QHBoxLayout()
+        behavior_actions.addStretch(1)
+        behavior_actions.addWidget(self.edit_behavior_button)
+        behavior_actions.addWidget(self.delete_behavior_button)
+        editor_row.addLayout(behavior_actions)
+        editor_row.addWidget(self.behavior_editor, 1)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(self.behavior_table)
-        layout.addLayout(controls)
+        layout.addWidget(self.menu_bar)
+        layout.addLayout(editor_row, 1)
+        layout.addWidget(self.status_label)
         layout.addWidget(buttons)
-        self.resize(420, 300)
+        self.resize(420, 520)
         self._refresh_behaviors()
 
+    def _build_behavior_menus(self) -> None:
+        menus = {}
+        for spec in material_behavior_specs():
+            parent = self.menu_bar
+            parent_path = ()
+            for part in spec.menu_path[:-1]:
+                parent_path = (*parent_path, part)
+                menu = menus.get(parent_path)
+                if menu is None:
+                    menu = parent.addMenu(part)
+                    menus[parent_path] = menu
+                parent = menu
+            action = parent.addAction(spec.menu_path[-1])
+            action.triggered.connect(
+                lambda _checked=False, behavior_id=spec.behavior_id:
+                self._add_behavior_kind(behavior_id)
+            )
+
+    @classmethod
+    def _canonical_kind(cls, kind: str) -> str:
+        normalized = str(kind).strip().casefold()
+        return cls._ALIASES.get(normalized, normalized)
+
     def material(self) -> MaterialDefinition:
+        self._sync_editor_to_behavior()
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("材料名称不能为空")
-        return MaterialDefinition(name, dict(self._properties))
+        behaviors = tuple(
+            MaterialBehavior(kind, parameters)
+            for kind, parameters in self._behaviors.items()
+        )
+        diagnostics = material_behavior_diagnostics(behaviors)
+        blocking_diagnostics = tuple(
+            item
+            for item in diagnostics
+            if not item.startswith("包含未注册的材料行为：")
+        )
+        if blocking_diagnostics:
+            raise ValueError("；".join(blocking_diagnostics))
+        incomplete = tuple(
+            kind
+            for kind, parameters in self._behaviors.items()
+            if self._behavior_status(kind, parameters) == "未完成"
+        )
+        if incomplete:
+            labels = tuple(
+                material_behavior_spec(kind).label
+                for kind in incomplete
+                if kind in self._PARAMETER_KEYS
+            )
+            raise ValueError(
+                "材料行为参数未填写完整：" + "、".join(labels)
+            )
+        if behaviors:
+            properties = {
+                key: value
+                for key, value in self._properties.items()
+                if key not in self._KNOWN_PROPERTY_KEYS
+            }
+            for behavior in behaviors:
+                properties.update(dict(behavior.parameters))
+        else:
+            # An unknown/imported model has no registered behavior editor yet.
+            # Preserve every property exactly instead of assuming that E/nu or
+            # another familiar key belongs to the new material schema.
+            properties = dict(self._properties)
+        model = self._original_material.constitutive_model
+        ids = {item.behavior_id for item in behaviors}
+        if NEO_HOOKEAN_BEHAVIOR_ID in ids:
+            model = "neo_hookean"
+        elif PLASTIC_BEHAVIOR_ID in ids:
+            model = "j2_plasticity"
+        elif ELASTIC_BEHAVIOR_ID in ids:
+            model = "linear_elastic"
+        return MaterialDefinition(
+            name,
+            properties,
+            constitutive_model=model,
+            algorithm=self._original_material.algorithm,
+            behaviors=behaviors,
+            description=self.description_edit.text(),
+        )
 
     def _behavior_rows(self) -> list[tuple[str, str, str]]:
         rows: list[tuple[str, str, str]] = []
-        if "E" in self._properties or "nu" in self._properties:
-            rows.append((
-                "elastic",
-                "线弹性",
-                "已定义",
-            ))
-        if "rho" in self._properties:
-            rows.append((
-                "density",
-                "密度",
-                "已定义",
-            ))
-        known = {"E", "nu", "rho"}
-        unknown = tuple(
-            key for key in self._properties if key not in known
-        )
+        for behavior_id, parameters in self._behaviors.items():
+            try:
+                label = material_behavior_spec(behavior_id).label
+            except KeyError:
+                label = f"其他行为（{behavior_id}）"
+            rows.append((behavior_id, label, self._behavior_status(behavior_id, parameters)))
+        known = self._KNOWN_PROPERTY_KEYS
+        unknown = tuple(key for key in self._properties if key not in known)
         if unknown:
-            rows.append((
-                "preserved",
-                "其他属性（来自 INP）",
-                f"已保留 {len(unknown)} 项",
-            ))
+            rows.append(("preserved", "其他属性（来自 INP）", f"已保留 {len(unknown)} 项"))
         return rows
 
+    def _behavior_status(self, behavior_id: str, parameters: Mapping[str, object]) -> str:
+        required = self._REQUIRED_PARAMETER_KEYS.get(behavior_id, ())
+        if required and not all(
+            key in parameters and str(parameters[key]).strip() for key in required
+        ):
+            return "未完成"
+        return "已定义"
+
     def _refresh_behaviors(self) -> None:
-        selected = self.behavior_table.currentRow()
+        selected_kind = self._selected_kind()
         rows = self._behavior_rows()
         self._row_kinds = [row[0] for row in rows]
+        self.behavior_table.blockSignals(True)
         self.behavior_table.setRowCount(len(rows))
         for row, (_kind, behavior, summary) in enumerate(rows):
             self.behavior_table.setItem(row, 0, QTableWidgetItem(behavior))
             self.behavior_table.setItem(row, 1, QTableWidgetItem(summary))
         if rows:
-            self.behavior_table.selectRow(
-                max(0, min(selected, len(rows) - 1))
-            )
+            target = selected_kind if selected_kind in self._row_kinds else rows[0][0]
+            self.behavior_table.selectRow(self._row_kinds.index(target))
+        else:
+            self.behavior_table.clearSelection()
+        self.behavior_table.blockSignals(False)
+        self._show_selected_behavior()
         self._update_buttons()
+        self._update_status()
 
-    def _add_behavior(self) -> None:
-        self._edit_kind(str(self.behavior_combo.currentData()))
-
-    def _edit_behavior(self) -> None:
+    def _selected_kind(self) -> str | None:
         row = self.behavior_table.currentRow()
         if 0 <= row < len(self._row_kinds):
-            self._edit_kind(self._row_kinds[row])
+            return self._row_kinds[row]
+        return None
+
+    def _add_behavior(self) -> None:
+        self._add_behavior_kind(str(self.behavior_combo.currentData()))
+
+    def _add_behavior_kind(self, kind: str) -> None:
+        canonical = self._canonical_kind(kind)
+        if canonical not in self._PARAMETER_KEYS:
+            return
+        if canonical not in self._behaviors:
+            self._behaviors[canonical] = {}
+        self._refresh_behaviors()
+        if canonical in self._row_kinds:
+            self.behavior_table.selectRow(self._row_kinds.index(canonical))
+        self._show_selected_behavior()
+
+    def _edit_behavior(self) -> None:
+        kind = self._selected_kind()
+        if kind is not None:
+            self._edit_kind(kind)
 
     def _edit_kind(self, kind: str) -> None:
-        if kind == "elastic":
-            dialog = ElasticBehaviorDialog(self._properties, self)
-            if not dialog.exec():
-                return
-            self._properties.update(dialog.values())
-        elif kind == "density":
-            dialog = DensityBehaviorDialog(self._properties, self)
-            if not dialog.exec():
-                return
-            self._properties["rho"] = dialog.value()
+        canonical = self._canonical_kind(kind)
+        properties = dict(self._behaviors.get(canonical, {}))
+        if canonical == ELASTIC_BEHAVIOR_ID:
+            dialog = ElasticBehaviorDialog(properties, self)
+        elif canonical == PLASTIC_BEHAVIOR_ID:
+            dialog = PlasticBehaviorDialog(properties, self)
+        elif canonical == DENSITY_BEHAVIOR_ID:
+            dialog = DensityBehaviorDialog(properties, self)
+        elif canonical == NEO_HOOKEAN_BEHAVIOR_ID:
+            dialog = NeoHookeanBehaviorDialog(properties, self)
         else:
             return
+        if not dialog.exec():
+            return
+        values = dialog.values()
+        self._behaviors[canonical] = dict(values)
         self._refresh_behaviors()
+        if canonical in self._row_kinds:
+            self.behavior_table.selectRow(self._row_kinds.index(canonical))
 
     def _delete_behavior(self) -> None:
-        row = self.behavior_table.currentRow()
-        if not 0 <= row < len(self._row_kinds):
+        kind = self._selected_kind()
+        if kind in self._behaviors:
+            self._sync_editor_to_behavior()
+            del self._behaviors[kind]
+            self._refresh_behaviors()
+
+    def _show_selected_behavior(self) -> None:
+        self._sync_editor_to_behavior()
+        kind = self._selected_kind()
+        self._clear_behavior_editor()
+        self._active_behavior_id = kind
+        if kind is None:
+            self.behavior_editor_layout.addWidget(QLabel("请选择或添加材料行为"))
+            self._update_buttons()
             return
-        kind = self._row_kinds[row]
-        if kind == "elastic":
-            self._properties.pop("E", None)
-            self._properties.pop("nu", None)
-        elif kind == "density":
-            self._properties.pop("rho", None)
+        if kind == "preserved":
+            self.behavior_editor_layout.addWidget(
+                QLabel("该材料行为来自 INP，当前版本仅保留其原始属性。")
+            )
+            self._update_buttons()
+            return
+        if kind not in self._PARAMETER_KEYS:
+            self.behavior_editor_layout.addWidget(QLabel("当前材料行为暂不支持编辑。"))
+            self._update_buttons()
+            return
+        self._build_inline_editor(kind)
+        self._update_buttons()
+
+    def _clear_behavior_editor(self) -> None:
+        self._editor_widgets = {}
+        def clear_layout(layout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                nested = item.layout()
+                if nested is not None:
+                    clear_layout(nested)
+                    nested.deleteLater()
+                    continue
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        clear_layout(self.behavior_editor_layout)
+
+    def _build_inline_editor(self, kind: str) -> None:
+        title = QLabel(material_behavior_spec(kind).label)
+        title.setStyleSheet("font-weight: 600; font-size: 14px;")
+        self.behavior_editor_layout.addWidget(title)
+        form = QFormLayout()
+        configure_form_layout(form)
+        parameters = self._behaviors[kind]
+        if kind == ELASTIC_BEHAVIOR_ID:
+            type_combo = QComboBox(self)
+            type_combo.addItem("各向同性", "isotropic")
+            type_combo.setToolTip("当前求解器暂支持各向同性线弹性")
+            type_combo.setEnabled(False)
+            form.addRow("类型", type_combo)
+            fields = (("E", "弹性模量 E", 1.0e-15, 1.0e15), ("nu", "泊松比 ν", -0.999999, 0.499999))
+        elif kind == PLASTIC_BEHAVIOR_ID:
+            form.addRow("硬化方式", QLabel("各向同性"))
+            fields = (("yield_stress", "屈服应力", 0.0, 1.0e15), ("hardening_modulus", "强化模量", 0.0, 1.0e15))
+        elif kind == DENSITY_BEHAVIOR_ID:
+            fields = (("rho", "密度 ρ", 0.0, 1.0e15),)
         else:
+            form.addRow("材料类型", QLabel("各向同性"))
+            form.addRow("应变能势", QLabel("Neo Hooke"))
+            fields = (("C10", "C10", 1.0e-15, 1.0e15), ("D1", "D1", 1.0e-15, 1.0e15))
+        for key, label, minimum, maximum in fields:
+            editor = AdaptivePrecisionDoubleSpinBox(self)
+            editor.setRange(minimum, maximum)
+            editor.setMaximumWidth(140)
+            if key in parameters:
+                editor.setValue(float(parameters[key]))
+            else:
+                editor.clear()
+            editor.textChanged.connect(self._update_status)
+            self._editor_widgets[key] = editor
+            form.addRow(label, editor)
+        self.behavior_editor_layout.addLayout(form)
+        self.behavior_editor_layout.addStretch(1)
+
+    def _sync_editor_to_behavior(self) -> None:
+        if self._active_behavior_id not in self._behaviors:
             return
-        self._refresh_behaviors()
+        parameters = self._behaviors[self._active_behavior_id]
+        for key, editor in self._editor_widgets.items():
+            if editor.text().strip():
+                parameters[key] = editor.value()
+            else:
+                parameters.pop(key, None)
+
+    def _update_status(self) -> None:
+        self._sync_editor_to_behavior()
+        behaviors = tuple(
+            MaterialBehavior(kind, parameters)
+            for kind, parameters in self._behaviors.items()
+        )
+        diagnostics = material_behavior_diagnostics(behaviors)
+        incomplete = any(
+            self._behavior_status(kind, parameters) == "未完成"
+            for kind, parameters in self._behaviors.items()
+        )
+        if diagnostics:
+            self.status_label.setText("状态：" + "；".join(diagnostics))
+        elif incomplete:
+            self.status_label.setText("状态：材料行为参数未填写完整")
+        else:
+            self.status_label.setText("状态：材料定义完整")
 
     def _update_buttons(self) -> None:
-        existing = set(self._row_kinds)
-        selected = self.behavior_table.currentRow()
-        selected_kind = (
-            self._row_kinds[selected]
-            if 0 <= selected < len(self._row_kinds)
-            else None
-        )
-        self.add_behavior_button.setEnabled(
-            str(self.behavior_combo.currentData()) not in existing
-        )
-        editable = selected_kind in {"elastic", "density"}
+        selected = self._selected_kind()
+        editable = selected in self._behaviors
         self.edit_behavior_button.setEnabled(editable)
         self.delete_behavior_button.setEnabled(editable)
 
@@ -384,14 +787,24 @@ class MaterialManagerDialog(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.add_button = QPushButton("新建", self)
         self.edit_button = QPushButton("编辑", self)
+        self.copy_button = QPushButton("复制", self)
+        self.rename_button = QPushButton("重命名", self)
         self.delete_button = QPushButton("删除", self)
         self.add_button.clicked.connect(self._add)
         self.edit_button.clicked.connect(self._edit)
+        self.copy_button.clicked.connect(self._copy)
+        self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemDoubleClicked.connect(lambda _item: self._edit())
         self.table.itemSelectionChanged.connect(self._update_buttons)
-        controls = QHBoxLayout()
-        for button in (self.add_button, self.edit_button, self.delete_button):
+        controls = QVBoxLayout()
+        for button in (
+            self.add_button,
+            self.edit_button,
+            self.copy_button,
+            self.rename_button,
+            self.delete_button,
+        ):
             controls.addWidget(button)
         controls.addStretch(1)
         buttons = QDialogButtonBox(
@@ -404,10 +817,12 @@ class MaterialManagerDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.table)
-        layout.addLayout(controls)
+        content = QHBoxLayout()
+        content.addWidget(self.table, 1)
+        content.addLayout(controls)
+        layout.addLayout(content, 1)
         layout.addWidget(buttons)
-        self.resize(520, 330)
+        self.resize(520, 350)
         self._refresh()
 
     def _refresh(self) -> None:
@@ -426,21 +841,27 @@ class MaterialManagerDialog(QDialog):
 
     @staticmethod
     def _behavior_summary(material: MaterialDefinition) -> str:
-        properties = material.properties
-        behaviors: list[str] = []
-        if "E" in properties or "nu" in properties:
-            behaviors.append("线弹性")
-        if "rho" in properties:
-            behaviors.append("密度")
-        if any(key not in {"E", "nu", "rho"} for key in properties):
-            behaviors.append("其他属性")
-        return "、".join(behaviors) or "未定义"
+        summary = behavior_summary(material)
+        if summary != "未定义":
+            return summary
+        if material.properties:
+            return "其他属性"
+        return "未定义"
 
     def _selected_row(self) -> int:
         return self.table.currentRow()
 
     def _store(self, value: MaterialDefinition, row: int | None = None) -> None:
-        duplicate = next((index for index, item in enumerate(self.materials) if item.name == value.name and index != row), None)
+        value = deepcopy(value)
+        duplicate = next(
+            (
+                index
+                for index, item in enumerate(self.materials)
+                if item.name.casefold() == value.name.casefold()
+                and index != row
+            ),
+            None,
+        )
         if duplicate is not None:
             raise ValueError(f"材料名称已存在：{value.name}")
         if row is None:
@@ -469,6 +890,43 @@ class MaterialManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "材料", str(error))
 
+    def _copy(self) -> None:
+        row = self._selected_row()
+        if row < 0:
+            return
+        source = self.materials[row]
+        name = self._unique_copy_name(source.name)
+        self._store(replace(deepcopy(source), name=name))
+        self.table.selectRow(len(self.materials) - 1)
+
+    def _unique_copy_name(self, source_name: str) -> str:
+        candidate = f"{source_name}-副本"
+        suffix = 2
+        existing = {material.name for material in self.materials}
+        while candidate in existing:
+            candidate = f"{source_name}-副本{suffix}"
+            suffix += 1
+        return candidate
+
+    def _rename(self) -> None:
+        row = self._selected_row()
+        if row < 0:
+            return
+        current = self.materials[row]
+        name, accepted = QInputDialog.getText(
+            self,
+            "重命名材料",
+            "材料名称：",
+            text=current.name,
+        )
+        name = name.strip()
+        if not accepted or not name or name == current.name:
+            return
+        try:
+            self._store(replace(current, name=name), row)
+        except ValueError as error:
+            QMessageBox.warning(self, "材料", str(error))
+
     def _delete(self) -> None:
         row = self._selected_row()
         if row >= 0:
@@ -479,6 +937,8 @@ class MaterialManagerDialog(QDialog):
     def _update_buttons(self) -> None:
         selected = self._selected_row() >= 0
         self.edit_button.setEnabled(selected)
+        self.copy_button.setEnabled(selected)
+        self.rename_button.setEnabled(selected)
         self.delete_button.setEnabled(selected)
 
     def values(self) -> list[MaterialDefinition]:
@@ -699,6 +1159,7 @@ class SectionEditDialog(QDialog):
             preset,
             selected_material.properties,
             properties,
+            constitutive_model=selected_material.constitutive_model,
         )
         return SectionDefinition(
             name,
@@ -815,6 +1276,7 @@ class SectionManagerDialog(QDialog):
         model_dimension: int = 2,
         section_presets: Sequence[str] = (),
         authoring_enabled: bool = True,
+        assignment_usage: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("截面管理")
@@ -826,6 +1288,10 @@ class SectionManagerDialog(QDialog):
         self._origins: list[str | None] = list(self._original_names)
         self.model_dimension = int(model_dimension)
         self._section_presets_arg = tuple(section_presets)
+        self._assignment_usage = {
+            str(name): int(count)
+            for name, count in (assignment_usage or {}).items()
+        }
         self.section_presets = _section_presets(
             section_presets,
             self.model_dimension,
@@ -846,9 +1312,15 @@ class SectionManagerDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
-        self.add_button, self.edit_button, self.delete_button = (QPushButton(text, self) for text in ("新建", "编辑", "删除"))
+        self.add_button = QPushButton("新建", self)
+        self.edit_button = QPushButton("编辑", self)
+        self.copy_button = QPushButton("复制", self)
+        self.rename_button = QPushButton("重命名", self)
+        self.delete_button = QPushButton("删除", self)
         self.add_button.clicked.connect(self._add)
         self.edit_button.clicked.connect(self._edit)
+        self.copy_button.clicked.connect(self._copy)
+        self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemDoubleClicked.connect(lambda _item: self._edit())
         self.table.itemSelectionChanged.connect(self._update_buttons)
@@ -856,6 +1328,8 @@ class SectionManagerDialog(QDialog):
         for button in (
             self.add_button,
             self.edit_button,
+            self.copy_button,
+            self.rename_button,
             self.delete_button,
         ):
             controls.addWidget(button)
@@ -893,7 +1367,11 @@ class SectionManagerDialog(QDialog):
                     self._section_label(section),
                 )
             ):
-                self.table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    count = self._assignment_usage.get(section.name, 0)
+                    item.setToolTip(f"当前截面分配引用：{count} 个")
+                self.table.setItem(row, column, item)
         if self.sections:
             row = max(0, min(self.table.currentRow(), len(self.sections) - 1))
             self.table.selectRow(row)
@@ -916,7 +1394,12 @@ class SectionManagerDialog(QDialog):
         )
 
     def _store(self, value: SectionDefinition, row: int | None = None) -> None:
-        if any(item.name == value.name and index != row for index, item in enumerate(self.sections)):
+        value = deepcopy(value)
+        if any(
+            item.name.casefold() == value.name.casefold()
+            and index != row
+            for index, item in enumerate(self.sections)
+        ):
             raise ValueError(f"截面名称已存在：{value.name}")
         if row is None:
             self.sections.append(value)
@@ -960,6 +1443,40 @@ class SectionManagerDialog(QDialog):
             except ValueError as error:
                 QMessageBox.warning(self, "截面", str(error))
 
+    def _copy(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        source = self.sections[row]
+        names = {section.name.casefold() for section in self.sections}
+        candidate = f"{source.name}-副本"
+        suffix = 2
+        while candidate.casefold() in names:
+            candidate = f"{source.name}-副本{suffix}"
+            suffix += 1
+        self._store(replace(deepcopy(source), name=candidate))
+
+    def _rename(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        current = self.sections[row].name
+        value, accepted = QInputDialog.getText(
+            self,
+            "重命名截面",
+            "截面名称：",
+            text=current,
+        )
+        if not accepted:
+            return
+        name = str(value).strip()
+        if not name or name == current:
+            return
+        try:
+            self._store(replace(self.sections[row], name=name), row)
+        except ValueError as error:
+            QMessageBox.warning(self, "截面", str(error))
+
     def _delete(self) -> None:
         row = self.table.currentRow()
         if row >= 0:
@@ -970,6 +1487,8 @@ class SectionManagerDialog(QDialog):
     def _update_buttons(self) -> None:
         selected = self.table.currentRow() >= 0
         self.edit_button.setEnabled(selected)
+        self.copy_button.setEnabled(selected)
+        self.rename_button.setEnabled(selected)
         self.delete_button.setEnabled(selected)
 
     def values(self) -> list[SectionDefinition]:
@@ -1416,3 +1935,216 @@ class RegionAssignmentDialog(QDialog):
             if text:
                 lines.append(text)
         return "\n".join(lines) or "当前截面分配不能提交。"
+
+
+class RegionAssignmentManagerDialog(QDialog):
+    """Manage all section-to-region associations in one small list."""
+
+    locateRequested = Signal(str)
+
+    def __init__(
+        self,
+        sections: Sequence[SectionDefinition],
+        assignments: Sequence[RegionAssignment],
+        editor_factory: Callable[
+            [RegionAssignment | None, int | None],
+            QDialog | None,
+        ],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        if not callable(editor_factory):
+            raise TypeError("editor_factory must be callable")
+        self.setWindowTitle("截面分配管理")
+        self.sections = tuple(deepcopy(sections))
+        self.assignments = list(deepcopy(assignments))
+        self._editor_factory = editor_factory
+        self._scope_selection_request: str | None = None
+        self.table = QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(("截面", "单元作用域", "梁方向"))
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.add_button = QPushButton("新建", self)
+        self.edit_button = QPushButton("编辑", self)
+        self.replace_button = QPushButton("替换", self)
+        self.delete_button = QPushButton("删除", self)
+        self.locate_button = QPushButton("定位区域", self)
+        self.add_button.clicked.connect(self._add)
+        self.edit_button.clicked.connect(self._edit)
+        self.replace_button.clicked.connect(self._replace)
+        self.delete_button.clicked.connect(self._delete)
+        self.locate_button.clicked.connect(self._locate)
+        self.table.itemDoubleClicked.connect(lambda _item: self._edit())
+        self.table.itemSelectionChanged.connect(self._update_buttons)
+        controls = QHBoxLayout()
+        for button in (
+            self.add_button,
+            self.edit_button,
+            self.replace_button,
+            self.delete_button,
+            self.locate_button,
+        ):
+            controls.addWidget(button)
+        controls.addStretch(1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.table)
+        layout.addLayout(controls)
+        layout.addWidget(buttons)
+        self.resize(620, 340)
+        self._refresh()
+
+    def _refresh(self, selected: int = 0) -> None:
+        self.table.setRowCount(len(self.assignments))
+        for row, assignment in enumerate(self.assignments):
+            values = (
+                str(assignment.section_name),
+                str(assignment.region_name),
+                "显式" if assignment.beam_orientation is not None else "自动",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                self.table.setItem(row, column, item)
+        if self.assignments:
+            self.table.selectRow(max(0, min(selected, len(self.assignments) - 1)))
+        self._update_buttons()
+
+    def _selected_index(self) -> int | None:
+        row = self.table.currentRow()
+        return row if 0 <= row < len(self.assignments) else None
+
+    def _editor(self, index: int | None) -> QDialog | None:
+        current = None if index is None else self.assignments[index]
+        return self._editor_factory(current, index)
+
+    def _add(self) -> None:
+        dialog = self._editor(None)
+        if dialog is None:
+            return
+        if not dialog.exec():
+            requested_scope_kind = self._requested_scope_kind(dialog)
+            if requested_scope_kind is not None:
+                # The editor can only request a viewport selection after it
+                # closes.  Propagate that intent to the owning main window;
+                # otherwise the manager silently eats the request.
+                self._scope_selection_request = requested_scope_kind
+                self.reject()
+            return
+        try:
+            self._store(dialog.assignment(), None)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "截面分配", str(error))
+
+    @staticmethod
+    def _requested_scope_kind(dialog: QDialog) -> str | None:
+        getter = getattr(dialog, "requested_scope_kind", None)
+        if not callable(getter):
+            return None
+        value = getter()
+        return None if value is None else str(value)
+
+    def requested_scope_kind(self) -> str | None:
+        """Return a scope-picking request that interrupted the manager."""
+
+        return self._scope_selection_request
+
+    def _edit(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        dialog = self._editor(index)
+        if dialog is None or not dialog.exec():
+            return
+        try:
+            self._store(dialog.assignment(), index)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "截面分配", str(error))
+
+    def _replace(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        dialog = self._editor(index)
+        if dialog is None or not dialog.exec():
+            return
+        try:
+            self._store(dialog.assignment(), index, force_replace=True)
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "截面分配", str(error))
+
+    def _store(
+        self,
+        value: RegionAssignment,
+        index: int | None,
+        *,
+        force_replace: bool = False,
+    ) -> None:
+        if type(value) is not RegionAssignment:
+            raise TypeError("assignment editor must return RegionAssignment")
+        duplicate = next(
+            (
+                candidate_index
+                for candidate_index, candidate in enumerate(self.assignments)
+                if candidate.region_name == value.region_name
+                and candidate_index != index
+            ),
+            None,
+        )
+        if duplicate is not None:
+            if not force_replace:
+                answer = QMessageBox.question(
+                    self,
+                    "替换截面分配",
+                    f"作用域“{value.region_name}”已有截面分配，是否替换？",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+            del self.assignments[duplicate]
+            if index is not None and duplicate < index:
+                index -= 1
+        if index is None:
+            self.assignments.append(deepcopy(value))
+            index = len(self.assignments) - 1
+        else:
+            self.assignments[index] = deepcopy(value)
+        self._refresh(index)
+
+    def _delete(self) -> None:
+        index = self._selected_index()
+        if index is None:
+            return
+        del self.assignments[index]
+        self._refresh(max(0, index - 1))
+
+    def _locate(self) -> None:
+        index = self._selected_index()
+        if index is not None:
+            self.locateRequested.emit(str(self.assignments[index].region_name))
+
+    def _update_buttons(self) -> None:
+        selected = self._selected_index() is not None
+        self.edit_button.setEnabled(selected)
+        self.replace_button.setEnabled(selected)
+        self.delete_button.setEnabled(selected)
+        self.locate_button.setEnabled(selected)
+
+    def values(self) -> list[RegionAssignment]:
+        return deepcopy(self.assignments)

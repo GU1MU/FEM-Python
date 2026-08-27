@@ -25,7 +25,7 @@ from fem_agent.export_authoring import (
 )
 from fem_agent.result_authoring import AcceptedResultSource, AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,

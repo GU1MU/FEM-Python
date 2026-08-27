@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from copy import deepcopy
 import os
@@ -6,10 +7,9 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from fem.application import ModelSession, run_static_preflight
-from fem.application.results import build_solve_result_bundle
 from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.result_authoring import AgentResultQueryBridge

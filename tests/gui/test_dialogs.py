@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
@@ -14,16 +15,20 @@ from fem_gui.dialogs import (
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
     DisplaySettingsDialog,
+    ResultAnimationDialog,
+    DisplayGroupViewCutDialog,
+    VisualizationOptionsDialog,
 )
 from fem_gui.symbol_dialog import SymbolSettingsDialog
 from fem_gui.viewport_background import ViewportBackgroundSettings
 from fem_gui.viewport_background_dialog import ViewportBackgroundDialog
-from fem_gui.visualization.colormaps import ABAQUS_RAINBOW
+from fem_gui.visualization.colormaps import ABAQUS_RAINBOW, CUSTOM_COLORMAP
 from fem_gui.visualization.contour_rendering import (
     CONTOUR_EDGE_FEATURE,
     CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_FILLED,
+    CONTOUR_RENDER_WIREFRAME,
 )
 from fem_gui.visualization.symbols import SymbolSettings
 
@@ -63,6 +68,20 @@ def test_adaptive_number_input_preserves_only_user_typed_precision():
     editor.setValue(3.4567)
     assert editor.value() == 3.4567
     assert editor.text() == "3.46"
+
+
+def test_adaptive_number_input_keeps_small_values_visible_and_accepts_exponents():
+    _application()
+    editor = AdaptivePrecisionDoubleSpinBox(input_decimals=16)
+    editor.setRange(1.0e-16, 1.0)
+    editor.setValue(1.0e-9)
+    assert editor.value() == pytest.approx(1.0e-9)
+    assert editor.text() != "0"
+    assert "e-" in editor.text()
+
+    editor.lineEdit().setText("2e-6")
+    editor.interpretText()
+    assert editor.value() == pytest.approx(2.0e-6)
 
 
 def test_contour_display_and_symbol_dialogs_round_trip_settings():
@@ -117,9 +136,14 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
             "orientation": "horizontal",
             "legend_font": "Times New Roman",
             "legend_font_size": 16,
+            "legend_position": "left",
+            "legend_label_count": "9",
+            "legend_title": False,
             "legend": True,
             "show_ids": True,
             "show_coordinate_system": False,
+            "show_node_labels": True,
+            "show_element_labels": True,
         }
     )
     display_settings = display.settings()
@@ -131,8 +155,13 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert display_settings["orientation"] == "horizontal"
     assert display_settings["legend_font"] == "Times New Roman"
     assert display_settings["legend_font_size"] == 16
+    assert display_settings["legend_position"] == "left"
+    assert display_settings["legend_label_count"] == "9"
+    assert not display_settings["legend_title"]
     assert display_settings["show_ids"]
     assert not display_settings["show_coordinate_system"]
+    assert display_settings["show_node_labels"]
+    assert display_settings["show_element_labels"]
     display_labels = {
         label.text() for label in display.findChildren(QLabel)
     }
@@ -149,6 +178,11 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert display.legend_font_size.width() == 60
     assert display.legend_font_size.suffix() == ""
     assert display.legend_font_size_unit.text() == "pt"
+    assert display.legend_position.width() == 82
+    assert display.legend_label_count.width() == 82
+    assert display.legend_title.text() == "显示"
+    assert display.show_node_labels.text() == "显示节点编号"
+    assert display.show_element_labels.text() == "显示单元编号"
     display.engineering_format.click()
     display.vertical_orientation.click()
     assert display.engineering_format.isChecked()
@@ -224,7 +258,13 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     contour.averaging_threshold_slider.setValue(83)
     assert contour.settings()["levels"] == 24
     assert contour.settings()["averaging_threshold"] == 83.0
+    contour.global_range.setChecked(True)
+    assert contour.settings()["range_mode"] == "global_step"
+    assert not contour.settings()["manual"]
+    assert not contour.minimum.isEnabled()
+    assert not contour.maximum.isEnabled()
     contour.manual_range.setChecked(True)
+    assert contour.settings()["range_mode"] == "manual"
     assert contour.minimum.isEnabled()
     assert contour.maximum.isEnabled()
     contour.style.setCurrentIndex(contour.style.findData("segmented"))
@@ -267,28 +307,200 @@ def test_display_settings_defaults_to_geometry_edges():
     assert not hidden.settings()["edges"]
 
 
-def test_contour_and_display_dialogs_split_render_and_edge_modes():
+def test_visualization_options_dialog_uses_one_categorized_window():
     _application()
-    contour = ContourSettingsDialog(
+    dialog = VisualizationOptionsDialog(
         {
-            "render_mode": CONTOUR_RENDER_FILLED,
-        }
-    )
-    display = DisplaySettingsDialog(
-        {
-            "edge_mode": CONTOUR_EDGE_FEATURE,
-            "edges": True,
-        }
+            "shape_mode": "deformed",
+            "contour_enabled": True,
+            "scale_mode": "custom",
+            "scale_value": 2.5,
+            "range_mode": "global_step",
+            "global_minimum": -1.0,
+            "global_maximum": 3.0,
+            "show_node_labels": True,
+            "show_symbols": True,
+        },
+        initial_category="云图显示",
     )
 
-    settings = contour.settings()
+    assert [
+        dialog.category_list.item(index).text()
+        for index in range(dialog.category_list.count())
+    ] == ["通用显示", "变形显示", "云图显示", "实体显示", "注释"]
+    assert dialog.category_list.currentRow() == 2
+    assert dialog.pages.currentWidget() is dialog.contour_page
+    assert dialog.scale_mode.currentData() == "custom"
+    assert dialog.scale_value.value() == 2.5
+    assert dialog.auto_range.isChecked() is False
+    assert dialog.global_range.isChecked()
+
+    dialog.select_category("实体显示")
+    dialog.show_node_labels.setChecked(True)
+    dialog.show_element_labels.setChecked(True)
+    settings = dialog.settings()
+    assert settings["show_node_labels"]
+    assert settings["show_element_labels"]
+    assert settings["show_symbols"]
+    assert settings["shape_mode"] == "deformed"
+    assert settings["scale_mode"] == "custom"
+    assert settings["range_mode"] == "global_step"
+    dialog.deleteLater()
+
+
+def test_visualization_options_dialog_combines_render_and_edge_modes():
+    _application()
+    dialog = VisualizationOptionsDialog(
+        {
+            "render_mode": CONTOUR_RENDER_FILLED,
+            "edge_mode": CONTOUR_EDGE_FEATURE,
+            "edges": True,
+        },
+        initial_category="云图显示",
+    )
+
+    settings = dialog.settings()
     assert settings["render_mode"] == CONTOUR_RENDER_FILLED
-    assert "edge_mode" not in settings
-    assert display.settings()["edge_mode"] == CONTOUR_EDGE_FEATURE
-    assert display.edge_mode.itemText(
-        display.edge_mode.findData(CONTOUR_EDGE_GEOMETRY)
-    ) == "几何边"
-    assert display.settings()["edges"]
+    assert settings["edge_mode"] == CONTOUR_EDGE_FEATURE
+    assert settings["edges"]
+    assert dialog.pages.count() == 5
+    assert dialog.category_list.currentItem().text() == "云图显示"
+    dialog.display_style.setCurrentIndex(
+        dialog.display_style.findData("wireframe")
+    )
+    settings = dialog.settings()
+    assert settings["render_mode"] == CONTOUR_RENDER_WIREFRAME
+    assert settings["edge_mode"] == "all"
+    dialog.select_category("注释")
+    assert dialog.annotation_page.isAncestorOf(dialog.show_minimum.parent())
+    assert not dialog.contour_page.isAncestorOf(dialog.show_minimum.parent())
+    dialog.deleteLater()
+
+
+def test_visualization_options_dialog_keeps_fixed_height_across_pages():
+    application = _application()
+    dialog = VisualizationOptionsDialog({}, initial_category="通用显示")
+    initial_height = dialog.height()
+    assert initial_height == 620
+    assert not hasattr(dialog, "display_group_combo")
+    assert not hasattr(dialog, "view_cut_list")
+    assert dialog.common_page.sizeHint().height() <= 300
+    for row in range(dialog.category_list.count()):
+        dialog.category_list.setCurrentRow(row)
+        application.processEvents()
+        assert dialog.height() == initial_height
+    dialog.deleteLater()
+
+
+def test_display_group_view_cut_dialog_combines_manager_controls():
+    _application()
+    dialog = DisplayGroupViewCutDialog(
+        {
+            "display_groups": {
+                "外壳": {"element_ids": (1, 3), "exclude": False},
+            },
+            "active_display_group": "外壳",
+            "view_cut": {
+                "planes": {
+                    "x": {"enabled": False, "offset": 0.0, "invert": False},
+                    "y": {"enabled": True, "offset": 0.25, "invert": True},
+                    "z": {"enabled": False, "offset": 0.0, "invert": False},
+                },
+            },
+        },
+        initial_page="view_cut",
+    )
+
+    assert dialog.windowTitle() == "显示组与视图切割"
+    assert [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())] == [
+        "显示组",
+        "视图切割",
+    ]
+    assert dialog.tabs.currentIndex() == 1
+    assert dialog.display_group_list.count() == 2
+    assert dialog.display_group_list.currentItem().text() == "外壳"
+    assert dialog.view_cut_list.item(1).checkState() == Qt.CheckState.Checked
+    assert dialog.view_cut_list.currentItem().text() == "Y-平面"
+    assert dialog.view_cut_positions["y"].value() == pytest.approx(0.25)
+    assert dialog.view_cut_invert.isChecked()
+
+    dialog.tabs.setCurrentIndex(0)
+    dialog.display_group_ids_edit.setText("2-4")
+    dialog.display_group_save_button.click()
+    dialog.tabs.setCurrentIndex(1)
+    dialog.view_cut_list.item(1).setCheckState(Qt.CheckState.Unchecked)
+    settings = dialog.settings()
+    assert settings["display_groups"]["外壳"]["element_ids"] == (2, 3, 4)
+    assert settings["active_display_group"] == "外壳"
+    assert not settings["view_cut"]["planes"]["y"]["enabled"]
+    dialog.deleteLater()
+
+
+def test_visualization_options_dialog_exposes_palette_preview_and_custom_stops():
+    _application()
+    dialog = VisualizationOptionsDialog({}, initial_category="云图显示")
+
+    assert dialog.colormap.count() >= 14
+    assert dialog.custom_color_group.isHidden()
+    dialog.colormap.setCurrentIndex(dialog.colormap.findData(CUSTOM_COLORMAP))
+    assert not dialog.custom_color_group.isHidden()
+    assert dialog.custom_color_stops.rowCount() == 3
+
+    middle_color = dialog.custom_color_stops.cellWidget(1, 1)
+    middle_color.set_color("#ffff00")
+    dialog.custom_color_stops.cellWidget(1, 0).setValue(40.0)
+    dialog.colormap_reverse.setChecked(True)
+    settings = dialog.settings()
+
+    assert settings["colormap"] == CUSTOM_COLORMAP
+    assert settings["colormap_reverse"]
+    assert settings["custom_color_stops"] == (
+        (0.0, "#0000ff"),
+        (0.4, "#ffff00"),
+        (1.0, "#ff0000"),
+    )
+    dialog.add_custom_color_button.click()
+    assert dialog.custom_color_stops.rowCount() == 4
+    dialog.deleteLater()
+
+
+def test_animation_dialog_preserves_noncontiguous_frame_indices():
+    _application()
+    dialog = ResultAnimationDialog(
+        (1, 3, 5),
+        current_frame_index=3,
+        start_frame=1,
+        end_frame=5,
+        interval_ms=250,
+        loop=True,
+    )
+    assert dialog.windowTitle() == "动画"
+    assert [
+        dialog.start_frame_combo.itemData(index)
+        for index in range(dialog.start_frame_combo.count())
+    ] == [1, 3, 5]
+    assert dialog.settings() == {
+        "start_frame": 1,
+        "end_frame": 5,
+        "interval_ms": 250,
+        "loop": True,
+    }
+
+    applied = []
+    dialog.applyRequested.connect(applied.append)
+    dialog.start_frame_combo.setCurrentIndex(1)
+    dialog.end_frame_combo.setCurrentIndex(2)
+    dialog.interval_spin.setValue(400)
+    dialog.loop_checkbox.setChecked(False)
+    assert dialog.apply()
+    assert applied == [
+        {
+            "start_frame": 3,
+            "end_frame": 5,
+            "interval_ms": 400,
+            "loop": False,
+        }
+    ]
 
 
 def test_viewport_background_dialog_supports_presets_and_live_preview():

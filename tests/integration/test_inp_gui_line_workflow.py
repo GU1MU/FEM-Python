@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from dataclasses import replace
 from pathlib import Path
@@ -16,9 +17,8 @@ from fem.application import (
     resolve_effective_beam_frames,
 )
 from fem.application.preflight import run_static_preflight
-from fem.application.results import build_solve_result_bundle
-from fem.core.model import LineLoad
-from fem.solvers.static_linear import solve
+from fem.model import LineLoad
+from fem.analysis.linear_static import solve
 from fem_gui.inspection_service import InspectionService
 from fem_gui.widgets.viewport import _effective_line_load_vector
 

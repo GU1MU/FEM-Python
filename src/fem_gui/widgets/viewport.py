@@ -6,7 +6,9 @@ import inspect
 import logging
 import math
 import os
-from collections.abc import Callable, Iterable
+from contextlib import contextmanager
+from pathlib import Path
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -21,21 +23,22 @@ from PySide6.QtWidgets import (
 )
 
 from fem.application import MeshEntityRef, RegionRef
-from fem.application.results import (
+from fem.results import (
     FieldLocation,
     FieldPosition,
     ResultCellKind,
+    ResultFieldTopology,
+    ResultRegionKey,
     ResultValueLayout,
 )
-from fem.boundary.step import (
-    boundary_for_step,
-    effective_step_boundaries,
-    get_step,
-)
-from fem.core._constraint_targets import (
+from fem.analysis import compile_boundary as boundary_for_step
+from fem.model import effective_displacement_constraints, resolve_analysis_step
+from fem.model.targets import (
     displacement_target_kind,
     resolve_displacement_node_ids,
 )
+from fem.selection import edges as mesh_edge_selection
+from fem.selection import faces as mesh_face_selection
 from fem.geometry import (
     LogicalEntityRef,
     SketchArc,
@@ -53,8 +56,9 @@ from fem.geometry import (
 from ..geometry_preview import FaceSketchBooleanDisplay, GeometryPreview
 from ..result_presentation import (
     result_field_position_label,
+    result_display_computation_label,
+    result_region_display_labels,
     section_point_labels_from_locations,
-    section_point_relative_position_label,
 )
 from ..scope_selection import MeshSelectionTopology, build_mesh_selection_topology
 from ..sketch_constraint_ui import SketchConstraintOverlay
@@ -63,30 +67,38 @@ from ..wire_editor import (
     snap_work_plane_point,
 )
 from ..viewport_background import ViewportBackgroundSettings
+from ..view_cut_state import (
+    VIEW_CUT_AXES,
+    default_view_cut_settings,
+    normalize_view_cut_settings,
+)
 from ..visualization.colormaps import (
     ABAQUS_RAINBOW,
     resolve_contour_colormap,
 )
 from ..visualization.contour_rendering import (
+    CONTOUR_EDGE_ALL,
     CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
+    CONTOUR_RENDER_HIDDEN_LINE,
     CONTOUR_RENDER_SHADED,
     bind_shaded_contour_scalars,
     build_shaded_contour_surface,
     contour_surface_options,
     extract_contour_edges,
+    extract_dataset_surface,
     style_contour_edges,
     update_shaded_contour_geometry,
 )
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
-from ..visualization.scene import DisplayState
+from ..visualization.scene import ContourDisplayState, DisplayState
 from ..visualization.symbols import (
     SymbolSettings,
     arc_points,
     camera_facing_offset,
     constraint_outward_direction,
+    constraint_corner_indices,
     constraint_rotation_axes,
-    constraint_sample_indices,
     constraint_spatial_regions,
     constraint_symbol_dimensions,
     load_arrow_origins,
@@ -96,6 +108,7 @@ from ..visualization.symbols import (
     sample_distributed_polyline,
     symbol_length,
 )
+
 
 if TYPE_CHECKING:
     from ..visualization.result_renderer import ResultRenderPayload
@@ -108,8 +121,16 @@ _backend_attempted = False
 BEAM_FRAME_GLYPH_LIMIT = 64
 BEAM_FRAME_CACHE_LIMIT = 256
 _TYPED_RESULT_GRID_NAME = "typed_result_grid"
+_MODEL_DISPLAY_SOURCE = "model"
+_RESULT_DISPLAY_SOURCE = "result"
+_GEOMETRY_PREVIEW_DISPLAY_SOURCE = "geometry_preview"
+_EMPTY_DISPLAY_SOURCE = "empty"
+_MODEL_EDGE_MODE = CONTOUR_EDGE_ALL
+_MODEL_EDGE_STYLE = "solid"
+_MODEL_EDGE_WIDTH = 1.0
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
+_RESULT_SAMPLE_POINT_SIZE = 10
 _GRAVITY_SYMBOL_COLOR = "#FFD400"
 
 
@@ -125,6 +146,100 @@ def _positive_id_indices(values: np.ndarray) -> dict[int, tuple[int, ...]]:
         identifier: tuple(indices)
         for identifier, indices in grouped.items()
     }
+
+
+def _result_surface_point_keys(
+    topology: ResultFieldTopology,
+) -> tuple[tuple[object, ...], ...]:
+    """Return geometry-sharing keys that respect result-field semantics.
+
+    A physical node is not always one render point.  Element-nodal values
+    retain one value per element side, and resolved nodal values retain one
+    value per material/section region.  Merging either of those by ``node_id``
+    silently destroys discontinuities before PyVista builds the shaded
+    surface, which makes a contour look numerically plausible but wrong.
+    """
+
+    if type(topology) is not ResultFieldTopology:
+        raise TypeError("topology must be ResultFieldTopology")
+    position = topology.selection.field_key.request.field_id.position
+    keys: list[tuple[object, ...]] = []
+    for point_index, location in enumerate(topology.point_locations):
+        if location is None:
+            keys.append(("point", point_index))
+            continue
+
+        if (
+            position is FieldPosition.NODE
+            and location.node_id is not None
+        ):
+            keys.append(("node", int(location.node_id)))
+            continue
+
+        if (
+            position is FieldPosition.ELEMENT_NODAL
+            and location.node_id is not None
+            and location.element_id is not None
+            and location.local_node is not None
+        ):
+            keys.append(
+                (
+                    "element_node",
+                    int(location.element_id),
+                    int(location.local_node),
+                    int(location.node_id),
+                )
+            )
+            continue
+
+        if (
+            position is FieldPosition.NODE_REGION
+            and location.node_id is not None
+            and location.region_key is not None
+        ):
+            keys.append(
+                ("node_region", int(location.node_id), location.region_key)
+            )
+            continue
+
+        if position is FieldPosition.RESOLVED_NODAL:
+            if (
+                location.averaged is True
+                and location.node_id is not None
+                and location.region_key is not None
+            ):
+                keys.append(
+                    (
+                        "resolved_nodal",
+                        int(location.node_id),
+                        location.region_key,
+                    )
+                )
+                continue
+            if (
+                location.averaged is False
+                and location.node_id is not None
+                and location.element_id is not None
+                and location.local_node is not None
+                and location.region_key is not None
+            ):
+                keys.append(
+                    (
+                        "resolved_raw",
+                        int(location.element_id),
+                        int(location.local_node),
+                        int(location.node_id),
+                        location.region_key,
+                    )
+                )
+                continue
+
+        # Centroid, integration-point and section-point records are samples,
+        # not shared nodal geometry.  Keep malformed/incomplete identities
+        # isolated as well; the typed topology validator will report them at
+        # the data boundary instead of making the renderer guess.
+        keys.append(("point", point_index))
+    return tuple(keys)
 
 
 def _cell_offsets_and_connectivity(
@@ -495,6 +610,58 @@ def _face_display_node_ids(node_ids: tuple[int, ...]) -> tuple[int, ...]:
     if len(node_ids) == 6:
         return node_ids[:3]
     return node_ids
+
+
+def _boundary_segments_from_faces(
+    faces: Iterable[tuple[int, ...]],
+) -> tuple[tuple[int, ...], ...]:
+    """Return the perimeter segments of a collection of polygonal faces.
+
+    The layout of a boundary symbol must come from mesh topology, not from
+    the order of points in a node set.  Shared edges are therefore cancelled
+    so a constraint on a face/surface is represented on its outside perimeter
+    instead of being scattered through the face interior.
+    """
+
+    edge_records: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for raw_ids in faces:
+        ids = tuple(int(node_id) for node_id in raw_ids)
+        if len(ids) < 2:
+            continue
+        for start, end in zip(ids, ids[1:] + ids[:1]):
+            if start == end:
+                continue
+            key = (min(start, end), max(start, end))
+            edge_records.setdefault(key, []).append((start, end))
+
+    perimeter: list[tuple[int, ...]] = []
+    for key in sorted(edge_records):
+        records = edge_records[key]
+        if len(records) == 1:
+            start, end = records[0]
+            perimeter.append((int(start), int(end)))
+    return tuple(perimeter)
+
+
+def _boundary_segments_from_edges(
+    chains: Iterable[tuple[int, ...]],
+) -> tuple[tuple[int, ...], ...]:
+    """Return non-shared mesh-edge chains from a selected node region."""
+
+    edge_records: dict[tuple[int, int], list[tuple[int, ...]]] = {}
+    for raw_chain in chains:
+        chain = tuple(int(node_id) for node_id in raw_chain)
+        if len(chain) < 2:
+            continue
+        key = (min(chain[0], chain[-1]), max(chain[0], chain[-1]))
+        edge_records.setdefault(key, []).append(chain)
+
+    perimeter: list[tuple[int, ...]] = []
+    for key in sorted(edge_records):
+        records = edge_records[key]
+        if len(records) == 1:
+            perimeter.append(records[0])
+    return tuple(perimeter)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1486,10 +1653,24 @@ class FEMViewport(QWidget):
         self._plotter = None
         self._grid = None
         self._result_grid = None
+        self._active_display_source = _EMPTY_DISPLAY_SOURCE
         self._result_render_surface = None
+        # Bounded cache for expensive VTK display-group extraction and view
+        # cuts.  The cache is deliberately separate from the result payload
+        # cache: a new frame/geometry invalidates it, while switching back to
+        # a recent presentation can reuse the already-filtered dataset.
+        self._result_display_dataset_cache: dict[tuple[object, ...], Any] = {}
+        self._result_shaded_surface_cache: dict[tuple[object, ...], Any] = {}
+        self._result_edges_cache: dict[tuple[object, ...], Any] = {}
         self._result_point_index_to_node_id: dict[int, int] = {}
         self._result_point_index_to_element_id: dict[int, int] = {}
         self._result_cell_index_to_element_id: dict[int, int] = {}
+        self._display_group_element_ids: frozenset[int] | None = None
+        self._display_group_exclude = False
+        self._view_cut: dict[str, object] = default_view_cut_settings()
+        self._result_probe_markers: tuple[
+            tuple[str, tuple[float, float, float]], ...
+        ] = ()
         self._result_provenance_layout: (
             tuple[object, object, object] | None
         ) = None
@@ -1570,6 +1751,13 @@ class FEMViewport(QWidget):
         self._artifact_id: str | None = None
         self._run_id: str | None = None
         self._actors: dict[str, Any] = {}
+        # A real VTK renderer can keep the previous result actor alive while
+        # the replacement actor is being built.  This is the last protection
+        # against a native repaint exposing the empty/grey interval between
+        # ``remove_actor`` and ``add_mesh``.  Lightweight test/fallback
+        # plotters without a renderer use the historical single-buffer path.
+        self._result_layer_staging = False
+        self._result_layer_staging_token = 0
         self._selection_mode = "node"
         self._selected_kind: str | None = None
         self._selected_id: int | None = None
@@ -1679,19 +1867,14 @@ class FEMViewport(QWidget):
         self._mesh_scope_render_timer.timeout.connect(
             self._render_mesh_scope_highlight
         )
-        self._contour = {
-            "manual": False, "minimum": 0.0, "maximum": 1.0, "levels": 12,
-            "colormap": ABAQUS_RAINBOW, "style": "segmented",
-            "legend": True, "edges": True,
-            "render_mode": CONTOUR_RENDER_SHADED,
-            "edge_mode": CONTOUR_EDGE_GEOMETRY,
-            "edge_style": "solid", "edge_width": 1.0,
-            "number_format": "scientific", "decimals": 2,
-            "orientation": "vertical", "show_minimum": False,
-            "show_maximum": False, "show_ids": False,
-            "legend_font": "Arial", "legend_font_size": 14,
-            "show_coordinate_system": True,
-        }
+        self._contour_state = ContourDisplayState(
+            colormap=ABAQUS_RAINBOW,
+            render_mode=CONTOUR_RENDER_SHADED,
+            edge_mode=CONTOUR_EDGE_GEOMETRY,
+        )
+        # The renderer still consumes a mapping, but the immutable typed state
+        # above is now the source of truth for contour and annotation options.
+        self._contour = self._contour_state.to_mapping()
         self._message = QLabel("", self)
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sketch_uv_label = QLabel("", self)
@@ -1711,11 +1894,11 @@ class FEMViewport(QWidget):
         self._sketch_uv_label.hide()
         self._stack = QStackedLayout()
         self._stack.addWidget(self._message)
-        host = QWidget(self)
-        host.setLayout(self._stack)
+        self._stack_host = QWidget(self)
+        self._stack_host.setLayout(self._stack)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(host)
+        layout.addWidget(self._stack_host)
         self._update_background_stylesheet()
 
     @property
@@ -1737,6 +1920,72 @@ class FEMViewport(QWidget):
         """Return the Session run represented by the result cache."""
         return self._run_id
 
+    @property
+    def active_display_source(self) -> str:
+        """Return the data source currently displayed in the viewport."""
+
+        return self._active_display_source
+
+    def _result_scene_active(self) -> bool:
+        return self._active_display_source == _RESULT_DISPLAY_SOURCE
+
+    def _active_result_mesh(self) -> Any | None:
+        """Return the result dataset only when it is the active scene."""
+
+        if not self._result_scene_active():
+            return None
+        payload = self._result_render_payload
+        dataset = self._result_grid
+        if payload is None or dataset is not getattr(payload, "dataset", None):
+            return None
+        return dataset
+
+    def _active_result_payload_mesh(self) -> Any | None:
+        """Return the active payload mesh before its actor is installed."""
+
+        if not self._result_scene_active():
+            return None
+        payload = self._result_render_payload
+        dataset = getattr(payload, "dataset", None)
+        if dataset is None:
+            return None
+        if self._result_grid is not None and self._result_grid is not dataset:
+            return None
+        return dataset
+
+    def _can_preserve_result_cache(self, geometry: ModelGeometry) -> bool:
+        """Return whether a model scene switch can retain result data."""
+
+        payload = self._result_render_payload
+        source = getattr(getattr(payload, "topology", None), "source", None)
+        return bool(
+            payload is not None
+            and self._geometry is geometry
+            and self._artifact_id == geometry.artifact_id
+            and getattr(source, "artifact_id", None) == geometry.artifact_id
+        )
+
+    def _discard_result_render_cache(self) -> None:
+        """Drop transient result rendering data without touching model data."""
+
+        self._result_render_payload = None
+        self._result_grid = None
+        self._result_render_surface = None
+        self._result_display_dataset_cache.clear()
+        self._result_shaded_surface_cache.clear()
+        self._result_edges_cache.clear()
+        self._result_point_index_to_node_id.clear()
+        self._result_point_index_to_element_id.clear()
+        self._result_cell_index_to_element_id.clear()
+        self._result_provenance_layout = None
+        self._result_render_validated_mtime = None
+        self._result_install_validation = None
+        self._scalar_reuse_pending = False
+        self._geometry_reuse_pending = False
+        self._scalar_reuse_display = None
+        self._rendered_display = None
+        self._run_id = None
+
     def model_scene_is_current(
         self,
         model: Any,
@@ -1748,8 +1997,7 @@ class FEMViewport(QWidget):
             self._model is model
             and self._geometry is geometry
             and self._artifact_id == geometry.artifact_id
-            and self._run_id is None
-            and self._result_render_payload is None
+            and self._active_display_source == _MODEL_DISPLAY_SOURCE
             and self._geometry_preview is None
         )
 
@@ -1775,7 +2023,8 @@ class FEMViewport(QWidget):
             == int(materialization_generation)
             and topology.deformation_scale == float(deformation_scale)
             and self._display == display
-            and self._result_grid is payload.dataset
+            and self._result_scene_active()
+            and self._active_result_mesh() is payload.dataset
             and "result" in self._actors
             and self._geometry_preview is None
         )
@@ -2268,6 +2517,7 @@ class FEMViewport(QWidget):
         model: Any,
         geometry: ModelGeometry,
         *,
+        preserve_result_cache: bool = True,
         refresh_symbols: bool = True,
         render: bool = True,
         reset_camera: bool = True,
@@ -2282,6 +2532,23 @@ class FEMViewport(QWidget):
             Callable[[], MeshSelectionTopology] | None
         ) = None,
     ) -> None:
+        preserve_result = bool(preserve_result_cache) and self._can_preserve_result_cache(
+            geometry
+        )
+        if not preserve_result:
+            self._discard_result_render_cache()
+        else:
+            # Keep the result data available while the model scene is shown.
+            # Result actors are rebuilt when the result scene is activated.
+            self._result_render_surface = None
+            self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = False
+            self._scalar_reuse_display = None
+            self._rendered_display = None
+            self._result_provenance_layout = None
+            self._result_render_validated_mtime = None
+            self._result_install_validation = None
+        self._active_display_source = _MODEL_DISPLAY_SOURCE
         if show_edges is not None:
             self._show_edges = bool(show_edges)
         if show_nodes is not None:
@@ -2293,7 +2560,6 @@ class FEMViewport(QWidget):
         self._model = model
         self._geometry = geometry
         self._artifact_id = geometry.artifact_id
-        self._run_id = None
         self._geometry_preview = None
         self._geometry_ghost_preview = None
         self._geometry_preview_surface = None
@@ -2314,7 +2580,12 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._display_projection_cache.clear()
-        self._result_render_payload = None
+        self._display_group_element_ids = None
+        self._display_group_exclude = False
+        self._view_cut = default_view_cut_settings()
+        self._result_probe_markers = ()
+        self._remove_actor("result_probe_markers")
+        self._remove_actor("result_probe_labels")
         self._result_render_surface = None
         self._scalar_reuse_pending = False
         self._geometry_reuse_pending = False
@@ -2373,10 +2644,12 @@ class FEMViewport(QWidget):
 
         if self._geometry is None:
             raise RuntimeError("cannot rebind a viewport without a model")
+        if not self._can_preserve_result_cache(geometry):
+            self._discard_result_render_cache()
+        self._active_display_source = _MODEL_DISPLAY_SOURCE
         self._model = model
         self._geometry = geometry
         self._artifact_id = geometry.artifact_id
-        self._run_id = None
         self._effective_frame_query = effective_frame_query
         self._boundary_cache.clear()
         self._beam_frame_cache.clear()
@@ -2387,6 +2660,7 @@ class FEMViewport(QWidget):
             self.stop_sketch_authoring(render=False)
         if self._wire_authoring_active:
             self.stop_wire_authoring(render=False)
+        self._active_display_source = _EMPTY_DISPLAY_SOURCE
         self._model = None
         self._geometry = None
         self._artifact_id = None
@@ -2412,6 +2686,12 @@ class FEMViewport(QWidget):
         self._pick_grid = None
         self._pick_locators.clear()
         self._result_render_payload = None
+        self._result_display_dataset_cache.clear()
+        self._result_shaded_surface_cache.clear()
+        self._result_edges_cache.clear()
+        self._display_group_element_ids = None
+        self._display_group_exclude = False
+        self._view_cut = default_view_cut_settings()
         self._scalar_reuse_pending = False
         self._geometry_reuse_pending = False
         self._scalar_reuse_display = None
@@ -2440,6 +2720,9 @@ class FEMViewport(QWidget):
         self._clear_geometry_scan_caches()
         self._grid = None
         self._result_grid = None
+        self._result_display_dataset_cache.clear()
+        self._result_shaded_surface_cache.clear()
+        self._result_edges_cache.clear()
         self._result_point_index_to_node_id.clear()
         self._result_point_index_to_element_id.clear()
         self._result_cell_index_to_element_id.clear()
@@ -4817,6 +5100,8 @@ class FEMViewport(QWidget):
         reset_camera: bool = True,
     ) -> None:
         """Display CAD geometry, optionally as a picking overlay on the mesh."""
+        if not preserve_model:
+            self._active_display_source = _GEOMETRY_PREVIEW_DISPLAY_SOURCE
         self._geometry_preview = preview
         self._install_geometry_pick_bindings(preview)
         if is_offscreen_environment():
@@ -5290,7 +5575,10 @@ class FEMViewport(QWidget):
                 mask_name,
             )
             algorithm.SetUpperThreshold(0.5)
-            algorithm.SetThresholdFunction(algorithm.THRESHOLD_UPPER)
+            if hasattr(algorithm, "SetThresholdFunction"):
+                algorithm.SetThresholdFunction(algorithm.THRESHOLD_UPPER)
+            else:
+                algorithm.ThresholdByUpper(0.5)
             actor_name = f"mesh_scope_selection_{kind}"
             actor = self._plotter.add_mesh(
                 algorithm,
@@ -5300,6 +5588,7 @@ class FEMViewport(QWidget):
                 name=actor_name,
                 reset_camera=False,
                 pickable=False,
+                render=False,
                 **styles[kind],
             )
             actor.SetVisibility(False)
@@ -5390,8 +5679,9 @@ class FEMViewport(QWidget):
         """Build a body surface and its geometry edges without mesh lines."""
 
         payload = self._rendered_result_payload()
-        if payload is not None and self._result_grid is not None:
-            dataset = self._result_grid
+        result_dataset = self._active_result_mesh()
+        if payload is not None and result_dataset is not None:
+            dataset = result_dataset
             ids = self._typed_result_cell_ids(dataset)
         elif (
             self._pick_grid is not None
@@ -5413,14 +5703,14 @@ class FEMViewport(QWidget):
         selected = dataset.extract_cells(cells)
         if self._is_line_mesh():
             rendered = (selected, None)
+            cache_key = (id(dataset), int(dataset.GetPoints().GetMTime()), requested)
             self._mesh_body_render_cache[cache_key] = rendered
             return rendered
         connected = selected.cast_to_unstructured_grid().clean()
-        surface = connected.extract_surface(
-            algorithm="dataset_surface"
-        ).clean()
+        surface = extract_dataset_surface(connected).clean()
         edges = extract_contour_edges(connected, CONTOUR_EDGE_GEOMETRY)
         rendered = (surface, edges)
+        cache_key = (id(dataset), int(dataset.GetPoints().GetMTime()), requested)
         self._mesh_body_render_cache[cache_key] = rendered
         return rendered
 
@@ -5451,6 +5741,7 @@ class FEMViewport(QWidget):
             name=actor_name,
             reset_camera=False,
             pickable=False,
+            render=False,
             **surface_options,
         )
         self._offset_highlight_actor(self._actors[actor_name])
@@ -5465,6 +5756,7 @@ class FEMViewport(QWidget):
                 name=edge_name,
                 reset_camera=False,
                 pickable=False,
+                render=False,
             )
             self._offset_highlight_actor(self._actors[edge_name])
         return True
@@ -5533,9 +5825,14 @@ class FEMViewport(QWidget):
                 "payload artifact provenance does not match the viewport model"
             )
         current = self._result_render_payload
+        # A payload may reuse the same VTK object while replacing its points
+        # or scalar array.  Filtered/ clipped child datasets then become
+        # stale even though ``id(dataset)`` did not change.
+        self._result_display_dataset_cache.clear()
         can_reuse = (
             current is not None
-            and self._result_grid is current.dataset
+            and self._result_scene_active()
+            and self._active_result_mesh() is current.dataset
             and "result" in self._actors
         )
         if can_reuse:
@@ -5552,9 +5849,14 @@ class FEMViewport(QWidget):
                 current_validated=shared_dataset,
                 candidate_validated=True,
             )
+            if not shared_dataset or geometry_changed:
+                self._result_shaded_surface_cache.clear()
+                self._result_edges_cache.clear()
         else:
             reused = False
             geometry_changed = False
+            self._result_shaded_surface_cache.clear()
+            self._result_edges_cache.clear()
         self._result_render_payload = checked
         self._scalar_reuse_pending = reused
         self._geometry_reuse_pending = reused and geometry_changed
@@ -5570,6 +5872,7 @@ class FEMViewport(QWidget):
         )
         self._artifact_id = source.artifact_id
         self._run_id = source.run_id
+        self._active_display_source = _RESULT_DISPLAY_SOURCE
         self._index_result_render_provenance(checked)
 
     def _index_result_render_provenance(
@@ -5736,9 +6039,10 @@ class FEMViewport(QWidget):
 
         payload = self._result_render_payload
         if (
-            payload is None
+            not self._result_scene_active()
+            or self._active_result_mesh() is None
+            or payload is None
             or self._scalar_reuse_pending
-            or self._result_grid is not payload.dataset
         ):
             return None
         modified = int(payload.dataset.GetMTime())
@@ -5910,6 +6214,7 @@ class FEMViewport(QWidget):
         if mode in {
             "geometry_point", "geometry_edge", "geometry_face", "geometry_body",
             "mesh_node", "mesh_edge", "mesh_face", "mesh_element", "mesh_body",
+            "result_probe_node", "result_probe_element",
         }:
             self._selection_mode = mode
         else:
@@ -6318,7 +6623,7 @@ class FEMViewport(QWidget):
         if updated or visibility_changed:
             self._schedule_mesh_scope_render()
 
-    def highlight_node(self, node_id: int) -> None:
+    def highlight_node(self, node_id: int, *, render: bool = True) -> None:
         if self._geometry is None or node_id not in self._geometry.node_id_to_point_index:
             return
         index = self._geometry.node_id_to_point_index[node_id]
@@ -6337,12 +6642,13 @@ class FEMViewport(QWidget):
             point = _pyvista.PolyData(points)
             self._actors["selection"] = self._plotter.add_mesh(
                 point, color="#d69a3a", point_size=14, render_points_as_spheres=True,
-                name="selection", reset_camera=False,
+                name="selection", reset_camera=False, render=False,
             )
             self._update_pickable_actors()
-            self._render()
+            if render:
+                self._render()
 
-    def highlight_element(self, element_id: int) -> None:
+    def highlight_element(self, element_id: int, *, render: bool = True) -> None:
         if self._geometry is None or element_id not in self._geometry.element_id_to_cell_index:
             return
         index = self._geometry.element_id_to_cell_index[element_id]
@@ -6356,12 +6662,13 @@ class FEMViewport(QWidget):
                 selected = self._pick_grid.extract_cells([index])
             self._actors["selection"] = self._plotter.add_mesh(
                 selected, color="#d69a3a", style="wireframe", line_width=3,
-                name="selection", reset_camera=False,
+                name="selection", reset_camera=False, render=False,
             )
             self._offset_highlight_actor(self._actors["selection"])
             self._update_pickable_actors()
         self.show_beam_frame_preview(int(element_id), render=False)
-        self._render()
+        if render:
+            self._render()
 
     def highlight_nodes(self, node_ids: tuple[int, ...]) -> None:
         if self._geometry is None or _pyvista is None or self._plotter is None:
@@ -6596,23 +6903,60 @@ class FEMViewport(QWidget):
         render: bool = True,
     ) -> None:
         """独立设置已投影结果的几何形状和云图开关。"""
+        self._active_display_source = _RESULT_DISPLAY_SOURCE
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
         self._display = DisplayState(
             shape_mode=shape,
             contour_enabled=bool(contour_enabled),
         )
-        previous_suppressed = self._render_suppressed
-        if not render:
-            self._render_suppressed = True
-        try:
-            self._update_result_layer()
-        finally:
-            self._render_suppressed = previous_suppressed
+        self._refresh_result_layer(render=render)
 
-    def set_contour_options(self, options: dict[str, Any]) -> None:
+    def _refresh_result_layer(self, *, render: bool = True) -> None:
+        """Rebuild the active result layer with one optional final render."""
+
+        with self.render_transaction():
+            self._update_result_layer()
+            # Reused scalar/display layers return early from
+            # ``_update_result_layer``.  In that path the stacked viewport
+            # could still be left on the neutral message page from an
+            # earlier transition, briefly exposing a grey page before the
+            # next render.  Select the plotter while updates are suppressed
+            # so the user sees one committed result scene only.
+            if self._result_scene_active() and isinstance(
+                self._plotter,
+                QWidget,
+            ):
+                self._stack.setCurrentWidget(self._plotter)
+        if render:
+            self._render()
+
+    def set_contour_options(
+        self,
+        options: Mapping[str, Any] | ContourDisplayState,
+        *,
+        render: bool = True,
+        update: bool = True,
+    ) -> None:
+        """Set contour options, optionally deferring the result-layer rebuild.
+
+        ``update=False`` is used by the main window when it is composing one
+        result-view transaction.  The state and reuse flags are still updated,
+        but the expensive VTK layer rebuild is left to the transaction's
+        final ``set_display`` call.  The default keeps the historical public
+        behaviour for direct viewport callers.
+        """
+        state = (
+            options
+            if isinstance(options, ContourDisplayState)
+            else ContourDisplayState.from_mapping(
+                options,
+                base=self._contour_state,
+            )
+        )
+        projected = state.to_mapping()
         changed = {
             key
-            for key, value in options.items()
+            for key, value in projected.items()
             if self._contour.get(key) != value
         }
         if not changed:
@@ -6620,25 +6964,77 @@ class FEMViewport(QWidget):
         previous_coordinate_system = bool(
             self._contour["show_coordinate_system"]
         )
-        self._contour.update(options)
+        self._contour_state = state
+        self._contour = projected
         coordinate_system_changed = (
             bool(self._contour["show_coordinate_system"])
             != previous_coordinate_system
         )
         if coordinate_system_changed:
             self._refresh_coordinate_system_axes()
+        labels_changed = (
+            "show_node_labels" in changed
+            or "show_element_labels" in changed
+        )
+        if labels_changed:
+            self.set_labels_visible(
+                state.show_node_labels,
+                state.show_element_labels,
+                render=False,
+            )
         if (
-            "edges" in options
+            "edges" in changed
             and self._display.contour_enabled
         ):
-            self._show_edges = bool(options["edges"])
-        if self._display.contour_enabled:
-            self._update_result_layer()
-        elif coordinate_system_changed:
+            self._show_edges = bool(self._contour["edges"])
+        appearance_keys = {
+            "face_color",
+            "edge_color",
+            "model_opacity",
+            "deformed_color",
+            "deformed_line_style",
+            "deformed_opacity",
+            "undeformed_color",
+            "undeformed_line_style",
+            "undeformed_opacity",
+            "render_mode",
+            "edge_mode",
+            "edge_style",
+            "edge_width",
+        }
+        appearance_changed = bool(changed & appearance_keys)
+        if appearance_changed:
+            # Actor construction options cannot be updated safely through the
+            # scalar reuse path, so force one complete representation rebuild.
+            self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = True
+        if (
+            update
+            and self._result_scene_active()
+            and self._result_render_payload is not None
+        ):
+            self._refresh_result_layer(render=render)
+        elif update and self._grid is not None and appearance_changed:
+            self._remove_actor("mesh_surface")
+            self._remove_actor("element_edges")
+            self._add_base_layers(reset_camera=False, render=False)
+            if render:
+                self._render()
+        elif render and (coordinate_system_changed or labels_changed):
             self._render()
 
-    def set_contour_metadata(self, options: dict[str, Any]) -> None:
-        self._contour.update(options)
+    def set_contour_metadata(self, options: Mapping[str, Any]) -> None:
+        self._contour_state = ContourDisplayState.from_mapping(
+            options,
+            base=self._contour_state,
+        )
+        self._contour = self._contour_state.to_mapping()
+
+    @property
+    def contour_display_state(self) -> ContourDisplayState:
+        """Return the immutable contour/annotation state used by the viewport."""
+
+        return self._contour_state
 
     def hide_selection_highlight(self, *, render: bool = True) -> None:
         """Hide the selection actor while preserving the selected FEM entity."""
@@ -6647,10 +7043,16 @@ class FEMViewport(QWidget):
         if render:
             self._render()
 
-    def set_undeformed_overlay_visible(self, visible: bool) -> None:
+    def set_undeformed_overlay_visible(
+        self,
+        visible: bool,
+        *,
+        render: bool = True,
+    ) -> None:
         self._overlay_undeformed = bool(visible)
         self._refresh_undeformed_overlay()
-        self._render()
+        if render:
+            self._render()
 
     def set_symbol_settings(
         self, settings: SymbolSettings, *, refresh: bool = True, render: bool = True
@@ -6680,13 +7082,79 @@ class FEMViewport(QWidget):
         self._symbols_visible = bool(visible)
         symbol_names = self._symbol_actor_names()
         existing = [self._actors[name] for name in symbol_names if name in self._actors]
-        if existing:
+        if not self._symbols_visible:
             for actor in existing:
-                actor.SetVisibility(self._symbols_visible)
+                actor.SetVisibility(False)
             if render:
                 self._render()
-        elif refresh and self._symbols_visible:
+        elif refresh:
+            # Rebuild when symbols are enabled again.  A module switch or a
+            # newly installed result may have changed the active step while
+            # the old actors were merely hidden; toggling visibility alone
+            # would make stale/empty symbols look like a rendering failure.
             self.show_boundary_and_loads(self._symbol_settings.step_name, render=render)
+        else:
+            for actor in existing:
+                actor.SetVisibility(True)
+            if render:
+                self._render()
+
+    def set_result_probe_markers(
+        self,
+        markers: Iterable[tuple[str, Iterable[float]]],
+        *,
+        render: bool = True,
+    ) -> None:
+        """Show non-pickable result Probe markers and labels in the viewport."""
+
+        normalized: list[tuple[str, tuple[float, float, float]]] = []
+        for marker in markers:
+            try:
+                label, coordinates = marker
+                values = tuple(float(value) for value in coordinates)
+            except (TypeError, ValueError) as error:
+                raise TypeError(
+                    "result probe markers must contain (label, coordinates)"
+                ) from error
+            if len(values) != 3 or not all(math.isfinite(value) for value in values):
+                raise ValueError("result probe marker coordinates must be finite XYZ")
+            text = str(label).strip()
+            if not text:
+                raise ValueError("result probe marker labels must not be blank")
+            normalized.append((text, values))
+        self._result_probe_markers = tuple(normalized)
+        self._remove_actor("result_probe_markers")
+        self._remove_actor("result_probe_labels")
+        if self._plotter is not None and _pyvista is not None and normalized:
+            points = np.asarray([coordinates for _label, coordinates in normalized])
+            self._actors["result_probe_markers"] = self._plotter.add_mesh(
+                _pyvista.PolyData(points),
+                color="#d32f2f",
+                point_size=14,
+                render_points_as_spheres=True,
+                name="result_probe_markers",
+                reset_camera=False,
+                pickable=False,
+            )
+            self._actors["result_probe_labels"] = self._plotter.add_point_labels(
+                points,
+                [label for label, _coordinates in normalized],
+                point_size=0,
+                font_size=10,
+                shape=None,
+                text_color="#b71c1c",
+                name="result_probe_labels",
+                reset_camera=False,
+            )
+        if render:
+            self._render()
+
+    def result_probe_markers(
+        self,
+    ) -> tuple[tuple[str, tuple[float, float, float]], ...]:
+        """Return the currently displayed Probe marker definitions."""
+
+        return self._result_probe_markers
 
     def screenshot_size(self) -> tuple[int, int]:
         """返回截图使用的当前 VTK 视口像素尺寸。"""
@@ -6773,6 +7241,63 @@ class FEMViewport(QWidget):
             camera.DeepCopy(camera_state)
             camera.Modified()
             self._render()
+
+    def begin_animation_export(self, path: str, *, fps: float = 10.0) -> None:
+        """Open a GIF/MP4 writer without replacing the current viewport.
+
+        The caller changes the displayed result frame and calls
+        :meth:`write_animation_frame` for each frame.  Keeping the writer
+        behind the viewport boundary prevents the main window from depending
+        on PyVista's private writer lifecycle.
+        """
+
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("动画导出路径不能为空")
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)):
+            raise TypeError("fps must be a real number")
+        fps_value = float(fps)
+        if not math.isfinite(fps_value) or fps_value <= 0.0:
+            raise ValueError("fps must be finite and greater than zero")
+        if self._plotter is None:
+            raise RuntimeError("三维视口尚未初始化")
+        plotter = self._plotter
+        if getattr(plotter, "mwriter", None) is not None:
+            raise RuntimeError("已有动画导出正在进行")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        suffix = target.suffix.casefold()
+        if suffix == ".gif":
+            plotter.open_gif(target, fps=fps_value, subrectangles=True)
+        elif suffix in {".mp4", ".avi", ".mov"}:
+            plotter.open_movie(
+                target,
+                framerate=max(1, round(fps_value)),
+                quality=8,
+            )
+        else:
+            raise ValueError("动画文件必须使用 .gif、.mp4、.avi 或 .mov 后缀")
+
+    def write_animation_frame(self) -> None:
+        """Append the currently rendered viewport to an open animation."""
+
+        if self._plotter is None:
+            raise RuntimeError("三维视口尚未初始化")
+        if getattr(self._plotter, "mwriter", None) is None:
+            raise RuntimeError("尚未打开动画导出")
+        self._plotter.write_frame()
+
+    def end_animation_export(self) -> None:
+        """Close an animation writer while keeping the viewport usable."""
+
+        if self._plotter is None:
+            return
+        writer = getattr(self._plotter, "mwriter", None)
+        if writer is None:
+            return
+        try:
+            writer.close()
+        finally:
+            self._plotter.mwriter = None
 
     def _save_offscreen_screenshot(
         self,
@@ -6912,15 +7437,30 @@ class FEMViewport(QWidget):
         self._apply_plotter_background()
         palette = self._visual_palette()
         for name, color in (
-            ("mesh_surface", self._mesh_layer_color(palette)),
-            ("element_edges", self._element_layer_color(palette)),
-            ("result_edges", self._background_settings.foreground_color),
+            (
+                "mesh_surface",
+                self._mesh_layer_color(palette),
+            ),
+            (
+                "element_edges",
+                self._element_layer_color(palette),
+            ),
+            (
+                "result_edges",
+                self._display_color("edge_color", self._background_settings.foreground_color),
+            ),
             ("nodes", self._node_layer_color(palette)),
-            ("undeformed_overlay", self._element_layer_color(palette)),
+            (
+                "undeformed_overlay",
+                self._undeformed_display_color(palette),
+            ),
         ):
             self._set_actor_color(name, color)
         if not self._display.contour_enabled:
-            self._set_actor_color("result", self._mesh_layer_color(palette))
+            self._set_actor_color(
+                "result",
+                self._display_color("face_color", self._mesh_layer_color(palette)),
+            )
             self._set_actor_edge_color(
                 "result",
                 self._element_layer_color(palette),
@@ -6934,19 +7474,41 @@ class FEMViewport(QWidget):
 
     def set_edges_visible(self, visible: bool, *, render: bool = True) -> None:
         self._show_edges = bool(visible)
-        if self._result_grid is not None:
+        if self._result_scene_active():
+            result_grid = self._active_result_mesh()
+            if result_grid is None:
+                # A result payload may be selected before its render layer is
+                # built.  Do not touch the model layer during that interval.
+                if render:
+                    self._render()
+                return
             base_edges = self._actors.get("element_edges")
             if base_edges is not None:
                 base_edges.SetVisibility(False)
             result_edges = self._actors.get("result_edges")
-            if self._display.contour_enabled:
+            shape_style = (
+                str(self._contour.get("deformed_line_style", "solid"))
+                if self._display.shape_mode == "deformed"
+                else str(self._contour.get("undeformed_line_style", "solid"))
+            )
+            separate_edges = (
+                self._display.contour_enabled
+                or self._contour.get("render_mode") == CONTOUR_RENDER_HIDDEN_LINE
+                or shape_style != "solid"
+            )
+            if separate_edges:
                 if (
                     self._show_edges
                     and result_edges is None
                     and self._plotter is not None
                 ):
                     result_edges = self._add_result_edges_layer(
-                        self._result_grid
+                        self._display_dataset(result_grid),
+                        edge_style=(
+                            str(self._contour.get("edge_style", "solid"))
+                            if self._display.contour_enabled
+                            else shape_style
+                        ),
                     )
                 if result_edges is not None:
                     result_edges.SetVisibility(self._show_edges)
@@ -7054,9 +7616,9 @@ class FEMViewport(QWidget):
         elif self._geometry_preview is not None:
             source = self._geometry_preview
             points = self._geometry_preview.points
-        elif self._result_grid is not None and "result" in self._actors:
-            source = self._result_grid
-            points = self._result_grid.points
+        elif self._active_result_payload_mesh() is not None:
+            source = self._active_result_payload_mesh()
+            points = source.points
         elif self._grid is not None:
             source = self._grid
             points = self._grid.points
@@ -7116,6 +7678,116 @@ class FEMViewport(QWidget):
         """Render once after a caller completes a batch of viewport updates."""
         self._render()
 
+    @contextmanager
+    def render_transaction(self):
+        """Batch actor mutations into one visible render.
+
+        PyVista's actor helpers render by default, independently of this
+        widget's ``_render`` helper.  A result switch removes the old actor
+        before installing the new one, so those implicit renders briefly
+        exposed an empty/grey scene.  This transaction suppresses both the
+        widget-level render calls and the explicit ``render=False`` options
+        used by the actor helpers in the batched paths.
+        """
+
+        previous_suppressed = self._render_suppressed
+        plotter = self._plotter
+        stack_host = getattr(self, "_stack_host", None)
+        previous_plotter_suppressed: bool | None = None
+        previous_widget_updates: bool | None = None
+        previous_plotter_updates: bool | None = None
+        previous_stack_host_updates: bool | None = None
+
+        # Snapshot every widget before disabling an ancestor.  Qt reports a
+        # descendant as disabled while one of its parents has updates turned
+        # off, so taking these snapshots after disabling ``self`` permanently
+        # restored the plotter and stack host to ``False``.
+        try:
+            previous_widget_updates = bool(self.updatesEnabled())
+        except (AttributeError, RuntimeError, TypeError):
+            previous_widget_updates = None
+        if stack_host is not None:
+            try:
+                previous_stack_host_updates = bool(stack_host.updatesEnabled())
+            except (AttributeError, RuntimeError, TypeError):
+                previous_stack_host_updates = None
+        if plotter is not None:
+            try:
+                previous_plotter_suppressed = bool(plotter.suppress_rendering)
+            except (AttributeError, RuntimeError, TypeError):
+                previous_plotter_suppressed = None
+            try:
+                previous_plotter_updates = bool(plotter.updatesEnabled())
+            except (AttributeError, RuntimeError, TypeError):
+                previous_plotter_updates = None
+
+        self._render_suppressed = True
+        try:
+            if previous_widget_updates is not None:
+                self.setUpdatesEnabled(False)
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        if stack_host is not None:
+            try:
+                if previous_stack_host_updates is not None:
+                    stack_host.setUpdatesEnabled(False)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        if plotter is not None:
+            try:
+                if previous_plotter_suppressed is not None:
+                    plotter.suppress_rendering = True
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+            try:
+                if previous_plotter_updates is not None:
+                    plotter.setUpdatesEnabled(False)
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+        try:
+            yield self
+        finally:
+            self._render_suppressed = previous_suppressed
+            if plotter is not None and previous_plotter_suppressed is not None:
+                try:
+                    plotter.suppress_rendering = previous_plotter_suppressed
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            if plotter is not None and previous_plotter_updates is not None:
+                try:
+                    plotter.setUpdatesEnabled(previous_plotter_updates)
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            if stack_host is not None and previous_stack_host_updates is not None:
+                try:
+                    stack_host.setUpdatesEnabled(previous_stack_host_updates)
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            if previous_widget_updates is not None:
+                try:
+                    self.setUpdatesEnabled(previous_widget_updates)
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+
+            # Queue repaint only after all update flags have been restored.
+            # This keeps the scene hidden during the batch while ensuring the
+            # first post-transaction paint sees the newly selected content.
+            if previous_widget_updates:
+                if stack_host is not None and previous_stack_host_updates is True:
+                    try:
+                        stack_host.update()
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
+                if plotter is not None and previous_plotter_updates is True:
+                    try:
+                        plotter.update()
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
+                try:
+                    self.update()
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+
     def schedule_resize_repaint(self) -> None:
         """Merge a geometry commit into QtInteractor's pending resize paint."""
         if self._plotter is not None:
@@ -7168,6 +7840,168 @@ class FEMViewport(QWidget):
                 dtype=float,
             )
         return self._constraint_reference_axis_cache
+
+    def _constraint_boundary_records(
+        self,
+        definition: object,
+        node_ids: tuple[int, ...],
+    ) -> tuple[tuple[int, ...], ...]:
+        """Resolve a constraint target to stable boundary chains.
+
+        Named edges and surfaces already carry topology and are preferred.
+        For a node set, the mesh topology is used to recover the perimeter of
+        the selected edge/face patch.  The old point-cloud fallback remains in
+        place for targets that do not have enough topology to form a boundary.
+        """
+
+        if self._model is None:
+            return ()
+        target_kind = displacement_target_kind(definition)
+        target = getattr(definition, "target", None)
+
+        if target_kind == "edge" and isinstance(target, str):
+            collection = getattr(self._model, "edges", {})
+            edge = collection.get(target)
+            if edge is not None:
+                records = tuple(
+                    tuple(int(node_id) for node_id in entry.node_ids)
+                    for entry in edge.edges
+                    if len(entry.node_ids) >= 2
+                )
+                if records:
+                    return records
+
+        if target_kind == "surface" and isinstance(target, str):
+            collection = getattr(self._model, "surfaces", {})
+            surface = collection.get(target)
+            if surface is not None:
+                faces = []
+                for entry in surface.faces:
+                    ids = _face_display_node_ids(
+                        tuple(int(node_id) for node_id in entry.node_ids)
+                    )
+                    faces.append(ids)
+                records = _boundary_segments_from_faces(faces)
+                if records:
+                    return records
+
+        selected = {int(node_id) for node_id in node_ids}
+        if getattr(self._model.mesh, "dofs_per_node", None) != 2:
+            selected_faces: list[tuple[int, ...]] = []
+            for _element_id, _local_index, raw_ids in mesh_face_selection.all(
+                self._model.mesh
+            ):
+                ids = _face_display_node_ids(
+                    tuple(int(node_id) for node_id in raw_ids)
+                )
+                if len(ids) < 3 or not set(ids).issubset(selected):
+                    continue
+                selected_faces.append(ids)
+            records = _boundary_segments_from_faces(selected_faces)
+            if records:
+                return records
+
+        selected_edges = []
+        for _element_id, _local_index, raw_ids in mesh_edge_selection.all(
+            self._model.mesh
+        ):
+            chain = tuple(int(node_id) for node_id in raw_ids)
+            if len(chain) >= 2 and set(chain).issubset(selected):
+                selected_edges.append(chain)
+        return _boundary_segments_from_edges(selected_edges)
+
+    def _constraint_boundary_layout(
+        self,
+        definition: object,
+        node_ids: tuple[int, ...],
+        sampling_density: str,
+    ) -> tuple[int, ...]:
+        """Return stable sampled anchors on the target boundary."""
+
+        if self._geometry is None or not node_ids:
+            return tuple(node_ids)
+        records = self._constraint_boundary_records(
+            definition,
+            node_ids,
+        )
+        if not records:
+            valid_node_ids = tuple(
+                node_id
+                for node_id in node_ids
+                if node_id in self._geometry.node_id_to_point_index
+            )
+            if not valid_node_ids:
+                return tuple(node_ids)
+            target_points = np.asarray([
+                self._geometry.points[
+                    self._geometry.node_id_to_point_index[node_id]
+                ]
+                for node_id in valid_node_ids
+            ], dtype=float)
+            regions = constraint_spatial_regions(
+                target_points,
+                self._geometry.points,
+                reference_axis=self._constraint_reference_axis(),
+            )
+            sampled: list[int] = []
+            for region_indices in regions:
+                region_node_ids = tuple(
+                    valid_node_ids[int(index)] for index in region_indices
+                )
+                selected_indices = constraint_corner_indices(
+                    target_points[region_indices],
+                    sampling_density,
+                )
+                sampled.extend(
+                    region_node_ids[int(index)] for index in selected_indices
+                )
+            return tuple(dict.fromkeys(sampled)) or valid_node_ids
+
+        candidate_ids = {
+            int(node_id)
+            for chain in records
+            for node_id in chain
+            if int(node_id) in self._geometry.node_id_to_point_index
+        }
+        if not candidate_ids:
+            return tuple(node_ids)
+        ordered_ids = tuple(
+            sorted(
+                candidate_ids,
+                key=lambda node_id: (
+                    tuple(
+                        float(value)
+                        for value in self._geometry.points[
+                            self._geometry.node_id_to_point_index[node_id]
+                        ]
+                    ),
+                    node_id,
+                ),
+            )
+        )
+        target_points = np.asarray([
+            self._geometry.points[self._geometry.node_id_to_point_index[node_id]]
+            for node_id in ordered_ids
+        ], dtype=float)
+        regions = constraint_spatial_regions(
+            target_points,
+            self._geometry.points,
+            reference_axis=self._constraint_reference_axis(),
+        )
+        sampled: list[int] = []
+        for region_indices in regions:
+            region_node_ids = tuple(ordered_ids[int(index)] for index in region_indices)
+            selected_indices = constraint_corner_indices(
+                target_points[region_indices],
+                sampling_density,
+            )
+            sampled.extend(
+                region_node_ids[int(index)] for index in selected_indices
+            )
+        sampled_node_ids = tuple(dict.fromkeys(sampled))
+        if not sampled_node_ids:
+            sampled_node_ids = ordered_ids
+        return sampled_node_ids
 
     def _element_lookup(self) -> dict[int, Any]:
         if self._element_lookup_cache is None:
@@ -7335,9 +8169,9 @@ class FEMViewport(QWidget):
     def show_boundary_and_loads(
         self, step_name: str | None = None, *, render: bool = True
     ) -> None:
-        for name in self._symbol_actor_names():
-            self._remove_actor(name)
         if not self._symbols_visible:
+            for name in self._symbol_actor_names():
+                self._remove_actor(name)
             if render:
                 self._render()
             return
@@ -7352,9 +8186,26 @@ class FEMViewport(QWidget):
                     self._model, selected_step
                 )
             boundary = self._boundary_cache[selected_step]
-        except Exception:
+            selected_definition = resolve_analysis_step(self._model, selected_step)
+            boundary_definitions = (
+                effective_displacement_constraints(
+                    self._model,
+                    selected_definition,
+                )
+                if settings.show_constraints
+                else ()
+            )
+        except Exception as error:
+            # Keep the last valid scene intact.  A transiently invalid step
+            # or stale region reference must not turn a refresh into a blank
+            # viewport.
+            logging.getLogger(__name__).warning(
+                "无法刷新约束/载荷符号，保留上一次有效显示：%s",
+                error,
+            )
             return
-        selected_definition = get_step(self._model, selected_step)
+        for name in self._symbol_actor_names():
+            self._remove_actor(name)
         glyph_scale = self._camera_symbol_length(settings.scale)
         self._last_symbol_scale = glyph_scale
         self._last_symbol_camera_position = self._camera_position()
@@ -7383,10 +8234,6 @@ class FEMViewport(QWidget):
         constraint_label_points: dict[int, np.ndarray] = {}
         constraint_labels_by_node: dict[int, list[str]] = {}
         if settings.show_constraints:
-            boundary_definitions = effective_step_boundaries(
-                self._model,
-                selected_definition,
-            )
             constraints_by_target: dict[
                 tuple[str, str | int],
                 dict[int, float],
@@ -7415,36 +8262,22 @@ class FEMViewport(QWidget):
                         )
                     except (KeyError, TypeError, ValueError):
                         continue
-                    target_points = np.asarray([
-                        self._geometry.points[
-                            self._geometry.node_id_to_point_index[node_id]
-                        ]
-                        for node_id in node_ids
-                    ])
-                    regions = constraint_spatial_regions(
-                        target_points,
-                        self._geometry.points,
-                        reference_axis=self._constraint_reference_axis(),
+                    sampled_node_ids = self._constraint_boundary_layout(
+                        representative_by_target[target_key],
+                        node_ids,
+                        sampling_density,
                     )
-                    sampled: list[int] = []
-                    for region_indices in regions:
-                        region_node_ids = tuple(
-                            node_ids[int(index)] for index in region_indices
-                        )
-                        selected = constraint_sample_indices(
-                            target_points[region_indices],
-                            sampling_density,
-                        )
-                        sampled.extend(
-                            region_node_ids[int(index)] for index in selected
-                        )
-                    sampled_node_ids = tuple(sampled)
                     self._constraint_sample_node_ids[sample_key] = sampled_node_ids
                 camera_position = self._camera_position()
                 for node_id in sampled_node_ids:
                     base = self._geometry.points[
                         self._geometry.node_id_to_point_index[node_id]
                     ]
+                    # Keep the anchor on the actual boundary node.  The
+                    # camera-facing offset only resolves depth ordering; it
+                    # must not move the symbol in model coordinates.  The
+                    # previous normal offset made the glyph visibly detach
+                    # from the constrained edge/face.
                     display_base = base + camera_facing_offset(
                         base, camera_position, 0.04 * constraint_scale
                     )
@@ -7466,9 +8299,8 @@ class FEMViewport(QWidget):
                         outward = constraint_outward_direction(
                             base, model_center, component
                         )
-                        tip = display_base + 0.08 * constraint_scale * outward
                         constraint_points.append(
-                            tip + constraint_scale * outward
+                            display_base + constraint_scale * outward
                         )
                         constraint_vectors.append(-outward)
                     displayed_axes = constraint_rotation_axes(
@@ -7531,7 +8363,7 @@ class FEMViewport(QWidget):
         if settings.show_nodal_loads:
             nodal_vectors: dict[int, np.ndarray] = {}
             nodal_moments: dict[int, np.ndarray] = {}
-            for dof, value in boundary.nodal_forces.items():
+            for dof, value in boundary.loads.nodal_forces.items():
                 node_index, component = divmod(int(dof), self._model.mesh.dofs_per_node)
                 node_id = self._model.mesh.dof_map.node_ids[node_index]
                 if component < translation_count:
@@ -7623,7 +8455,9 @@ class FEMViewport(QWidget):
                     count = len(members)
                     add_distributed_group(
                         definition, members,
-                        boundary.surface_tractions[surface_offset:surface_offset + count],
+                        boundary.loads.surface_tractions[
+                            surface_offset:surface_offset + count
+                        ],
                         "face",
                     )
                     surface_offset += count
@@ -7634,7 +8468,9 @@ class FEMViewport(QWidget):
                     count = len(members)
                     add_distributed_group(
                         definition, members,
-                        boundary.edge_tractions[edge_offset:edge_offset + count],
+                        boundary.loads.edge_tractions[
+                            edge_offset:edge_offset + count
+                        ],
                         "edge",
                     )
                     edge_offset += count
@@ -7676,7 +8512,7 @@ class FEMViewport(QWidget):
                         else (int(definition.target),)
                     )
                     count = len(target_ids)
-                    group_loads = boundary.line_loads[
+                    group_loads = boundary.loads.line_loads[
                         line_offset:line_offset + count
                     ]
                     line_offset += count
@@ -8130,14 +8966,36 @@ class FEMViewport(QWidget):
 
     def _add_element_edges_layer(self) -> Any:
         palette = self._visual_palette()
+        dataset = self._display_dataset(self._grid)
+        # The model scene has its own stable mesh representation.  Result
+        # contour options (in particular "no edges") must never remove the
+        # preprocessing element grid when the user switches modules.
+        edge_mode = _MODEL_EDGE_MODE
+        edge_style = _MODEL_EDGE_STYLE
+        if self._is_line_mesh():
+            render_dataset = dataset
+            render_options: dict[str, Any] = {"style": "wireframe"}
+        else:
+            render_dataset = extract_contour_edges(dataset, edge_mode)
+            if render_dataset is None:
+                return None
+            cell_count = getattr(render_dataset, "n_cells", None)
+            if cell_count is not None and int(cell_count) == 0:
+                return None
+            render_dataset = style_contour_edges(render_dataset, edge_style)
+            render_options = {}
+        line_width = _MODEL_EDGE_WIDTH
+        if edge_style == "bold":
+            line_width = max(line_width * 2.0, 3.0)
         actor = self._plotter.add_mesh(
-            self._grid,
+            render_dataset,
             color=self._element_layer_color(palette),
-            style="wireframe",
-            line_width=self._element_line_width(),
+            line_width=line_width,
+            opacity=1.0,
             lighting=False,
             name="element_edges",
             reset_camera=False,
+            **render_options,
             **self._line_render_options(),
         )
         self._actors["element_edges"] = actor
@@ -8147,9 +9005,11 @@ class FEMViewport(QWidget):
         palette = self._visual_palette()
         line_options = self._line_render_options()
         mesh_color = self._mesh_layer_color(palette)
+        display_grid = self._display_dataset(self._grid)
         self._actors["mesh_surface"] = self._plotter.add_mesh(
-            self._grid, color=mesh_color, show_edges=False, name="mesh_surface",
+            display_grid, color=mesh_color, show_edges=False, name="mesh_surface",
             line_width=self._element_line_width(), lighting=False,
+            opacity=1.0,
             reset_camera=False,
             **line_options,
         )
@@ -8163,6 +9023,8 @@ class FEMViewport(QWidget):
             self._render()
 
     def _update_result_layer(self) -> None:
+        if not self._result_scene_active():
+            return
         if (
             self._scalar_reuse_pending
             and self._scalar_reuse_display is not None
@@ -8189,23 +9051,147 @@ class FEMViewport(QWidget):
         self._scalar_reuse_pending = False
         self._geometry_reuse_pending = False
         self._scalar_reuse_display = None
-        self._remove_actor("result")
-        self._remove_actor("result_edges")
-        self._remove_actor("extrema")
-        self._remove_scalar_bars()
+        previous_actors = {
+            name: self._actors.get(name)
+            for name in ("result", "result_edges", "extrema")
+        }
+        previous_payload = self._result_render_payload
+        previous_grid = self._result_grid
+        previous_surface = self._result_render_surface
+        previous_rendered_display = self._rendered_display
+        previous_provenance_layout = self._result_provenance_layout
+        previous_validated_mtime = self._result_render_validated_mtime
+        previous_install_validation = self._result_install_validation
+        staging = bool(
+            previous_actors["result"] is not None
+            and self._plotter_supports_result_staging()
+        )
+        if staging:
+            self._result_layer_staging_token += 1
+            self._result_layer_staging = True
+        else:
+            self._remove_actor("result")
+            self._remove_actor("result_edges")
+            self._remove_actor("extrema")
+            self._remove_scalar_bars()
         self._result_grid = None
         self._result_render_surface = None
         self._rendered_display = None
-        if self._result_render_payload is not None:
-            self._update_result_render_payload_layer(
-                self._result_render_payload
-            )
+        try:
+            if self._result_render_payload is not None:
+                self._update_result_render_payload_layer(
+                    self._result_render_payload
+                )
+            else:
+                self._result_point_index_to_node_id.clear()
+                self._result_point_index_to_element_id.clear()
+                self._result_cell_index_to_element_id.clear()
+                self._result_provenance_layout = None
+                self._result_install_validation = None
+        except Exception:
+            if staging:
+                self._discard_result_layer_stage(previous_actors)
+                self._result_render_payload = previous_payload
+                self._result_grid = previous_grid
+                self._result_render_surface = previous_surface
+                self._rendered_display = previous_rendered_display
+                self._result_provenance_layout = previous_provenance_layout
+                self._result_render_validated_mtime = previous_validated_mtime
+                self._result_install_validation = previous_install_validation
+            raise
+        finally:
+            if staging:
+                self._result_layer_staging = False
+        if staging:
+            self._commit_result_layer_stage(previous_actors)
+
+    def _plotter_supports_result_staging(self) -> bool:
+        """Return whether the active backend can retain an old actor by handle."""
+
+        plotter = self._plotter
+        return bool(
+            plotter is not None
+            and hasattr(plotter, "renderer")
+            and callable(getattr(plotter, "remove_actor", None))
+        )
+
+    def _result_layer_actor_name(self, name: str) -> str:
+        """Use a collision-free VTK name while a result layer is staged."""
+
+        if not self._result_layer_staging:
+            return name
+        return f"__fem_result_stage_{self._result_layer_staging_token}_{name}"
+
+    def _remove_actor_object(self, actor: Any | None) -> None:
+        """Remove an actor without relying on its current dictionary key."""
+
+        if actor is None or self._plotter is None:
             return
-        self._result_point_index_to_node_id.clear()
-        self._result_point_index_to_element_id.clear()
-        self._result_cell_index_to_element_id.clear()
-        self._result_provenance_layout = None
-        self._result_install_validation = None
+        try:
+            self._plotter.remove_actor(
+                actor,
+                reset_camera=False,
+                render=False,
+            )
+        except Exception:
+            pass
+
+    def _discard_result_layer_stage(
+        self,
+        previous_actors: Mapping[str, Any | None],
+    ) -> None:
+        """Drop staged actors and restore the previous actor handles."""
+
+        for name in ("result", "result_edges", "extrema"):
+            candidate = self._actors.get(name)
+            previous = previous_actors.get(name)
+            if candidate is not None and candidate is not previous:
+                self._remove_actor_object(candidate)
+            if previous is None:
+                self._actors.pop(name, None)
+            else:
+                self._actors[name] = previous
+
+    def _commit_result_layer_stage(
+        self,
+        previous_actors: Mapping[str, Any | None],
+    ) -> None:
+        """Atomically replace result actors and rebuild the legend once."""
+
+        current_actors = {
+            name: self._actors.get(name)
+            for name in ("result", "result_edges", "extrema")
+        }
+        for name, previous in previous_actors.items():
+            if previous is not None and previous is not current_actors[name]:
+                self._remove_actor_object(previous)
+        for name, current in current_actors.items():
+            if current is None:
+                self._actors.pop(name, None)
+            else:
+                self._actors[name] = current
+
+        self._remove_scalar_bars()
+        payload = self._result_render_payload
+        actor = self._actors.get("result")
+        mapper = None if actor is None else getattr(actor, "mapper", None)
+        if (
+            payload is not None
+            and self._display.contour_enabled
+            and self._contour["legend"]
+            and mapper is not None
+            and self._plotter is not None
+        ):
+            scalar_bar = self._plotter.add_scalar_bar(
+                mapper=mapper,
+                render=False,
+                **self._contour_bar_args(payload),
+            )
+            self._configure_contour_bar(
+                payload,
+                mapper,
+                scalar_bar=scalar_bar,
+            )
 
     def _update_result_render_payload_layer(
         self,
@@ -8234,36 +9220,46 @@ class FEMViewport(QWidget):
         if base_edges is not None:
             base_edges.SetVisibility(False)
         is_line_mesh = self._is_line_mesh()
-        render_dataset = dataset
+        display_dataset = self._display_dataset(dataset)
+        render_dataset = display_dataset
         if (
             self._contour["render_mode"] == CONTOUR_RENDER_SHADED
             and not is_line_mesh
+            and display_dataset is dataset
         ):
-            render_dataset = build_shaded_contour_surface(
-                dataset,
-                checked.topology.cells,
-                tuple(
-                    (
-                        (0, int(location.node_id))
-                        if location is not None
-                        and location.node_id is not None
-                        else (1, point_index)
-                    )
-                    for point_index, location in enumerate(
-                        checked.topology.point_locations
-                    )
-                ),
-                scalar_name=checked.scalar_name,
-                point_scalars=(
-                    checked.topology.value_layout
-                    is ResultValueLayout.POINT
-                ),
+            point_scalars = (
+                checked.topology.value_layout is ResultValueLayout.POINT
             )
+            surface_key = (
+                id(dataset),
+                id(checked.topology.cells),
+                bool(point_scalars),
+            )
+            render_dataset = self._result_shaded_surface_cache.get(surface_key)
+            if render_dataset is None or not bind_shaded_contour_scalars(
+                render_dataset,
+                dataset,
+                scalar_name=checked.scalar_name,
+                point_scalars=point_scalars,
+            ):
+                render_dataset = build_shaded_contour_surface(
+                    dataset,
+                    checked.topology.cells,
+                    _result_surface_point_keys(checked.topology),
+                    scalar_name=checked.scalar_name,
+                    point_scalars=point_scalars,
+                )
+                if render_dataset is not dataset:
+                    self._result_shaded_surface_cache[surface_key] = render_dataset
+                    while len(self._result_shaded_surface_cache) > 4:
+                        self._result_shaded_surface_cache.pop(
+                            next(iter(self._result_shaded_surface_cache))
+                        )
         self._result_render_surface = (
             render_dataset if render_dataset is not dataset else None
         )
         kwargs: dict[str, Any] = {
-            "name": "result",
+            "name": self._result_layer_actor_name("result"),
             "reset_camera": False,
             "line_width": self._element_line_width(),
             "show_edges": False,
@@ -8272,7 +9268,23 @@ class FEMViewport(QWidget):
                 str(self._contour["render_mode"]),
                 is_line_mesh=is_line_mesh,
             ),
+            "opacity": self._display_opacity(
+                "deformed"
+                if self._display.shape_mode == "deformed"
+                else "undeformed"
+            ),
         }
+        if any(
+            kind is ResultCellKind.SAMPLE_VERTEX
+            for kind in checked.topology.cell_kinds
+        ):
+            # Integration-point fields are explicit samples, not a mesh
+            # surface.  Make them visible as stable spherical markers instead
+            # of relying on PyVista's backend-dependent default point size.
+            kwargs.update(
+                point_size=_RESULT_SAMPLE_POINT_SIZE,
+                render_points_as_spheres=True,
+            )
         if self._display.contour_enabled:
             color_count = (
                 256
@@ -8284,11 +9296,16 @@ class FEMViewport(QWidget):
                 cmap=resolve_contour_colormap(
                     str(self._contour["colormap"]),
                     color_count,
+                    reverse=bool(self._contour.get("colormap_reverse", False)),
+                    custom_color_stops=self._contour.get("custom_color_stops"),
                 ),
                 n_colors=color_count,
                 interpolate_before_map=self._contour.get("style")
                 == "continuous",
-                show_scalar_bar=self._contour["legend"],
+                show_scalar_bar=(
+                    self._contour["legend"]
+                    and not self._result_layer_staging
+                ),
                 scalar_bar_args=self._contour_bar_args(checked),
             )
             if self._contour["manual"]:
@@ -8298,22 +9315,63 @@ class FEMViewport(QWidget):
                 )
         else:
             palette = self._visual_palette()
+            shape_style = (
+                str(self._contour.get("deformed_line_style", "solid"))
+                if self._display.shape_mode == "deformed"
+                else str(self._contour.get("undeformed_line_style", "solid"))
+            )
             kwargs.update(
-                color=self._mesh_layer_color(palette),
-                show_edges=self._show_edges and not self._is_line_mesh(),
-                edge_color=self._element_layer_color(palette),
+                color=self._display_color(
+                    "deformed_color"
+                    if self._display.shape_mode == "deformed"
+                    else "undeformed_color",
+                    self._mesh_layer_color(palette),
+                ),
+                show_edges=(
+                    self._show_edges
+                    and not self._is_line_mesh()
+                    and shape_style == "solid"
+                ),
+                edge_color=self._display_color(
+                    "edge_color",
+                    self._element_layer_color(palette),
+                ),
             )
         self._actors["result"] = self._plotter.add_mesh(
             render_dataset,
+            render=False,
             **kwargs,
         )
-        if self._display.contour_enabled and self._contour["legend"]:
+        if (
+            self._display.contour_enabled
+            and self._contour["legend"]
+            and not self._result_layer_staging
+        ):
             self._configure_contour_bar(
                 checked,
                 getattr(self._actors["result"], "mapper", None),
             )
-        if self._display.contour_enabled and self._show_edges:
-            self._add_result_edges_layer(dataset)
+        shape_style = (
+            str(self._contour.get("deformed_line_style", "solid"))
+            if self._display.shape_mode == "deformed"
+            else str(self._contour.get("undeformed_line_style", "solid"))
+        )
+        if (
+            self._show_edges
+            and (
+                self._display.contour_enabled
+                or self._contour["render_mode"] == CONTOUR_RENDER_HIDDEN_LINE
+                or shape_style != "solid"
+            )
+        ):
+            self._add_result_edges_layer(
+                display_dataset,
+                edge_style=(
+                    str(self._contour.get("edge_style", "solid"))
+                    if self._display.contour_enabled
+                    else shape_style
+                ),
+            )
         if (
             self._display.contour_enabled
             and (
@@ -8321,10 +9379,11 @@ class FEMViewport(QWidget):
                 or self._contour["show_maximum"]
             )
         ):
-            self._add_result_render_payload_extrema_labels(
-                checked,
-                payload_validated=True,
-            )
+            if display_dataset is dataset:
+                self._add_result_render_payload_extrema_labels(
+                    checked,
+                    payload_validated=True,
+                )
         selected_mesh_references = set(
             self._mesh_scope_selected_references
         )
@@ -8341,7 +9400,12 @@ class FEMViewport(QWidget):
         self._refresh_node_layer(render=False)
         self._refresh_labels(render=False)
         self._refresh_undeformed_overlay()
-        self._restore_selection()
+        self._restore_selection(render=False)
+        # A source switch may have temporarily selected the message page while
+        # its old model cache was detached. Select the render widget only after
+        # the complete result actor and its scalar mapping exist.
+        if isinstance(self._plotter, QWidget):
+            self._stack.setCurrentWidget(self._plotter)
         self._render()
         self._rendered_display = self._display
 
@@ -8352,7 +9416,7 @@ class FEMViewport(QWidget):
         if (
             payload is None
             or self._plotter is None
-            or self._result_grid is not payload.dataset
+            or self._active_result_mesh() is not payload.dataset
             or mapper is None
         ):
             return False
@@ -8382,6 +9446,7 @@ class FEMViewport(QWidget):
             if self._contour["legend"]:
                 scalar_bar = self._plotter.add_scalar_bar(
                     mapper=mapper,
+                    render=False,
                     **self._contour_bar_args(checked),
                 )
                 self._configure_contour_bar(
@@ -8428,7 +9493,7 @@ class FEMViewport(QWidget):
         if (
             payload is None
             or self._plotter is None
-            or self._result_grid is not payload.dataset
+            or self._active_result_mesh() is not payload.dataset
             or mapper is None
         ):
             return False
@@ -8478,6 +9543,7 @@ class FEMViewport(QWidget):
         if self._display.contour_enabled and self._contour["legend"]:
             scalar_bar = self._plotter.add_scalar_bar(
                 mapper=mapper,
+                render=False,
                 **self._contour_bar_args(checked),
             )
             self._configure_contour_bar(
@@ -8501,7 +9567,7 @@ class FEMViewport(QWidget):
             self._refresh_node_layer(render=False)
             self._refresh_labels(render=False)
             self._refresh_undeformed_overlay()
-            self._restore_selection()
+            self._restore_selection(render=False)
         self._result_render_validated_mtime = int(
             checked.dataset.GetMTime()
         )
@@ -8528,6 +9594,18 @@ class FEMViewport(QWidget):
             return None
         return self._payload_data_range(payload)
 
+    def _contour_label_count(self) -> int:
+        """Return the requested scalar-bar label count."""
+
+        value = self._contour.get("legend_label_count", "auto")
+        if value in (None, "", "auto"):
+            return min(int(self._contour["levels"]) + 1, 7)
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return min(int(self._contour["levels"]) + 1, 7)
+        return max(3, min(count, 15))
+
     @staticmethod
     def _payload_data_range(
         payload: ResultRenderPayload,
@@ -8550,34 +9628,56 @@ class FEMViewport(QWidget):
         selection = payload.topology.selection
         field_id = selection.field_key.request.field_id
         variable = field_id.variable.value
-        vertical = self._contour["orientation"] == "vertical"
+        requested_position = str(
+            self._contour.get("legend_position", "auto")
+        )
+        if requested_position in {"left", "right"}:
+            vertical = True
+        elif requested_position in {"top", "bottom"}:
+            vertical = False
+        else:
+            vertical = self._contour["orientation"] == "vertical"
         font_family = {
             "Arial": "arial",
             "Times New Roman": "times",
             "Courier New": "courier",
         }.get(str(self._contour["legend_font"]), "arial")
         font_size = int(self._contour["legend_font_size"])
+        locations = (
+            payload.topology.point_locations
+            if payload.topology.value_layout is ResultValueLayout.POINT
+            else payload.topology.cell_locations
+        )
+        field_position_label = result_field_position_label(
+            field_id,
+            section_point_labels=section_point_labels_from_locations(
+                locations
+            ),
+        )
+        display_query = payload.topology.display_query
         title = f"{variable}, {selection.component}"
-        if field_id.position in {
+        if display_query is not None:
+            display_label = result_display_computation_label(
+                display_query.effective_computation
+            )
+            title += f"（{display_label or field_position_label}）"
+            if display_query.frame.frame_index > 0:
+                title += f" · 增量 {display_query.frame.frame_index}"
+        elif field_id.position in {
             FieldPosition.SECTION_POINT,
             FieldPosition.SECTION_END,
         }:
-            locations = (
-                payload.topology.point_locations
-                if payload.topology.value_layout is ResultValueLayout.POINT
-                else payload.topology.cell_locations
-            )
-            position = result_field_position_label(
-                field_id,
-                section_point_labels=section_point_labels_from_locations(
-                    locations
-                ),
-            )
-            title += f"（{position}）"
+            # Preserve the legacy title for headless/direct payloads that do
+            # not carry a DisplayQuery yet.
+            title += f"（{field_position_label}）"
+        if not bool(self._contour.get("legend_title", True)):
+            title = ""
+        if requested_position == "auto":
+            requested_position = "right" if vertical else "bottom"
         options: dict[str, Any] = {
             "title": title,
             "vertical": vertical,
-            "n_labels": min(int(self._contour["levels"]) + 1, 7),
+            "n_labels": self._contour_label_count(),
             "fmt": self._scalar_format(),
             "color": self._background_settings.foreground_color,
             "outline": False,
@@ -8590,7 +9690,7 @@ class FEMViewport(QWidget):
             options.update(
                 width=0.045,
                 height=0.62,
-                position_x=0.78,
+                position_x=0.08 if requested_position == "left" else 0.78,
                 position_y=0.19,
             )
         else:
@@ -8598,7 +9698,7 @@ class FEMViewport(QWidget):
                 width=0.46,
                 height=0.065,
                 position_x=0.27,
-                position_y=0.08,
+                position_y=0.86 if requested_position == "top" else 0.08,
             )
         return options
 
@@ -8614,12 +9714,20 @@ class FEMViewport(QWidget):
         if scalar_bar is None:
             scalar_bars = getattr(self._plotter, "scalar_bars", None)
             title = self._contour_bar_args(payload)["title"]
-            if scalar_bars is None or title not in scalar_bars:
+            if scalar_bars is None:
                 return
-            scalar_bar = scalar_bars[title]
+            if title in scalar_bars:
+                scalar_bar = scalar_bars[title]
+            elif len(scalar_bars) == 1:
+                # A title-less legend is intentionally allowed.  PyVista may
+                # store that scalar bar under a generated key rather than the
+                # empty title, so use the only bar when there is no ambiguity.
+                scalar_bar = next(iter(scalar_bars.values()))
+            else:
+                return
 
         minimum, maximum = self._contour_data_range(payload)
-        label_count = min(int(self._contour["levels"]) + 1, 7)
+        label_count = self._contour_label_count()
         values = (
             np.asarray((minimum,), dtype=float)
             if minimum == maximum
@@ -8642,29 +9750,57 @@ class FEMViewport(QWidget):
         annotation_text.SetColor(*label_text.GetColor())
         annotation_text.SetFontSize(label_text.GetFontSize())
 
-    def _add_result_edges_layer(self, dataset: Any) -> Any | None:
+    def _add_result_edges_layer(
+        self,
+        dataset: Any,
+        *,
+        edge_style: str | None = None,
+    ) -> Any | None:
         edge_mode = str(self._contour["edge_mode"])
         if edge_mode == CONTOUR_EDGE_NONE:
             edge_mode = "all"
-        edges = extract_contour_edges(dataset, edge_mode)
-        if edges is None or edges.n_cells == 0:
-            return None
-        edges = style_contour_edges(
-            edges,
-            str(self._contour["edge_style"]),
+        selected_style = (
+            str(self._contour["edge_style"])
+            if edge_style is None
+            else str(edge_style)
         )
+        edge_key = (
+            id(dataset),
+            edge_mode,
+            selected_style,
+        )
+        edges = self._result_edges_cache.get(edge_key)
+        if edges is None:
+            edges = extract_contour_edges(dataset, edge_mode)
+            if edges is None or edges.n_cells == 0:
+                return None
+            edges = style_contour_edges(edges, selected_style)
+            self._result_edges_cache[edge_key] = edges
+            while len(self._result_edges_cache) > 8:
+                self._result_edges_cache.pop(
+                    next(iter(self._result_edges_cache))
+                )
         line_width = float(self._contour["edge_width"])
-        if self._contour["edge_style"] == "bold":
+        if selected_style == "bold":
             line_width = max(line_width * 2.0, 3.0)
         actor = self._plotter.add_mesh(
             edges,
-            color=self._background_settings.foreground_color,
+            color=self._display_color(
+                "edge_color",
+                self._background_settings.foreground_color,
+            ),
             line_width=line_width,
+            opacity=self._display_opacity(
+                "deformed"
+                if self._display.shape_mode == "deformed"
+                else "undeformed"
+            ),
             lighting=False,
             show_scalar_bar=False,
             pickable=False,
-            name="result_edges",
+            name=self._result_layer_actor_name("result_edges"),
             reset_camera=False,
+            render=False,
             **self._line_render_options(),
         )
         self._offset_highlight_actor(actor)
@@ -8697,6 +9833,11 @@ class FEMViewport(QWidget):
             )
             points = np.asarray(checked.dataset.cell_centers().points)
             locations = topology.cell_locations
+        region_labels = result_region_display_labels(
+            location.region_key
+            for location in locations
+            if location is not None and location.region_key is not None
+        )
         finite = np.flatnonzero(np.isfinite(values))
         if len(finite) == 0:
             return
@@ -8711,7 +9852,10 @@ class FEMViewport(QWidget):
                 continue
             label = f"{title} {self._format_scalar(float(values[index]))}"
             if self._contour["show_ids"]:
-                identity = self._result_location_identity(locations[index])
+                identity = self._result_location_identity(
+                    locations[index],
+                    region_labels=region_labels,
+                )
                 if identity:
                     label += f"（{identity}）"
             entries.append((index, label))
@@ -8727,40 +9871,20 @@ class FEMViewport(QWidget):
             shape=None,
             text_color="#000000",
             always_visible=True,
-            name="extrema",
+            name=self._result_layer_actor_name("extrema"),
             reset_camera=False,
+            render=False,
         )
 
     @staticmethod
     def _result_location_identity(
         location: FieldLocation | None,
+        *,
+        region_labels: Mapping[ResultRegionKey, str] | None = None,
     ) -> str:
         if location is None:
             return ""
-        values = []
-        if location.node_id is not None:
-            values.append(f"节点 {int(location.node_id)}")
-        if location.element_id is not None:
-            values.append(f"单元 {int(location.element_id)}")
-        if location.integration_point is not None:
-            values.append(f"积分点 {int(location.integration_point)}")
-        if location.local_node is not None:
-            values.append(f"局部节点 {int(location.local_node)}")
-        if location.section_point is not None:
-            position = section_point_relative_position_label(
-                location.section_point
-            )
-            values.append(
-                position
-                if position.startswith("截面点 ")
-                else f"截面位置 {position}"
-            )
-            values.append(
-                "截面坐标 "
-                f"({location.section_point.local_y:.6g}, "
-                f"{location.section_point.local_z:.6g})"
-            )
-        return "，".join(values)
+        return location.identity_label(region_labels=region_labels)
 
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:
         self._remove_actor("element_edges")
@@ -8784,24 +9908,44 @@ class FEMViewport(QWidget):
         ):
             return
         undeformed = self._make_grid(self._geometry.points)
+        undeformed = self._display_dataset(undeformed)
+        palette = self._visual_palette()
+        color = self._undeformed_display_color(palette)
+        line_style = str(self._contour.get("undeformed_line_style", "solid"))
+        if line_style != "solid" and not self._is_line_mesh():
+            edges = extract_contour_edges(
+                undeformed,
+                str(self._contour.get("edge_mode", CONTOUR_EDGE_GEOMETRY)),
+            )
+            if edges is not None and int(edges.n_cells) > 0:
+                undeformed = style_contour_edges(edges, line_style)
+                render_options: dict[str, Any] = {}
+            else:
+                return
+        else:
+            render_options = {"style": "wireframe"}
+        line_width = float(self._contour.get("edge_width", 1.0))
+        if line_style == "bold":
+            line_width = max(line_width * 2.0, 3.0)
         self._actors["undeformed_overlay"] = self._plotter.add_mesh(
             undeformed,
-            color=self._element_layer_color(self._visual_palette()),
-            style="wireframe",
-            line_width=self._element_line_width(),
-            opacity=0.65,
+            color=color,
+            line_width=line_width,
+            opacity=self._display_opacity("undeformed"),
             name="undeformed_overlay",
             reset_camera=False,
+            render=False,
+            **render_options,
             **self._line_render_options(),
         )
 
-    def _restore_selection(self) -> None:
+    def _restore_selection(self, *, render: bool = True) -> None:
         if not self._selection_highlight_visible:
             return
         if self._selected_kind == "node" and self._selected_id is not None:
-            self.highlight_node(self._selected_id)
+            self.highlight_node(self._selected_id, render=render)
         elif self._selected_kind == "element" and self._selected_id is not None:
-            self.highlight_element(self._selected_id)
+            self.highlight_element(self._selected_id, render=render)
 
     def _scalar_format(self) -> str:
         decimals = int(self._contour["decimals"])
@@ -8853,7 +9997,7 @@ class FEMViewport(QWidget):
                 color=self._node_layer_color(palette),
                 point_size=self._node_point_size(),
                 render_points_as_spheres=True, lighting=False,
-                name="nodes", reset_camera=False,
+                name="nodes", reset_camera=False, render=False,
             )
             self._update_pickable_actors()
         if render:
@@ -8884,6 +10028,7 @@ class FEMViewport(QWidget):
                 self._model_display_points(),
                 labels,
                 name="node_labels",
+                render=False,
                 **self._label_render_options("node"),
             )
         if self._show_element_labels:
@@ -8893,6 +10038,7 @@ class FEMViewport(QWidget):
                 centers,
                 labels,
                 name="element_labels",
+                render=False,
                 **self._label_render_options("element"),
             )
         if render:
@@ -9259,6 +10405,16 @@ class FEMViewport(QWidget):
 
     def _resolve_pick(self, x: int, y: int) -> PickHit | None:
         mode = self._selection_mode
+        if mode in {"result_probe_node", "result_probe_element"}:
+            normal_mode = (
+                "node" if mode == "result_probe_node" else "element"
+            )
+            self._selection_mode = normal_mode
+            try:
+                hit = self._resolve_pick(x, y)
+            finally:
+                self._selection_mode = mode
+            return None if hit is None else replace(hit, kind=normal_mode)
         if mode == "geometry_point":
             return self._pick_screen_point(
                 x,
@@ -10097,12 +11253,17 @@ class FEMViewport(QWidget):
                 target_names.add("geometry_edges")
             else:
                 target_names.add("geometry_surface")
-        elif self._selection_mode in {"node", "mesh_node"} and "nodes" in self._actors:
+        elif self._selection_mode in {
+            "node",
+            "mesh_node",
+            "result_probe_node",
+        } and "nodes" in self._actors:
             target_names.add("nodes")
         elif self._selection_mode in {
             "element",
             "mesh_element",
             "mesh_body",
+            "result_probe_element",
         }:
             target_names.add("mesh_surface")
         elif self._selection_mode == "mesh_edge":
@@ -10182,6 +11343,295 @@ class FEMViewport(QWidget):
             "label_background": "#ffffff",
         }
 
+    def _display_color(self, key: str, fallback: str) -> str:
+        """Resolve an explicit presentation colour against the active palette."""
+
+        raw = self._contour.get(key, "auto")
+        if str(raw).strip().casefold() in {"", "auto", "默认"}:
+            return fallback
+        selected = QColor(str(raw))
+        return selected.name() if selected.isValid() else fallback
+
+    def _undeformed_display_color(self, palette: dict[str, str]) -> str:
+        """Resolve the default undeformed overlay color for each mesh family."""
+
+        fallback = (
+            self._element_layer_color(palette)
+            if self._is_line_mesh()
+            else palette["overlay"]
+        )
+        return self._display_color("undeformed_color", fallback)
+
+    def _display_opacity(self, shape: str | None = None) -> float:
+        """Return normalized global/shape opacity for the current viewport."""
+
+        try:
+            value = float(self._contour.get("model_opacity", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        if shape == "deformed":
+            try:
+                value *= float(self._contour.get("deformed_opacity", 1.0))
+            except (TypeError, ValueError):
+                pass
+        elif shape == "undeformed":
+            try:
+                value *= float(self._contour.get("undeformed_opacity", 0.65))
+            except (TypeError, ValueError):
+                pass
+        return max(0.0, min(1.0, value))
+
+    def _display_dataset(self, dataset: Any) -> Any:
+        """Apply the saved element filter and view cuts for display."""
+
+        cache_key: tuple[object, ...] | None = None
+        result_payload = self._result_render_payload
+        if (
+            result_payload is not None
+            and self._result_scene_active()
+            and dataset is result_payload.dataset
+        ):
+            view_cut = normalize_view_cut_settings(self._view_cut)
+            planes = view_cut["planes"]
+            enabled_planes = tuple(
+                (
+                    axis,
+                    bool(planes[axis].get("enabled", False)),
+                    float(planes[axis].get("offset", 0.0)),
+                    bool(planes[axis].get("invert", False)),
+                )
+                for axis in VIEW_CUT_AXES
+            )
+            has_cut = any(item[1] for item in enabled_planes)
+            ids = self._display_group_element_ids
+            if ids is not None or has_cut:
+                cache_key = (
+                    id(dataset),
+                    ids,
+                    bool(self._display_group_exclude),
+                    enabled_planes,
+                )
+                cached = self._result_display_dataset_cache.get(cache_key)
+                if cached is not None:
+                    return cached
+
+        filtered = dataset
+        try:
+            source_bounds = tuple(float(value) for value in dataset.bounds)
+        except (AttributeError, TypeError, ValueError):
+            source_bounds = ()
+        ids = self._display_group_element_ids
+        if ids is not None and int(getattr(dataset, "n_cells", 0)) > 0:
+            if self._result_scene_active() and dataset is self._result_grid:
+                element_ids = np.asarray(
+                    [
+                        self._result_cell_index_to_element_id.get(index, -1)
+                        for index in range(int(dataset.n_cells))
+                    ],
+                    dtype=np.int64,
+                )
+            elif "element_id" in getattr(dataset, "cell_data", {}):
+                element_ids = np.asarray(dataset.cell_data["element_id"], dtype=np.int64)
+            else:
+                element_ids = np.arange(int(dataset.n_cells), dtype=np.int64) + 1
+            keep = np.isin(element_ids, tuple(ids))
+            if self._display_group_exclude:
+                keep = ~keep
+            cell_indices = np.flatnonzero(keep).astype(np.int64)
+            if len(cell_indices) != int(dataset.n_cells):
+                try:
+                    filtered = dataset.extract_cells(cell_indices)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    filtered = dataset
+
+        view_cut = normalize_view_cut_settings(self._view_cut)
+        planes = view_cut["planes"]
+        if not isinstance(planes, Mapping) or not any(
+            bool(planes[axis].get("enabled", False))
+            for axis in VIEW_CUT_AXES
+        ):
+            if cache_key is not None:
+                self._result_display_dataset_cache[cache_key] = filtered
+                while len(self._result_display_dataset_cache) > 6:
+                    self._result_display_dataset_cache.pop(
+                        next(iter(self._result_display_dataset_cache))
+                    )
+            return filtered
+        try:
+            bounds = source_bounds
+            if len(bounds) != 6:
+                bounds = tuple(float(value) for value in filtered.bounds)
+            if len(bounds) != 6:
+                return filtered
+            center = np.array(
+                [
+                    (bounds[0] + bounds[1]) * 0.5,
+                    (bounds[2] + bounds[3]) * 0.5,
+                    (bounds[4] + bounds[5]) * 0.5,
+                ],
+                dtype=float,
+            )
+            for axis_index, axis in enumerate(VIEW_CUT_AXES):
+                plane = planes[axis]
+                if not bool(plane.get("enabled", False)):
+                    continue
+                normal = np.zeros(3, dtype=float)
+                normal[axis_index] = 1.0
+                origin = center.copy()
+                origin[axis_index] += float(plane.get("offset", 0.0))
+                candidate = filtered.clip(
+                    normal=normal,
+                    origin=origin,
+                    invert=bool(plane.get("invert", False)),
+                )
+                if int(getattr(candidate, "n_points", 0)) == 0:
+                    return filtered
+                if (
+                    int(getattr(filtered, "n_cells", 0)) > 0
+                    and int(getattr(candidate, "n_cells", 0)) == 0
+                ):
+                    return filtered
+                filtered = candidate
+            if cache_key is not None:
+                self._result_display_dataset_cache[cache_key] = filtered
+                while len(self._result_display_dataset_cache) > 6:
+                    self._result_display_dataset_cache.pop(
+                        next(iter(self._result_display_dataset_cache))
+                    )
+            return filtered
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            # A cut is a presentation aid; an unsupported backend must not
+            # make an otherwise valid result disappear.
+            if cache_key is not None:
+                self._result_display_dataset_cache[cache_key] = filtered
+                while len(self._result_display_dataset_cache) > 6:
+                    self._result_display_dataset_cache.pop(
+                        next(iter(self._result_display_dataset_cache))
+                    )
+            return filtered
+
+    def set_display_group(
+        self,
+        element_ids: Iterable[int] | None,
+        *,
+        exclude: bool = False,
+        render: bool = True,
+        update: bool = True,
+    ) -> None:
+        """Limit visible cells, optionally deferring the expensive rebuild."""
+
+        if element_ids is None:
+            self._display_group_element_ids = None
+        else:
+            normalized = frozenset(int(value) for value in element_ids)
+            if any(value <= 0 for value in normalized):
+                raise ValueError("display group element IDs must be positive")
+            self._display_group_element_ids = normalized
+        self._display_group_exclude = bool(exclude)
+        self._result_display_dataset_cache.clear()
+        if (
+            update
+            and self._result_scene_active()
+            and self._result_render_payload is not None
+        ):
+            self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = True
+            self._refresh_result_layer(render=render)
+        elif update and self._grid is not None:
+            self._remove_actor("mesh_surface")
+            self._remove_actor("element_edges")
+            self._add_base_layers(reset_camera=False, render=False)
+            if render:
+                self._render()
+
+    def display_group_state(self) -> dict[str, object]:
+        """Return the non-persistent viewport projection of the active group."""
+
+        return {
+            "element_ids": None
+            if self._display_group_element_ids is None
+            else tuple(sorted(self._display_group_element_ids)),
+            "exclude": bool(self._display_group_exclude),
+        }
+
+    def set_view_cut(
+        self,
+        settings: Mapping[str, object] | None,
+        *,
+        render: bool = True,
+        update: bool = True,
+    ) -> None:
+        """Set view-cut planes, optionally deferring the expensive rebuild."""
+
+        normalized = normalize_view_cut_settings(settings)
+        self._view_cut = normalized
+        self._result_display_dataset_cache.clear()
+        if (
+            update
+            and self._result_scene_active()
+            and self._result_render_payload is not None
+        ):
+            self._scalar_reuse_pending = False
+            self._geometry_reuse_pending = True
+            self._refresh_result_layer(render=render)
+        elif update and self._grid is not None:
+            self._remove_actor("mesh_surface")
+            self._remove_actor("element_edges")
+            self._add_base_layers(reset_camera=False, render=False)
+            if render:
+                self._render()
+
+    def view_cut_settings(self) -> dict[str, object]:
+        """Return a detached copy of the current view-cut settings."""
+
+        return normalize_view_cut_settings(self._view_cut)
+
+    def view_cut_motion_ranges(self) -> dict[str, tuple[float, float]]:
+        """Return model-scaled slider ranges for the three cut positions."""
+
+        bounds = self._fit_bounds()
+        if bounds is None or len(bounds) != 6:
+            active_result = self._active_result_payload_mesh()
+            candidates = (
+                active_result,
+                self._grid,
+            )
+            for candidate in candidates:
+                try:
+                    candidate_bounds = tuple(
+                        float(value) for value in candidate.bounds
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if len(candidate_bounds) == 6 and all(
+                    math.isfinite(value) for value in candidate_bounds
+                ):
+                    bounds = candidate_bounds
+                    break
+        if bounds is None or len(bounds) != 6:
+            return {axis: (-1.0, 1.0) for axis in VIEW_CUT_AXES}
+        minimum = np.asarray(
+            [bounds[0], bounds[2], bounds[4]],
+            dtype=float,
+        )
+        maximum = np.asarray(
+            [bounds[1], bounds[3], bounds[5]],
+            dtype=float,
+        )
+        half_extent = (maximum - minimum) * 0.5
+        reference = max(float(np.max(np.abs(minimum))), 1.0)
+        half_extent = np.maximum(half_extent, reference * 1.0e-6)
+        # Keep the slider inside the model.  An endpoint outside the model
+        # makes one side of ``clip`` empty and looks like the result vanished.
+        half_extent *= 0.999
+        return {
+            axis: (
+                -float(half_extent[index]),
+                float(half_extent[index]),
+            )
+            for index, axis in enumerate(VIEW_CUT_AXES)
+        }
+
     def _set_actor_color(self, name: str, color: str) -> None:
         actor = self._actors.get(name)
         if actor is None:
@@ -10229,7 +11679,7 @@ class FEMViewport(QWidget):
         payload = self._result_render_payload
         if (
             payload is not None
-            and self._result_grid is payload.dataset
+            and self._active_result_mesh() is payload.dataset
             and self._display.contour_enabled
             and (self._contour["show_minimum"] or self._contour["show_maximum"])
         ):

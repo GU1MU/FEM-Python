@@ -393,6 +393,50 @@ def constraint_sample_indices(points: np.ndarray, density: str) -> np.ndarray:
     return _spatial_sample_indices(points, density, limits)
 
 
+def constraint_corner_indices(points: np.ndarray, density: str) -> np.ndarray:
+    """Prefer geometric corners for polygonal constraint regions.
+
+    Rectangular supports are much easier to read when their symbols occupy
+    the four corners rather than arbitrary points along the top and bottom
+    edges.  Smooth or highly faceted boundaries still use the normal density
+    sampler, so this rule does not turn a curved support into a cluttered
+    ring of markers.
+    """
+
+    points = np.asarray(points, dtype=float)
+    if len(points) <= 2:
+        return np.arange(len(points), dtype=np.int64)
+
+    centered = points - np.mean(points, axis=0)
+    _left, singular_values, right = np.linalg.svd(centered, full_matrices=False)
+    tolerance = max(float(singular_values[0]) * 1.0e-8, 1.0e-12)
+    dimension = int(np.count_nonzero(singular_values > tolerance))
+    if dimension == 1:
+        order = np.argsort(centered @ right[0])
+        return np.asarray((order[0], order[-1]), dtype=np.int64)
+    if dimension != 2:
+        return constraint_sample_indices(points, density)
+
+    projected = centered @ right[:2].T
+    hull = _convex_hull_indices(projected)
+    if len(hull) < 3:
+        return constraint_sample_indices(points, density)
+    scale = max(float(np.ptp(projected, axis=0).max()), 1.0)
+    turn_tolerance = 1.0e-10 * scale * scale
+    corners: list[int] = []
+    for position, current in enumerate(hull):
+        previous = hull[position - 1]
+        following = hull[(position + 1) % len(hull)]
+        first = projected[current] - projected[previous]
+        second = projected[following] - projected[current]
+        cross = float(first[0] * second[1] - first[1] * second[0])
+        if abs(cross) > turn_tolerance:
+            corners.append(int(current))
+    if 3 <= len(corners) <= 6:
+        return np.asarray(corners, dtype=np.int64)
+    return constraint_sample_indices(points, density)
+
+
 def constraint_spatial_regions(
     points: np.ndarray,
     model_points: np.ndarray,

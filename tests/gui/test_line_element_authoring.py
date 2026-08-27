@@ -21,13 +21,13 @@ from fem.application import (
     PreflightStage,
     RegionRef,
 )
-from fem.core.model import (
+from fem.model import (
     DisplacementConstraint,
     LineLoad,
     NodalLoad,
     OutputRequest,
 )
-from fem.steps.factory import static
+from fem.model.authoring import static
 from fem_gui.analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,

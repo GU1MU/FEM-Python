@@ -11,8 +11,8 @@ from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
 from fem.application import RegionRef
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import FEMModel
 from fem.geometry import LogicalEntityRef
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.widgets.viewport import (
@@ -309,9 +309,12 @@ def test_fit_prefers_deformed_result_bounds_over_base_grid() -> None:
     viewport._grid = SimpleNamespace(
         points=np.asarray(((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)))
     )
-    viewport._result_grid = SimpleNamespace(
+    result_grid = SimpleNamespace(
         points=np.asarray(((20.0, 10.0, -2.0), (30.0, 15.0, 4.0)))
     )
+    viewport._result_grid = result_grid
+    viewport._result_render_payload = SimpleNamespace(dataset=result_grid)
+    viewport._active_display_source = "result"
     viewport._actors["result"] = object()
 
     viewport.fit()

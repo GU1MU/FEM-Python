@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, UnitContext
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem.geometry import PlateWithHoleGeometry
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import (

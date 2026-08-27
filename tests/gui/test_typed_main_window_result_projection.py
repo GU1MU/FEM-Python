@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle
 
 import os
 from pathlib import Path
@@ -8,16 +9,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldState,
     ResultProvider,
     ScalarFieldSelection,
-    SolveResultBundle,
     build_result_provider,
-    build_solve_result_bundle,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui.commands import GuiCommandOutcome, GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.result_presentation import visible_result_fields

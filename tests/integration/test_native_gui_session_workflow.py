@@ -19,8 +19,8 @@ from fem.application import (
     SectionDefinition,
     describe_session_authoring,
 )
-from fem.application.results import OutputExecutionStatus, ResultVariable
-from fem.core.model import (
+from fem.results import OutputExecutionStatus, ResultVariable
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     MaterialDefinition,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -10,20 +11,25 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QDoubleSpinBox,
+    QInputDialog,
     QLabel,
 )
 
-from fem.application import SectionDefinition
-from fem.core.model import MaterialDefinition
+from fem.application import RegionAssignment, SectionDefinition
+from fem.model import MaterialDefinition
 from fem_gui.dialogs import AdaptivePrecisionDoubleSpinBox
 from fem_gui.model_dialogs import (
     DensityBehaviorDialog,
     ElasticBehaviorDialog,
+    PlasticBehaviorDialog,
     MaterialEditDialog,
     MaterialManagerDialog,
+    RegionAssignmentDialog,
+    RegionAssignmentManagerDialog,
     SectionEditDialog,
     SectionManagerDialog,
 )
+import fem_gui.main_window as main_window_module
 
 
 def _application() -> QApplication:
@@ -94,11 +100,169 @@ def test_material_inputs_use_adaptive_precision_consistently():
     assert density.density_spin.text() == "7850.12"
     assert elastic.values()["nu"] == 0.333333
 
+
     elastic.poisson_spin.selectAll()
     QTest.keyClicks(elastic.poisson_spin, "0.333333")
     QTest.keyClick(elastic.poisson_spin, Qt.Key.Key_Return)
     assert elastic.poisson_spin.text() == "0.333333"
     assert elastic.values()["nu"] == 0.333333
+
+
+def test_assignment_manager_replaces_by_region_without_losing_other_state():
+    _application()
+    manager = RegionAssignmentManagerDialog(
+        [
+            SectionDefinition("Solid", "Steel"),
+            SectionDefinition("Other", "Steel"),
+        ],
+        [
+            RegionAssignment("Solid", "Domain-A"),
+            RegionAssignment("Other", "Domain-B"),
+        ],
+        lambda _current, _index: None,
+    )
+
+    manager._store(
+        RegionAssignment("Other", "Domain-A"),
+        1,
+        force_replace=True,
+    )
+
+    assert manager.values() == [RegionAssignment("Other", "Domain-A")]
+    assert manager.table.item(0, 1).text() == "Domain-A"
+
+
+def test_assignment_manager_forwards_scope_selection_request():
+    _application()
+    editor = RegionAssignmentDialog(
+        [SectionDefinition("Solid", "Steel")],
+        [],
+        allow_scope_selection=True,
+    )
+
+    def interrupted_exec() -> int:
+        editor.scope_pick_button.click()
+        return 0
+
+    editor.exec = interrupted_exec
+    manager = RegionAssignmentManagerDialog(
+        [SectionDefinition("Solid", "Steel")],
+        [],
+        lambda _current, _index: editor,
+    )
+
+    manager._add()
+
+    assert manager.requested_scope_kind() == "element_set"
+
+
+def test_main_window_starts_scope_picker_after_assignment_manager_request(
+    monkeypatch,
+):
+    _application()
+    calls = []
+
+    class SignalStub:
+        def connect(self, _callback):
+            return None
+
+    class ManagerStub:
+        def __init__(self, *_args):
+            self.locateRequested = SignalStub()
+
+        def requested_scope_kind(self):
+            return "element_set"
+
+    monkeypatch.setattr(
+        main_window_module,
+        "RegionAssignmentManagerDialog",
+        ManagerStub,
+    )
+    fake_window = SimpleNamespace(
+        document=SimpleNamespace(
+            sections=(SectionDefinition("Solid", "Steel"),),
+            assignments=(),
+        ),
+        _exec_dialog=lambda _dialog: False,
+        _request_analysis_geometry_selection=(
+            lambda operation, scope_kind: calls.append(
+                (operation, scope_kind)
+            )
+        ),
+    )
+
+    main_window_module.FEMMainWindow.show_section_assignment_manager(
+        fake_window
+    )
+
+    assert calls == [("section", "element_set")]
+
+
+def test_material_editor_can_author_plastic_parameters(monkeypatch):
+    _application()
+    dialog = PlasticBehaviorDialog({})
+
+    assert not dialog.ok_button.isEnabled()
+    dialog.yield_stress_spin.setValue(250.0)
+    dialog.hardening_spin.setValue(100.0)
+
+    assert dialog.ok_button.isEnabled()
+    assert dialog.values() == {
+        "yield_stress": 250.0,
+        "hardening_modulus": 100.0,
+    }
+
+    material_dialog = MaterialEditDialog(
+        MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3})
+    )
+    assert material_dialog.behavior_combo.findData("plastic") >= 0
+
+    monkeypatch.setattr(
+        PlasticBehaviorDialog,
+        "exec",
+        lambda _dialog: 1,
+    )
+    monkeypatch.setattr(
+        PlasticBehaviorDialog,
+        "values",
+        lambda _dialog: {
+            "yield_stress": 250.0,
+            "hardening_modulus": 100.0,
+        },
+    )
+    material_dialog._edit_kind("plastic")
+    assert material_dialog.material().properties["yield_stress"] == 250.0
+
+
+def test_material_editor_noop_preserves_algorithm_and_model_identity():
+    _application()
+    original = MaterialDefinition(
+        "Steel",
+        {
+            "E": 210000.0,
+            "nu": 0.3,
+            "yield_stress": 250.0,
+        },
+        constitutive_model="j2_plasticity",
+        algorithm="radial_return",
+    )
+    dialog = MaterialEditDialog(original)
+
+    assert dialog.material() == original
+
+
+def test_material_editor_noop_preserves_unknown_model_identity():
+    _application()
+    original = MaterialDefinition(
+        "Imported",
+        {"E": 1000.0, "nu": 0.25, "future_parameter": 7.0},
+        constitutive_model="future_model",
+        algorithm="future_algorithm",
+    )
+    dialog = MaterialEditDialog(original)
+
+    assert dialog.model_combo.currentData() == "future_model"
+    assert dialog.material() == original
 
 
 def test_section_dialog_uses_dimension_specific_supported_parameters():
@@ -234,6 +398,39 @@ def test_material_manager_creates_mutable_copy_from_snapshot_tuple():
         "Aluminum",
     ]
     assert [material.name for material in original] == ["Steel"]
+
+
+def test_material_manager_supports_copy_and_independent_rename(monkeypatch):
+    _application()
+    original = (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),)
+    dialog = MaterialManagerDialog(original)
+
+    dialog._copy()
+    assert [material.name for material in dialog.values()] == [
+        "Steel",
+        "Steel-副本",
+    ]
+    assert dialog.values()[1] == original[0].__class__(
+        "Steel-副本",
+        {"E": 210000.0, "nu": 0.3},
+    )
+
+    dialog.table.selectRow(0)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *_args, **_kwargs: ("钢材", True),
+    )
+    dialog._rename()
+
+    assert [material.name for material in dialog.values()] == [
+        "钢材",
+        "Steel-副本",
+    ]
+    assert [material.name for material in original] == ["Steel"]
+    assert len(dialog.rename_intents()) == 1
+    assert dialog.rename_intents()[0].old_name == "Steel"
+    assert dialog.rename_intents()[0].new_name == "钢材"
 
 
 def test_section_manager_creates_mutable_copy_from_snapshot_tuple():

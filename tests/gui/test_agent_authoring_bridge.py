@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
 
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     FEMModel,

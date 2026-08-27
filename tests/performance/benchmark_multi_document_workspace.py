@@ -58,7 +58,7 @@ import numpy as np
 
 _PROJECT_IMPORT_ERROR: BaseException | None = None
 try:
-    from fem.application.results import (
+    from fem.results import (
         ResultArchiveModelProjection,
         ResultArchiveOrigin,
         ResultArchiveRun,
@@ -68,9 +68,9 @@ try:
         execute_output_requests,
         result_model_fingerprint,
     )
-    from fem.core.model import AnalysisStep, FEMModel, OutputRequest
-    from fem.core.mesh import Element2D, Mesh2D, Node2D
-    from fem.core.result import ModelResult
+    from fem.model import AnalysisStep, FEMModel, OutputRequest
+    from fem.model.mesh import Element2D, Mesh2D, Node2D
+    from fem.results import ModelResult
     from fem.io import encode_result_archive
     from fem_gui import inspection_service
     from fem_gui.visualization import model_adapter

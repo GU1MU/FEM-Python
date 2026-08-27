@@ -9,8 +9,8 @@ from typing import Any
 
 import numpy as np
 
-from fem.application.results import ElementResultProfile, ResultArchiveModelProjection
-from fem.core.model import (
+from fem.results import ElementResultProfile, ResultArchiveModelProjection
+from fem.model import (
     ElementSet,
     NodeSet,
 )

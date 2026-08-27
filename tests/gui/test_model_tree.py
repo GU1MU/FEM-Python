@@ -15,14 +15,14 @@ from fem.application import (
     SectionDefinition,
     describe_model_capabilities,
 )
-from fem.application.results import project_output_requests
-from fem.core.model import (
+from fem.results import project_output_requests
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     GravityLoad,
     OutputRequest,
 )
-from fem.elements import BeamOrientation
+from fem.model import BeamOrientation
 from fem_gui.widgets.model_tree import (
     ModelTree,
     ROLE_INHERITED,

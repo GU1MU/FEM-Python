@@ -6,7 +6,7 @@ import math
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.application.results import FieldState
+from fem.results import FieldState
 from fem_agent.result_authoring import (
     AcceptedResultReference,
     AgentResultAggregation,

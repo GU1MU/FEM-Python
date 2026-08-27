@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import os
 import csv
@@ -10,15 +11,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
-from fem.application.results import (
+from fem.results import (
     FieldState,
     ScalarFieldSelection,
-    build_solve_result_bundle,
     restore_result_provider,
 )
 from fem.io.result_csv import RESULT_TABLE_CSV_BASE_HEADER
 from fem.io.result_vtk import read_result_vtk
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui.commands import (
     ResultCsvExportSpec,
     ResultVtkExportSpec,

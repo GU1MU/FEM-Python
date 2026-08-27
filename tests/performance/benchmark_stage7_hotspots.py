@@ -9,8 +9,8 @@ from time import perf_counter
 from typing import Any
 
 from fem.application.preflight import run_static_preflight
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import AnalysisStep, FEMModel
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
 

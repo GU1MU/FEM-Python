@@ -3,8 +3,8 @@ from dataclasses import replace
 import pytest
 
 from fem.application import ModelSession, NativePart, describe_session_authoring
-from fem.application.results import FieldState
-from fem.core.model import AnalysisStep
+from fem.results import FieldState
+from fem.model import AnalysisStep
 from fem.geometry import LogicalEntityRef, RectangleGeometry
 from fem.mesh.settings import MeshSettings
 from fem_gui.action_state import (
@@ -92,6 +92,22 @@ def test_startup_model_enables_new_part_actions_before_session_initialization() 
         GuiActionKey.GEOMETRY_WIRE,
     ):
         assert states[key].enabled
+
+
+def test_section_manager_can_open_before_material_creation() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    snapshot = session.snapshot()
+
+    states = _by_key(
+        derive_action_availability(
+            snapshot,
+            describe_session_authoring(snapshot),
+            GuiActionContext(),
+        )
+    )
+
+    assert states[GuiActionKey.SECTION_MANAGER].enabled
 
 
 def test_existing_part_disables_all_new_part_actions() -> None:
@@ -465,6 +481,7 @@ def test_screenshot_depends_only_on_capture_scene_and_backend_facts(
         "viewport_capture_active",
         "result_source_current",
         "catalog_available",
+        "result_frames_available",
         "selected_field_exists",
         "materialization_pending",
         "result_task_busy",
@@ -483,3 +500,42 @@ def test_action_context_requires_typed_selected_field_state() -> None:
         GuiActionContext(
             selected_field_state="ready",  # type: ignore[arg-type]
         )
+
+
+def test_result_actions_use_their_specific_result_facts() -> None:
+    ready = _result_action_states(
+        GuiActionContext(result_frames_available=True),
+    )
+    assert ready[GuiActionKey.DISPLAY_SETTINGS].enabled
+    assert ready[GuiActionKey.ANIMATION_SETTINGS].enabled
+    assert ready[GuiActionKey.QUERY_PROBE].enabled
+    assert ready[GuiActionKey.XY_DATA].enabled
+
+    no_frames = _result_action_states(
+        GuiActionContext(result_frames_available=False),
+    )
+    assert no_frames[GuiActionKey.DISPLAY_SETTINGS].enabled
+    assert not no_frames[GuiActionKey.ANIMATION_SETTINGS].enabled
+    assert no_frames[GuiActionKey.QUERY_PROBE].enabled
+    assert not no_frames[GuiActionKey.XY_DATA].enabled
+
+    no_catalog = _result_action_states(
+        GuiActionContext(
+            catalog_available=False,
+            result_frames_available=True,
+        ),
+    )
+    assert no_catalog[GuiActionKey.ANIMATION_SETTINGS].enabled
+    assert not no_catalog[GuiActionKey.QUERY_PROBE].enabled
+    assert not no_catalog[GuiActionKey.XY_DATA].enabled
+
+    busy = _result_action_states(
+        GuiActionContext(result_frames_available=True, busy=True),
+    )
+    for key in (
+        GuiActionKey.DISPLAY_SETTINGS,
+        GuiActionKey.ANIMATION_SETTINGS,
+        GuiActionKey.QUERY_PROBE,
+        GuiActionKey.XY_DATA,
+    ):
+        assert not busy[key].enabled

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from dataclasses import replace
 import os
@@ -20,16 +21,15 @@ from fem.application import (
     RegionAssignment,
     describe_session_authoring,
 )
-from fem.core.model import OutputRequest
-from fem.application.results import (
+from fem.model import OutputRequest
+from fem.results import (
     FieldPosition,
     FieldRequest,
     ResultFieldId,
     ResultVariable,
-    build_solve_result_bundle,
     restore_result_provider,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.model_dialogs import RegionAssignmentDialog
 from fem_gui.task_controller import TaskApplyStatus
