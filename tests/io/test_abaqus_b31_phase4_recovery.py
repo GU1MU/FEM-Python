@@ -1,16 +1,16 @@
 from __future__ import annotations
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
-from fem.elements import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
+from fem.model import (
     BEAM_FRAME_FIELD_KEY,
     BeamFrameField,
     BeamIntegrationPointForces,
-    get_element_kernel,
 )
 from fem.post.stress.beam import recover_integration_point_stress
 

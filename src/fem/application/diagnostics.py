@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
+from fem.model import StaticFormulation
+
 
 class PreflightSeverity(str, Enum):
     """Severity used to derive a preflight outcome."""
@@ -97,6 +99,7 @@ class PreflightFacts:
     model_name: str | None = None
     step_name: str = ""
     procedure: str = ""
+    formulation: StaticFormulation | None = None
     node_count: int = 0
     element_count: int = 0
     dof_count: int = 0
@@ -109,6 +112,12 @@ class PreflightFacts:
     line_load_count: int = 0
     body_load_count: int = 0
     gravity_load_count: int = 0
+    # These fields describe the compiled execution plan, not merely the
+    # persistence-facing formulation. Keep them as presentation data so this
+    # DTO does not depend on solver implementation types.
+    geometry_mode: str | None = None
+    execution_strategy: str | None = None
+    material_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

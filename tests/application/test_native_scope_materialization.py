@@ -18,10 +18,11 @@ from fem.application.native_scope_materialization import (
 )
 from fem.application import native_scope_materialization as scope_materialization
 from fem.application.preprocessing import generate_fem_model
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     MaterialDefinition,
+    UnitContext,
 )
 from fem.geometry import (
     BoxGeometry,
@@ -296,3 +297,54 @@ def test_remeshing_invalidates_mesh_scopes_and_their_dependents() -> None:
     assert snapshot.model is None
     assert snapshot.artifact is None
     assert delta.effects
+
+
+@pytest.mark.gmsh
+def test_part_mesh_setting_change_invalidates_face_scope_before_remesh() -> None:
+    recipe = BoxGeometry("PartRemeshScope", 2.0, 1.0, 0.5)
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "Part remesh scope",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+    )
+    session.replace_part_mesh_settings(
+        "P1",
+        MeshSettings(0.5, cell_shape="tetrahedron"),
+    )
+    first_task = session.prepare_mesh_generation()
+    first_model = generate_fem_model(first_task)
+    assert session.accept_generated_model(
+        first_task.token,
+        first_model,
+    ).accepted
+
+    face = mesh_faces.boundary(first_model.mesh)[0]
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "LoadedFace",
+                (MeshEntityRef.face(*face, part_id="P1"),),
+            ),
+        )
+    )
+    assert session.snapshot().named_regions
+
+    delta = session.replace_part_mesh_settings(
+        "P1",
+        MeshSettings(0.2, cell_shape="tetrahedron"),
+    )
+    snapshot = session.snapshot()
+
+    assert not snapshot.named_regions
+    assert not snapshot.assignments
+    assert not snapshot.steps
+    assert snapshot.model is None
+    assert delta.effects
+
+    second_task = session.prepare_mesh_generation()
+    second_model = generate_fem_model(second_task)
+    assert session.accept_generated_model(
+        second_task.token,
+        second_model,
+    ).accepted

@@ -5,8 +5,8 @@ from copy import deepcopy
 import pytest
 
 from fem.application.session import ProjectSnapshot
-from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import (
     Edge,
     ElementEdge,
     ElementFace,

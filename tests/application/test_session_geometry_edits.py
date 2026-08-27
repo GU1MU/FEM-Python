@@ -12,14 +12,14 @@ from fem.application import (
     SectionDefinition,
     TransitionEffect,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     ElementSet,
     FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import (

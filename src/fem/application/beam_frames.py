@@ -8,17 +8,17 @@ from typing import Any
 
 import numpy as np
 
-from fem import materials
-from fem.elements import (
+from fem import analysis as analysis_domain
+from fem.model import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrame,
     BeamFrameField,
     BeamOrientation,
     BeamOrientationError,
-    get_element_capabilities,
     resolve_beam_frame,
     resolve_beam_frame_field,
 )
+from fem.elements import get_element_capabilities
 
 from .capabilities import RegionRef
 from .diagnostics import (
@@ -161,7 +161,7 @@ def resolve_effective_beam_frames(
         return _target_error_report(target, str(error))
 
     try:
-        resolution = materials.resolve_sections(
+        resolution = analysis_domain.resolve_sections(
             model,
             element_lookup=element_lookup,
         )
@@ -242,7 +242,7 @@ def resolve_effective_beam_frames(
 
         effective = resolution.for_element(element_id)
         properties = (
-            materials.restored_element_properties(
+            analysis_domain.restored_element_properties(
                 model,
                 element_id,
                 element,
@@ -495,17 +495,22 @@ def _declared_orientation_diagnostics(
             if element is None:
                 continue
             try:
-                resolved = materials.resolve_section_properties(
+                resolved = analysis_domain.resolve_section_properties(
                     str(element.type),
                     material.properties,
                     str(section.section_type),
                     properties,
                     baseline_properties=(
-                        materials.restored_element_properties(
+                        analysis_domain.restored_element_properties(
                             model,
                             element_id,
                             element,
                         )
+                    ),
+                    constitutive_model=getattr(
+                        material,
+                        "constitutive_model",
+                        None,
                     ),
                 )
             except (

@@ -16,8 +16,8 @@ from fem.application import (
     describe_model_capabilities,
     run_static_preflight,
 )
-from fem.application.results import project_output_requests
-from fem.core.model import AnalysisStep, OutputRequest
+from fem.results import project_output_requests
+from fem.model import AnalysisStep, OutputRequest
 from fem_gui.analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     OutputRequestDialog,

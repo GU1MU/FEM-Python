@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model import AnalysisStep, FEMModel
 from fem.io import inp
 
 from ..diagnostics import DiagnosticCode, has_errors, make_diagnostic

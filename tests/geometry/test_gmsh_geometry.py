@@ -9,16 +9,19 @@ from typing import Any, Sequence
 import numpy as np
 import pytest
 
-from fem import geometry, materials, post, steps
-from fem.core import FEMModel, Mesh2D, Mesh3D, validate_model
-from fem.elements import get_element_kernel
-from fem.elements.beam_section import parse_beam2_section
+from fem import geometry, materials, post
+from fem.model import authoring as steps
+from fem.model import add_material, assign_section
+from fem.model import FEMModel, Mesh2D, Mesh3D
+from fem.analysis import validate_model
+from fem.model.beam_section import parse_beam2_section
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.geometry._gmsh import backend as _gmsh_backend
 from fem.geometry._gmsh import predicates as _gmsh_predicates
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 from fem.selection import curves, edges, elements, nodes
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from tests.helpers.gmsh_fake import (
     _ENTITY_DEPENDENT_MESH_CONTROLS,
     _TRANSFORM_UNSAFE_ENTITY_CONTROLS,
@@ -4330,8 +4333,8 @@ def test_real_truss2_vertical_slice_matches_bar_solution_and_exports_vtk(
         E=elastic_modulus,
         nu=0.3,
     )
-    materials.add(model, steel)
-    materials.assign(model, steel, "MEMBERS", area=area)
+    add_material(model, steel)
+    assign_section(model, steel, "MEMBERS", area=area)
     load_step = steps.static("pull")
     steps.displacement(load_step, "FIXED", components=(1, 2, 3))
     fixed_id = model.node_sets["FIXED"].node_ids[0]
@@ -4396,8 +4399,8 @@ def test_real_beam2_vertical_slice_uses_fixed_rectangle_axes_and_line_load(
         E=elastic_modulus,
         nu=0.3,
     )
-    materials.add(model, steel)
-    materials.assign(
+    add_material(model, steel)
+    assign_section(
         model,
         steel,
         "MEMBERS",
@@ -4493,8 +4496,8 @@ def test_real_facade_rectangle_selects_regions_solves_and_survives_cleanup(
     model.node_sets[right.name] = right
     model.edges[right_edge.name] = right_edge
     elastic = materials.linear_elastic.material("elastic", E=1000.0, nu=0.3)
-    materials.add(model, elastic)
-    materials.assign(model, "elastic", "DOMAIN")
+    add_material(model, elastic)
+    assign_section(model, "elastic", "DOMAIN")
     load_step = steps.static("pull")
     steps.displacement(load_step, "LEFT", components=(1, 2))
     steps.edge_traction(load_step, "RIGHT", vector=(2.0, 0.0))

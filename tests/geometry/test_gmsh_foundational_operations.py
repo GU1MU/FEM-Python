@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from fem.core import Mesh2D, Mesh3D
+from fem.model import Mesh2D, Mesh3D
 from fem import geometry
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing

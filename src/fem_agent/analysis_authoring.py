@@ -14,14 +14,16 @@ from fem.application import (
     UnitContext,
     describe_model_capabilities,
 )
-from fem.application.results import project_output_request
-from fem.core.model import (
+from fem.analysis import resolve_formulation
+from fem.results import project_output_request
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
+    StaticFormulation,
 )
 
 from .authoring import AgentProposal, AuthoringContext, ModelPatch, ProposalKind
@@ -509,6 +511,7 @@ class LinearStaticAnalysis:
             surface_loads=tuple(surface_loads),
             outputs=outputs,
             metadata={"nlgeom": False},
+            formulation=StaticFormulation.LINEAR,
         )
 
 
@@ -669,8 +672,7 @@ def require_non_destructive_a5_batch(
         type(step) is not AnalysisStep
         or type(step.procedure) is not str
         or step.procedure != "static"
-        or "nlgeom" not in step.metadata
-        or step.metadata["nlgeom"] is not False
+        or resolve_formulation(step) is not StaticFormulation.LINEAR
     ):
         raise AnalysisAuthoringError(
             "A5 requires one linear static step with NLGEOM disabled"

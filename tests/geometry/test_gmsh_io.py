@@ -10,10 +10,10 @@ from typing import get_type_hints
 import numpy as np
 import pytest
 
-from fem.core import Mesh2D, Mesh3D
-from fem.elements import get_element_kernel
-from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
-from fem.elements.tetrahedron import TET10_NATURAL_NODE_COORDS
+from fem.model import Mesh2D, Mesh3D
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.elements.hex20 import HEX20_NATURAL_NODE_COORDS
+from fem.elements.tet10 import TET10_NATURAL_NODE_COORDS
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 

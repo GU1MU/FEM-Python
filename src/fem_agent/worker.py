@@ -23,7 +23,7 @@ import numpy as np
 import scipy
 
 from fem import materials
-from fem.core.result import ModelResult
+from fem.results import ModelResult
 
 from .artifacts import (
     ArtifactStore,
@@ -1486,7 +1486,9 @@ def execute_result_query_request(
     if record.spec.unit_context is None:
         raise ValueError("the completed run has no declared unit context")
 
-    materials.apply_sections(imported.model)
+    from fem.analysis import apply_sections
+
+    apply_sections(imported.model)
     if _solution_model_sha256(imported.model) != expected_model_sha256:
         raise ValueError(
             "the reconstructed model layout does not match the saved "

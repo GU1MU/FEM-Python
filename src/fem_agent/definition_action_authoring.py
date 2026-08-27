@@ -27,11 +27,11 @@ from fem.application import (
     evaluate_native_assignment_candidate,
     validate_logical_reference,
 )
-from fem.application.results import project_output_request
+from fem.results import project_output_request
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
-from fem.core.model import (
+from fem.model import (
     BodyForce,
     DisplacementConstraint,
     EdgeLoad,
@@ -40,13 +40,18 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
+    StaticFormulation,
 )
 from fem.geometry import (
     LogicalEntityRef,
     geometry_dimension,
     namespace_part_logical_id,
 )
-from fem.materials import BEAM_SECTION_TYPES, resolve_section_properties
+from fem.analysis import (
+    BEAM_SECTION_TYPES,
+    resolve_formulation,
+    resolve_section_properties,
+)
 
 from .analysis_authoring import (
     AnalysisAuthoringError,
@@ -346,7 +351,10 @@ def _create_analysis_child_patch(
     )
     if steps[0].name != step_name:
         raise ValueError("analysis step is missing or ambiguous")
-    if steps[0].procedure != "static" or steps[0].metadata.get("nlgeom") is not False:
+    if (
+        steps[0].procedure != "static"
+        or resolve_formulation(steps[0]) is not StaticFormulation.LINEAR
+    ):
         raise ValueError("analysis actions require one linear static NLGEOM=false step")
     dimension = _part_dimension(snapshot)
     dofs_per_node = _model_dofs_per_node(snapshot)

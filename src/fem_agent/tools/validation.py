@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any
 
-from fem.core import validate_model
+from fem.analysis import resolve_formulation, validate_model
+from fem.model import StaticFormulation
 
 from ..diagnostics import DiagnosticCode, exception_diagnostic, make_diagnostic
 from ..schemas import Diagnostic
@@ -79,24 +80,17 @@ def _unsupported_step_diagnostic(step: Any) -> Diagnostic | None:
             remediation="Provide exactly one linear static analysis step.",
         )
 
-    metadata = getattr(step, "metadata", {})
-    if not isinstance(metadata, Mapping):
-        return make_diagnostic(
+    try:
+        formulation = resolve_formulation(step)
+    except Exception as error:
+        return exception_diagnostic(
             DiagnosticCode.INVALID_MODEL,
-            f"Analysis step {name!r} metadata must be a mapping.",
+            error,
             source=_SOURCE,
             step=name,
-            remediation="Correct the imported analysis-step metadata.",
+            remediation="Provide a typed static analysis formulation.",
         )
-    nlgeom = next(
-        (
-            value
-            for key, value in metadata.items()
-            if str(key).strip().casefold() == "nlgeom"
-        ),
-        None,
-    )
-    if _truthy_option(nlgeom):
+    if formulation is StaticFormulation.NONLINEAR:
         return make_diagnostic(
             DiagnosticCode.UNSUPPORTED_PROCEDURE,
             f"Analysis step {name!r} enables geometric nonlinearity; "
@@ -106,18 +100,6 @@ def _unsupported_step_diagnostic(step: Any) -> Diagnostic | None:
             remediation="Use a static step with NLGEOM disabled.",
         )
     return None
-
-
-def _truthy_option(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        normalized = value.strip().casefold()
-        if normalized in {"", "0", "false", "no", "off"}:
-            return False
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-    return bool(value)
 
 
 # A descriptive alias is useful to worker code that already imported the

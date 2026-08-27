@@ -4,7 +4,7 @@ from math import isfinite
 
 import pytest
 
-from fem.elements.beam_section import parse_beam2_section
+from fem.model.beam_section import parse_beam2_section
 
 
 def _rectangle():

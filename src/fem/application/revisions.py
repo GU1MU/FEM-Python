@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from .results.data import ResultMaterializationSnapshot
-    from .results.fields import FieldMaterializationKey
-    from .results.fields import ResultSourceKey
+    from fem.results.data import ResultMaterializationSnapshot
+    from fem.results.fields import FieldMaterializationKey
+    from fem.results.fields import ResultSourceKey
     from .runs import ResultRecord
 
 
@@ -93,7 +93,7 @@ class TaskToken:
         model_revision = dict(self.dependency_revisions).get("model_revision")
         if model_revision is None:
             return None
-        from .results.fields import ResultSourceKey
+        from fem.results.fields import ResultSourceKey
 
         return ResultSourceKey(
             result_id=self.result_id,
@@ -192,7 +192,12 @@ class ResultTaskSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ResultMaterializationTaskSnapshot:
-    """Detached provider input for one generation-bound field recovery."""
+    """Generation-bound provider input for one field recovery task.
+
+    Session callers normally receive a detached record.  GUI display tasks may
+    retain the accepted immutable record when their worker captures the live
+    provider instead of reading this snapshot's record.
+    """
 
     token: TaskToken
     run_id: str

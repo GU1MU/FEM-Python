@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from fem.io import inp as abaqus
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from tests.helpers.file_builders import write_inp
 
 

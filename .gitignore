@@ -1,4 +1,4 @@
-results/
+/results/
 !/src/fem/application/results/
 !/src/fem/application/results/**
 !/tests/application/results/
@@ -11,11 +11,15 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .vscode/
+.venv/
 .env
+opencode.jsonc
 ex.py
 *.txt
 !/tests/fixtures/**
 data/
 scripts/
-docs/
+/docs/*
+/模型-*.fempy
+/启动GUI.cmd
 AGENTS.md

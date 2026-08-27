@@ -5,11 +5,14 @@ import pickle
 import numpy as np
 import pytest
 
-from fem import materials, selection, steps
-from fem.core import model as core_model
-from fem.core.dof import DofMap
-from fem.core.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
-from fem.core.model import (
+from fem import materials, selection
+from fem.analysis.compilation import apply_sections
+from fem.model import authoring as steps
+from fem.model import add_material, assign_section
+from fem import model as core_model
+from fem.model.node_dofs import NodeDofMap
+from fem.model.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -46,7 +49,7 @@ from tests.helpers.mesh_builders import (
 def test_dof_map_handles_mesh_nodes_independent_of_dimension():
     nodes = [Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)]
 
-    dof_map = DofMap.from_nodes(nodes, dofs_per_node=2)
+    dof_map = NodeDofMap.from_nodes(nodes, dofs_per_node=2)
 
     assert dof_map.node_ids == [10, 20]
     assert dof_map.node_dofs(10) == [0, 1]
@@ -58,9 +61,9 @@ def test_dof_map_rejects_duplicate_nodes_and_invalid_components():
     nodes = [Node2D(1, 0.0, 0.0), Node2D(1, 1.0, 0.0)]
 
     with pytest.raises(ValueError):
-        DofMap.from_nodes(nodes, dofs_per_node=2)
+        NodeDofMap.from_nodes(nodes, dofs_per_node=2)
 
-    dof_map = DofMap.from_nodes([Node2D(1, 0.0, 0.0)], dofs_per_node=2)
+    dof_map = NodeDofMap.from_nodes([Node2D(1, 0.0, 0.0)], dofs_per_node=2)
     with pytest.raises(IndexError):
         dof_map.global_dof(1, -1)
     with pytest.raises(IndexError):
@@ -320,10 +323,10 @@ def test_model_element_info_returns_type_material_and_properties_by_element_id()
     model.element_sets["tets"] = ElementSet("tets", (2,))
     steel = materials.linear_elastic.material("steel", E=210.0, nu=0.3)
     aluminum = materials.linear_elastic.material("aluminum", E=120.0, nu=0.25)
-    materials.add(model, steel)
-    materials.add(model, aluminum)
-    materials.assign(model, "steel", "hexes", rho=7.85)
-    materials.assign(model, "aluminum", "tets", rho=2.7)
+    add_material(model, steel)
+    add_material(model, aluminum)
+    assign_section(model, "steel", "hexes", rho=7.85)
+    assign_section(model, "aluminum", "tets", rho=2.7)
 
     info = core_model.model_element_info(model, 2)
 
@@ -347,14 +350,14 @@ def test_apply_sections_stamps_stable_stress_region_signatures():
     model = FEMModel(mesh=mesh)
     model.element_sets["triangles"] = ElementSet("triangles", (1,))
     model.element_sets["quadrilaterals"] = ElementSet("quadrilaterals", (2,))
-    materials.add(
+    add_material(
         model,
         MaterialDefinition(
             "steel",
             {"E": 210.0, "nu": 0.3, "metadata": {"grade": "A"}},
         ),
     )
-    materials.assign(
+    assign_section(
         model,
         "steel",
         "triangles",
@@ -362,7 +365,7 @@ def test_apply_sections_stamps_stable_stress_region_signatures():
         plane_type="stress",
         thickness=1.5,
     )
-    materials.assign(
+    assign_section(
         model,
         "steel",
         "quadrilaterals",
@@ -371,7 +374,7 @@ def test_apply_sections_stamps_stable_stress_region_signatures():
         thickness=1.5,
     )
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     first, second = mesh.elements
     assert first.props["_stress_material_signature"] == second.props[

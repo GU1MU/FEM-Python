@@ -19,12 +19,12 @@ from .diagnostics import (
     PreflightSeverity,
     PreflightStage,
 )
-from .results.output_requests import (
+from fem.results.output_requests import (
     OutputRequestProjection,
     ResultCapabilityCatalog,
     project_output_request,
 )
-from .results.registry import (
+from fem.results.registry import (
     classify_result_element_types,
     classify_result_model,
 )
@@ -35,7 +35,7 @@ from .native_mesh_contract import (
 )
 
 if TYPE_CHECKING:
-    from fem.core.model import LineLoad
+    from fem.model import LineLoad
 
     from .definitions import ModelDefinitions, RegionAssignment
 
@@ -434,7 +434,7 @@ def evaluate_authoring_candidate(
     """Evaluate an uninstalled assignment or line load on detached state."""
 
     normalized_operation = _normalize_operation(operation)
-    from fem.core.model import LineLoad
+    from fem.model import LineLoad
 
     from .definitions import RegionAssignment
 
@@ -589,10 +589,10 @@ def _evaluate_line_load_candidate(
     compiled = compile_result.require_model()
 
     if step_name is not None:
-        from fem.boundary.step import get_step
+        from fem.model import resolve_analysis_step
 
         try:
-            selected_step = get_step(compiled, step_name)
+            selected_step = resolve_analysis_step(compiled, step_name)
         except Exception as error:
             return AuthoringCapability(
                 operation,
@@ -2262,7 +2262,7 @@ def _supports_section_preset(
 
 
 def _section_presets(element_family: str) -> tuple[str, ...]:
-    from fem.materials import section_presets_for_element_family
+    from fem.analysis import section_presets_for_element_family
 
     return section_presets_for_element_family(element_family)
 

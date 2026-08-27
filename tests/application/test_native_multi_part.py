@@ -10,7 +10,7 @@ from fem.application import (
     SectionDefinition,
     SessionStateError,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     MaterialDefinition,

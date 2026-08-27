@@ -16,8 +16,8 @@ from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
     NATIVE_SCOPE_CATALOG_KEY,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel, MaterialDefinition
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel, MaterialDefinition
 from fem.geometry import PlateWithHoleGeometry, RectangleGeometry
 from fem.mesh.settings import MeshSettings
 from fem.selection import edges as mesh_edges

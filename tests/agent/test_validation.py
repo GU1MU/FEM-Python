@@ -1,4 +1,4 @@
-from fem.core.model import NodeSet
+from fem.model import NodeSet, StaticFormulation
 
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.tools.validation import validate_analysis
@@ -46,6 +46,18 @@ def test_validate_analysis_rejects_geometric_nonlinearity():
     model.steps[0].metadata["NLGEOM"] = "YES"
 
     diagnostics = validate_analysis(model, "pull")
+
+    assert diagnostics[0].code == DiagnosticCode.UNSUPPORTED_PROCEDURE.value
+    assert "geometric nonlinearity" in diagnostics[0].message
+
+
+def test_validate_analysis_uses_typed_formulation_over_persistence_mirror():
+    model = make_static_pull_truss_model()
+    step = model.steps[0]
+    step.formulation = StaticFormulation.NONLINEAR
+    step.metadata["NLGEOM"] = False
+
+    diagnostics = validate_analysis(model, step)
 
     assert diagnostics[0].code == DiagnosticCode.UNSUPPORTED_PROCEDURE.value
     assert "geometric nonlinearity" in diagnostics[0].message

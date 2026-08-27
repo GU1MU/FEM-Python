@@ -12,11 +12,13 @@ from .errors import (
 from .mesher import Mesher
 from .specs import AutoMeshSpec, MeshSpec
 from .types import GmshMeshRef, MeshFieldRef
+from . import importer
 
 
 __all__ = [
     "AutoMeshSpec",
     "GmshMeshRef",
+    "importer",
     "MeshCellShapeError",
     "MeshControlConflictError",
     "MeshFieldOwnershipError",

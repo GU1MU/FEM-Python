@@ -3,9 +3,9 @@ import csv
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
 from fem.io import csv as csv_io
 from fem.post import stress, vtk
 

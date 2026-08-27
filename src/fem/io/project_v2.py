@@ -22,7 +22,7 @@ from fem.application.project_validation import (
     validate_native_project_inputs,
 )
 from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
+from fem.model import BEAM_LOCAL_Y_REFERENCE_KEY
 from fem.geometry.recipe_topology import (
     TOPOLOGY_REFERENCE_CONTRACT,
     TopologyFingerprint,

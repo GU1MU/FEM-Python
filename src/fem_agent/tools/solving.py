@@ -8,7 +8,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Any
 
-from fem.solvers import static_linear
+from fem.application.analysis_execution import solve_analysis as execute_analysis
 
 from ..diagnostics import DiagnosticCode, exception_diagnostic, make_diagnostic
 from ..schemas import Diagnostic, DiagnosticSeverity
@@ -36,7 +36,7 @@ def solve_analysis(model: Any, step: Any) -> SolveOutcome:
     try:
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
-            result = static_linear.solve(model, step=step)
+            result = execute_analysis(model, step=step)
     except Exception as error:
         return SolveOutcome(
             result=None,

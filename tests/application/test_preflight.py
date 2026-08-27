@@ -17,15 +17,15 @@ from fem.application import (
     TaskToken,
     run_static_preflight,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BEAM_LOCAL_Y_REFERENCE_KEY,
     DisplacementConstraint,
     LineLoad,
     NodalLoad,
     OutputRequest,
     SectionAssignment,
 )
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
 _FIXTURES = (
@@ -81,8 +81,8 @@ def test_quick_preflight_skips_stiffness_without_mutating_model(
     before = deepcopy(model.mesh.elements[0].props)
     calls = []
     monkeypatch.setattr(
-        preflight_module.static_linear,
-        "validate_stiffness",
+        preflight_module.DEFAULT_ANALYSIS_EXECUTOR,
+        "validate_prepared",
         lambda *_args, **_kwargs: calls.append(True),
     )
 
@@ -116,13 +116,13 @@ def test_large_model_quick_check_avoids_per_element_resolution(
         unexpected,
     )
     monkeypatch.setattr(
-        preflight_module.materials,
+        preflight_module.analysis_domain,
         "resolve_sections",
         unexpected,
     )
     monkeypatch.setattr(
-        preflight_module.static_linear,
-        "validate_stiffness",
+        preflight_module.DEFAULT_ANALYSIS_EXECUTOR,
+        "validate_prepared",
         unexpected,
     )
 

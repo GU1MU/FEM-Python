@@ -11,7 +11,7 @@ from fem.application import (
     RunStatus,
     describe_session_authoring,
 )
-from fem.core.model import AnalysisStep, OutputRequest
+from fem.model import AnalysisStep, OutputRequest
 from fem.geometry import (
     LogicalEntityRef,
     RectangleGeometry,

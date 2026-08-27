@@ -18,13 +18,14 @@ from fem.application import (
     UnitContext,
     describe_model_capabilities,
 )
-from fem.application.results import project_output_request
-from fem.core.model import (
+from fem.results import project_output_request
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
     MaterialDefinition,
     OutputRequest,
+    StaticFormulation,
 )
 
 from .authoring import AuthoringContext, ModelPatch
@@ -228,6 +229,7 @@ def create_incremental_definition_patch(
                 name,
                 procedure="static",
                 metadata={"nlgeom": False},
+                formulation=StaticFormulation.LINEAR,
             ),
         )
         created_names = (name,)

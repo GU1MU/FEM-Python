@@ -1,3 +1,4 @@
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from dataclasses import FrozenInstanceError
 
 import pytest
@@ -7,8 +8,6 @@ from fem.elements import (
     ElementCapabilityRequirement,
     ElementCapabilityStatus,
     get_element_capabilities,
-    get_element_kernel,
-    register_element_kernel,
     registered_element_capabilities,
 )
 
@@ -200,53 +199,6 @@ def test_unknown_or_unsupported_element_capability_queries_fail_closed(
         get_element_capabilities(element_type)
 
 
-def test_registration_requires_a_descriptor_without_partial_registration():
-    class MissingCapabilitiesKernel:
-        canonical_type = "MissingCapabilitiesKernel"
-        aliases = ("MissingCapabilitiesAlias",)
-
-    with pytest.raises(ValueError, match="requires a capability descriptor"):
-        register_element_kernel(MissingCapabilitiesKernel())
-
-    for name in ("MissingCapabilitiesKernel", "MissingCapabilitiesAlias"):
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_kernel(name)
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_capabilities(name)
-
-
-def test_registration_rejects_canonical_identity_mismatch_atomically():
-    class IdentityKernel:
-        canonical_type = "IdentityKernel"
-        aliases = ()
-
-    descriptor = _descriptor(canonical_type="DifferentIdentity")
-
-    with pytest.raises(ValueError, match="canonical type must exactly match"):
-        register_element_kernel(IdentityKernel(), descriptor)
-
-    with pytest.raises(NotImplementedError, match="Unsupported element type"):
-        get_element_kernel("IdentityKernel")
-
-
-def test_registration_rejects_alias_mismatch_atomically():
-    class AliasKernel:
-        canonical_type = "AliasKernel"
-        aliases = ("KernelAlias",)
-
-    descriptor = _descriptor(
-        canonical_type="AliasKernel",
-        aliases=("DescriptorAlias",),
-    )
-
-    with pytest.raises(ValueError, match="aliases must exactly match"):
-        register_element_kernel(AliasKernel(), descriptor)
-
-    for name in ("AliasKernel", "KernelAlias", "DescriptorAlias"):
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_capabilities(name)
-
-
 def test_descriptor_construction_rejects_missing_or_conflicting_metadata():
     with pytest.raises(ValueError, match="DOF label count"):
         _descriptor(dof_labels=("U1",))
@@ -258,24 +210,6 @@ def test_descriptor_construction_rejects_missing_or_conflicting_metadata():
         _descriptor(topological_dimension=3, spatial_dimension=2)
     with pytest.raises(TypeError, match="must be a tuple"):
         _descriptor(load_kinds=["node"])  # type: ignore[arg-type]
-
-
-def test_registration_rejects_existing_alias_without_partial_registration():
-    class ConflictingKernel:
-        canonical_type = "CapabilityConflictKernel"
-        aliases = ("c3d8",)
-
-    descriptor = _descriptor(
-        canonical_type="CapabilityConflictKernel",
-        aliases=("c3d8",),
-    )
-
-    with pytest.raises(ValueError, match="already registered"):
-        register_element_kernel(ConflictingKernel(), descriptor)
-
-    with pytest.raises(NotImplementedError, match="Unsupported element type"):
-        get_element_capabilities("CapabilityConflictKernel")
-    assert get_element_capabilities("c3d8").canonical_type == "Hex8"
 
 
 def _descriptor(

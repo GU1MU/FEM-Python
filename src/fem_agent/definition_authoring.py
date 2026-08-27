@@ -23,7 +23,8 @@ from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
     mesh_references_for_logical_entities,
 )
-from fem.core.model import (
+from fem.analysis import resolve_formulation
+from fem.model import (
     AnalysisStep,
     BodyForce,
     DisplacementConstraint,
@@ -34,6 +35,7 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
+    StaticFormulation,
 )
 from fem.geometry import (
     LogicalEntityRef,
@@ -1137,6 +1139,7 @@ def _encode_step(step: object) -> dict[str, object]:
     return {
         "name": step.name,
         "procedure": step.procedure,
+        "formulation": resolve_formulation(step).value,
         "metadata": deepcopy(dict(step.metadata)),
         "boundaries": [
             {
@@ -1223,6 +1226,7 @@ def _decode_step(value: object) -> AnalysisStep:
         {
             "name",
             "procedure",
+            "formulation",
             "metadata",
             "boundaries",
             "cloads",
@@ -1238,6 +1242,9 @@ def _decode_step(value: object) -> AnalysisStep:
     return AnalysisStep(
         name=_strict_string(data["name"], "analysis step name"),
         procedure=_strict_string(data["procedure"], "analysis procedure"),
+        formulation=StaticFormulation(
+            _strict_string(data["formulation"], "analysis formulation")
+        ),
         metadata=deepcopy(
             dict(_require_mapping(data["metadata"], "step metadata"))
         ),

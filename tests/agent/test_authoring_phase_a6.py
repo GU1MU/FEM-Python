@@ -15,7 +15,7 @@ from fem.application import (
     UnitContext,
     ValidationRecord,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     NodalLoad,

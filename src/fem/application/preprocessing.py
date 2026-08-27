@@ -10,8 +10,8 @@ from typing import Any, Protocol
 from collections.abc import Callable
 
 from fem import geometry
-from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from fem.core.model import FEMModel
+from fem.model import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import FEMModel
 from fem.geometry.measurements import resolve_target_radius
 from fem.geometry.body_relations import require_meshable_body_relations
 from fem.geometry.recipe_analysis import (
@@ -35,8 +35,8 @@ from fem.geometry.part_namespace import (
     part_id_from_logical_id,
     strip_part_reference,
 )
-from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
+from fem.mesh.gmsh import importer as gmsh_io
 from fem.mesh.settings import MeshSettings
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
@@ -220,31 +220,32 @@ def generate_fem_model(
 
             mesh_size = mesh_settings.size
             refinements: list[Any] = []
-            for control in mesh_settings.local_controls:
-                entities = topology_resolver.resolve(
-                    cad,
-                    recipe,
-                    topology,
-                    control.target,
-                )
-                scale = (
-                    mesh_settings.size
-                    if control.falloff.reference == "global_size"
-                    else resolve_target_radius(recipe, control.target)
-                )
-                distance = mesher.distance_field(
-                    **_distance_field_sources(entities),
-                    sampling=100,
-                )
-                refinements.append(
-                    mesher.threshold_field(
-                        distance,
-                        size_min=control.size,
-                        size_max=mesh_settings.size,
-                        dist_min=scale * control.falloff.start_factor,
-                        dist_max=scale * control.falloff.end_factor,
+            if mesh_settings.cell_shape != "hexahedron":
+                for control in mesh_settings.local_controls:
+                    entities = topology_resolver.resolve(
+                        cad,
+                        recipe,
+                        topology,
+                        control.target,
                     )
-                )
+                    scale = (
+                        mesh_settings.size
+                        if control.falloff.reference == "global_size"
+                        else resolve_target_radius(recipe, control.target)
+                    )
+                    distance = mesher.distance_field(
+                        **_distance_field_sources(entities),
+                        sampling=100,
+                    )
+                    refinements.append(
+                        mesher.threshold_field(
+                            distance,
+                            size_min=control.size,
+                            size_max=mesh_settings.size,
+                            dist_min=scale * control.falloff.start_factor,
+                            dist_max=scale * control.falloff.end_factor,
+                        )
+                    )
             if refinements:
                 background = (
                     refinements[0]
@@ -695,18 +696,88 @@ def _configure_hexahedral_mesh(
         for entity in cad.boundary(topology.boundary, combined=False)
         if entity.dimension == 1
     )
-    node_count = max(
-        2,
-        int(math.ceil(resolver.characteristic_size(recipe) / settings.size)) + 1,
-    )
+    curve_lengths = {
+        (int(curve.dimension), int(curve.tag)): _structured_curve_length(
+            cad,
+            curve,
+        )
+        for curve in curves
+    }
+    local_counts_by_length: dict[float, int] = {}
+    boundary_curve_keys = {
+        (int(curve.dimension), int(curve.tag)) for curve in curves
+    }
+    for control in settings.local_controls:
+        if control.target.kind != "edge":
+            raise ValueError(
+                "结构化六面体局部网格控制只支持边；面和点控制需要非结构化网格"
+            )
+        targets = _unique_entities(
+            resolver.resolve(cad, recipe, topology, control.target)
+        )
+        if any(entity.dimension != 1 for entity in targets):
+            raise TopologyResolutionError(
+                f"{control.target.logical_id} 必须解析为结构化体边界边"
+            )
+        for target in targets:
+            key = (int(target.dimension), int(target.tag))
+            if key not in boundary_curve_keys:
+                raise TopologyResolutionError(
+                    f"{control.target.logical_id} 必须解析为结构化体边界边"
+                )
+            length_key = round(curve_lengths[key], 12)
+            node_count = max(
+                2,
+                int(math.ceil(curve_lengths[key] / control.size)) + 1,
+            )
+            local_counts_by_length[length_key] = max(
+                local_counts_by_length.get(length_key, 2),
+                node_count,
+            )
     for curve in curves:
-        mesher.transfinite_curve(curve, num_nodes=node_count)
+        key = (int(curve.dimension), int(curve.tag))
+        length_key = round(curve_lengths[key], 12)
+        node_count = max(
+            _structured_curve_node_count(
+                curve_lengths[key],
+                settings.size,
+            ),
+            local_counts_by_length.get(length_key, 2),
+        )
+        mesher.transfinite_curve(
+            curve,
+            num_nodes=node_count,
+        )
     for surface in topology.boundary:
         mesher.transfinite_surface(surface)
         mesher.recombine(surface)
     if len(topology.domain) != 1:
         raise TopologyResolutionError("结构化六面体网格要求唯一计算域")
     mesher.transfinite_volume(topology.domain[0])
+
+
+def _structured_curve_length(
+    cad: Any,
+    curve: Any,
+) -> float:
+    """Return the length of one straight structured-mesh curve."""
+
+    endpoints = tuple(cad.boundary((curve,), combined=False))
+    if len(endpoints) != 2:
+        raise TopologyResolutionError(
+            "结构化六面体网格要求每条边都是可测量的直线"
+        )
+    coordinates = tuple(cad.center_of_mass(point) for point in endpoints)
+    length = math.dist(coordinates[0], coordinates[1])
+    if not math.isfinite(length) or length <= 0.0:
+        raise TopologyResolutionError("结构化六面体网格发现无效边长")
+    return length
+
+
+def _structured_curve_node_count(length: float, size: float) -> int:
+    """Return a transfinite node count from one curve length and size."""
+
+    return max(2, int(math.ceil(length / size)) + 1)
 
 
 def _distance_field_sources(

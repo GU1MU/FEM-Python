@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from fem.io.inp import read
-from fem.elements import get_element_kernel
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.post.stress import beam
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 
 
 FIXTURES = (

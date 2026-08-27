@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     Edge,
     ElementEdge,
@@ -11,7 +11,7 @@ from fem.core.model import (
     NodeSet,
     Surface,
 )
-from fem.core.result import ModelResult
+from fem.results import ModelResult
 from fem.post.stress import beam, field, invariants
 
 from fem_agent.diagnostics import DiagnosticCode

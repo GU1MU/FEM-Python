@@ -1,4 +1,4 @@
-from fem.core.mesh import (
+from fem.model.mesh import (
     Element2D,
     Element3D,
     Mesh2D,
@@ -328,7 +328,7 @@ def make_hex8_stiffness_mesh():
 
 
 def make_hex20_stiffness_mesh(curved=False):
-    from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
+    from fem.elements.hex20 import HEX20_NATURAL_NODE_COORDS
 
     nodes = [
         Node3D(

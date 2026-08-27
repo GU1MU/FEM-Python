@@ -6,8 +6,8 @@ import math
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrame,
     BeamOrientation,

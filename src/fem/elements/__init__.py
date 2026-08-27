@@ -1,87 +1,48 @@
+"""Reference elements: topology, interpolation, quadrature, and DOF shape."""
+
 from __future__ import annotations
 
-from .base import ElementKernel
-from .beam_frame import (
-    BEAM_ELEMENT_FRAME_FIELD_KEY,
-    BEAM_DEFAULT_LOCAL_Y_REFERENCE,
-    BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
-    BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
-    BEAM_FRAME_COMPARISON_TOLERANCE,
-    BEAM_FRAME_FIELD_KEY,
-    BEAM_FRAME_FIELD_REFERENCE_KEY,
-    BEAM_FRAME_INTEGRATION_ORDER,
-    BEAM_FRAME_INTERPOLATION,
-    BEAM_LOCAL_Y_REFERENCE_KEY,
-    BEAM_ORIENTATION_PARALLEL_TOLERANCE,
-    BeamEndFrame,
-    BeamFrame,
-    BeamFrameField,
-    BeamFrameFieldError,
-    BeamFrameFieldInvalidError,
-    BeamFrameVariationError,
-    BeamOrientation,
-    BeamOrientationError,
-    BeamOrientationInvalidError,
-    BeamOrientationParallelError,
-    BeamOrientationUnsupportedTargetError,
-    parse_beam_orientation,
-    resolve_beam_frame,
-    resolve_beam_frame_field,
-    validate_beam_frame_field,
-    validate_beam_frame_fields,
-)
-from .beam_section import BeamIntegrationPointForces
 from .capabilities import (
     ElementCapabilityDescriptor,
     ElementCapabilityLimitation,
     ElementCapabilityRequirement,
     ElementCapabilityStatus,
 )
+from .beam2 import Beam2Definition
+from .contracts import ElementDefinition
+from .hex20 import Hex20Definition
+from .hex8 import Hex8Definition
+from .quad4 import Quad4Definition
+from .quad8 import Quad8Definition
+from .tet10 import Tet10Definition
+from .tet4 import Tet4Definition
+from .tri3 import Tri3Definition
+from .tri6 import Tri6Definition
+from .truss2 import Truss2Definition
 from .registry import (
     canonical_element_type,
+    get_element_definition,
     get_element_capabilities,
-    get_element_kernel,
-    register_element_kernel,
     registered_element_capabilities,
 )
 
 __all__ = [
-    "BEAM_DEFAULT_LOCAL_Y_REFERENCE",
-    "BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY",
-    "BEAM_ELEMENT_FRAME_FIELD_KEY",
-    "BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY",
-    "BEAM_FRAME_COMPARISON_TOLERANCE",
-    "BEAM_FRAME_FIELD_KEY",
-    "BEAM_FRAME_FIELD_REFERENCE_KEY",
-    "BEAM_FRAME_INTEGRATION_ORDER",
-    "BEAM_FRAME_INTERPOLATION",
-    "BEAM_LOCAL_Y_REFERENCE_KEY",
-    "BEAM_ORIENTATION_PARALLEL_TOLERANCE",
-    "BeamEndFrame",
-    "BeamFrame",
-    "BeamFrameField",
-    "BeamFrameFieldError",
-    "BeamFrameFieldInvalidError",
-    "BeamFrameVariationError",
-    "BeamIntegrationPointForces",
-    "BeamOrientation",
-    "BeamOrientationError",
-    "BeamOrientationInvalidError",
-    "BeamOrientationParallelError",
-    "BeamOrientationUnsupportedTargetError",
     "ElementCapabilityDescriptor",
     "ElementCapabilityLimitation",
     "ElementCapabilityRequirement",
     "ElementCapabilityStatus",
-    "ElementKernel",
+    "ElementDefinition",
+    "Beam2Definition",
+    "Hex20Definition",
+    "Hex8Definition",
+    "Quad4Definition",
+    "Quad8Definition",
+    "Tet10Definition",
+    "Tet4Definition",
+    "Tri3Definition",
+    "Tri6Definition",
     "canonical_element_type",
+    "get_element_definition",
     "get_element_capabilities",
-    "get_element_kernel",
-    "parse_beam_orientation",
-    "register_element_kernel",
     "registered_element_capabilities",
-    "resolve_beam_frame",
-    "resolve_beam_frame_field",
-    "validate_beam_frame_field",
-    "validate_beam_frame_fields",
 ]

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from fem import geometry
-from fem.core import Mesh2D
+from fem.model import Mesh2D
 from fem.geometry._gmsh import backend as _gmsh_backend
 from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing

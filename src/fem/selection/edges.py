@@ -3,7 +3,7 @@ from __future__ import annotations
 import builtins
 from typing import Any
 
-from ..core.model import Edge, ElementEdge
+from fem.model import Edge, ElementEdge
 from .nodes import _coord_matches
 
 

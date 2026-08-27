@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from fem.core.mesh import MeshProtocol
+from fem.model import MeshProtocol
 from fem.elements.registry import get_element_capabilities
 
 
@@ -36,7 +36,7 @@ def analyze_mesh(mesh: MeshProtocol) -> MeshQualityReport:
     """
 
     if not isinstance(mesh, MeshProtocol):
-        raise TypeError("mesh must implement fem.core.mesh.MeshProtocol")
+        raise TypeError("mesh must implement fem.model.mesh.MeshProtocol")
     coordinates = {
         int(node.id): np.asarray(
             (float(node.x), float(node.y), float(getattr(node, "z", 0.0))),

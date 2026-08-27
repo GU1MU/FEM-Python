@@ -12,14 +12,14 @@ from fem.application.definitions import (
 )
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BeamOrientation,
     DisplacementConstraint,
     LineLoad,
     MaterialDefinition,
     NodalLoad,
 )
-from fem.elements import BeamOrientation
 from fem.geometry import (
     LogicalEntityRef,
     RectangleGeometry,

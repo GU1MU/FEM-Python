@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import get_element_kernel, resolve_beam_frame
-from fem.elements.beam_frame import BeamFrameField
-from fem.elements.beam_section import parse_beam2_section
-from fem.elements.line import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import BeamFrameField, resolve_beam_frame
+from fem.model.beam_section import parse_beam2_section
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.physics.mechanics.operators.line import (
     _beam2_integrated_line_load,
     _beam2_variable_stiffness,
 )

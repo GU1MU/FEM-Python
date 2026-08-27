@@ -1,12 +1,13 @@
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 import numpy as np
 import pytest
 
-from fem import steps
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core import validate_model
-from fem.core.model import (
+from fem.model import authoring as steps
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.analysis import validate_model
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
@@ -15,15 +16,14 @@ from fem.core.model import (
     LineLoad,
     NodalLoad,
 )
-from fem.core.result import ModelResult
-from fem.elements import (
+from fem.results import ModelResult
+from fem.model import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
-    get_element_kernel,
     resolve_beam_frame,
 )
-from fem.elements.beam_section import parse_beam2_section
+from fem.model.beam_section import parse_beam2_section
 from fem.post.stress import beam as beam_stress
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 
 
 def _beam_model(*, inclined=False, orientation=None):

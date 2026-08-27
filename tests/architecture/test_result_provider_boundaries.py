@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 GUI_ROOT = SRC_ROOT / "fem_gui"
 POST_ROOT = SRC_ROOT / "fem" / "post"
-PROVIDER_ROOT = SRC_ROOT.joinpath(*"fem.application.results".split("."))
+PROVIDER_ROOT = SRC_ROOT.joinpath(*"fem.results".split("."))
 AGENT_ROOT = SRC_ROOT / "fem_agent"
 COMPATIBILITY_LEDGER = (
     PROJECT_ROOT

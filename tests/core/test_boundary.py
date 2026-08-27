@@ -3,12 +3,13 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from fem import boundary
-from fem.boundary.condition import BoundaryCondition
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step, effective_step_boundaries
-from fem.boundary import step as boundary_step
-from fem.core.model import (
+from fem.analysis.compilation import boundary
+from fem.analysis.compilation.boundary.condition import BoundaryCondition
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.model import effective_displacement_constraints
+from fem.analysis.compilation.boundary import step as boundary_step
+from fem.model import (
     AnalysisStep,
     BodyForce,
     DisplacementConstraint,
@@ -23,8 +24,8 @@ from fem.core.model import (
     Surface,
     SurfaceLoad,
 )
-from fem.elements import get_element_kernel
-from fem.elements.beam_section import parse_beam2_section
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.model.beam_section import parse_beam2_section
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex20_stiffness_mesh,
@@ -101,8 +102,8 @@ def test_effective_step_boundaries_accumulate_all_preceding_steps() -> None:
     model.steps[1].boundaries = (previous,)
     model.steps[2].boundaries = (current,)
 
-    initial = effective_step_boundaries(model, "Initial")
-    inherited = effective_step_boundaries(model, "pull2")
+    initial = effective_displacement_constraints(model, "Initial")
+    inherited = effective_displacement_constraints(model, "pull2")
 
     assert initial == tuple(model.steps[0].boundaries)
     assert inherited == (*model.steps[0].boundaries, previous, current)

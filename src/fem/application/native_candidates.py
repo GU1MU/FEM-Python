@@ -6,12 +6,12 @@ from copy import deepcopy
 import math
 from typing import Any, Iterable, Mapping
 
-from fem.core.model import LineLoad
-from fem.elements import (
+from fem.model import (
     BEAM_ORIENTATION_PARALLEL_TOLERANCE,
     BeamOrientation,
-    get_element_capabilities,
+    LineLoad,
 )
+from fem.elements import get_element_capabilities
 from fem.geometry.recipes import (
     MovedGeometry,
     RotatedGeometry,

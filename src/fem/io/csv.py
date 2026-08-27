@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv as csv_lib
 from typing import Dict, List, Optional
 
-from ..core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from .materials import _get_float_from_material, read
 
 

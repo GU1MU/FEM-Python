@@ -16,7 +16,7 @@ from fem.application import (
     RegionAssignment,
     TokenStatus,
 )
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model import AnalysisStep, FEMModel
 from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import passing_preflight_report
 from tests.helpers.result_builders import make_solve_result_bundle

@@ -13,8 +13,9 @@ from fem.application.definitions import (
 )
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BeamOrientation,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -22,7 +23,6 @@ from fem.core.model import (
     NodalLoad,
     SurfaceLoad,
 )
-from fem.elements import BeamOrientation
 from fem.geometry.recipes import (
     PlateWithHoleGeometry,
 )

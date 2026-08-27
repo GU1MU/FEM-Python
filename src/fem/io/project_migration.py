@@ -27,7 +27,7 @@ from fem.application.native_part import (
     PartBooleanProvenance,
     validate_native_parts,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     MaterialDefinition,
 )

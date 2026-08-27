@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 
 from copy import deepcopy
 
@@ -7,11 +8,11 @@ import pytest
 
 from fem.io import inp as abaqus
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.assemble import assemble_global_stiffness
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.assembly import assemble_global_stiffness
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
@@ -21,9 +22,9 @@ from fem.core.model import (
     NodeSet,
     SectionAssignment,
 )
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY, get_element_kernel
-from fem.materials import apply_sections
-from fem.solvers.static_linear import solve
+from fem.model import BEAM_LOCAL_Y_REFERENCE_KEY
+from fem.analysis import apply_sections
+from fem.analysis.linear_static import solve
 from tests.helpers.file_builders import write_inp
 
 

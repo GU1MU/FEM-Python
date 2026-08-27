@@ -17,8 +17,8 @@ from fem.application import (
     UnitContext,
 )
 from fem.application.native_scope_materialization import NATIVE_PART_OWNERSHIP_KEY
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel, MaterialDefinition
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel, MaterialDefinition
 from fem.geometry import RectangleGeometry
 from fem.io.project import dumps_project, loads_project
 from fem.mesh.settings import MeshSettings
@@ -284,7 +284,7 @@ def test_a5_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
     definitions = deepcopy(
         patch.operations[1].parameters["definitions"]
     )
-    definitions["steps"][0]["metadata"]["nlgeom"] = "false"
+    definitions["steps"][0]["formulation"] = "nonlinear_static"
     operations = (
         patch.operations[0],
         ModelOperation(
@@ -297,7 +297,7 @@ def test_a5_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
         snapshot,
         base_session_revision=snapshot.session_revision,
     )
-    with pytest.raises(AnalysisAuthoringError, match="NLGEOM"):
+    with pytest.raises(AnalysisAuthoringError, match="linear static"):
         require_non_destructive_a5_batch(snapshot, batch)
 
     definitions["steps"][0]["boundaries"][0]["value"] = "0.0"

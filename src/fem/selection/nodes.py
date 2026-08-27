@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..core.model import NodeSet
+from fem.model import NodeSet
 
 
 def by_x(mesh: Any, x_value: float, tol: float = 1e-8) -> list[int]:

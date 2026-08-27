@@ -7,7 +7,7 @@ import time
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem.geometry import PlateWithHoleGeometry
 from fem.geometry.gmsh_coordinator import (
     GmshExecutionCancelled,

@@ -7,15 +7,13 @@ from pathlib import Path
 from fem.io.inp import read
 from fem.application import (
     AuthoringStatus,
-    BeamOrientation,
     ModelDefinitions,
     RegionAssignment,
     SectionDefinition,
     definitions_from_model,
     evaluate_authoring_candidate,
 )
-from fem.core.model import LineLoad
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
+from fem.model import BEAM_LOCAL_Y_REFERENCE_KEY, BeamOrientation, LineLoad
 
 
 _FIXTURES = (

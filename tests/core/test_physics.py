@@ -2,12 +2,13 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
 
-from fem.boundary.condition import BoundaryCondition
-from fem.boundary.constraints import apply_dirichlet
-from fem.core.model import AnalysisStep, DisplacementConstraint, FEMModel, NodalLoad, NodeSet
-from fem.elements import get_element_kernel
+from fem.analysis.compilation.boundary.condition import BoundaryCondition
+from fem.analysis.compilation.boundary.constraints import apply_dirichlet
+from fem.model import AnalysisStep, DisplacementConstraint, FEMModel, NodalLoad, NodeSet
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.materials import linear_elastic
-from fem.solvers import linear, static_linear
+from fem.analysis import linear_static as static_linear
+from fem.solver import linear
 from tests.helpers.mesh_builders import (
     make_hex20_stiffness_mesh,
     make_hex8_stiffness_mesh,

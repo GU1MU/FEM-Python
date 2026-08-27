@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fem.core.mesh import (
+from fem.model.mesh import (
     Element2D,
     Element3D,
     Mesh2D,

@@ -13,6 +13,15 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+if not all(
+    (PROJECT_ROOT / "scripts" / name).is_file()
+    for name in ("compare_frame_b31_odb.py", "export_frame_b31_program_snapshot.py")
+):
+    pytest.skip(
+        "[optional-native-runtime] Abaqus comparison scripts are not present in this checkout",
+        allow_module_level=True,
+    )
+
 
 def _load_script(name: str):
     path = PROJECT_ROOT / "scripts" / name

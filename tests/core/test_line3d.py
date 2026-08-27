@@ -1,17 +1,17 @@
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 import numpy as np
 import pytest
 
-from fem.boundary.condition import BoundaryCondition
-from fem.boundary.loads import build_load_vector
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
-from fem.elements import (
+from fem.analysis.compilation.boundary.condition import BoundaryCondition
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
+from fem.model import (
     BEAM_LOCAL_Y_REFERENCE_KEY,
-    get_element_kernel,
     resolve_beam_frame,
 )
-from fem.elements.beam_section import parse_beam2_section
+from fem.model.beam_section import parse_beam2_section
 from fem.post.stress import beam as beam_stress
 
 

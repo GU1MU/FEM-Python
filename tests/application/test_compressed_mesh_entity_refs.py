@@ -12,8 +12,8 @@ from fem.application import (
 )
 from fem.application.native_scope_materialization import materialize_native_scopes
 from fem.application.preprocessing import _active_part_regions
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
 
 
 @pytest.mark.parametrize(

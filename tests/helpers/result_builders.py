@@ -1,15 +1,12 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle
 
 import numpy as np
 
-from fem.application.results import (
-    SolveResultBundle,
-    build_solve_result_bundle,
-)
 from fem.application.revisions import SolveTaskSnapshot
 from fem.application.runs import ResultRecord
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
 
 
 def make_zero_result(mesh, model_name):

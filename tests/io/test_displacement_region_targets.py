@@ -5,7 +5,7 @@ import pytest
 from fem.application.definitions import NamedRegion, NativePart
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
-from fem.core.model import AnalysisStep, DisplacementConstraint
+from fem.model import AnalysisStep, DisplacementConstraint
 from fem.geometry import (
     ExtrudedGeometry,
     LogicalEntityRef,

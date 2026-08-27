@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from dataclasses import replace
 import json
@@ -6,8 +7,7 @@ import json
 import pytest
 
 from fem.application import ModelSession, run_static_preflight
-from fem.application.results import build_solve_result_bundle
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem_agent.authoring_runtime import provider_safe_authoring_payload
 from fem_agent.result_authoring import (
     RESULT_QUERY_SCHEMA_VERSION,

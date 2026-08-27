@@ -41,24 +41,26 @@ from fem.geometry.recipe_topology import (
     surviving_logical_reference_ids,
 )
 from fem.mesh.settings import MeshSettings
-from fem.solvers.static_linear import PreparedSystem
-from fem.elements import validate_beam_frame_fields
+from fem.analysis import PreparedAnalysis
+from fem.model import validate_beam_frame_fields
 
-from .results import (
+from fem.results import (
     FieldMaterializationKey,
     LoadedResultArchive,
     ResultArchiveModelProjection,
     ResultArchiveRun,
     ResultArchiveOrigin,
     ResultArchiveSnapshot,
-    ResultArchiveSaveSnapshot,
     ResultMaterializationPatch,
     ResultProvider,
     ResultFileState,
     ResultSourceKey,
-    SolveResultBundle,
     build_archived_result_provider,
     field_materialization_sort_key,
+)
+from .result_archive import ResultArchiveSaveSnapshot
+from .result_workflow import (
+    SolveResultBundle,
     validate_solve_result_model_identity,
 )
 from .changes import (
@@ -138,13 +140,13 @@ from .runs import (
     result_record_provider,
     utc_now,
 )
-from .results.archive import (
+from fem.results.archive import (
     build_result_archive_snapshot,
     rebind_result_archive_snapshot,
     result_model_fingerprint,
 )
 from .validation import ValidationRecord, ValidationStamp
-from .units import UnitContext
+from fem.model.units import UnitContext
 
 
 _ALL_INVALIDATIONS = frozenset(
@@ -227,7 +229,7 @@ class _IssuedSolvePayload:
 
     model: Any
     step: Any
-    prepared_system: PreparedSystem | None = None
+    prepared_system: PreparedAnalysis | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,7 +255,7 @@ class _PreparedSystemRecord:
     """Single artifact-bound reusable linear-static base system."""
 
     key: tuple[str, str, int]
-    prepared: PreparedSystem
+    prepared: PreparedAnalysis
 
 
 @dataclass(slots=True)
@@ -2832,23 +2834,51 @@ class ModelSession:
                 frozenset(),
                 "Part mesh settings unchanged",
             )
+        clears_mesh_scopes = _regions_use_mesh_entities(
+            self._named_regions.values()
+        )
+        candidate_steps = (
+            _without_geometry_dependent_steps(self._steps)
+            if clears_mesh_scopes
+            else self._steps
+        )
+        had_regions = clears_mesh_scopes and bool(self._named_regions)
+        had_assignments = clears_mesh_scopes and bool(self._assignments)
+        steps_cleared = candidate_steps != self._steps
         self._replace_part(updated)
         self._part_revisions[normalized] += 1
         self._active_part_id = normalized
         self._sync_active_part_projection()
+        if clears_mesh_scopes:
+            self._named_regions = {}
+            self._assignments = ()
+            self._steps = candidate_steps
+            self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
+        changed = {
+            ChangeKind.PROJECT_INPUTS,
+            ChangeKind.MESH_SETTINGS,
+            ChangeKind.MODEL,
+            ChangeKind.VALIDATIONS,
+            ChangeKind.RUNS,
+            ChangeKind.DISPLAYED_RESULT,
+        }
+        effects: set[TransitionEffect] = set()
+        if had_regions:
+            changed.add(ChangeKind.NAMED_REGIONS)
+            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+        if had_assignments or steps_cleared:
+            changed.add(ChangeKind.DEFINITIONS)
+        if had_assignments:
+            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+        if steps_cleared:
+            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
-            {
-                ChangeKind.PROJECT_INPUTS,
-                ChangeKind.MESH_SETTINGS,
-                ChangeKind.MODEL,
-                ChangeKind.VALIDATIONS,
-                ChangeKind.RUNS,
-                ChangeKind.DISPLAYED_RESULT,
-            },
+            changed,
             _MODEL_INVALIDATIONS,
             "Part mesh settings replaced",
+            effects=effects,
         )
 
     def delete_native_part(
@@ -4772,10 +4802,7 @@ class ModelSession:
                 raise SessionStateError(
                     "mesh generation requires an unsuppressed Part"
                 )
-            if (
-                _regions_use_mesh_entities(self._named_regions.values())
-                and self._artifact is not None
-            ):
+            if _regions_use_mesh_entities(self._named_regions.values()):
                 raise SessionStateError(
                     "mesh scopes must be cleared before generating a new mesh"
                 )
@@ -4836,10 +4863,7 @@ class ModelSession:
             )
         if self._geometry_recipe is None:
             raise SessionStateError("mesh generation requires geometry")
-        if (
-            _regions_use_mesh_entities(self._named_regions.values())
-            and self._artifact is not None
-        ):
+        if _regions_use_mesh_entities(self._named_regions.values()):
             raise SessionStateError(
                 "mesh scopes must be cleared before generating a new mesh"
             )
@@ -5195,16 +5219,16 @@ class ModelSession:
         self,
         token: TaskToken,
         report: PreflightReport,
-        prepared_system: PreparedSystem | None,
+        prepared_system: PreparedAnalysis | None,
     ) -> SessionDelta:
         """Accept validation and atomically install its worker-prepared K."""
 
         if (
             prepared_system is not None
-            and type(prepared_system) is not PreparedSystem
+            and not isinstance(prepared_system, PreparedAnalysis)
         ):
             raise TypeError(
-                "prepared_system must be exactly PreparedSystem or None"
+                "prepared_system must implement PreparedAnalysis or be None"
             )
         return self._accept_validation(
             token,
@@ -5217,7 +5241,7 @@ class ModelSession:
         token: TaskToken,
         report: PreflightReport,
         *,
-        prepared_system: PreparedSystem | None,
+        prepared_system: PreparedAnalysis | None,
     ) -> SessionDelta:
         status = self._token_status_for(token, "validation")
         if status is not TokenStatus.CURRENT:
@@ -5355,7 +5379,7 @@ class ModelSession:
         solve_model = (
             deepcopy(artifact.model)
             if solve_prepared is None
-            else solve_prepared._trusted_model_for_task()
+            else solve_prepared.model_for_task()
         )
         solve_steps = tuple(
             step
@@ -5448,23 +5472,23 @@ class ModelSession:
         self,
         token: TaskToken,
         bundle: SolveResultBundle,
-        prepared_system: PreparedSystem,
+        prepared_system: PreparedAnalysis,
         *,
-        cache_candidate: PreparedSystem | None = None,
+        cache_candidate: PreparedAnalysis | None = None,
         timings: Mapping[str, float] | None = None,
     ) -> SessionDelta:
         """Accept a solve and atomically cache its worker-prepared base K."""
 
-        if type(prepared_system) is not PreparedSystem:
+        if not isinstance(prepared_system, PreparedAnalysis):
             raise TypeError(
-                "prepared_system must be exactly PreparedSystem"
+                "prepared_system must implement PreparedAnalysis"
             )
         if (
             cache_candidate is not None
-            and type(cache_candidate) is not PreparedSystem
+            and not isinstance(cache_candidate, PreparedAnalysis)
         ):
             raise TypeError(
-                "cache_candidate must be exactly PreparedSystem or None"
+                "cache_candidate must implement PreparedAnalysis or be None"
             )
         return self._accept_run_succeeded(
             token,
@@ -5480,8 +5504,8 @@ class ModelSession:
         bundle: SolveResultBundle,
         *,
         timings: Mapping[str, float] | None,
-        prepared_system: PreparedSystem | None,
-        cache_candidate: PreparedSystem | None = None,
+        prepared_system: PreparedAnalysis | None,
+        cache_candidate: PreparedAnalysis | None = None,
     ) -> SessionDelta:
         status = self._token_status_for(token, "solve")
         if status is not TokenStatus.CURRENT:
@@ -5501,7 +5525,7 @@ class ModelSession:
             )
         if (
             prepared_system is not None
-            and prepared_system._trusted_model_for_task()
+            and prepared_system.model_for_task()
             is not issued_payload.model
         ):
             raise ValueError(
@@ -5524,7 +5548,7 @@ class ModelSession:
                     "cache-hit solve cannot replace the root prepared system"
                 )
             if (
-                cache_candidate._trusted_model_for_task()
+                cache_candidate.model_for_task()
                 is issued_payload.model
             ):
                 raise ValueError(
@@ -5532,7 +5556,7 @@ class ModelSession:
                 )
             if (
                 prepared_system is None
-                or not prepared_system._shares_base_stiffness_with(
+                or not prepared_system.shares_cache_with(
                     cache_candidate
                 )
             ):
@@ -5966,8 +5990,20 @@ class ModelSession:
         self,
         run_id: str,
         field_keys: Iterable[FieldMaterializationKey],
+        *,
+        detach_record: bool = True,
     ) -> ResultMaterializationTaskSnapshot:
-        """Bind lazy field recovery to one exact accepted generation."""
+        """Bind lazy field recovery to one exact accepted generation.
+
+        The default keeps the historical detached worker snapshot.  GUI
+        display tasks may explicitly retain the already immutable accepted
+        record because their workload captures the provider and never reads
+        ``task.record``; this avoids copying a large mesh/result graph on the
+        Qt thread while leaving other callers on the safe detached path.
+        """
+
+        if type(detach_record) is not bool:
+            raise TypeError("detach_record must be bool")
 
         record = self._current_result_record(str(run_id))
         if record is None:
@@ -6016,10 +6052,15 @@ class ModelSession:
             generation=generation,
             expected_patch_keys=expected_patch_keys,
         )
+        task_record = (
+            detached_result_record(record)
+            if detach_record
+            else record
+        )
         return ResultMaterializationTaskSnapshot(
             token=token,
             run_id=str(run_id),
-            record=detached_result_record(record),
+            record=task_record,
             field_keys=deepcopy(ordered),
         )
 
@@ -6562,6 +6603,74 @@ class ModelSession:
             run = self._find_run_by_name(normalized)
         return None if run is None else deepcopy(run)
 
+    def rename_run(
+        self,
+        run_id_or_name: str,
+        new_name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Rename one non-running in-memory job without changing its result."""
+
+        self._check_expected(expected_session_revision)
+        self._require_open()
+        normalized = str(run_id_or_name).strip()
+        run = self._runs.get(normalized) or self._find_run_by_name(normalized)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id_or_name}")
+        if run.status is RunStatus.RUNNING:
+            raise SessionStateError("running jobs cannot be renamed")
+        clean_name = str(new_name).strip()
+        if not clean_name:
+            raise ValueError("run name must not be empty")
+        if len(clean_name) > 64:
+            raise ValueError("run name must not exceed 64 characters")
+        existing = self._find_run_by_name(clean_name)
+        if existing is not None and existing.run_id != run.run_id:
+            raise ValueError(f"run name already exists: {clean_name}")
+        self._runs[run.run_id] = replace(run, name=clean_name)
+        return self._emit(
+            {ChangeKind.RUNS},
+            frozenset(),
+            "analysis run renamed",
+        )
+
+    def delete_run(
+        self,
+        run_id_or_name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SessionDelta:
+        """Delete one terminal job and its in-memory result record."""
+
+        self._check_expected(expected_session_revision)
+        self._require_open()
+        normalized = str(run_id_or_name).strip()
+        run = self._runs.get(normalized) or self._find_run_by_name(normalized)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id_or_name}")
+        if run.status is RunStatus.RUNNING:
+            raise SessionStateError("running jobs cannot be deleted")
+        run_id = run.run_id
+        self._runs.pop(run_id, None)
+        self._results.pop(run_id, None)
+        self._result_model_fingerprints.pop(run_id, None)
+        self._result_file_states.pop(run_id, None)
+        self._active_result_save_tasks.pop(run_id, None)
+        if self._selected_run_id == run_id:
+            self._selected_run_id = None
+        displayed = self._displayed_result_run_id == run_id
+        if displayed:
+            self._displayed_result_run_id = None
+        changed = {ChangeKind.RUNS}
+        if displayed:
+            changed.add(ChangeKind.DISPLAYED_RESULT)
+        return self._emit(
+            changed,
+            frozenset(),
+            "analysis run deleted",
+        )
+
     def next_run_name(self) -> str:
         number = 1
         while self._find_run_by_name(f"作业-{number}") is not None:
@@ -6946,7 +7055,7 @@ class ModelSession:
             self._model_revision,
         )
 
-    def _current_prepared_system(self) -> PreparedSystem | None:
+    def _current_prepared_system(self) -> PreparedAnalysis | None:
         record = self._prepared_system
         if record is None:
             return None
@@ -6957,11 +7066,11 @@ class ModelSession:
 
     def _install_prepared_system(
         self,
-        prepared_system: PreparedSystem,
+        prepared_system: PreparedAnalysis,
     ) -> None:
-        if type(prepared_system) is not PreparedSystem:
+        if not isinstance(prepared_system, PreparedAnalysis):
             raise TypeError(
-                "prepared_system must be exactly PreparedSystem"
+                "prepared_system must implement PreparedAnalysis"
             )
         self._prepared_system = _PreparedSystemRecord(
             self._prepared_system_key(),

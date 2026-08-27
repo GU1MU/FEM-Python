@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from fem.application import ModelSession, NativePart, TokenStatus
-from fem.core.model import AnalysisStep
+from fem.model import AnalysisStep
 from fem.geometry.recipes import BoxGeometry
 from tests.helpers.preflight_builders import (
     failing_preflight_report,

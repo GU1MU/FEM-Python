@@ -12,7 +12,7 @@ from fem.application import (
     RevisionConflictError,
     SectionDefinition,
 )
-from fem.core.model import AnalysisStep, FEMModel, MaterialDefinition
+from fem.model import AnalysisStep, FEMModel, MaterialDefinition
 from fem.geometry.recipes import BoxGeometry
 from fem.mesh.settings import MeshSettings
 from tests.helpers.preflight_builders import passing_preflight_report

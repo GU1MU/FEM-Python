@@ -4,7 +4,7 @@ from tests.helpers.file_builders import write_inp
 
 
 def _hex20_node_lines():
-    from fem.elements.hexahedron import HEX20_NATURAL_NODE_COORDS
+    from fem.elements.hex20 import HEX20_NATURAL_NODE_COORDS
 
     return [
         f"{node_id}, {(xi + 1.0) / 2.0}, {(eta + 1.0) / 2.0}, {(zeta + 1.0) / 2.0}"

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fem.application.session import ProjectSaveSnapshot, ProjectSnapshot
-from fem.application.units import UnitContext
+from fem.model.units import UnitContext
 
 from ._project_codec import (
     ProjectFieldCodecPolicy,

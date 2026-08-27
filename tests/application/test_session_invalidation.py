@@ -18,14 +18,14 @@ from fem.application import (
     SectionDefinition,
     TokenStatus,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     ElementSet,
     FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -626,7 +626,8 @@ def test_removing_a_referenced_named_region_is_rejected_without_side_effects() -
 def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects() -> None:
     session = _session_with_artifacts()
     snapshot = session.snapshot()
-    snapshot.model.materials["Steel"].properties["E"] = 99.0
+    with pytest.raises(TypeError):
+        snapshot.model.materials["Steel"].properties["E"] = 99.0
     snapshot.sections[0].properties["tag"] = "changed"
     with pytest.raises(FrozenInstanceError):
         snapshot.named_regions["Region-A"].references += (
@@ -638,7 +639,8 @@ def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects()
         )
 
     validation = session.prepare_validation("Step-A")
-    validation.model.materials["Steel"].properties["E"] = 77.0
+    with pytest.raises(TypeError):
+        validation.model.materials["Steel"].properties["E"] = 77.0
 
     fresh = session.snapshot()
     assert fresh.model.materials["Steel"].properties["E"] == 1.0

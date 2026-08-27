@@ -15,8 +15,8 @@ from fem.application import (
     SolveTaskSnapshot,
     TaskToken,
 )
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
 from tests.helpers.model_builders import make_simple_truss_mesh
 from tests.helpers.result_builders import make_solve_result_bundle
 

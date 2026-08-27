@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from fem.core.model import AnalysisStep, MaterialDefinition
+from fem.model import AnalysisStep, MaterialDefinition
 
 from .definitions import NamedRegion, RegionAssignment, SectionDefinition
 

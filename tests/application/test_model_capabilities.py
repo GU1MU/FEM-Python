@@ -15,7 +15,7 @@ from fem.application import (
     describe_region_capabilities,
     require_region_kind,
 )
-from fem.core.model import (
+from fem.model import (
     Edge,
     ElementEdge,
     ElementFace,
@@ -23,8 +23,7 @@ from fem.core.model import (
     NodeSet,
     Surface,
 )
-from fem.core.model import LineLoad, SectionAssignment
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
+from fem.model import BEAM_LOCAL_Y_REFERENCE_KEY, LineLoad, SectionAssignment
 from fem.mesh.settings import MeshSettings
 
 

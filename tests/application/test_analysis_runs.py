@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle
 
 from copy import deepcopy
 from dataclasses import replace
@@ -13,16 +14,14 @@ from fem.application import (
     RunStatus,
     TokenStatus,
 )
-from fem.application.results import (
+from fem.results import (
     ResultMaterializationSnapshot,
     ResultTopologyProjection,
-    SolveResultBundle,
-    build_solve_result_bundle,
 )
-from fem.core.model import AnalysisStep, FEMModel
-from fem.core.result import ModelResult
+from fem.model import AnalysisStep, FEMModel
+from fem.results import ModelResult
 from fem.geometry.recipes import BoxGeometry
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from tests.helpers.preflight_builders import passing_preflight_report
 from tests.helpers.result_builders import make_solve_result_bundle
 from tests.helpers.model_builders import (
@@ -590,3 +589,40 @@ def test_model_revision_change_removes_unsubmitted_run_only() -> None:
     assert session.snapshot().runs == ()
     with pytest.raises(KeyError, match="unknown run"):
         session.prepare_run_solve("Job-1")
+
+
+def test_terminal_run_can_be_renamed_without_changing_identity() -> None:
+    session = _session()
+    session.create_run("Step-A", "Job-1")
+    run = session.find_run("Job-1")
+    assert run is not None
+
+    delta = session.rename_run(run.run_id, "拉伸-结果")
+
+    renamed = session.find_run(run.run_id)
+    assert delta.changed == frozenset({ChangeKind.RUNS})
+    assert renamed is not None
+    assert renamed.run_id == run.run_id
+    assert renamed.name == "拉伸-结果"
+    session.create_run("Step-A", "Job-2")
+    second = session.find_run("Job-2")
+    assert second is not None
+    with pytest.raises(ValueError, match="already exists"):
+        session.rename_run(second.run_id, "拉伸-结果")
+
+
+def test_deleting_terminal_run_removes_its_result_and_display() -> None:
+    session = _session()
+    solve = session.prepare_solve("Step-A", "Job-1")
+    session.begin_run(solve.token)
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
+
+    delta = session.delete_run(solve.run_id)
+
+    assert delta.changed == frozenset({ChangeKind.RUNS, ChangeKind.DISPLAYED_RESULT})
+    assert session.find_run(solve.run_id) is None
+    assert session.current_result() is None
+    assert session.snapshot().displayed_result_run_id is None

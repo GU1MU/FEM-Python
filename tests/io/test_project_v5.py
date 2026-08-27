@@ -34,7 +34,7 @@ from fem.geometry import (
     logical_ref_sort_key,
     undo_solid_body_feature,
 )
-from fem.core.model import MaterialDefinition
+from fem.model import MaterialDefinition
 from fem.io.project import decode_project
 from fem.io.project_v4 import encode_project_v4
 from fem.io.project_v5 import (
