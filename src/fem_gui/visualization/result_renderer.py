@@ -8,7 +8,7 @@ from itertools import chain
 import numpy as np
 import pyvista
 
-from fem.application.results import (
+from fem.results import (
     ResultCellKind,
     ResultFieldTopology,
     ResultValueLayout,

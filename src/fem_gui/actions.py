@@ -28,8 +28,10 @@ def build_actions(owner: Any) -> dict[str, QAction]:
         )
         key = descriptor.key.value
         action.setObjectName(f"action_{key}")
-        action.setToolTip(descriptor.text)
-        action.setStatusTip(descriptor.text)
+        tooltip = descriptor.tooltip or descriptor.text
+        action.setProperty("_canonical_tooltip", tooltip)
+        action.setToolTip(tooltip)
+        action.setStatusTip(tooltip)
         action.setCheckable(descriptor.checkable)
         action.setChecked(descriptor.checked)
         action.triggered.connect(_callback(owner, descriptor))

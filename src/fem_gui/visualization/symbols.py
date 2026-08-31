@@ -393,6 +393,56 @@ def constraint_sample_indices(points: np.ndarray, density: str) -> np.ndarray:
     return _spatial_sample_indices(points, density, limits)
 
 
+def constraint_corner_indices(points: np.ndarray, density: str) -> np.ndarray:
+    """Prefer geometric corners for polygonal constraint regions.
+
+    Rectangular supports are much easier to read when their symbols occupy
+    the four corners rather than arbitrary points along the top and bottom
+    edges.  Smooth or highly faceted boundaries still use the normal density
+    sampler, so this rule does not turn a curved support into a cluttered
+    ring of markers.
+    """
+
+    points = np.asarray(points, dtype=float)
+    if len(points) <= 2:
+        return np.arange(len(points), dtype=np.int64)
+
+    centered = points - np.mean(points, axis=0)
+    _left, singular_values, right = np.linalg.svd(centered, full_matrices=False)
+    tolerance = max(float(singular_values[0]) * 1.0e-8, 1.0e-12)
+    dimension = int(np.count_nonzero(singular_values > tolerance))
+    if dimension == 1:
+        order = np.argsort(centered @ right[0])
+        return np.asarray((order[0], order[-1]), dtype=np.int64)
+    if dimension != 2:
+        return constraint_sample_indices(points, density)
+
+    projected = centered @ right[:2].T
+    # ``_convex_hull_indices`` intentionally keeps collinear boundary points
+    # for continuous-support sampling.  That representation is not suitable
+    # for corner selection: when a rectangular mesh is ordered by xyz, the
+    # lower and upper chains can contain repeated collinear vertices and make
+    # an edge look like several small turns.  Use the strict hull here so an
+    # anchor is always a geometric corner of the selected region.
+    hull = _strict_convex_hull_indices(projected)
+    if len(hull) < 3:
+        return constraint_sample_indices(points, density)
+    scale = max(float(np.ptp(projected, axis=0).max()), 1.0)
+    turn_tolerance = 1.0e-10 * scale * scale
+    corners: list[int] = []
+    for position, current in enumerate(hull):
+        previous = hull[position - 1]
+        following = hull[(position + 1) % len(hull)]
+        first = projected[current] - projected[previous]
+        second = projected[following] - projected[current]
+        cross = float(first[0] * second[1] - first[1] * second[0])
+        if abs(cross) > turn_tolerance:
+            corners.append(int(current))
+    if 3 <= len(corners) <= 6:
+        return np.asarray(corners, dtype=np.int64)
+    return constraint_sample_indices(points, density)
+
+
 def constraint_spatial_regions(
     points: np.ndarray,
     model_points: np.ndarray,
@@ -462,6 +512,50 @@ def _convex_hull_indices(points: np.ndarray) -> list[int]:
     upper: list[int] = []
     for index in reversed(ordered):
         while len(upper) >= 2 and cross(upper[-2], upper[-1], index) < -1.0e-12:
+            upper.pop()
+        upper.append(index)
+    return lower[:-1] + upper[:-1]
+
+
+def _strict_convex_hull_indices(points: np.ndarray) -> list[int]:
+    """Return hull vertices after removing collinear boundary points.
+
+    Constraint-density sampling needs the complete projected perimeter, while
+    corner sampling needs only the actual polygon vertices.  Keeping these
+    two hull policies separate prevents a refined rectangular face from
+    selecting points a few elements away from its corners.
+    """
+    points = np.asarray(points, dtype=float)
+
+    def cross(origin: int, first: int, second: int) -> float:
+        first_edge = points[first] - points[origin]
+        second_edge = points[second] - points[origin]
+        return float(
+            first_edge[0] * second_edge[1]
+            - first_edge[1] * second_edge[0]
+        )
+
+    if len(points) <= 1:
+        return list(range(len(points)))
+    ordered = sorted(
+        range(len(points)),
+        key=lambda index: (points[index, 0], points[index, 1]),
+    )
+    scale = max(float(np.ptp(points, axis=0).max()), 1.0)
+    tolerance = 1.0e-12 * scale * scale
+
+    lower: list[int] = []
+    for index in ordered:
+        while len(lower) >= 2 and cross(
+            lower[-2], lower[-1], index
+        ) <= tolerance:
+            lower.pop()
+        lower.append(index)
+    upper: list[int] = []
+    for index in reversed(ordered):
+        while len(upper) >= 2 and cross(
+            upper[-2], upper[-1], index
+        ) <= tolerance:
             upper.pop()
         upper.append(index)
     return lower[:-1] + upper[:-1]

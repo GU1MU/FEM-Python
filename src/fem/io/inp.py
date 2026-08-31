@@ -6,7 +6,7 @@ from pathlib import Path as _Path
 from typing import Any as _Any
 from typing import Iterable as _Iterable
 
-from ..core.model import FEMModel as _FEMModel
+from fem.model import FEMModel as _FEMModel
 
 
 @_dataclass(frozen=True, slots=True)

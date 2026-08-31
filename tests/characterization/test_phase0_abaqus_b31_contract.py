@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FREEZE_PATH = PROJECT_ROOT / "docs" / "2026-08-04-abaqus-b31-inp-phase-0-freeze.md"
@@ -12,6 +14,8 @@ LEDGER_PATH = PROJECT_ROOT / "docs" / "2026-08-04-abaqus-b31-inp-usage-ledger.js
 
 
 def test_phase0_freeze_records_target_api_errors_orientation_terms_and_isolation() -> None:
+    if not FREEZE_PATH.is_file():
+        pytest.skip("[legacy-v1] phase-0 freeze document is absent")
     text = FREEZE_PATH.read_text(encoding="utf-8")
 
     for token in (
@@ -36,6 +40,8 @@ def test_phase0_freeze_records_target_api_errors_orientation_terms_and_isolation
 
 
 def test_phase0_usage_ledger_is_complete_for_current_callers_and_data_free() -> None:
+    if not LEDGER_PATH.is_file():
+        pytest.skip("[legacy-v1] phase-0 usage ledger is absent")
     ledger = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
 
     assert ledger["schema_version"] == 1

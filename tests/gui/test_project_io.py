@@ -24,7 +24,7 @@ from fem.application import (
     with_compatibility_analysis_names,
 )
 from fem.geometry import LogicalEntityRef
-from fem.core.model import (
+from fem.model import (
     BodyForce,
     DisplacementConstraint,
     EdgeLoad,
@@ -33,7 +33,7 @@ from fem.core.model import (
     NodalLoad,
     FEMModel,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry.recipes import (
     SketchCircle,
     SketchGeometry,
@@ -52,7 +52,7 @@ from fem.mesh.settings import (
     MeshSettings,
     MeshSizeFalloff,
 )
-from fem.steps.factory import static
+from fem.model.authoring import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from tests.helpers.gui_command_receipts import await_succeeded

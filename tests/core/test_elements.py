@@ -1,29 +1,29 @@
 import numpy as np
 import pytest
 
-from fem import boundary
-from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.analysis.compilation import boundary
+from fem.model.mesh import Element3D, Mesh3D, Node3D
 from fem.elements import (
     canonical_element_type,
-    get_element_kernel,
-    register_element_kernel,
-    resolve_beam_frame,
 )
-from fem.elements.beam_section import parse_beam2_section
-from fem.elements.hexahedron import (
+from fem.model import resolve_beam_frame
+from fem.model.beam_section import parse_beam2_section
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.physics.mechanics.operators.continuum_hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
+)
+from fem.model.mesh_geometry import line3d_geometry
+from fem.elements.hex8 import hex8_gauss_points, hex8_shape_funcs_grads
+from fem.elements.hex20 import (
     HEX20_NATURAL_NODE_COORDS,
     hex20_gauss_points,
     hex20_shape_funcs_grads,
-    hex8_gauss_points,
-    hex8_shape_funcs_grads,
 )
-from fem.elements.line import line3d_geometry
-from fem.elements.tetrahedron import (
+from fem.elements.tet10 import (
     TET10_NATURAL_NODE_COORDS,
     tet10_gauss_points,
 )
-from fem.elements.triangle import tri6_shape_funcs_grads
+from fem.elements.tri6 import tri6_shape_funcs_grads
 from fem.materials import linear_elastic
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
@@ -100,14 +100,10 @@ def test_solid_kernels_expose_face_node_indices(
     assert {len(face) for face in topology} == {nodes_per_face}
 
 
-def test_registry_rejects_conflicting_aliases_without_partial_registration():
-    class ConflictingKernel:
-        canonical_type = "UniqueTestType"
-        aliases = ("hEx8",)
+def test_mechanical_registry_is_closed_to_runtime_registration():
+    import fem.elements as reference_elements
 
-    with pytest.raises(ValueError, match="already registered"):
-        register_element_kernel(ConflictingKernel())
-
+    assert not hasattr(reference_elements, "register_element_kernel")
     with pytest.raises(NotImplementedError, match="Unsupported element type: UniqueTestType"):
         get_element_kernel("UniqueTestType")
 
@@ -223,13 +219,19 @@ def test_inclined_beam_cantilever_matches_timoshenko_tip_response():
     section = parse_beam2_section(elem.props)
     Izz = section.Izz
     shear_modulus = E / (2.0 * (1.0 + nu))
-    shear_y, _ = section.effective_shear_rigidities(shear_modulus, nu)
+    shear_y, _ = section.abaqus_b31_shear_rigidities(
+        shear_modulus,
+        nu,
+        L,
+    )
     free = mesh.node_dofs(elem.node_ids[1])
     F = np.zeros(mesh.num_dofs, dtype=float)
     F[free[:3]] = rotation[1]
 
     U_tip = np.linalg.solve(Ke[np.ix_(free, free)], F[free])
-    v_local = L**3 / (3.0 * E * Izz) + L / shear_y
+    # One-point B31 bending follows its discrete 1/4 EI compliance, not the
+    # continuum Euler-Bernoulli 1/3 EI value.
+    v_local = L**3 / (4.0 * E * Izz) + L / shear_y
     expected = np.concatenate([
         rotation[1] * v_local,
         rotation[2] * (L**2 / (2.0 * E * Izz)),
@@ -593,7 +595,7 @@ def test_hex_integration_point_stress_builds_node_lookup_once(
     mesh = mesh_builder()
     kernel = get_element_kernel(element_type)
     calls = 0
-    from fem.elements import hexahedron as hexahedron_module
+    from fem.physics.mechanics.operators import continuum_hexahedron as hexahedron_module
 
     original = hexahedron_module.build_node_lookup
 
@@ -618,7 +620,7 @@ def test_hex8_bbar_stress_at_builds_node_lookup_once(monkeypatch):
     mesh = make_hex8_solid_stress_mesh()
     kernel = get_element_kernel("Hex8")
     calls = 0
-    from fem.elements import hexahedron as hexahedron_module
+    from fem.physics.mechanics.operators import continuum_hexahedron as hexahedron_module
 
     original = hexahedron_module.build_node_lookup
 

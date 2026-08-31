@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.core import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -21,6 +21,7 @@ from fem.core.model import (
     FEMModel,
     GravityLoad,
     LineLoad,
+    NodeSet,
 )
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow, initial_display_policy
@@ -257,6 +258,58 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
     )
     assert viewport._boundary_cache == {}
     assert viewport._beam_frame_cache == {}
+
+
+def test_constraint_layout_uses_selected_face_perimeter_and_outward_normal():
+    _application()
+    mesh = make_selection_hex_mesh()
+    model = FEMModel(
+        mesh=mesh,
+        node_sets={"fixed_face": NodeSet("fixed_face", [1, 2, 3, 4])},
+        steps=[
+            AnalysisStep(
+                "step",
+                boundaries=[
+                    DisplacementConstraint("fixed_face", 1, 3, 0.0),
+                ],
+            )
+        ],
+    )
+    viewport = FEMViewport()
+    viewport._model = model
+    viewport._geometry = build_model_geometry(model)
+
+    sampled = viewport._constraint_boundary_layout(
+        model.steps[0].boundaries[0],
+        (1, 2, 3, 4),
+        "low",
+    )
+
+    assert set(sampled) == {1, 2, 3, 4}
+    viewport.close()
+
+
+def test_symbol_refresh_keeps_previous_actors_when_boundary_compilation_fails(
+    monkeypatch,
+):
+    _application()
+    viewport = FEMViewport()
+    viewport._model = object()
+    viewport._geometry = object()
+    viewport._plotter = object()
+    monkeypatch.setattr(viewport_module, "_pyvista", object())
+
+    actor = _VisibilityActor()
+    viewport._actors["constraints"] = actor
+
+    def fail_boundary(*_args, **_kwargs):
+        raise RuntimeError("stale region")
+
+    monkeypatch.setattr(viewport_module, "boundary_for_step", fail_boundary)
+    viewport.show_boundary_and_loads("step", render=False)
+
+    assert viewport._actors["constraints"] is actor
+    viewport.close()
 
 
 def test_runnable_step_previews_constraints_from_previous_step(monkeypatch):

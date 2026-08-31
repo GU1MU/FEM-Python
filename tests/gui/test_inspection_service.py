@@ -14,7 +14,7 @@ from fem.application import (
     SectionDefinition,
     resolve_effective_beam_frames,
 )
-from fem.application.results import (
+from fem.results import (
     ElementResultInspectionRequest,
     FieldPosition,
     FieldRequest,
@@ -30,8 +30,8 @@ from fem.application.results import (
     build_result_provider,
     restore_result_provider,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     ElementSet,
     FEMModel,
@@ -41,7 +41,7 @@ from fem.core.model import (
     SectionAssignment,
 )
 from fem.post.averaging import NodalAveragingPolicy
-from fem_gui.inspection_service import InspectionService
+from fem_gui.inspection_service import InspectionService, format_number
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
@@ -53,6 +53,11 @@ def _page(inspection, title):
 
 def _fields(page):
     return dict(page.fields)
+
+
+def test_inspection_number_format_does_not_hide_small_nonzero_values():
+    assert format_number(1.0e-14) == "1e-14"
+    assert format_number(0.0) == "0"
 
 
 def _provider_source() -> ResultSourceKey:
@@ -223,10 +228,13 @@ def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
     assert tuple(table.title for table in node_page.tables) == (
         "位移 U（就绪）",
         "反力 RF（就绪）",
-        "应力 S（节点）（就绪）",
+        "应力 S（单元节点（未平均））（就绪）",
+        "应力 S（区域内节点平均）（就绪）",
     )
     assert tuple(table.title for table in element_page.tables) == (
-        "应力 S（节点）（就绪）",
+        "应力 S（积分点）（就绪）",
+        "应力 S（质心）（就绪）",
+        "应力 S（单元节点（未平均））（就绪）",
     )
     assert all(
         table.columns
@@ -254,7 +262,7 @@ def test_typed_result_rows_preserve_all_location_provenance() -> None:
 
     element_node = tuple(
         row
-        for row in by_title["应力 S（节点）（就绪）"].rows
+        for row in by_title["应力 S（单元节点（未平均））（就绪）"].rows
         if row[1] == "S11"
     )
 

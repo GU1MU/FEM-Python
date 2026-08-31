@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import QAbstractItemView, QMenu, QTreeWidget, QTreeWidgetItem
 
-from fem.application.results import (
+from fem.results import (
     FieldAvailability,
     FieldState,
     ResultCatalog,
@@ -16,7 +16,8 @@ from fem.application.results import (
 from fem_gui.result_presentation import (
     result_field_is_beam_section,
     result_field_position_label,
-    visible_result_fields,
+    result_tree_fields,
+    result_variable_label,
 )
 
 ROLE_SELECTION = int(Qt.ItemDataRole.UserRole)
@@ -35,10 +36,21 @@ _FIELD_LABELS = {
     "result.field.ur.node": "转角 UR",
     "result.field.rf.node": "反力 RF",
     "result.field.rm.node": "反力矩 RM",
-    "result.field.sf.integration_point": "截面力 SF（积分点）",
-    "result.field.sm.integration_point": "截面矩 SM（积分点）",
+    "result.field.sf.integration_point": "截面力 SF",
+    "result.field.sm.integration_point": "截面矩 SM",
     "result.field.le.centroid": "对数应变 LE",
+    "result.field.s.integration_point": "应力 S",
+    "result.field.s.centroid": "应力 S",
     "result.field.s.element_nodal": "应力 S",
+    "result.field.s.resolved_nodal": "应力 S",
+    "result.field.e.integration_point": "应变 E",
+    "result.field.e.centroid": "应变 E",
+    "result.field.e.element_nodal": "应变 E",
+    "result.field.e.resolved_nodal": "应变 E",
+    "result.field.peeq.integration_point": "塑性应变 PEEQ",
+    "result.field.peeq.centroid": "塑性应变 PEEQ",
+    "result.field.peeq.element_nodal": "塑性应变 PEEQ",
+    "result.field.peeq.resolved_nodal": "塑性应变 PEEQ",
 }
 
 
@@ -184,10 +196,16 @@ class ResultTree(QTreeWidget):
 
         default_item: QTreeWidgetItem | None = None
         beam_stress_item: QTreeWidgetItem | None = None
-        for availability in visible_result_fields(catalog.fields):
+        for availability in result_tree_fields(catalog.fields):
             if result_field_is_beam_section(availability.descriptor.field_id):
                 if beam_stress_item is None:
-                    beam_stress_item = QTreeWidgetItem(["应力 S"])
+                    beam_stress_item = QTreeWidgetItem(
+                        [
+                            result_variable_label(
+                                availability.descriptor.field_id.variable
+                            )
+                        ]
+                    )
                     step.addChild(beam_stress_item)
                 field_item, selected_component = self._catalog_field_item(
                     availability,
@@ -204,6 +222,9 @@ class ResultTree(QTreeWidget):
             field_item, selected_component = self._catalog_field_item(
                 availability,
                 catalog.default_selection,
+                field_label=result_variable_label(
+                    availability.descriptor.field_id.variable
+                ),
             )
             step.addChild(field_item)
             if selected_component is not None:
@@ -485,10 +506,16 @@ class ResultTree(QTreeWidget):
         _set_identity(step, document_id, run_id, source, "step")
         default_item: QTreeWidgetItem | None = None
         beam_stress_item: QTreeWidgetItem | None = None
-        for availability in visible_result_fields(catalog.fields):
+        for availability in result_tree_fields(catalog.fields):
             if result_field_is_beam_section(availability.descriptor.field_id):
                 if beam_stress_item is None:
-                    beam_stress_item = QTreeWidgetItem(["S"])
+                    beam_stress_item = QTreeWidgetItem(
+                        [
+                            result_variable_label(
+                                availability.descriptor.field_id.variable
+                            )
+                        ]
+                    )
                     _set_identity(
                         beam_stress_item,
                         document_id,
@@ -513,6 +540,9 @@ class ResultTree(QTreeWidget):
             field_item, selected_component = self._catalog_field_item(
                 availability,
                 catalog.default_selection,
+                field_label=result_variable_label(
+                    availability.descriptor.field_id.variable
+                ),
             )
             _annotate_identity(field_item, document_id, run_id, source)
             step.addChild(field_item)
@@ -633,13 +663,24 @@ class ResultTree(QTreeWidget):
         document_id: int | None = None,
         source: object | None = None,
     ) -> bool:
-        """Select the exact catalog component without rebuilding the tree."""
+        """Select a catalog component without rebuilding the tree.
+
+        Exact positions remain selectable through the typed result controls.
+        If the selected position is intentionally collapsed from this tree,
+        select its physical-variable representative instead.
+        """
 
         item = self._selection_item(
             selection,
             document_id=document_id,
             source=source,
         )
+        if item is None:
+            item = self._variable_selection_item(
+                selection,
+                document_id=document_id,
+                source=source,
+            )
         if item is None:
             return False
         self.setCurrentItem(item)
@@ -688,6 +729,12 @@ class ResultTree(QTreeWidget):
                 source=source,
             )
             is not None
+            or self._variable_selection_item(
+                selection,
+                document_id=document_id,
+                source=source,
+            )
+            is not None
         )
 
     def _selection_item(
@@ -730,6 +777,56 @@ class ResultTree(QTreeWidget):
                     fallback = item
             pending.extend(item.child(index) for index in range(item.childCount()))
         return fallback
+
+    def _variable_selection_item(
+        self,
+        selection: ScalarFieldSelection,
+        *,
+        document_id: int | None = None,
+        source: object | None = None,
+    ) -> QTreeWidgetItem | None:
+        """Find the compact tree item representing an exact field variable."""
+
+        if type(selection) is not ScalarFieldSelection:
+            raise TypeError("selection must be a ScalarFieldSelection")
+        variable = selection.field_key.request.field_id.variable
+        if document_id is None:
+            pending = [
+                self.topLevelItem(index) for index in range(self.topLevelItemCount())
+            ]
+        else:
+            pending = [
+                self._roots[key]
+                for key in self._keys_by_document.get(int(document_id), ())
+                if key in self._roots
+            ]
+        while pending:
+            item = pending.pop(0)
+            matches_document = document_id is None or item.data(
+                0, ROLE_DOCUMENT_ID
+            ) == int(document_id)
+            matches_source = (
+                source is None or item.data(0, ROLE_RESULT_SOURCE) == source
+            )
+            representative = item.data(0, ROLE_SELECTION)
+            if (
+                matches_document
+                and matches_source
+                and type(representative) is ScalarFieldSelection
+                and representative.field_key.request.field_id.variable is variable
+            ):
+                for index in range(item.childCount()):
+                    child = item.child(index)
+                    child_selection = child.data(0, ROLE_SELECTION)
+                    if (
+                        type(child_selection) is ScalarFieldSelection
+                        and child_selection.component == selection.component
+                    ):
+                        return child
+                if representative.component == selection.component:
+                    return item
+            pending.extend(item.child(index) for index in range(item.childCount()))
+        return None
 
     def _activate_item(self, item: QTreeWidgetItem) -> None:
         if item.data(0, ROLE_RESULT_KIND) == "run":
@@ -835,6 +932,7 @@ def _successful_runs(projection: object) -> tuple[object, ...]:
         run
         for run in getattr(projection, "runs", ())
         if bool(getattr(run, "has_result", False))
+        or bool(getattr(run, "has_partial_result", False))
         or str(getattr(getattr(run, "status", None), "value", "")) == "succeeded"
     )
 

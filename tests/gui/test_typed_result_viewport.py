@@ -13,7 +13,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import MeshEntityRef
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldLocation,
     FieldMaterializationKey,
@@ -27,14 +27,18 @@ from fem.application.results import (
     ResultVariable,
     ScalarFieldSelection,
 )
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem_gui.visualization.result_renderer import (
     RESULT_SCALAR_NAME,
     build_result_render_payload,
 )
-from fem_gui.visualization.colormaps import abaqus_rainbow_colors
+from fem_gui.visualization.colormaps import (
+    abaqus_rainbow_colors,
+    resolve_contour_colormap,
+)
 from fem_gui.visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
+    CONTOUR_EDGE_NONE,
     CONTOUR_RENDER_FILLED,
 )
 from fem_gui.visualization.scene import DisplayState
@@ -502,6 +506,39 @@ class _Plotter:
         self.render_count += 1
 
 
+def test_model_scene_edges_ignore_cached_result_mesh() -> None:
+    _application()
+    viewport = FEMViewport()
+    payload = _point_payload()
+    viewport.set_result_render_payload(payload)
+    viewport._result_grid = payload.dataset
+    viewport._active_display_source = "model"
+    base_edges = _Actor()
+    viewport._actors["element_edges"] = base_edges
+
+    viewport.set_edges_visible(True, render=False)
+
+    assert viewport.active_display_source == "model"
+    assert base_edges.visible
+    viewport.close()
+
+
+def test_model_mesh_edges_ignore_result_edge_mode() -> None:
+    _application()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._grid = pyvista.Cube().triangulate()
+    viewport._contour["edge_mode"] = CONTOUR_EDGE_NONE
+    viewport._active_display_source = "model"
+
+    actor = viewport._add_element_edges_layer()
+
+    assert actor is not None
+    assert plotter.mesh_calls
+    viewport.close()
+
+
 def test_coordinate_system_option_updates_viewport_axes() -> None:
     _application()
     viewport = FEMViewport()
@@ -590,6 +627,65 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     assert viewport.artifact_id == "artifact-1"
     assert viewport.run_id == "run-1"
     viewport.close()
+
+
+def test_custom_contour_palette_reaches_the_viewport_renderer() -> None:
+    _application()
+    payload = _point_payload()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._display = DisplayState("deformed", True)
+    custom_stops = (
+        (0.0, "#0000ff"),
+        (0.5, "#ffffff"),
+        (1.0, "#ff0000"),
+    )
+    viewport.set_contour_options(
+        {
+            "colormap": "custom",
+            "colormap_reverse": True,
+            "custom_color_stops": custom_stops,
+            "levels": 3,
+        }
+    )
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    _rendered, options = plotter.mesh_calls[0]
+    assert options["cmap"] == resolve_contour_colormap(
+        "custom",
+        3,
+        reverse=True,
+        custom_color_stops=custom_stops,
+    )
+    assert viewport.contour_display_state.colormap_reverse
+    assert viewport.contour_display_state.custom_color_stops == custom_stops
+    viewport.close()
+
+
+def test_shaded_result_keys_preserve_element_nodal_sides() -> None:
+    """Unaveraged element-node values must not merge at shared nodes."""
+
+    payload = _duplicate_point_payload()
+    keys = viewport_module._result_surface_point_keys(payload.topology)
+
+    # Points 0/3 and 2/4 share physical node IDs but belong to different
+    # element-local records.  They must remain separate render vertices.
+    assert keys[0] != keys[3]
+    assert keys[2] != keys[4]
+    assert len(set(keys)) == len(keys)
+
+    node_payload = _node_payload()
+    node_keys = viewport_module._result_surface_point_keys(
+        node_payload.topology
+    )
+    assert node_keys == (
+        ("node", 10),
+        ("node", 20),
+        ("node", 30),
+    )
 
 
 def test_deformed_beam_result_moves_visible_nodes_with_the_elements(
@@ -850,6 +946,41 @@ def test_engineering_scalar_format_and_legend_typography_are_configurable() -> N
     assert scalar_bar_args["font_family"] == "times"
     assert scalar_bar_args["title_font_size"] == 16
     assert scalar_bar_args["label_font_size"] == 16
+
+    viewport.close()
+
+
+def test_contour_legend_layout_title_and_label_count_are_configurable() -> None:
+    _application()
+    viewport = FEMViewport()
+    viewport.set_contour_options(
+        {
+            "legend_position": "left",
+            "legend_label_count": "9",
+            "legend_title": False,
+        }
+    )
+
+    left_args = viewport._contour_bar_args(_point_payload())
+    assert left_args["vertical"]
+    assert left_args["position_x"] == 0.08
+    assert left_args["position_y"] == 0.19
+    assert left_args["n_labels"] == 9
+    assert left_args["title"] == ""
+
+    viewport.set_contour_options(
+        {
+            "legend_position": "top",
+            "legend_label_count": "3",
+            "legend_title": True,
+        }
+    )
+    top_args = viewport._contour_bar_args(_point_payload())
+    assert not top_args["vertical"]
+    assert top_args["position_x"] == 0.27
+    assert top_args["position_y"] == 0.86
+    assert top_args["n_labels"] == 3
+    assert top_args["title"]
 
     viewport.close()
 
@@ -1655,6 +1786,24 @@ def test_typed_sample_result_keeps_model_grid_for_labels_and_background(
     assert len(label_points) == 2
     assert labels == ["401", "402"]
     assert plotter.background_calls[-1] == ("#202020", None)
+    viewport.close()
+
+
+def test_integration_point_result_uses_visible_sample_markers() -> None:
+    _application()
+    payload = _integration_point_payload()
+    viewport = FEMViewport()
+    plotter = _Plotter()
+    viewport._plotter = plotter
+    viewport._display = DisplayState("deformed", True)
+
+    viewport.set_result_render_payload(payload)
+    viewport._update_result_layer()
+
+    rendered, options = plotter.mesh_calls[0]
+    assert rendered is payload.dataset
+    assert options["point_size"] == 10
+    assert options["render_points_as_spheres"] is True
     viewport.close()
 
 

@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
 
-from fem import materials, post
+from fem import post
+from fem.analysis.compilation import apply_sections
 from fem.io import inp as abaqus
-from fem.boundary.step import boundary_for_step, get_step
-from fem.core.model import (
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.model import resolve_analysis_step as get_step
+from fem.model import (
     DisplacementConstraint,
     ElementEdge,
     ElementFace,
@@ -14,8 +16,8 @@ from fem.core.model import (
     OutputSourceEvidence,
     SectionAssignment,
 )
-from fem.core.mesh import Mesh3D
-from fem.solvers import static_linear
+from fem.model.mesh import Mesh3D
+from fem.analysis import linear_static as static_linear
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.file_builders import write_inp
 
@@ -211,7 +213,7 @@ def test_abaqus_read_preserves_2d_solid_section_thickness(tmp_path):
     model = abaqus.read(inp_path)
 
     assert model.sections[0].properties == {"thickness": 2.5}
-    materials.apply_sections(model)
+    apply_sections(model)
     assert {
         element.props["thickness"]
         for element in model.mesh.elements
@@ -360,7 +362,7 @@ def test_abaqus_read_hides_internal_element_sets_without_breaking_surfaces_or_se
     bc = boundary_for_step(model, "LOAD")
     assert len(bc.surface_tractions) == 1
 
-    materials.apply_sections(model)
+    apply_sections(model)
     assert model.mesh.elements[0].props["material"] == "STEEL"
 
 
@@ -400,7 +402,7 @@ def test_abaqus_sections_use_part_element_ids_when_assembly_set_reuses_name(tmp_
 
     model = abaqus.read(path)
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert [elem.props.get("material") for elem in model.mesh.elements] == ["STEEL", "STEEL"]
     assert [elem.props.get("E") for elem in model.mesh.elements] == [210.0, 210.0]
@@ -1585,7 +1587,7 @@ def test_abaqus_read_builds_and_solves_full_c3d20_model(tmp_path):
     assert step.gravity_loads == (GravityLoad((0.0, -3.0, 0.0)),)
     assert not any(name.startswith("__DLOAD") for name in model.surfaces)
 
-    materials.apply_sections(model)
+    apply_sections(model)
     assert model.mesh.elements[0].props["material"] == "STEEL"
     assert model.mesh.elements[0].props["E"] == 210.0
     assert model.mesh.elements[0].props["nu"] == 0.3

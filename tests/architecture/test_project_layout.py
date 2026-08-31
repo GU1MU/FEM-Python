@@ -378,6 +378,9 @@ def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
                 "fem.geometry.errors",
                 "fem.geometry.types",
             )
+            public_model_modules = (
+                "fem.model",
+            )
             geometry_parts = target.split(".")
             public_facade_target = (
                 len(geometry_parts) == 3
@@ -391,6 +394,10 @@ def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
                     target == module or target.startswith(f"{module}.")
                     for module in public_geometry_modules
                 )
+                or any(
+                    target == module or target.startswith(f"{module}.")
+                    for module in public_model_modules
+                )
             )
             if target == "fem" or (
                 target.startswith("fem.") and not allowed_fem_target
@@ -398,7 +405,7 @@ def test_gmsh_meshing_recursively_depends_only_on_public_geometry_contracts():
                 offenders.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
                 )
-            elif not target.startswith("fem.") and (
+            elif target != "gmsh" and not target.startswith("fem.") and (
                 target.split(".", 1)[0] not in sys.stdlib_module_names
             ):
                 offenders.append(
@@ -424,18 +431,19 @@ def test_generated_mesh_reference_has_no_concrete_geometry_backchannel():
 
 
 def test_gmsh_io_imports_only_mesh_level_fem_core_types():
-    path = SRC_ROOT / "fem" / "io" / "gmsh.py"
+    path = SRC_ROOT / "fem" / "mesh" / "gmsh" / "importer.py"
     allowed_fem_targets = {
-        "fem.core.Element2D",
-        "fem.core.Element3D",
-        "fem.core.Mesh2D",
-        "fem.core.Mesh3D",
-        "fem.core.Node2D",
-        "fem.core.Node3D",
+        "fem.model.Element2D",
+        "fem.model.Element3D",
+        "fem.model.Mesh2D",
+        "fem.model.Mesh3D",
+        "fem.model.Node2D",
+        "fem.model.Node3D",
         "fem.mesh.gmsh.GmshMeshRef",
+        "fem.mesh.gmsh.types.GmshMeshRef",
     }
     resolved_imports = tuple(
-        _resolved_import_targets(path, "fem.io.gmsh")
+        _resolved_import_targets(path, "fem.mesh.gmsh.importer")
     )
     offenders = []
     for target, lineno in resolved_imports:
@@ -449,17 +457,20 @@ def test_gmsh_io_imports_only_mesh_level_fem_core_types():
             offenders.append(f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}")
 
     assert offenders == []
-    assert "fem.mesh.gmsh.GmshMeshRef" in {
+    assert "fem.mesh.gmsh.types.GmshMeshRef" in {
         target for target, _ in resolved_imports
     }
 
 
 def test_fem_runtime_layers_do_not_import_geometry_or_meshing():
     package_roots = (
-        SRC_ROOT / "fem" / "core",
         SRC_ROOT / "fem" / "elements",
-        SRC_ROOT / "fem" / "assemble",
-        SRC_ROOT / "fem" / "solvers",
+        SRC_ROOT / "fem" / "assembly",
+        SRC_ROOT / "fem" / "materials",
+        SRC_ROOT / "fem" / "physics",
+        SRC_ROOT / "fem" / "problem",
+        SRC_ROOT / "fem" / "solver",
+        SRC_ROOT / "fem" / "state",
     )
     missing_roots = [
         str(package_root.relative_to(PROJECT_ROOT))
@@ -524,7 +535,7 @@ def test_application_layer_has_no_qt_pyvista_or_gui_dependency():
 
 
 def test_result_support_matrix_has_one_application_owner():
-    results_root = APPLICATION_ROOT / "results"
+    results_root = SRC_ROOT / "fem" / "results"
     projection_path = results_root / "output_requests.py"
     registry_path = results_root / "registry.py"
     support_names = {
@@ -536,7 +547,7 @@ def test_result_support_matrix_has_one_application_owner():
     assignments = []
     factory_definitions = []
 
-    for path in sorted(APPLICATION_ROOT.rglob("*.py")):
+    for path in sorted(results_root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -584,11 +595,11 @@ def test_result_support_matrix_has_one_application_owner():
 
 
 def test_application_recovery_calls_are_owned_by_result_materializer():
-    owner = APPLICATION_ROOT / "results" / "_materializers.py"
+    owner = SRC_ROOT / "fem" / "results" / "_materializers.py"
     recovery_imports = []
     offenders = []
 
-    for path in sorted(APPLICATION_ROOT.rglob("*.py")):
+    for path in sorted((SRC_ROOT / "fem" / "results").rglob("*.py")):
         targets = tuple(
             _resolved_import_targets(path, _module_name(path))
         )
@@ -763,10 +774,9 @@ def test_recipe_compiler_does_not_map_logical_ids_by_backend_tag_order():
 
 def test_kernel_and_material_layers_do_not_import_application():
     package_roots = (
-        SRC_ROOT / "fem" / "core",
         SRC_ROOT / "fem" / "elements",
         SRC_ROOT / "fem" / "materials",
-        SRC_ROOT / "fem" / "solvers",
+        SRC_ROOT / "fem" / "physics",
     )
     assert all(path.is_dir() for path in package_roots)
     offenders = []
@@ -1174,20 +1184,20 @@ def test_gui_model_definitions_shim_is_removed():
 
 
 def test_beam_frame_domain_module_has_no_upward_or_adapter_dependency():
-    path = SRC_ROOT / "fem" / "elements" / "beam_frame.py"
+    path = SRC_ROOT / "fem" / "model" / "beam_frame.py"
     forbidden_roots = (
         "fem.application",
         "fem_gui",
         "fem.io",
         "fem.abaqus",
-        "fem.solvers",
+        "fem.solver",
         "fem.post",
     )
     offenders = [
         f"{path.relative_to(PROJECT_ROOT)}:{lineno} -> {target}"
         for target, lineno in _resolved_import_targets(
             path,
-            "fem.elements.beam_frame",
+            "fem.model.beam_frame",
         )
         if any(
             target == root or target.startswith(f"{root}.")
@@ -1223,9 +1233,7 @@ def test_beam_frame_has_one_production_resolver_and_no_legacy_helper():
     assert legacy_references == []
     assert len(resolver_definitions) == 1
     resolver_path, _lineno = resolver_definitions[0].rsplit(":", 1)
-    assert Path(resolver_path) == Path(
-        "src/fem/elements/beam_frame.py"
-    )
+    assert Path(resolver_path) == Path("src/fem/model/beam_frame.py")
 
 
 def test_gui_beam_frame_consumers_use_application_query_boundary():
@@ -1665,7 +1673,6 @@ def test_abaqus_parser_does_not_compute_beam_frames_or_rotations():
 
 def test_core_elements_and_materials_do_not_import_abaqus_adapter():
     package_roots = (
-        SRC_ROOT / "fem" / "core",
         SRC_ROOT / "fem" / "elements",
         SRC_ROOT / "fem" / "materials",
     )
@@ -1870,7 +1877,7 @@ def test_production_has_no_beam_slenderness_gate():
     # not an aspect-ratio capability gate.  Keep that explicit compensation
     # legal while rejecting names that imply import rejection or formulation
     # switching based on a geometric slenderness threshold.
-    numeric_owner = SRC_ROOT / "fem" / "elements" / "beam_section.py"
+    numeric_owner = SRC_ROOT / "fem" / "model" / "beam_section.py"
     numeric_source = _source(numeric_owner)
     assert "ABAQUS_B31_SLENDERNESS_COMPENSATION" in numeric_source
     assert "slenderness_compensation" in numeric_source

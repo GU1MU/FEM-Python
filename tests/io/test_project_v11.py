@@ -7,7 +7,7 @@ import pytest
 from fem.application.face_sketch_boolean import prepare_face_sketch_boolean
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.session import ModelSession
-from fem.application.units import UnitContext
+from fem.model.units import UnitContext
 from fem.geometry import (
     BoxGeometry,
     FaceSketchBooleanDirection,

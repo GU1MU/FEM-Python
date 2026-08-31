@@ -15,9 +15,9 @@ from PySide6.QtWidgets import QApplication, QDialog, QMenu, QToolButton
 from fem.application import ModelSession, NamedRegion, describe_session_authoring
 from fem.geometry import LogicalEntityRef
 from fem.io import save_project, save_result_archive
-from fem.core.model import DisplacementConstraint, NodalLoad
-from fem.application.results import ResultArchiveModelProjection
-from fem.application.results import (
+from fem.model import DisplacementConstraint, NodalLoad
+from fem.results import ResultArchiveModelProjection
+from fem.results import (
     FieldState,
     ResultQuery,
     ScalarFieldSelection,
@@ -199,7 +199,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
     assert window.actions["open_result"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert not window.actions["reload"].isEnabled()
-    assert window.actions["screenshot"].toolTip() == "导出视口"
+    assert window.actions["screenshot"].toolTip() == "导出当前视口图片"
     assert not window.actions["save_project"].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
     _wait_idle(window)
@@ -222,7 +222,8 @@ def test_result_archive_switches_between_result_and_mesh_modules(
         assert window.navigation.tabs.currentWidget() is window.model_tree
         assert window.viewport._model is window._result_archive_model_view
         assert window.viewport._geometry is window.geometry
-        assert window.viewport._result_render_payload is None
+        assert window.viewport.active_display_source == "model"
+        assert window.viewport._result_render_payload is not None
         assert window.viewport.artifact_id == artifact_id
 
     window.ribbon.set_current("结果")

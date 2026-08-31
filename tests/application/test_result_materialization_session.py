@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 import fem.application.runs as runs_module
-import fem.application.results.workflow as workflow_module
+import fem.application.result_workflow as workflow_module
 from fem.application import (
     ChangeKind,
     ModelSession,
@@ -16,7 +16,7 @@ from fem.application import (
     RunStatus,
     TokenStatus,
 )
-from fem.application.results import (
+from fem.results import (
     FieldData,
     FieldPosition,
     FieldRequest,
@@ -25,7 +25,7 @@ from fem.application.results import (
     ResultVariable,
     restore_result_provider,
 )
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model import AnalysisStep, FEMModel
 from fem.geometry.recipes import BoxGeometry
 from tests.helpers.model_builders import make_simple_truss_mesh
 from tests.helpers.preflight_builders import passing_preflight_report

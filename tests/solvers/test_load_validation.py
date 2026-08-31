@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 from scipy.sparse import csr_matrix
 
-from fem.boundary.condition import BoundaryCondition
-from fem.boundary.constraints import apply_dirichlet
-from fem.boundary.loads import build_load_vector
-from fem.solvers import linear
+from fem.analysis.compilation.boundary.condition import BoundaryCondition
+from fem.analysis.compilation.boundary.constraints import apply_dirichlet
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.solver import linear
 from tests.helpers.model_builders import make_simple_truss_mesh
 
 

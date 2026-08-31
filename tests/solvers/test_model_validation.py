@@ -6,17 +6,19 @@ import numpy as np
 import pytest
 
 from fem import materials
-from fem.materials import assignment as material_assignment
-from fem.assemble import assemble_global_stiffness_sparse
-from fem.assemble import stiffness as stiffness_module
-from fem.core import (
+from fem.analysis.compilation import apply_sections
+from fem.analysis.compilation import assignments as material_assignment
+from fem.model import add_material, assign_section
+from fem.assembly import assemble_global_stiffness_sparse
+from fem.assembly import stiffness as stiffness_module
+from fem.analysis import (
     validate_analysis_step,
     validate_mesh,
     validate_model,
     validate_model_structure,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
@@ -27,8 +29,9 @@ from fem.core.model import (
     NodalLoad,
     SectionAssignment,
 )
-from fem.core.result import ModelResult
-from fem.solvers import static_linear
+from fem.results import ModelResult
+from fem.physics.contracts import LocalContribution
+from fem.analysis import linear_static as static_linear
 from tests.helpers.mesh_builders import make_beam_stiffness_mesh, make_truss_stiffness_mesh
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
@@ -41,7 +44,7 @@ def test_validate_mesh_rejects_stale_dof_map_until_explicit_rebuild():
     mesh = make_truss_stiffness_mesh()
     mesh.nodes.append(Node3D(3, 3.0, 0.0, 0.0))
 
-    with pytest.raises(ValueError, match=r"DofMap.*rebuild_dof_map"):
+    with pytest.raises(ValueError, match=r"NodeDofMap.*rebuild_dof_map"):
         validate_mesh(mesh)
 
     mesh.rebuild_dof_map()
@@ -114,7 +117,7 @@ def test_validate_model_rejects_invalid_set_and_section_references():
         validate_model(missing_material_model)
 
     missing_set_model = make_truss_workflow_model()
-    materials.add(
+    add_material(
         missing_set_model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3),
     )
@@ -256,11 +259,11 @@ def test_validate_model_rejects_nonfinite_step_values(kind):
 
 def test_validate_model_accepts_global_id_and_set_gravity_with_effective_density():
     model = make_truss_workflow_model()
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3, rho=0.0),
     )
-    materials.assign(model, "steel", "bar", area=2.0)
+    assign_section(model, "steel", "bar", area=2.0)
     model.steps.append(
         AnalysisStep(
             "gravity",
@@ -354,7 +357,7 @@ def test_targeted_gravity_validation_ignores_stale_section_density():
         {"E": 100.0, "nu": 0.3, "rho": 2.0},
     )
     model.sections.append(SectionAssignment("bar", "steel", properties={"area": 2.0}))
-    materials.apply_sections(model)
+    apply_sections(model)
     model.materials["steel"] = MaterialDefinition("steel", {"E": 100.0, "nu": 0.3})
     model.steps.append(
         AnalysisStep(
@@ -446,25 +449,25 @@ def test_line_load_compatibility_uses_element_capabilities():
 def test_apply_sections_restores_original_properties_after_change_and_removal():
     original_props = {"E": 10.0, "area": 2.0, "custom": "base"}
     model = make_truss_workflow_model(element_props=dict(original_props))
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3),
     )
-    materials.assign(model, "steel", "bar", area=3.0, first_only="old")
+    assign_section(model, "steel", "bar", area=3.0, first_only="old")
 
-    materials.apply_sections(model)
+    apply_sections(model)
     elem = model.mesh.elements[0]
     assert elem.props["E"] == 100.0
     assert elem.props["area"] == 3.0
     assert elem.props["first_only"] == "old"
 
     model.sections.clear()
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("aluminum", E=50.0, nu=0.25),
     )
-    materials.assign(model, "aluminum", "bar", area=4.0)
-    materials.apply_sections(model)
+    assign_section(model, "aluminum", "bar", area=4.0)
+    apply_sections(model)
 
     assert elem.props["E"] == 50.0
     assert elem.props["area"] == 4.0
@@ -472,7 +475,7 @@ def test_apply_sections_restores_original_properties_after_change_and_removal():
     assert "first_only" not in elem.props
 
     model.sections.clear()
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert elem.props == original_props
 
@@ -488,13 +491,13 @@ def _beam_assignment_model():
     aluminum = materials.linear_elastic.material(
         "aluminum", E=70.0, nu=0.33, rho=2.7
     )
-    materials.add(model, aluminum)
+    add_material(model, aluminum)
     return model, aluminum
 
 
 def test_apply_sections_assigns_effective_beam2_material_and_section_properties():
     model, aluminum = _beam_assignment_model()
-    materials.assign(
+    assign_section(
         model,
         aluminum,
         model.element_sets["beam"],
@@ -502,7 +505,7 @@ def test_apply_sections_assigns_effective_beam2_material_and_section_properties(
         radius=0.02,
     )
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     elem = model.mesh.elements[0]
     assert elem.props["material"] == "aluminum"
@@ -515,20 +518,20 @@ def test_apply_sections_assigns_effective_beam2_material_and_section_properties(
 
 def test_apply_sections_rejects_invalid_beam2_section_transactionally():
     model, aluminum = _beam_assignment_model()
-    materials.assign(
+    assign_section(
         model,
         aluminum,
         "beam",
         section_type="solid_circle",
         radius=0.02,
     )
-    materials.apply_sections(model)
+    apply_sections(model)
     elem = model.mesh.elements[0]
     props_before = deepcopy(elem.props)
     metadata_before = deepcopy(model.metadata)
 
     model.sections.clear()
-    materials.assign(
+    assign_section(
         model,
         aluminum,
         "beam",
@@ -537,7 +540,7 @@ def test_apply_sections_rejects_invalid_beam2_section_transactionally():
     )
 
     with pytest.raises(ValueError, match=r"Element 1.*radius"):
-        materials.apply_sections(model)
+        apply_sections(model)
 
     assert elem.props == props_before
     assert model.metadata == metadata_before
@@ -547,23 +550,23 @@ def test_apply_sections_rejects_missing_effective_beam2_section():
     model, _ = _beam_assignment_model()
 
     with pytest.raises(ValueError, match=r"Element 1.*section_type"):
-        materials.apply_sections(model)
+        apply_sections(model)
 
 
 def test_apply_sections_preserves_last_matching_section_semantics():
     model = make_truss_workflow_model(element_props={"area": 2.0})
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("first", E=100.0, nu=0.3),
     )
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("last", E=50.0, nu=0.25),
     )
-    materials.assign(model, "first", "bar", first_only="remove-me")
-    materials.assign(model, "last", "bar", area=4.0)
+    assign_section(model, "first", "bar", first_only="remove-me")
+    assign_section(model, "last", "bar", area=4.0)
 
-    materials.apply_sections(model)
+    apply_sections(model)
 
     elem = model.mesh.elements[0]
     assert elem.props["material"] == "last"
@@ -574,12 +577,12 @@ def test_apply_sections_preserves_last_matching_section_semantics():
 
 def test_apply_sections_does_not_restore_old_baseline_into_replaced_element():
     model = make_truss_workflow_model(element_props={"E": 10.0, "area": 2.0})
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3),
     )
-    materials.assign(model, "steel", "bar")
-    materials.apply_sections(model)
+    assign_section(model, "steel", "bar")
+    apply_sections(model)
 
     replacement = Element3D(
         1,
@@ -588,9 +591,9 @@ def test_apply_sections_does_not_restore_old_baseline_into_replaced_element():
         {"E": 9.0, "area": 9.0, "replacement": True},
     )
     model.mesh.elements[0] = replacement
-    materials.apply_sections(model)
+    apply_sections(model)
     model.sections.clear()
-    materials.apply_sections(model)
+    apply_sections(model)
 
     assert replacement.props == {
         "E": 9.0,
@@ -602,12 +605,12 @@ def test_apply_sections_does_not_restore_old_baseline_into_replaced_element():
 @pytest.mark.parametrize("failure", ["material", "set", "element"])
 def test_apply_sections_resolution_failure_preserves_previous_state(failure):
     model = make_truss_workflow_model(element_props={"E": 10.0, "area": 2.0})
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3),
     )
-    materials.assign(model, "steel", "bar", area=3.0)
-    materials.apply_sections(model)
+    assign_section(model, "steel", "bar", area=3.0)
+    apply_sections(model)
     elem = model.mesh.elements[0]
     props_before = deepcopy(elem.props)
     metadata_before = deepcopy(model.metadata)
@@ -623,7 +626,7 @@ def test_apply_sections_resolution_failure_preserves_previous_state(failure):
         message = "element 999 is not defined"
 
     with pytest.raises(KeyError, match=message):
-        materials.apply_sections(model)
+        apply_sections(model)
 
     assert elem.props == props_before
     assert model.metadata == metadata_before
@@ -631,12 +634,12 @@ def test_apply_sections_resolution_failure_preserves_previous_state(failure):
 
 def test_apply_sections_commit_failure_rolls_back_props_and_metadata(monkeypatch):
     model = make_truss_workflow_model(element_props={"E": 10.0, "area": 2.0})
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material("steel", E=100.0, nu=0.3),
     )
-    materials.assign(model, "steel", "bar", area=3.0)
-    materials.apply_sections(model)
+    assign_section(model, "steel", "bar", area=3.0)
+    apply_sections(model)
     elem = model.mesh.elements[0]
     props_before = deepcopy(elem.props)
     metadata_before = deepcopy(model.metadata)
@@ -653,7 +656,7 @@ def test_apply_sections_commit_failure_rolls_back_props_and_metadata(monkeypatch
     )
 
     with pytest.raises(RuntimeError, match="commit failed"):
-        materials.apply_sections(model)
+        apply_sections(model)
 
     assert elem.props == props_before
     assert model.metadata == metadata_before
@@ -749,19 +752,56 @@ def test_assembly_rejects_invalid_element_stiffness(monkeypatch, failure):
     Ke = np.eye(6)
     if failure == "nonfinite":
         Ke[0, 0] = np.nan
-        message = "contains non-finite values"
+        message = "element contribution must be finite"
     else:
         Ke[0, 1] = 1.0
-        message = "stiffness is not symmetric"
+        message = "tangent is not symmetric"
 
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            return Ke
+    class Operator:
+        def initialize(
+            self,
+            entity,
+            resources,
+            state,
+            properties=None,
+            *,
+            state_namespace,
+        ):
+            del entity, resources, state, properties, state_namespace
+
+        def evaluate(
+            self,
+            entity,
+            reference_coordinates,
+            fields,
+            dofs,
+            resources,
+            state,
+            properties=None,
+            *,
+            context,
+            state_namespace,
+        ):
+            del (
+                entity,
+                reference_coordinates,
+                fields,
+                resources,
+                state,
+                properties,
+                context,
+                state_namespace,
+            )
+            return LocalContribution(
+                dofs=dofs,
+                residual=np.zeros(len(dofs)),
+                tangent=Ke,
+            )
 
     monkeypatch.setattr(
         stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
+        "get_mechanical_operator",
+        lambda mesh, element_type: Operator(),
     )
 
     with pytest.raises(ValueError, match=message):

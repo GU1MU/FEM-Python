@@ -14,7 +14,7 @@ from fem.application import (
 )
 from fem.application.feature_history import derive_feature_history
 from fem.application.project_validation import NativeProjectValidationError
-from fem.core.model import AnalysisStep, DisplacementConstraint, MaterialDefinition
+from fem.model import AnalysisStep, DisplacementConstraint, MaterialDefinition
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import (
     BoxGeometry,

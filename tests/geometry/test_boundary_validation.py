@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
-from fem.core import validate_model
-from fem.core.model import (
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.analysis import validate_model
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -17,8 +17,8 @@ from fem.core.model import (
     Surface,
     SurfaceLoad,
 )
-from fem.elements import get_element_kernel
-from fem.solvers import static_linear
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.analysis import linear_static as static_linear
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex20_stiffness_mesh,
@@ -86,7 +86,7 @@ def test_quad_load_consumers_reject_invalid_shared_thickness(operation):
 
     with pytest.raises(
         ValueError,
-        match=r"Quad4 element 1 thickness must be finite and > 0",
+        match=r"plane element 1 thickness invalid: thickness must be finite and > 0",
     ):
         if operation == "body_force":
             kernel.body_force(mesh, elem, (0.0, -1.0))

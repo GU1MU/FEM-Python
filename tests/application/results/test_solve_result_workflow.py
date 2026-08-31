@@ -1,23 +1,21 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle, validate_solve_result_model_identity
 
 from collections.abc import Callable
 from copy import deepcopy
 
 import pytest
 
-import fem.application.results.workflow as workflow_module
-from fem.application.results import (
+import fem.application.result_workflow as workflow_module
+from fem.results import (
     FieldPosition,
     OutputExecutionStatus,
     ResultProvider,
     ResultVariable,
-    SolveResultBundle,
-    build_solve_result_bundle,
-    validate_solve_result_model_identity,
 )
 from fem.application.revisions import SolveTaskSnapshot, TaskToken
-from fem.core.model import AnalysisStep, OutputRequest
-from fem.core.result import ModelResult
+from fem.model import AnalysisStep, OutputRequest
+from fem.results import ModelResult
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,

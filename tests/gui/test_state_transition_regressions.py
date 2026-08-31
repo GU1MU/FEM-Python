@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import json
 import os
@@ -19,19 +20,18 @@ from fem.application import (
     SectionDefinition,
     TokenStatus,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
 )
-from fem.application.results import build_solve_result_bundle
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import RectangleGeometry
 from fem.io.project import save_project
 from fem.mesh.settings import LocalMeshControl, MeshSettings
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry

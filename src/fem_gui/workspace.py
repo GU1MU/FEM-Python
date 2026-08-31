@@ -18,6 +18,7 @@ from typing import Callable, Literal
 from fem.application import ModelSession, SessionSnapshot
 
 from .task_controller import BackgroundTaskController
+from .view_cut_state import default_view_cut_settings
 
 
 def canonical_path(path: str | os.PathLike[str] | Path) -> str:
@@ -45,6 +46,7 @@ class DocumentPresentationState:
     module_name: str | None = None
     step_name: str | None = None
     result_selection: object | None = None
+    result_frame_index: int = 0
     display_state: object | None = None
     camera_state: object | None = None
     selection_mode: str | None = None
@@ -52,6 +54,12 @@ class DocumentPresentationState:
     result_scale_value: float = 1.0
     contour_options: dict[str, object] = field(default_factory=dict)
     overlay_undeformed: bool = False
+    display_groups: dict[str, dict[str, object]] = field(default_factory=dict)
+    active_display_group: str | None = None
+    view_cut_settings: dict[str, object] = field(
+        default_factory=default_view_cut_settings
+    )
+    animation_settings: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -287,6 +295,24 @@ class FEMWorkspace:
                 self._next_job_number,
                 int(clean[len(prefix) :]) + 1,
             )
+
+    def rename_job_name(self, old_name: str, new_name: str) -> None:
+        """Replace one reserved job display name in the workspace index."""
+
+        old_key = str(old_name).strip().casefold()
+        new_clean = str(new_name).strip()
+        if not old_key or not new_clean:
+            raise ValueError("job names must not be empty")
+        new_key = new_clean.casefold()
+        if new_key != old_key and new_key in self._job_names:
+            raise ValueError(f"job name already exists: {new_clean}")
+        self._job_names.discard(old_key)
+        self.remember_job_name(new_clean)
+
+    def forget_job_name(self, name: str) -> None:
+        """Release one in-memory job name after deleting its job record."""
+
+        self._job_names.discard(str(name).strip().casefold())
 
     @property
     def document_count(self) -> int:

@@ -10,13 +10,13 @@ import numpy as np
 import pytest
 
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.assemble import assemble_global_stiffness
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
-from fem.elements import get_element_kernel
+from fem.assembly import assemble_global_stiffness
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 from fem.io import inp
-from fem.materials import apply_sections
-from fem.solvers.static_linear import solve
+from fem.analysis import apply_sections
+from fem.analysis.linear_static import solve
 
 
 def _write_deck(tmp_path: Path, name: str, lines: tuple[str, ...]) -> Path:

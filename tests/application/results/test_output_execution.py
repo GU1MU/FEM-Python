@@ -5,13 +5,13 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-import fem.application.results.execution as execution_module
-from fem.application.results.data import (
+import fem.results.execution as execution_module
+from fem.results.data import (
     FieldState,
     ResultDiagnostic,
     ResultMaterializationPatch,
 )
-from fem.application.results.execution import (
+from fem.results.execution import (
     OutputExecutionOutcome,
     OutputExecutionStatus,
     OutputRequestExecution,
@@ -19,7 +19,7 @@ from fem.application.results.execution import (
     ResultExecutionReport,
     execute_output_requests,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldMaterializationKey,
     FieldPosition,
     FieldRequest,
@@ -27,16 +27,16 @@ from fem.application.results.fields import (
     ResultSourceKey,
     ResultVariable,
 )
-from fem.application.results.output_requests import (
+from fem.results.output_requests import (
     ExecutableOutputRequest,
     OutputRequestProjection,
     OutputVariableProjection,
 )
-from fem.application.results.provider import (
+from fem.results.provider import (
     ResultProvider,
     build_result_provider,
 )
-from fem.core.model import OutputRequest, OutputSourceEvidence
+from fem.model import OutputRequest, OutputSourceEvidence
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
@@ -637,7 +637,7 @@ def test_shared_lazy_key_is_materialized_once_and_satisfies_each_request(
     )
 
 
-def test_legacy_continuum_positions_share_one_element_nodal_materialization(
+def test_continuum_positions_materialize_as_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _continuum_provider()
@@ -681,11 +681,17 @@ def test_legacy_continuum_positions_share_one_element_nodal_materialization(
         OutputExecutionStatus.EXECUTED,
         OutputExecutionStatus.EXECUTED,
     )
-    assert calls == [FieldPosition.ELEMENT_NODAL]
+    assert calls == [
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+    ]
     assert tuple(
         field.key.request.field_id.position
         for field in outcome.eager_patch.fields
-    ) == (FieldPosition.ELEMENT_NODAL,)
+    ) == (
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+    )
     assert outcome.report.diagnostics == ()
 
 

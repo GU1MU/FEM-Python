@@ -3,13 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     ResultArchiveModelProjection,
     ResultSourceKey,
     ResultTopologyProjection,
 )
-from fem.core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import FEMModel
 from fem.post.fields import ResultRegionKey, make_result_region_signature
 import fem_gui.visualization.model_adapter as model_adapter_module
 from fem_gui.visualization.model_adapter import (

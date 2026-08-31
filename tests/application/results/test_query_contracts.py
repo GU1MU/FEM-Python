@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldLocation,
     FieldMaterializationKey,
@@ -13,7 +13,7 @@ from fem.application.results import (
     ResultSourceKey,
     ResultVariable,
 )
-from fem.application.results.query import (
+from fem.results.query import (
     ResultQuery,
     ResultQueryRecord,
     ResultQueryResult,

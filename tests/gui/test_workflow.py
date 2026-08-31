@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     ResultProvider,
     ResultVariable,

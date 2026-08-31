@@ -4,16 +4,21 @@ from copy import deepcopy
 
 import pytest
 
-from fem import materials
+from fem.analysis import apply_sections
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.core import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model import (
+    BEAM_LOCAL_Y_REFERENCE_KEY,
+    BeamOrientation,
+    Element3D,
+    Mesh3D,
+    Node3D,
+)
+from fem.model import (
     ElementSet,
     FEMModel,
     MaterialDefinition,
     SectionAssignment,
 )
-from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY, BeamOrientation
 
 
 def _beam_model(
@@ -101,7 +106,7 @@ def test_effective_query_restores_uncovered_direct_orientation_read_only():
     model = _beam_model(reference=(0.0, 0.0, 1.0))
     element = model.mesh.elements[0]
     element.props[BEAM_LOCAL_Y_REFERENCE_KEY] = (0.0, 1.0, 0.0)
-    materials.apply_sections(model)
+    apply_sections(model)
     assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (0.0, 0.0, 1.0)
     model.sections.clear()
 
@@ -118,7 +123,7 @@ def test_effective_query_restores_direct_orientation_after_model_deepcopy():
     model = _beam_model(reference=(0.0, 0.0, 1.0))
     element = model.mesh.elements[0]
     element.props[BEAM_LOCAL_Y_REFERENCE_KEY] = (0.0, 1.0, 0.0)
-    materials.apply_sections(model)
+    apply_sections(model)
 
     copied = deepcopy(model)
     copied.sections.clear()

@@ -16,8 +16,8 @@ from fem.application import (
 from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import (
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,

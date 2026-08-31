@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from . import (
     csv,
-    gmsh,
     inp,
     materials,
     project,
@@ -23,6 +22,7 @@ from . import (
     result_csv,
     result_vtk,
 )
+from fem.mesh.gmsh import importer as gmsh
 from ._project_errors import (
     ProjectDecodeError,
     ProjectEncodeError,

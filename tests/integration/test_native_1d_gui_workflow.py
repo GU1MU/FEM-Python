@@ -23,8 +23,8 @@ from fem.application import (
     evaluate_native_assignment_candidate,
     evaluate_native_line_load_candidate,
 )
-from fem.application.results import ResultVariable
-from fem.core.model import (
+from fem.results import ResultVariable
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     LineLoad,

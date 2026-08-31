@@ -4,8 +4,8 @@ import math
 from collections import defaultdict
 from typing import Any
 
-from ...core.mesh import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
-from ...core.model import (
+from fem.model import Element2D, Element3D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     Edge,
@@ -25,7 +25,7 @@ from ...core.model import (
     Surface,
     SurfaceLoad,
 )
-from ...elements import (
+from ...model import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
@@ -33,13 +33,15 @@ from ...elements import (
     BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrameField,
-    canonical_element_type,
-    get_element_capabilities,
     resolve_beam_frame_field,
     validate_beam_frame_field,
 )
-from ...elements.line import line3d_geometry
-from ...materials import resolve_sections
+from ...elements import (
+    canonical_element_type,
+    get_element_capabilities,
+)
+from ...model.mesh_geometry import line3d_geometry
+from ...analysis import resolve_sections
 from ...selection import edges as edge_selection
 from ...selection import faces as face_selection
 from ..inp import (

@@ -16,8 +16,8 @@ from fem.application import (
     TokenStatus,
     compile_named_region_edit,
 )
-from fem.core.mesh import Element2D, Mesh2D, Mesh3D, Node2D, Node3D
-from fem.core.model import FEMModel, MaterialDefinition
+from fem.model.mesh import Element2D, Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import FEMModel, MaterialDefinition
 
 
 def _imported_session(tmp_path, *, node_count: int = 4) -> ModelSession:

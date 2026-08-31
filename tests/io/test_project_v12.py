@@ -9,8 +9,8 @@ from fem.application.native_scope_materialization import (
     materialize_native_scopes,
 )
 from fem.application.session import ModelSession, ProjectSnapshot
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
 from fem.geometry import MovedGeometry, RectangleGeometry
 from fem.io.project import decode_project, dumps_project, encode_project, loads_project
 from fem.io.project_v11 import encode_project_v11

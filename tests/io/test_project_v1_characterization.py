@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from fem.application import NativePart
-from fem.core.immutable_json import thaw_json_mapping
-from fem.core.model import OutputRequest, OutputSourceEvidence
+from fem.model.immutable_json import thaw_json_mapping
+from fem.model import OutputRequest, OutputSourceEvidence
 from fem.io import (
     ProjectDecodeError,
     ProjectEncodeError,

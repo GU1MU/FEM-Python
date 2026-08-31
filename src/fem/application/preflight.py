@@ -1,18 +1,39 @@
-"""Structured, selected-Step linear-static preflight."""
+"""Structured, selected-Step static preflight."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from math import ceil
 from typing import Any, Iterable
 
-from fem import materials
-from fem.boundary.step import boundary_for_step, get_step
-from fem.core.validation import (
+import numpy as np
+from scipy.sparse.linalg import spsolve
+
+from fem import analysis as analysis_domain
+from fem.analysis import (
+    AnalysisRequest,
+    DEFAULT_ANALYSIS_EXECUTOR,
+    ExecutionStrategy,
+    PreparedAnalysis,
+    compile_analysis,
+    compile_boundary,
+    execution_plan_cache_scope,
+    resolve_analysis_request,
+    resolve_execution_plan,
+)
+from fem.analysis.compilation import DEFAULT_NONLINEAR_STATIC_CAPABILITIES
+from fem.model import (
+    DynamicProcedureKind,
+    DynamicStepControls,
+    StaticFormulation,
+    resolve_analysis_step,
+)
+from fem.analysis.validation import (
     validate_analysis_step,
     validate_model_structure,
 )
-from fem.solvers import static_linear
+from fem.elements import get_element_capabilities
 
 from .beam_frames import resolve_effective_beam_frames
 from .capabilities import (
@@ -37,10 +58,15 @@ from .revisions import TaskToken
 
 @dataclass(frozen=True, slots=True)
 class PreparedPreflight:
-    """One typed preflight report and its reusable prepared base system."""
+    """One typed preflight report and an optional reusable static base system.
+
+    Dynamic procedures are fully compiled during numerical preflight, but
+    their ``CompiledAnalysis`` is not a Session ``PreparedAnalysis`` cache
+    entry.  It is therefore intentionally not exposed through this field.
+    """
 
     report: PreflightReport
-    prepared_system: static_linear.PreparedSystem | None = None
+    prepared_system: PreparedAnalysis | None = None
 
 
 def run_static_preflight(
@@ -52,7 +78,7 @@ def run_static_preflight(
     copy_model: bool = True,
     quick_check: bool = False,
 ) -> PreflightReport:
-    """Check one detached model Step and return stable diagnostics."""
+    """Check one detached linear or supported nonlinear static Step."""
 
     return _evaluate_static_preflight(
         model,
@@ -87,6 +113,7 @@ def prepare_static_preflight(
     )
 
 
+@execution_plan_cache_scope()
 def _evaluate_static_preflight(
     model: Any,
     step: Any = None,
@@ -149,7 +176,7 @@ def _evaluate_static_preflight(
         )
 
     try:
-        selected_step = get_step(owned_model, step)
+        selected_step = resolve_analysis_step(owned_model, step)
     except Exception as error:
         diagnostics.append(
             _diagnostic(
@@ -166,6 +193,22 @@ def _evaluate_static_preflight(
         if selected_step is not None
         else requested_name
     )
+
+    analysis_request: AnalysisRequest | None = None
+    if selected_step is not None:
+        try:
+            analysis_request = resolve_analysis_request(selected_step)
+        except Exception as error:
+            diagnostics.append(
+                _diagnostic(
+                    "step.controls.invalid",
+                    PreflightStage.STEP,
+                    error,
+                    subject=report_step_name,
+                    path=("steps", report_step_name, "controls"),
+                    remediation="请修复分析步的过程、NLGEOM 或增量控制参数。",
+                )
+            )
 
     step_valid = selected_step is not None
     if structure_valid and selected_step is not None:
@@ -190,8 +233,8 @@ def _evaluate_static_preflight(
         selected_step,
         diagnostics,
         report_step_name,
+        request=analysis_request,
     )
-
     definitions_valid = (
         _append_quick_definition_diagnostics(
             owned_model,
@@ -210,9 +253,34 @@ def _evaluate_static_preflight(
             diagnostics,
         )
 
+    execution_plan = None
+    if analysis_request is not None and definitions_valid:
+        try:
+            execution_plan = resolve_execution_plan(
+                owned_model,
+                analysis_request,
+            )
+        except Exception as error:
+            diagnostics.append(
+                _diagnostic(
+                    "analysis.execution_plan.invalid",
+                    PreflightStage.CAPABILITY,
+                    error,
+                    subject=report_step_name,
+                    path=("steps", report_step_name, "execution_plan"),
+                    remediation=(
+                        "请检查几何模式、材料模型标识、截面和单元能力是否完整。"
+                    ),
+                )
+            )
+    nonlinear_step = (
+        execution_plan is not None
+        and execution_plan.strategy is ExecutionStrategy.INCREMENTAL_NEWTON
+    )
+
     if structure_valid and step_valid and selected_step is not None:
         try:
-            boundary = boundary_for_step(owned_model, selected_step)
+            boundary = compile_boundary(owned_model, selected_step)
         except Exception as error:
             diagnostics.append(
                 _diagnostic(
@@ -225,7 +293,7 @@ def _evaluate_static_preflight(
                 )
             )
         else:
-            if not boundary.prescribed_displacements:
+            if not boundary.constraints.prescribed_values:
                 diagnostics.append(
                     PreflightDiagnostic(
                         code="static.boundary.missing_displacement",
@@ -258,35 +326,74 @@ def _evaluate_static_preflight(
         and procedure_valid
         and definitions_valid
         and boundary is not None
-        and boundary.prescribed_displacements
+        and boundary.constraints.prescribed_values
         and not _has_blocking_diagnostic(diagnostics)
     ):
-        if check_numerical_stability:
+        if nonlinear_step:
+            nonlinear_valid, nonlinear_checked = _validate_nonlinear_entry(
+                owned_model,
+                selected_step,
+                diagnostics,
+                check_numerical_stability=check_numerical_stability,
+            )
+            numerical_stability_checked = nonlinear_checked
+        elif check_numerical_stability:
             numerical_stability_checked = True
             try:
-                candidate = static_linear.prepare(
+                if analysis_request is None:
+                    raise ValueError(
+                        "a valid analysis request is required for stiffness validation"
+                    )
+                candidate = DEFAULT_ANALYSIS_EXECUTOR.prepare(
                     owned_model,
-                    copy_model=False,
+                    analysis_request,
                 )
-                static_linear.validate_stiffness(
-                    candidate,
+                DEFAULT_ANALYSIS_EXECUTOR.validate_prepared(
+                    owned_model,
                     selected_step,
+                    analysis_request,
+                    candidate,
                 )
             except Exception as error:
+                dynamic_request = (
+                    analysis_request is not None
+                    and analysis_request.step.procedure == "dynamic"
+                )
                 diagnostics.append(
                     _diagnostic(
-                        "static.stiffness.singular",
-                        PreflightStage.STIFFNESS,
+                        (
+                            "dynamic.problem.invalid"
+                            if dynamic_request
+                            else "static.stiffness.singular"
+                        ),
+                        (
+                            PreflightStage.CAPABILITY
+                            if dynamic_request
+                            else PreflightStage.STIFFNESS
+                        ),
                         error,
                         subject=report_step_name,
                         path=("steps", report_step_name, "stiffness"),
                         remediation=(
-                            "请检查约束、材料、截面、单元连接和零刚度自由度。"
+                            "请为动力学单元提供密度 rho，并检查质量矩阵、"
+                            "材料、截面和边界条件。"
+                            if dynamic_request
+                            else "请检查约束、材料、截面、单元连接和零刚度自由度。"
                         ),
                     )
                 )
             else:
-                if retain_prepared_system:
+                if analysis_request is not None and analysis_request.step.procedure == "dynamic":
+                    _validate_dynamic_prepared(
+                        candidate,
+                        analysis_request,
+                        diagnostics,
+                        report_step_name,
+                    )
+                if (
+                    retain_prepared_system
+                    and isinstance(candidate, PreparedAnalysis)
+                ):
                     prepared_system = candidate
         else:
             diagnostics.append(
@@ -310,6 +417,8 @@ def _evaluate_static_preflight(
         selected_step,
         boundary,
         report_step_name,
+        request=analysis_request,
+        execution_plan=execution_plan,
     )
     return PreparedPreflight(
         report=PreflightReport(
@@ -603,24 +712,29 @@ def _append_quick_definition_diagnostics(
         section_properties = getattr(section, "properties", {})
         for element_type, (element_id, element) in representatives.items():
             try:
-                materials.resolve_section_properties(
+                analysis_domain.resolve_section_properties(
                     element_type,
                     material_properties,
                     declared_type,
                     section_properties,
-                    baseline_properties=materials.restored_element_properties(
+                    baseline_properties=analysis_domain.restored_element_properties(
                         model,
                         element_id,
                         element,
                     ),
+                    constitutive_model=getattr(
+                        material,
+                        "constitutive_model",
+                        None,
+                    ),
                 )
-            except materials.SectionCompatibilityError as caught:
+            except analysis_domain.SectionCompatibilityError as caught:
                 code = "definition.section.incompatible"
                 section_error = caught
-            except materials.MaterialPropertyError as caught:
+            except analysis_domain.MaterialPropertyError as caught:
                 code = "definition.material.invalid"
                 section_error = caught
-            except materials.SectionPropertyError as caught:
+            except analysis_domain.SectionPropertyError as caught:
                 code = getattr(
                     caught,
                     "code",
@@ -756,7 +870,7 @@ def _append_definition_diagnostics(
         )
 
     try:
-        resolution = materials.resolve_sections(model)
+        resolution = analysis_domain.resolve_sections(model)
     except Exception as error:
         diagnostics.append(
             _diagnostic(
@@ -1042,24 +1156,22 @@ def _validate_static_procedure(
     step: Any,
     diagnostics: list[PreflightDiagnostic],
     step_name: str,
+    *,
+    request: AnalysisRequest | None = None,
 ) -> bool:
     if step is None:
         return False
-    procedure = str(getattr(step, "procedure", "")).strip().casefold()
-    metadata = getattr(step, "metadata", {})
-    nlgeom = next(
-        (
-            value
-            for key, value in metadata.items()
-            if str(key).strip().casefold() == "nlgeom"
-        ),
-        None,
-    )
-    if procedure == "static" and not _truthy_option(nlgeom):
+    if request is None:
+        procedure = str(getattr(step, "procedure", "")).strip().casefold()
+        nlgeom = None
+    else:
+        procedure = request.step.procedure
+        nlgeom = request.formulation is StaticFormulation.NONLINEAR
+    if procedure in {"static", "dynamic"}:
         return True
     message = (
-        "The current solver supports only linear static Steps "
-        "with nlgeom disabled."
+        "The current solver supports static, implicit dynamic, and explicit "
+        "dynamic Steps; the selected procedure is not available yet."
     )
     diagnostics.append(
         PreflightDiagnostic(
@@ -1069,11 +1181,248 @@ def _validate_static_procedure(
             message=message,
             subject=step_name,
             path=("steps", step_name, "procedure"),
-            remediation="请选择线性静力过程并关闭 nlgeom。",
+            remediation="请选择已实现的静力、隐式动力学或显式动力学过程。",
             details={"procedure": procedure, "nlgeom": nlgeom},
         )
     )
     return False
+
+
+def _validate_nonlinear_entry(
+    model: Any,
+    step: Any,
+    diagnostics: list[PreflightDiagnostic],
+    *,
+    check_numerical_stability: bool,
+) -> tuple[bool, bool]:
+    """Validate a registered nonlinear static entry without running a solve."""
+
+    mesh = getattr(model, "mesh", None)
+    valid = True
+    try:
+        dofs_per_node = int(mesh.dofs_per_node)
+    except (AttributeError, TypeError, ValueError) as error:
+        _append_nonlinear_diagnostic(
+            diagnostics,
+            "nonlinear.entry.invalid",
+            PreflightStage.CAPABILITY,
+            error,
+            subject="mesh",
+            remediation=(
+                "当前材料或几何非线性路径需要已注册的平面或实体连续体单元，"
+                "并且节点自由度必须与单元 capability 匹配。"
+            ),
+        )
+        return False, False
+
+    for element in getattr(mesh, "elements", ()):
+        try:
+            descriptor = get_element_capabilities(element.type)
+            nonlinear_capability = DEFAULT_NONLINEAR_STATIC_CAPABILITIES.resolve(
+                element.type
+            )
+            definition = nonlinear_capability.definition_factory()
+            node_count = len(element.node_ids)
+        except Exception as error:
+            valid = False
+            _append_nonlinear_diagnostic(
+                diagnostics,
+                "nonlinear.entry.unsupported_element",
+                PreflightStage.CAPABILITY,
+                error,
+                subject=getattr(element, "id", "element"),
+                remediation=(
+                    "请使用已注册的增量静力算子，并使节点数和自由度与单元能力匹配。"
+                ),
+            )
+            continue
+
+        if (
+            nonlinear_capability.canonical_type != descriptor.canonical_type
+            or node_count != descriptor.node_count
+            or node_count != definition.node_count
+            or dofs_per_node != descriptor.dofs_per_node
+        ):
+            valid = False
+            _append_nonlinear_diagnostic(
+                diagnostics,
+                "nonlinear.entry.unsupported_element",
+                PreflightStage.CAPABILITY,
+                ValueError(
+                    f"element {element.id} has incompatible nonlinear capability "
+                    f"{nonlinear_capability.canonical_type}, "
+                    f"{node_count} nodes and mesh DOFs/node={dofs_per_node}"
+                ),
+                subject=element.id,
+                remediation=(
+                    "请使网格自由度、元素节点数、元素能力描述和非线性定义保持一致。"
+                ),
+            )
+
+    if not valid:
+        return False, False
+
+    try:
+        problem = compile_analysis(
+            model,
+            resolve_analysis_request(step),
+        ).problem
+        if not check_numerical_stability:
+            diagnostics.append(
+                PreflightDiagnostic(
+                    code="nonlinear.stability.skipped_large_model",
+                    severity=PreflightSeverity.WARNING,
+                    stage=PreflightStage.STIFFNESS,
+                    message=(
+                        "大型非线性模型快速检查已跳过初始切线数值稳定性检查。"
+                    ),
+                    subject=str(getattr(step, "name", "")),
+                    path=(
+                        "steps",
+                        str(getattr(step, "name", "")),
+                        "nonlinear_stiffness",
+                    ),
+                    remediation="提交分析后，Newton 求解器仍会执行完整切线装配。",
+                )
+            )
+            return True, False
+
+        evaluation = problem.evaluate()
+        tangent = evaluation.tangent
+        rhs = np.ones(int(mesh.num_dofs), dtype=float)
+        solution = spsolve(tangent, rhs)
+        if not np.all(np.isfinite(solution)):
+            raise ValueError(
+                "the initial nonlinear tangent solve returned non-finite values"
+            )
+    except KeyError as error:
+        valid = False
+        _append_nonlinear_diagnostic(
+            diagnostics,
+            "nonlinear.material.property_missing",
+            PreflightStage.DEFINITIONS,
+            error,
+            subject="materials",
+            remediation=(
+                "为所有参与非线性静力的材料提供 E、nu；"
+                "若启用塑性，再提供 yield_stress，可选 hardening_modulus。"
+            ),
+        )
+    except Exception as error:
+        valid = False
+        _append_nonlinear_diagnostic(
+            diagnostics,
+            "nonlinear.entry.invalid",
+            PreflightStage.STIFFNESS,
+            error,
+            subject=str(getattr(step, "name", "")),
+            remediation=(
+                "请检查非线性材料参数、单元几何、边界约束和初始切线。"
+            ),
+        )
+    return valid, check_numerical_stability and valid
+
+
+def _append_nonlinear_diagnostic(
+    diagnostics: list[PreflightDiagnostic],
+    code: str,
+    stage: PreflightStage,
+    error: Any,
+    *,
+    subject: Any,
+    remediation: str,
+) -> None:
+    diagnostics.append(
+        _diagnostic(
+            code,
+            stage,
+            error,
+            subject=subject,
+            path=("nonlinear",),
+            remediation=remediation,
+        )
+    )
+
+
+def _validate_dynamic_prepared(
+    prepared: Any,
+    request: AnalysisRequest,
+    diagnostics: list[PreflightDiagnostic],
+    step_name: str,
+) -> None:
+    """Check explicit stability without turning a compiled dynamic object into a cache."""
+
+    controls = request.controls
+    if not isinstance(controls, DynamicStepControls):
+        return
+    if controls.procedure_kind is not DynamicProcedureKind.EXPLICIT:
+        return
+    problem = getattr(prepared, "problem", None)
+    stable_increment = getattr(problem, "stable_time_increment", None)
+    if not callable(stable_increment):
+        return
+    try:
+        estimate = float(stable_increment())
+    except Exception as error:
+        diagnostics.append(
+            _diagnostic(
+                "dynamic.stability.invalid",
+                PreflightStage.STIFFNESS,
+                error,
+                subject=step_name,
+                path=("steps", step_name, "stable_time_increment"),
+                remediation="请检查质量密度、单元刚度和边界条件。",
+            )
+        )
+        return
+    if not np.isfinite(estimate):
+        return
+    effective = 0.9 * estimate
+    if effective < controls.minimum_time_increment:
+        diagnostics.append(
+            _diagnostic(
+                "dynamic.stability.below_minimum_increment",
+                PreflightStage.STIFFNESS,
+                ValueError(
+                    "the explicit stable time increment is below the configured minimum"
+                ),
+                subject=step_name,
+                path=("steps", step_name, "stable_time_increment"),
+                remediation=(
+                    "减小最小时间增量、改善网格质量或调整材料/密度参数。"
+                ),
+            )
+        )
+        return
+    required = max(1, ceil(request.controls.time_period / effective - 1.0e-12))
+    if required > controls.maximum_increments:
+        diagnostics.append(
+            _diagnostic(
+                "dynamic.stability.insufficient_increments",
+                PreflightStage.STEP,
+                ValueError(
+                    "maximum_increments is too small for the explicit stable time step"
+                ),
+                subject=step_name,
+                path=("steps", step_name, "maximum_increments"),
+                remediation="增大最大增量数，或设置更合理的时间步和模型尺度。",
+            )
+        )
+    elif controls.initial_time_increment > effective:
+        diagnostics.append(
+            PreflightDiagnostic(
+                code="dynamic.stability.initial_increment_capped",
+                severity=PreflightSeverity.WARNING,
+                stage=PreflightStage.STIFFNESS,
+                message=(
+                    f"显式稳定时间增量估计为 {effective:.3e}，"
+                    "求解时会自动限制用户设置的初始增量。"
+                ),
+                subject=step_name,
+                path=("steps", step_name, "initial_time_increment"),
+                remediation="如需减少增量数，可增大密度或改善单元尺寸；也可保持当前设置。",
+            )
+        )
 
 
 def _append_output_diagnostic(
@@ -1138,6 +1487,9 @@ def _preflight_facts(
     step: Any,
     boundary: Any,
     step_name: str,
+    *,
+    request: AnalysisRequest | None,
+    execution_plan: Any | None = None,
 ) -> PreflightFacts:
     mesh = getattr(model, "mesh", None)
     return PreflightFacts(
@@ -1146,24 +1498,40 @@ def _preflight_facts(
         procedure=(
             str(getattr(step, "procedure", "")) if step is not None else ""
         ),
+        formulation=None if request is None else request.formulation,
         node_count=len(getattr(mesh, "nodes", ())),
         element_count=len(getattr(mesh, "elements", ())),
         dof_count=int(getattr(mesh, "num_dofs", 0)),
         material_count=len(getattr(model, "materials", {})),
         section_count=len(getattr(model, "sections", ())),
         displacement_count=(
-            len(boundary.prescribed_displacements)
+            len(boundary.constraints.prescribed_values)
             if boundary is not None
             else 0
         ),
         nodal_load_count=(
-            len(boundary.nodal_forces) if boundary is not None else 0
+            len(boundary.loads.nodal_forces) if boundary is not None else 0
         ),
         edge_load_count=len(getattr(step, "edge_loads", ())),
         surface_load_count=len(getattr(step, "surface_loads", ())),
         line_load_count=len(getattr(step, "line_loads", ())),
         body_load_count=len(getattr(step, "body_loads", ())),
         gravity_load_count=len(getattr(step, "gravity_loads", ())),
+        geometry_mode=(
+            None
+            if request is None or request.geometry_mode is None
+            else request.geometry_mode.value
+        ),
+        execution_strategy=(
+            None
+            if execution_plan is None
+            else execution_plan.strategy.value
+        ),
+        material_models=(
+            ()
+            if execution_plan is None
+            else tuple(execution_plan.material_models)
+        ),
     )
 
 

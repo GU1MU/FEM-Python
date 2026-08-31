@@ -3,7 +3,7 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 
-from ...core.mesh import Mesh2D, Mesh3D, Node2D, Node3D
+from fem.model import Mesh2D, Mesh3D, Node2D, Node3D
 from .._paths import prepare_output_path
 
 

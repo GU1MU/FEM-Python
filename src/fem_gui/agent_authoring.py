@@ -39,7 +39,7 @@ from fem.application.recipe_compiler import compile_recipe
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldPosition,
     FieldState,

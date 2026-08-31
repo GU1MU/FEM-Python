@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     ElementResultInspectionRequest,
     FieldPosition,
     FieldState,
@@ -21,8 +21,8 @@ from fem.application.results import (
     prepare_result_export_snapshot,
     project_scalar_field_topology,
 )
-from fem.core.model import OutputRequest
-from fem.elements.beam_section import BeamSectionPoint
+from fem.model import OutputRequest
+from fem.model.beam_section import BeamSectionPoint
 from fem_gui.inspection_service import InspectionService
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import TypedResultQueryDialog

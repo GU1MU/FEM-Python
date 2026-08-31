@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle, SolveResultBundle
 
 import os
 from pathlib import Path
@@ -10,25 +11,28 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     FieldMaterializationKey,
     FieldState,
+    ResultProbeKind,
+    ResultProbeRequest,
     ResultProvider,
     ResultQuery,
     ResultQueryResult,
     ScalarFieldSelection,
-    SolveResultBundle,
     build_result_provider,
-    build_solve_result_bundle,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from fem_gui.commands import (
     GuiCommandOutcome,
     GuiCommandReceipt,
     GuiCommandStatus,
 )
 from fem_gui.main_window import FEMMainWindow
-from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
+from fem_gui.postprocessing_dialogs import (
+    ResultProbeDialog,
+    TypedResultQueryDialog,
+)
 from fem_gui.task_controller import (
     BackgroundTaskState,
     TaskApplyStatus,
@@ -441,6 +445,39 @@ def test_query_action_open_and_cancel_never_recovers_fields(
     assert opened[0].catalog is provider.catalog()
     assert window.document.session_revision == revision
     assert provider.snapshot.generation == generation
+
+
+def test_probe_action_reads_the_current_result_frame_without_replacing_provider(
+    solved_window: FEMMainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = solved_window
+    provider = window.result_provider
+    assert type(provider) is ResultProvider
+    opened: list[ResultProbeDialog] = []
+
+    def probe_and_close(dialog: ResultProbeDialog) -> int:
+        opened.append(dialog)
+        dialog.target_combo.setCurrentIndex(
+            dialog.target_combo.findData(ResultProbeKind.NODE)
+        )
+        dialog.target_id_spin.setValue(
+            provider.snapshot.topology.node_ids[0]
+        )
+        dialog.request_probe()
+        return 0
+
+    monkeypatch.setattr(ResultProbeDialog, "exec", probe_and_close)
+    window.show_result_probe_dialog()
+
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert dialog.table.rowCount() == 1
+    request = dialog._last_request
+    assert isinstance(request, ResultProbeRequest)
+    assert request.target.kind is ResultProbeKind.NODE
+    assert window.result_provider is provider
+    assert dialog.frame_key == provider.frame_key
 
 
 def test_query_dialog_source_switch_rejects_before_querying_new_run(

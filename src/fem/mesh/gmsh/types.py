@@ -149,7 +149,7 @@ def _prepare_generated_mesh_reference(
 def _stale_gmsh_mesh_error(model_name: str) -> StaleGmshMeshError:
     return StaleGmshMeshError(
         f"generated Gmsh mesh for model {model_name!r} is stale; import it "
-        "with fem.io.gmsh.read() inside the owning geometry model context"
+        "with fem.mesh.gmsh.importer.read() inside the owning geometry model context"
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from ..core.model import ElementSet
+from fem.model import ElementSet
 from ..elements import canonical_element_type
 
 

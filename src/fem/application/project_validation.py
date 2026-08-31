@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from fem.core.model import AnalysisStep, MaterialDefinition
+from fem.model import AnalysisStep, MaterialDefinition
 from fem.geometry.recipe_topology import topology_fingerprint_for_recipe
 from fem.mesh.settings import MeshSettings
 from fem.elements import get_element_capabilities
-from fem.materials.sections import section_family
+from fem.analysis import section_family
 
 from .definitions import (
     CompressedMeshEntityRefs,

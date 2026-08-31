@@ -18,20 +18,22 @@ from fem.application.definitions import (
     RegionAssignment,
     SectionDefinition,
 )
-from fem.core.immutable_json import thaw_json_mapping
-from fem.core.model import (
+from fem.model.immutable_json import thaw_json_mapping
+from fem.model import (
     AnalysisStep,
     BodyForce,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
+    InitialConditionSet,
     LineLoad,
+    MaterialBehavior,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
 )
-from fem.elements import BeamOrientation
+from fem.model import BeamOrientation
 from fem.geometry.recipes import (
     BooleanBodyContext,
     BooleanGeometry,
@@ -3266,10 +3268,21 @@ def decode_material_field(
 ) -> MaterialDefinition:
     data = _field_mapping(value, path, policy.decode_error)
     required = {"name"}
-    optional = {"properties"}
+    optional = {
+        "properties",
+        "constitutive_model",
+        "algorithm",
+        "behaviors",
+        "description",
+    }
     if policy.require_current_fields:
         required.add("properties")
-        optional.clear()
+        optional = {
+            "constitutive_model",
+            "algorithm",
+            "behaviors",
+            "description",
+        }
     _field_keys(
         data,
         path,
@@ -3278,6 +3291,44 @@ def decode_material_field(
         policy=policy,
         error_type=policy.decode_error,
     )
+    raw_behaviors = data.get("behaviors", ())
+    behavior_values: list[MaterialBehavior] = []
+    for index, raw_behavior in enumerate(
+        _field_array(raw_behaviors, f"{path}.behaviors", policy.decode_error)
+    ):
+        behavior_data = _field_mapping(
+            raw_behavior,
+            f"{path}.behaviors[{index}]",
+            policy.decode_error,
+        )
+        _field_keys(
+            behavior_data,
+            f"{path}.behaviors[{index}]",
+            required={"behavior_id", "parameters"},
+            optional=set(),
+            policy=policy,
+            error_type=policy.decode_error,
+        )
+        behavior_values.append(
+            MaterialBehavior(
+                _field_string(
+                    behavior_data["behavior_id"],
+                    f"{path}.behaviors[{index}].behavior_id",
+                    policy.decode_error,
+                ),
+                _field_json_object(
+                    behavior_data["parameters"],
+                    f"{path}.behaviors[{index}].parameters",
+                    policy.decode_error,
+                ),
+            )
+        )
+    raw_algorithm = data.get("algorithm")
+    if raw_algorithm is not None and not isinstance(raw_algorithm, str):
+        raise policy.decode_error(f"{path}.algorithm 必须是字符串或 null")
+    raw_description = data.get("description", "")
+    if not isinstance(raw_description, str):
+        raise policy.decode_error(f"{path}.description 必须是字符串")
     return _field_construct(
         MaterialDefinition,
         path,
@@ -3292,6 +3343,18 @@ def decode_material_field(
             f"{path}.properties",
             policy.decode_error,
         ),
+        constitutive_model=(
+            _field_string(
+                data["constitutive_model"],
+                f"{path}.constitutive_model",
+                policy.decode_error,
+            )
+            if "constitutive_model" in data
+            else "linear_elastic"
+        ),
+        algorithm=raw_algorithm,
+        behaviors=tuple(behavior_values),
+        description=raw_description,
     )
 
 
@@ -3304,10 +3367,33 @@ def encode_material_field(
     _field_exact_dataclass(
         material,
         MaterialDefinition,
-        {"name", "properties"},
+        {
+            "name",
+            "properties",
+            "constitutive_model",
+            "algorithm",
+            "behaviors",
+            "description",
+        },
         path,
         policy,
     )
+    if not policy.require_current_fields and (
+        material.constitutive_model != "linear_elastic"
+        or material.algorithm is not None
+        or material.description
+        or any(
+            item.behavior_id
+            not in {
+                "mechanical.elasticity.isotropic",
+                "general.density",
+            }
+            for item in material.behaviors
+        )
+    ):
+        raise policy.encode_error(
+            f"{path} 包含 v{policy.version_label} 无法保存的材料行为状态"
+        )
     return {
         "name": _field_string(
             material.name,
@@ -3318,6 +3404,26 @@ def encode_material_field(
             material.properties,
             f"{path}.properties",
             policy.encode_error,
+        ),
+        **(
+            {
+                "constitutive_model": material.constitutive_model,
+                "algorithm": material.algorithm,
+                "behaviors": [
+                    {
+                        "behavior_id": item.behavior_id,
+                        "parameters": _field_json_object(
+                            item.parameters,
+                            f"{path}.behaviors[{index}].parameters",
+                            policy.encode_error,
+                        ),
+                    }
+                    for index, item in enumerate(material.behaviors)
+                ],
+                "description": material.description,
+            }
+            if policy.require_current_fields
+            else {}
         ),
     }
 
@@ -4313,6 +4419,22 @@ def decode_step_field(
                 )
             )
         )
+    metadata = _field_json_object(
+        data["metadata"] if "metadata" in data else {},
+        f"{path}.metadata",
+        policy.decode_error,
+    )
+    persisted_initial = metadata.get("initial_conditions")
+    initial_conditions = (
+        InitialConditionSet()
+        if persisted_initial is None
+        else _field_construct(
+            InitialConditionSet.from_metadata,
+            f"{path}.metadata.initial_conditions",
+            policy,
+            persisted_initial,
+        )
+    )
     return _field_construct(
         AnalysisStep,
         path,
@@ -4327,11 +4449,8 @@ def decode_step_field(
             f"{path}.procedure",
             policy.decode_error,
         ),
-        metadata=_field_json_object(
-            data["metadata"] if "metadata" in data else {},
-            f"{path}.metadata",
-            policy.decode_error,
-        ),
+        metadata=metadata,
+        initial_conditions=initial_conditions,
         **collections,
     )
 
@@ -4347,6 +4466,15 @@ def encode_step_field(
         "procedure",
         "metadata",
         *_STEP_COLLECTION_CODECS,
+        # Typed controls are the canonical in-memory mirror of the persisted
+        # metadata keys.  They are intentionally not a second wire field.
+        "controls",
+        # Typed execution selections are runtime fields; the current wire
+        # format continues to carry procedure/metadata only.
+        "formulation",
+        "geometry_mode",
+        "options",
+        "initial_conditions",
     }
     _field_exact_dataclass(
         step,
@@ -4355,6 +4483,43 @@ def encode_step_field(
         path,
         policy,
     )
+    controls = getattr(step, "controls", None)
+    if controls is not None:
+        to_metadata = getattr(controls, "to_metadata", None)
+        if not callable(to_metadata):
+            raise policy.encode_error(
+                f"{path}.controls 必须提供 to_metadata()"
+            )
+        try:
+            mirrored = to_metadata()
+        except Exception as error:
+            raise policy.encode_error(
+                f"{path}.controls 无法转换为项目元数据：{error}"
+            ) from error
+        metadata = getattr(step, "metadata", {})
+        if any(metadata.get(key) != value for key, value in mirrored.items()):
+            raise policy.encode_error(
+                f"{path}.controls 与 {path}.metadata 不一致"
+            )
+    initial_conditions = getattr(step, "initial_conditions", None)
+    if initial_conditions is not None:
+        to_metadata = getattr(initial_conditions, "to_metadata", None)
+        if not callable(to_metadata):
+            raise policy.encode_error(
+                f"{path}.initial_conditions 必须提供 to_metadata()"
+            )
+        mirrored_initial = to_metadata()
+        metadata = getattr(step, "metadata", {})
+        persisted_initial = metadata.get("initial_conditions")
+        if mirrored_initial:
+            if persisted_initial != mirrored_initial:
+                raise policy.encode_error(
+                    f"{path}.initial_conditions 与 {path}.metadata 不一致"
+                )
+        elif persisted_initial not in (None, {}):
+            raise policy.encode_error(
+                f"{path}.initial_conditions 与 {path}.metadata 不一致"
+            )
     if not policy.body_force_loads and tuple(step.body_loads):
         raise policy.encode_error(
             f"{path}.body_loads 无法由 {policy.version_label} 无损表示"
@@ -4660,9 +4825,12 @@ def _field_json_object(
     path: str,
     error_type: type[Exception],
 ) -> dict[str, Any]:
-    if type(value) is not dict:
+    # Domain value objects may expose immutable Mapping implementations.  The
+    # wire representation is still a plain JSON object; normalize only at
+    # this boundary instead of weakening the in-memory contract.
+    if not isinstance(value, Mapping):
         raise error_type(f"{path} 必须是普通 JSON object")
-    return _field_json_value(value, path, error_type, set())
+    return _field_json_value(dict(value), path, error_type, set())
 
 
 def _field_json_value(
@@ -4694,7 +4862,7 @@ def _field_json_value(
             ]
         finally:
             ancestors.remove(identity)
-    if type(value) is dict:
+    if isinstance(value, Mapping):
         identity = id(value)
         if identity in ancestors:
             raise error_type(f"{path} 包含循环 JSON 引用")

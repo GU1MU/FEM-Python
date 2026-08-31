@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     ResultQuery,
     ResultSourceKey,
@@ -18,22 +18,22 @@ from fem.application.results import (
     execute_output_requests,
     prepare_result_export_snapshot,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     FEMModel,
     NodalLoad,
     OutputRequest,
 )
-from fem.elements.beam_section import (
+from fem.model.beam_section import (
     BeamIntegrationPointForces,
     parse_beam2_section,
     recover_integration_point_stress,
 )
 from fem.io.result_csv import dumps_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 
 
 _SECTION_ORACLE = (

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 
 from pathlib import Path
 
@@ -12,13 +13,12 @@ from fem.application import (
     definitions_from_model,
     resolve_effective_beam_frames,
 )
-from fem.elements import (
+from fem.model import (
     BEAM_DEFAULT_LOCAL_Y_REFERENCE,
     BEAM_DEFAULT_LOCAL_Y_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
-    get_element_kernel,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 from tests.helpers.file_builders import write_inp
 
 

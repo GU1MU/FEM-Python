@@ -3,8 +3,8 @@ from __future__ import annotations
 import builtins
 from typing import Any
 
-from ..core.model import ElementFace, Surface
-from ..elements.hexahedron import HEX20_FACE_NODE_INDICES
+from fem.model import ElementFace, Surface
+from ..elements.hex20 import HEX20_FACE_NODE_INDICES
 from .nodes import _coord_matches
 
 

@@ -80,7 +80,7 @@ def test_contour_dialog_fits_viewport_after_exec(
         return 0
 
     monkeypatch.setattr(
-        "fem_gui.main_window.ContourSettingsDialog.exec",
+        "fem_gui.main_window.VisualizationOptionsDialog.exec",
         reject_dialog,
     )
 

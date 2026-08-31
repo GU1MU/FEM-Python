@@ -17,8 +17,8 @@ from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
     NATIVE_SCOPE_CATALOG_KEY,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
+from fem.model.mesh import Element2D, Mesh2D, Node2D
+from fem.model import FEMModel
 from fem.geometry import (
     PlateWithHoleGeometry,
     SketchCircle,

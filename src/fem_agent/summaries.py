@@ -8,7 +8,8 @@ from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 
-from fem.core import model_element_info
+from fem.analysis import resolve_formulation
+from fem.model import StaticFormulation, model_element_info
 
 from .diagnostics import DiagnosticCode, make_diagnostic
 from .schemas import (
@@ -236,7 +237,9 @@ def _step_summary(
         {
             "name": _bounded_text(step.name),
             "procedure": _bounded_text(step.procedure),
-            "nlgeom": _truthy_option(step.metadata.get("nlgeom")),
+            "nlgeom": (
+                resolve_formulation(step) is StaticFormulation.NONLINEAR
+            ),
             "constraint_count": len(step.boundaries),
             "nodal_load_count": len(step.cloads),
             "surface_load_count": len(step.surface_loads),
@@ -891,14 +894,6 @@ def _deduplicate_diagnostics(
         seen.add(key)
         result.append(diagnostic)
     return tuple(result)
-
-
-def _truthy_option(value: object) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().casefold() not in {"", "0", "false", "no", "off"}
-    return bool(value)
 
 
 def _bounded_text(value: object, *, max_length: int = 128) -> str:

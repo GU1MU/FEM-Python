@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import math
 import os
@@ -12,7 +13,7 @@ from fem.application import (
     ScopedDefinitionBatch,
     run_static_preflight,
 )
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     FieldRequest,
     ResultFieldId,
@@ -21,10 +22,9 @@ from fem.application.results import (
     ResultSourceKey,
     ResultVariable,
     build_result_provider,
-    build_solve_result_bundle,
 )
-from fem.core.model import Edge, ElementEdge, ElementSet, NodeSet
-from fem.solvers import static_linear
+from fem.model import Edge, ElementEdge, ElementSet, NodeSet
+from fem.analysis import linear_static as static_linear
 from fem_agent.result_authoring import (
     AcceptedResultSource,
     AgentResultAggregation,

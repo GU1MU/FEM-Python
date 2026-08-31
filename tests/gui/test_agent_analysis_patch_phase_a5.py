@@ -7,8 +7,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from fem.application import RegionRef
-from fem.core.mesh import Mesh2D
-from fem.core.model import (
+from fem.model.mesh import Mesh2D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,
@@ -80,15 +80,15 @@ def test_a5_model_tree_uses_named_stable_edit_identity() -> None:
     }
 
     assert by_kind["boundary"].text(0) == "位移-固定端"
-    assert by_kind["boundary"].data(0, ROLE_KEY) == (
+    assert by_kind["boundary"].data(0, ROLE_KEY) == [
         "分析步-静力",
         "位移-固定端",
-    )
+    ]
     assert by_kind["edge_load"].text(0) == "载荷-拉伸"
-    assert by_kind["edge_load"].data(0, ROLE_KEY) == (
+    assert by_kind["edge_load"].data(0, ROLE_KEY) == [
         "分析步-静力",
         "载荷-拉伸",
-    )
+    ]
     assert by_kind["output"].text(0) == "U"
 
 

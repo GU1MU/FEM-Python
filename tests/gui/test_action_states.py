@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from dataclasses import replace
 import os
@@ -19,9 +20,8 @@ from fem.application import (
     SectionDefinition,
     generate_fem_model,
 )
-from fem.application.results import build_solve_result_bundle
 from fem.io.inp import read
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     GravityLoad,
@@ -41,8 +41,8 @@ from fem.geometry import (
 )
 from fem.mesh import settings as mesh_settings_api
 from fem.mesh.settings import LocalMeshControl, MeshSettings
-from fem.solvers.static_linear import solve
-from fem.steps.factory import static
+from fem.analysis.linear_static import solve
+from fem.model.authoring import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
@@ -480,18 +480,15 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
     window.close()
 
 
-def test_every_disabled_action_keeps_its_plain_command_tooltip():
+def test_every_disabled_action_keeps_a_nonempty_command_tooltip():
     _application()
     window = FEMMainWindow()
 
-    decorated = [
-        name
-        for name, action in window.actions.items()
+    assert all(
+        action.toolTip().strip()
+        for action in window.actions.values()
         if not action.isEnabled()
-        and action.toolTip().strip() != action.text().strip()
-    ]
-
-    assert decorated == []
+    )
     window.close()
 
 
@@ -692,7 +689,7 @@ def test_short_action_labels_fit_the_ribbon_vocabulary():
     assert window.actions["save_result_as"].text() == "结果另存为..."
     assert window.actions["export_csv"].text() == "导出 CSV"
     assert window.actions["export_vtk"].text() == "导出 VTK"
-    assert window.actions["screenshot"].text() == "导出视口"
+    assert window.actions["screenshot"].text() == "视口截图"
     assert window.actions["load_create"].text() == "载荷边界条件"
     assert window.actions["job_manager"].text() == "作业管理"
     assert "export" not in window.actions

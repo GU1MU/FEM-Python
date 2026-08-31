@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldAvailability,
     FieldMaterializationKey,
@@ -23,7 +23,7 @@ from fem.application.results import (
     field_materialization_sort_key,
     restore_result_provider,
 )
-from fem.application.results.inspection import (
+from fem.results.inspection import (
     ElementResultInspectionRequest,
     NodeResultInspectionRequest,
     inspect_result_snapshot,

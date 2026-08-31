@@ -6,7 +6,7 @@ from collections.abc import Mapping
 import math
 from typing import Any
 
-from fem.core.mesh import (
+from fem.model import (
     Element2D,
     Element3D,
     Mesh2D,
@@ -14,7 +14,7 @@ from fem.core.mesh import (
     Node2D,
     Node3D,
 )
-from fem.core.model import (
+from fem.model import (
     Edge,
     ElementEdge,
     ElementFace,
@@ -22,8 +22,8 @@ from fem.core.model import (
     FEMModel,
     NodeSet,
     Surface,
-    _unstamped_element_properties,
 )
+from fem.model.entities import _unstamped_element_properties
 
 
 _SECTION_METADATA_KEYS = frozenset(

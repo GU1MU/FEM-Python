@@ -16,7 +16,7 @@ from fem.application import (
     SectionDefinition,
 )
 from tests.helpers.preflight_builders import passing_preflight_report
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
@@ -24,7 +24,7 @@ from fem.core.model import (
     GravityLoad,
     MaterialDefinition,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
+from fem.model.mesh import Element3D, Mesh3D, Node3D
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipe_topology import describe_recipe_topology
 from fem.geometry.recipes import BoxGeometry
@@ -118,7 +118,8 @@ def test_material_rename_cascades_to_sections_in_one_commit() -> None:
     assert tuple(material.name for material in after.materials) == ("Structural Steel",)
     assert after.sections[0].material == "Structural Steel"
 
-    renamed.properties["E"] = 1.0
+    with pytest.raises(TypeError):
+        renamed.properties["E"] = 1.0
     assert after.materials[0].properties["E"] == 210_000.0
 
 

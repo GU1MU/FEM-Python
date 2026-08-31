@@ -7,6 +7,7 @@ from fem_gui.visualization.symbols import (
     SymbolSettings,
     arc_points,
     camera_facing_offset,
+    constraint_corner_indices,
     constraint_outward_direction,
     constraint_rotation_axes,
     constraint_sample_indices,
@@ -239,6 +240,75 @@ def test_line_support_sampling_follows_distance_on_a_graded_mesh():
     selected = points[constraint_sample_indices(points, "medium")]
 
     assert selected[:, 0] == pytest.approx(np.linspace(0.0, 1.0, 6), abs=0.004)
+
+
+def test_polygonal_constraint_layout_prefers_geometric_corners():
+    points = np.asarray((
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (2.0, 1.0, 0.0),
+        (2.0, 2.0, 0.0),
+        (1.0, 2.0, 0.0),
+        (0.0, 2.0, 0.0),
+        (0.0, 1.0, 0.0),
+    ))
+
+    selected = points[constraint_corner_indices(points, "low")]
+
+    assert selected.shape == (4, 3)
+    assert sorted(map(tuple, selected)) == [
+        (0.0, 0.0, 0.0),
+        (0.0, 2.0, 0.0),
+        (2.0, 0.0, 0.0),
+        (2.0, 2.0, 0.0),
+    ]
+
+
+def test_polygonal_constraint_corners_ignore_collinear_xyz_ordered_nodes():
+    # This is the ordering produced by the boundary candidate sort for a
+    # 3-D rectangular face: all nodes along one coordinate are adjacent, so
+    # both boundary chains contain many collinear nodes.
+    points = np.asarray((
+        (100.0, 0.0, 0.0),
+        (100.0, 0.0, 5.0),
+        (100.0, 0.0, 10.0),
+        (100.0, 0.0, 15.0),
+        (100.0, 0.0, 20.0),
+        (100.0, 5.0, 0.0),
+        (100.0, 5.0, 20.0),
+        (100.0, 10.0, 0.0),
+        (100.0, 10.0, 20.0),
+        (100.0, 15.0, 0.0),
+        (100.0, 15.0, 20.0),
+        (100.0, 20.0, 0.0),
+        (100.0, 20.0, 20.0),
+        (100.0, 25.0, 0.0),
+        (100.0, 25.0, 20.0),
+        (100.0, 30.0, 0.0),
+        (100.0, 30.0, 20.0),
+        (100.0, 35.0, 0.0),
+        (100.0, 35.0, 20.0),
+        (100.0, 40.0, 0.0),
+        (100.0, 40.0, 20.0),
+        (100.0, 45.0, 0.0),
+        (100.0, 45.0, 20.0),
+        (100.0, 50.0, 0.0),
+        (100.0, 50.0, 5.0),
+        (100.0, 50.0, 10.0),
+        (100.0, 50.0, 15.0),
+        (100.0, 50.0, 20.0),
+    ))
+
+    selected = points[constraint_corner_indices(points, "medium")]
+
+    assert selected.shape == (4, 3)
+    assert sorted(map(tuple, selected)) == [
+        (100.0, 0.0, 0.0),
+        (100.0, 0.0, 20.0),
+        (100.0, 50.0, 0.0),
+        (100.0, 50.0, 20.0),
+    ]
 
 
 def test_symbol_length_uses_effective_sides_for_thin_models():

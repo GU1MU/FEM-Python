@@ -9,13 +9,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.assemble import assemble_global_stiffness
-from fem.boundary.loads import build_load_vector
-from fem.boundary.step import boundary_for_step
+from fem.assembly import assemble_global_stiffness
+from fem.analysis.compilation.boundary.loads import build_load_vector
+from fem.analysis.compilation.boundary.step import boundary_for_step
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.elements import resolve_beam_frame
+from fem.model import resolve_beam_frame
 from fem.io import inp
-from fem.materials import apply_sections
+from fem.analysis import apply_sections
 
 
 def _write(tmp_path: Path, name: str, lines: tuple[str, ...]) -> Path:

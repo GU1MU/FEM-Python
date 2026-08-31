@@ -22,13 +22,13 @@ from fem.application import (
     RegionRef,
     SectionDefinition,
 )
-from fem.application.results import (
+from fem.results import (
     ElementResultProfile,
     ResultCapabilityCatalog,
     ResultModelFamily,
 )
 from fem.application.preprocessing import generate_fem_model
-from fem.core.model import (
+from fem.model import (
     BodyForce,
     DisplacementConstraint,
     EdgeLoad,
@@ -37,11 +37,14 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
     OutputSourceEvidence,
+    StaticAnalysisOptions,
+    StaticFormulation,
+    StaticStepControls,
 )
 from fem.geometry import ExtrudedGeometry, LogicalEntityRef, RectangleGeometry
 from fem.mesh.settings import MeshSettings
-from fem.solvers.static_linear import solve, validate_problem
-from fem.steps.factory import static
+from fem.analysis.linear_static import solve, validate_problem
+from fem.model.authoring import static
 from fem_gui.analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
@@ -333,6 +336,50 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     step_name, output = output_dialog.definition()
     assert step_name == "Load"
     assert output == candidates[0].authoring_request
+
+
+def test_static_step_dialog_exposes_the_final_nonlinear_boundary():
+    _application()
+    dialog = StaticStepDialog("Nonlinear")
+
+    assert not dialog.nlgeom_check.isChecked()
+    assert not hasattr(dialog, "material_model_combo")
+
+    dialog.nlgeom_check.setChecked(True)
+    assert dialog.initial_increment_spin.isEnabled()
+    dialog.initial_increment_spin.setValue(0.25)
+    dialog.maximum_increment_spin.setValue(0.5)
+    dialog.maximum_increments_spin.setValue(8)
+    dialog.newton_max_iterations_spin.setValue(40)
+    dialog.residual_tolerance_spin.setValue(1.0e-9)
+    step = dialog.step()
+
+    assert step.metadata["NLGEOM"] is True
+    assert step.metadata["initial_increment"] == pytest.approx(0.25)
+    assert step.metadata["maximum_increment"] == pytest.approx(0.5)
+    assert step.metadata["maximum_increments"] == 8
+    assert step.metadata["newton_max_iterations"] == 40
+    assert step.metadata["residual_tolerance"] == pytest.approx(1.0e-9)
+    dialog.close()
+
+
+def test_static_step_dialog_separates_fixed_and_automatic_increment_modes():
+    _application()
+    dialog = StaticStepDialog("Increment")
+
+    assert dialog.incrementation_mode_combo.currentData() == "automatic"
+    assert dialog.maximum_increment_spin.isEnabled()
+
+    dialog.incrementation_mode_combo.setCurrentIndex(
+        dialog.incrementation_mode_combo.findData("fixed")
+    )
+    assert not dialog.automatic_cutback_check.isEnabled()
+    assert not dialog.adaptive_growth_check.isEnabled()
+    step = dialog.step()
+    assert step.controls is not None
+    assert not step.controls.automatic_cutback
+    assert not step.controls.adaptive_growth
+    dialog.close()
 
 
 def test_analysis_dialog_region_catalogs_reject_untyped_strings():
@@ -750,6 +797,133 @@ def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
     updated = manager.values()[0]
     assert updated.boundaries[0].name == "固定端位移"
     assert updated.edge_loads[0].name == "加载边牵引"
+
+
+def test_analysis_manager_edits_nonlinear_step_configuration(monkeypatch):
+    _application()
+    step = static(
+        "Load",
+        NLGEOM=True,
+        finite_strain_material_model="formal_j2",
+        finite_strain_max_iterations=40,
+    )
+    manager = AnalysisDefinitionManagerDialog(
+        [step],
+        [],
+        [],
+        [],
+        2,
+    )
+
+    def disable_nonlinear(dialog):
+        dialog.nlgeom_check.setChecked(False)
+        return True
+
+    monkeypatch.setattr(StaticStepDialog, "exec", disable_nonlinear)
+    assert manager.edit_definition(("step", 0, None))
+    updated = manager.values()[0]
+
+    assert "NLGEOM" not in updated.metadata
+    assert "finite_strain_material_model" not in updated.metadata
+    assert updated.metadata["finite_strain_max_iterations"] == 40
+
+
+def test_analysis_manager_preserves_internal_material_variant_metadata(
+    monkeypatch,
+):
+    _application()
+    step = static(
+        "Load",
+        NLGEOM=True,
+        finite_strain_material_model="formal_j2",
+    )
+    manager = AnalysisDefinitionManagerDialog([step], [], [], [], 2)
+
+    def rename_without_exposing_variant(dialog):
+        dialog.name_edit.setText("Load-2")
+        return True
+
+    monkeypatch.setattr(
+        StaticStepDialog,
+        "exec",
+        rename_without_exposing_variant,
+    )
+    assert manager.edit_definition(("step", 0, None))
+
+    updated = manager.values()[0]
+    assert updated.metadata["NLGEOM"] is True
+    assert updated.metadata["finite_strain_material_model"] == "formal_j2"
+
+
+def test_analysis_manager_edit_uses_typed_controls_over_stale_metadata(
+    monkeypatch,
+):
+    _application()
+    controls = StaticStepControls(
+        initial_increment=0.5,
+        maximum_increments=2,
+        newton_max_iterations=31,
+        residual_tolerance=2.0e-7,
+    )
+    step = static(
+        "Load",
+        controls=controls,
+        formulation=StaticFormulation.NONLINEAR,
+    )
+    step.metadata["initial_increment"] = 0.1
+    manager = AnalysisDefinitionManagerDialog([step], [], [], [], 2)
+    observed: dict[str, float] = {}
+
+    def inspect_typed_controls(dialog):
+        observed["initial_increment"] = dialog.initial_increment_spin.value()
+        dialog.name_edit.setText("Load-2")
+        return True
+
+    monkeypatch.setattr(StaticStepDialog, "exec", inspect_typed_controls)
+
+    assert manager.edit_definition(("step", 0, None))
+    updated = manager.values()[0]
+
+    assert observed["initial_increment"] == pytest.approx(0.5)
+    assert updated.controls == controls
+    assert updated.metadata["initial_increment"] == pytest.approx(0.5)
+    assert updated.name == "Load-2"
+
+
+def test_analysis_manager_step_edit_preserves_payloads_and_options(
+    monkeypatch,
+):
+    _application()
+    boundary = DisplacementConstraint("Fixed", 1, 2, 0.0)
+    load = NodalLoad("Loaded", 1, 12.0)
+    output = OutputRequest("field", "node", ("U",))
+    controls = StaticStepControls(initial_increment=0.25)
+    options = StaticAnalysisOptions(material_algorithm="radial_return")
+    step = static(
+        "Load",
+        controls=controls,
+        formulation=StaticFormulation.NONLINEAR,
+        options=options,
+    )
+    step.boundaries = (boundary,)
+    step.cloads = (load,)
+    step.outputs = (output,)
+    manager = AnalysisDefinitionManagerDialog([step], [], [], [], 2)
+
+    def rename_only(dialog):
+        dialog.name_edit.setText("Load-2")
+        return True
+
+    monkeypatch.setattr(StaticStepDialog, "exec", rename_only)
+
+    assert manager.edit_definition(("step", 0, None))
+    updated = manager.values()[0]
+
+    assert updated.boundaries == (boundary,)
+    assert updated.cloads == (load,)
+    assert updated.outputs == (output,)
+    assert updated.controls == controls
+    assert updated.options == options
 
 
 def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
@@ -1422,7 +1596,7 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
     )
 
 
-def test_output_request_discards_parsed_inp_details():
+def test_output_request_preserves_parsed_inp_details():
     _application()
     current = OutputRequest(
         "history",
@@ -1440,15 +1614,10 @@ def test_output_request_discards_parsed_inp_details():
     step_name, output = dialog.definition()
 
     assert step_name == "Load"
-    assert output != current
     assert output is not current
-    assert output == OutputRequest(
-        "history",
-        "preselect",
-        ("PRESELECT", "PRESELECT", "Future"),
-    )
-    assert not output.metadata
-    assert output.source_evidence is None
+    assert output == current
+    assert output.metadata == current.metadata
+    assert output.source_evidence == current.source_evidence
     assert not dialog.step_combo.isEnabled()
     assert tuple(
         dialog.candidate_list.item(index).text()
@@ -1547,6 +1716,19 @@ def test_analysis_manager_uses_readable_definition_summaries():
     assert manager.table.item(1, 3).text() == "U1 = 0"
     assert manager.table.item(2, 0).text() == "输出"
     assert manager.table.item(2, 2).text() == "节点"
+
+
+def test_analysis_manager_shows_nonlinear_typed_formulation() -> None:
+    _application()
+    manager = AnalysisDefinitionManagerDialog(
+        [static("Nonlinear", formulation=StaticFormulation.NONLINEAR)],
+        (),
+        [],
+        [],
+        2,
+    )
+
+    assert manager.table.item(0, 3).text() == "非线性静力"
 
 
 def test_model_tree_boundary_and_load_delete_preserve_other_definitions():

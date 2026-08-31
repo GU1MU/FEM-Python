@@ -19,9 +19,9 @@ from fem.application import (
     describe_session_authoring,
     with_compatibility_analysis_names,
 )
-from fem.core.model import OutputRequest
+from fem.model import OutputRequest
 from fem.geometry import RectangleGeometry
-from fem.steps.factory import static
+from fem.model.authoring import static
 import fem_gui.analysis_definition_dialogs as definition_dialogs_module
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow

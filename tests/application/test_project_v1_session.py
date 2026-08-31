@@ -15,8 +15,9 @@ from fem.application import (
     TokenStatus,
 )
 from fem.application.feature_history import derive_feature_history
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BeamOrientation,
     DisplacementConstraint,
     EdgeLoad,
     GravityLoad,
@@ -24,7 +25,6 @@ from fem.core.model import (
     NodalLoad,
     OutputRequest,
 )
-from fem.elements import BeamOrientation
 from fem.geometry.recipes import PlateWithHoleGeometry
 from fem.geometry.references import LogicalEntityRef
 from fem.io import project_v1
@@ -289,7 +289,8 @@ def test_save_snapshot_exposes_only_detached_copies(tmp_path):
     session.replace_from_snapshot(_project_snapshot())
     save_snapshot = session.prepare_project_save()
     exposed = save_snapshot.snapshot
-    exposed.material_definitions[0].properties["E"] = 999.0
+    with pytest.raises(TypeError):
+        exposed.material_definitions[0].properties["E"] = 999.0
     exposed.section_definitions[0].properties["thickness"] = 999.0
     exposed.feature_history[0].payload["summary"] = "tampered"
     exposed.analysis_definitions[0].metadata["increments"].append(999)

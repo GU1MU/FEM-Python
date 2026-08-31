@@ -16,7 +16,7 @@ from fem.application import (
     TokenStatus,
     describe_session_authoring,
 )
-from fem.application.results import (
+from fem.results import (
     ElementResultInspectionRequest,
     FieldAssociation,
     FieldPosition,
@@ -32,7 +32,7 @@ from fem.application.results import (
     prepare_result_export_snapshot,
     restore_result_provider,
 )
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model import AnalysisStep, FEMModel
 from fem.geometry.recipes import BoxGeometry
 from fem.io import project as project_module
 from fem.io.project import (

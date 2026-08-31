@@ -10,11 +10,11 @@ from numbers import Real
 from typing import Any
 
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.core._constraint_targets import (
+from fem.model.targets import (
     displacement_target_kind,
     resolve_displacement_node_ids,
 )
-from fem.application.results import (
+from fem.results import (
     ElementResultInspectionRequest,
     FieldPosition,
     FieldState,
@@ -25,14 +25,15 @@ from fem.application.results import (
     ResultProvider,
     ResultQueryValidationError,
 )
-from fem.post.fields import encode_result_region_key
 from .result_presentation import (
     result_field_has_section_points,
     result_field_position_label,
     result_field_is_visible,
+    result_region_display_labels,
     result_provider_section_point_labels,
     section_point_relative_position_label,
 )
+from .analysis_presentation import analysis_step_label
 
 
 _RESULT_VARIABLE_LABELS = {
@@ -41,6 +42,8 @@ _RESULT_VARIABLE_LABELS = {
     "RF": "反力 RF",
     "RM": "反力矩 RM",
     "LE": "对数应变 LE",
+    "E": "应变 E",
+    "PEEQ": "塑性应变 PEEQ",
     "S": "应力 S",
 }
 _RESULT_COMPONENT_LABELS = {
@@ -847,7 +850,13 @@ class InspectionService:
             len(step.outputs),
         )
         pages = [InspectionPage("概况", (
-            ("分析步名称", step.name), ("分析类型", _procedure_label(step.procedure)),
+            ("分析步名称", step.name),
+            (
+                "分析类型",
+                analysis_step_label(step)
+                if str(step.procedure).casefold() == "static"
+                else _procedure_label(step.procedure),
+            ),
             ("边界条件数量", str(boundary_count)), ("载荷数量", str(load_count)),
             ("输出请求数量", str(output_count)),
         ))]
@@ -1128,6 +1137,12 @@ def _provider_result_table(
     rows: list[tuple[str, ...]] = []
     references: list[EntityReference | None] = []
     variable = descriptor.field_id.variable.value
+    region_labels = result_region_display_labels(
+        record.location.region_key
+        for component_result in field_entry.component_results
+        for record in component_result.records
+        if record.location.region_key is not None
+    )
     for component_result in field_entry.component_results:
         component = _localized_result_component(
             component_result.query.component,
@@ -1182,7 +1197,7 @@ def _provider_result_table(
                     (
                         "—"
                         if location.region_key is None
-                        else encode_result_region_key(location.region_key)
+                        else region_labels[location.region_key]
                     ),
                     _averaged_label(location.averaged),
                     diagnostic,
@@ -1244,7 +1259,7 @@ def format_number(value: object) -> str:
         return "—"
     if isinstance(value, Real):
         number = float(value)
-        if abs(number) < 5.0e-13:
+        if number == 0.0:
             return "0"
         return f"{number:.6g}"
     return str(value)
@@ -1302,7 +1317,7 @@ def _plane_label(value: object) -> str:
 
 
 def _procedure_label(value: str) -> str:
-    return "线性静力" if str(value).lower() == "static" else str(value)
+    return str(value)
 
 
 def _output_kind(value: str) -> str:

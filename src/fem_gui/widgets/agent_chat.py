@@ -1805,6 +1805,15 @@ class AgentChatDrawer(_BoundaryFrame):
         self,
         event: QWheelEvent,
     ) -> None:
+        # A direct wheel gesture is an explicit user override of the pending
+        # auto-follow operation.  Cancelling the queued restore prevents a
+        # zero-delay layout update from immediately jumping back to the
+        # newest message after the wheel handler moves the scrollbar.
+        self._conversation_scroll_timer.stop()
+        self._conversation_scroll_update_pending = False
+        self._conversation_scroll_restore_value = None
+        self._conversation_scroll_suspended = False
+        self._conversation_auto_follow = False
         scroll_bar = self.conversation_scroll.verticalScrollBar()
         pixel_delta = event.pixelDelta().y()
         if pixel_delta:

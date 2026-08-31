@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import numpy as np
 import pytest
@@ -14,9 +15,8 @@ from fem.application import (
     run_static_preflight,
 )
 from fem.application.preprocessing import generate_fem_model
-from fem.application.results import build_solve_result_bundle
 from fem.application.solid_boolean import prepare_solid_body_boolean
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     OutputRequest,
@@ -45,7 +45,7 @@ from fem.geometry import (
 from fem.io.project import dumps_project, loads_project
 from fem.materials.linear_elastic import material
 from fem.mesh.settings import MeshSettings
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.result_authoring import AgentResultQueryBridge

@@ -10,7 +10,7 @@ from fem.application import (
     SessionAuthoringProjection,
     SessionSnapshot,
 )
-from fem.application.results import FieldState
+from fem.results import FieldState
 from fem.geometry import (
     BooleanGeometry,
     ExtrudedGeometry,
@@ -102,8 +102,12 @@ class GuiActionKey(str, Enum):
     OVERLAY = "overlay"
     FIELD = "field"
     DISPLAY_SETTINGS = "display_settings"
+    DISPLAY_GROUP_VIEW_CUT = "display_group_view_cut"
     SCALE = "scale"
     CONTOUR_OPTIONS = "contour_options"
+    ANIMATION_SETTINGS = "animation_settings"
+    QUERY_PROBE = "query_probe"
+    XY_DATA = "xy_data"
     QUERY = "query"
     EXPORT_CSV = "export_csv"
     EXPORT_VTK = "export_vtk"
@@ -129,6 +133,7 @@ class GuiActionDescriptor:
     group: str | None = None
     argument: object | None = None
     checked_only: bool = False
+    tooltip: str | None = None
 
 
 def _d(
@@ -142,6 +147,7 @@ def _d(
     group: str | None = None,
     argument: object | None = None,
     checked_only: bool = False,
+    tooltip: str | None = None,
 ) -> GuiActionDescriptor:
     return GuiActionDescriptor(
         key,
@@ -153,6 +159,7 @@ def _d(
         group,
         argument,
         checked_only,
+        tooltip,
     )
 
 
@@ -177,7 +184,7 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.MODEL_INFO, "模型概况", "show_model_information", "model_info"),
     _d(GuiActionKey.MATERIAL_MANAGER, "材料管理", "show_material_manager", "material"),
     _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
-    _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
+    _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "show_section_assignment_manager", "section_assign"),
     _d(GuiActionKey.GEOMETRY_CREATE, "新建部件", "create_geometry", "sketch"),
     _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
     _d(
@@ -234,23 +241,57 @@ ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
     _d(GuiActionKey.SUBMIT_JOB, "创建作业", "create_job", "job"),
     _d(GuiActionKey.RESUBMIT_JOB, "复制作业", "resubmit_job", "resubmit"),
     _d(GuiActionKey.JOB_MANAGER, "作业管理", "show_job_manager", "job_manager"),
-    _d(GuiActionKey.UNDEFORMED, "未变形形状", "set_shape_mode", "undeformed", checkable=True, checked=True, group="shape", argument="undeformed"),
-    _d(GuiActionKey.DEFORMED, "变形形状", "set_shape_mode", "deformed", checkable=True, group="shape", argument="deformed"),
-    _d(GuiActionKey.CONTOUR, "显示云图", "_toggle_contour", "contour", checkable=True),
-    _d(GuiActionKey.OVERLAY, "叠加未变形轮廓", "_toggle_undeformed_overlay", "overlay", checkable=True),
+    _d(GuiActionKey.UNDEFORMED, "未变形", "set_shape_mode", "undeformed", checkable=True, checked=True, group="shape", argument="undeformed", tooltip="显示未变形形状"),
+    _d(GuiActionKey.DEFORMED, "变形", "set_shape_mode", "deformed", checkable=True, group="shape", argument="deformed", tooltip="显示变形形状"),
+    _d(GuiActionKey.CONTOUR, "显示云图", "_toggle_contour", "contour", checkable=True, tooltip="显示或隐藏当前结果云图"),
+    _d(GuiActionKey.OVERLAY, "叠加轮廓", "_toggle_undeformed_overlay", "overlay", checkable=True, tooltip="叠加未变形轮廓，便于比较变形前后的形状"),
     _d(GuiActionKey.FIELD, "结果变量和分量", "show_result_display_dialog", "field"),
     _d(GuiActionKey.DISPLAY_SETTINGS, "显示设置", "show_display_settings_dialog", "settings"),
+    _d(
+        GuiActionKey.DISPLAY_GROUP_VIEW_CUT,
+        "显示组",
+        "show_display_group_view_cut",
+        "view_more",
+        tooltip="管理结果显示组和视图切割",
+    ),
     _d(GuiActionKey.SCALE, "变形比例", "show_result_display_dialog", "scale"),
-    _d(GuiActionKey.CONTOUR_OPTIONS, "云图设置", "show_contour_dialog", "settings"),
+    _d(GuiActionKey.CONTOUR_OPTIONS, "云图选项", "show_contour_dialog", "settings"),
+    _d(
+        GuiActionKey.ANIMATION_SETTINGS,
+        "动画设置",
+        "show_result_animation_dialog",
+        "animation",
+        tooltip="设置结果帧范围和播放方式",
+    ),
+    _d(
+        GuiActionKey.QUERY_PROBE,
+        "结果查询",
+        "show_result_query_probe_dialog",
+        "query",
+        tooltip="打开当前结果查询窗口，可按编号查询或定位当前结果帧",
+    ),
+    _d(
+        GuiActionKey.XY_DATA,
+        "XY 曲线",
+        "show_result_xy_data_dialog",
+        "xy_data",
+        tooltip="从多个增量提取结果曲线",
+    ),
     _d(
         GuiActionKey.QUERY,
         "查询结果",
         "show_result_query_dialog",
         "query",
     ),
-    _d(GuiActionKey.EXPORT_CSV, "导出 CSV", "export_csv", "export"),
+    _d(GuiActionKey.EXPORT_CSV, "导出 CSV", "export_csv", "export", tooltip="导出当前结果数据为 CSV 文件"),
     _d(GuiActionKey.EXPORT_VTK, "导出 VTK", "export_vtk", "export"),
-    _d(GuiActionKey.SCREENSHOT, "导出视口", "export_viewport_image", "image"),
+    _d(
+        GuiActionKey.SCREENSHOT,
+        "视口截图",
+        "export_viewport_image",
+        "image",
+        tooltip="导出当前视口图片",
+    ),
     _d(GuiActionKey.ABOUT, "关于", "show_about"),
     _d(GuiActionKey.SELECT_POINT, "选择点", "_set_selection_filter", "select_geometry_point", checkable=True, checked=True, group="selection", argument="point", checked_only=True),
     _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_filter", "select_element", checkable=True, group="selection", argument="element", checked_only=True),
@@ -276,10 +317,12 @@ class GuiActionContext:
     # until MainWindow supplies the derived Phase-8 facts explicitly.
     result_source_current: bool = True
     catalog_available: bool = True
+    result_frames_available: bool = False
     selected_field_exists: bool = True
     selected_field_state: FieldState | None = FieldState.READY
     materialization_pending: bool = False
     result_task_busy: bool = False
+    result_display_task_busy: bool = False
     viewport_scene_available: bool = False
     wire_editor_active: bool = False
     sketch_editor_active: bool = False
@@ -298,9 +341,11 @@ class GuiActionContext:
             "viewport_capture_active",
             "result_source_current",
             "catalog_available",
+            "result_frames_available",
             "selected_field_exists",
             "materialization_pending",
             "result_task_busy",
+            "result_display_task_busy",
             "viewport_scene_available",
             "wire_editor_active",
             "sketch_editor_active",
@@ -371,6 +416,12 @@ def derive_action_availability(
         and not context.materialization_pending
         and not context.result_task_busy
     )
+    # Result display workers do not mutate the model or the accepted result;
+    # they only prepare the next visual commit while the previous complete
+    # scene remains on screen.  Keep view-only commands stable during that
+    # interval so a fast worker cannot produce a grey -> enabled flash.
+    result_display_busy = bool(context.result_display_task_busy)
+    view_actions_idle = not busy or result_display_busy
     recipe = snapshot.geometry_recipe
     active_part = snapshot.active_part
     active_part_editable = (
@@ -393,6 +444,11 @@ def derive_action_availability(
         snapshot.source_kind == "native"
         and isinstance(recipe, NATIVE_GEOMETRY_TYPES)
         and active_part_editable
+    )
+    view_scene_available = bool(
+        has_model
+        or has_native_geometry
+        or (has_current_result and context.viewport_scene_available)
     )
     is_multi_body = isinstance(recipe, MultiBodyGeometry)
     selected_body_count = len(
@@ -705,10 +761,11 @@ def derive_action_availability(
     set_state(
         GuiActionKey.SECTION_MANAGER,
         snapshot.source_kind is not None
-        and bool(snapshot.materials)
-        and (section_capability.can_enter or bool(snapshot.sections))
         and not busy,
-        _capability_reason(section_capability, "请先新建模型或打开 INP，并创建材料"),
+        _capability_reason(
+            section_capability,
+            "请先新建模型或打开 INP",
+        ),
     )
     visible_targets = tuple(
         target
@@ -860,7 +917,7 @@ def derive_action_availability(
             set_state(key, enabled, reason)
     else:
         for kind, key in selection_keys.items():
-            enabled = has_model and not busy
+            enabled = view_scene_available and view_actions_idle
             reason = "请先生成网格或打开 INP 模型"
             if kind == "face" and selection_dimension == 1:
                 enabled = False
@@ -881,13 +938,25 @@ def derive_action_availability(
     ):
         set_state(
             key,
-            (has_model or has_native_geometry) and not busy,
+            view_scene_available and view_actions_idle,
             "请先创建几何、生成网格或打开 INP 模型",
         )
     set_state(
         GuiActionKey.SELECTED_INFO,
-        has_model and context.fem_selection_kind in {"node", "element"},
-        "请先选择节点或单元",
+        has_model
+        and context.fem_selection_kind in {"node", "element"}
+        and not busy,
+        "请先选择节点或单元，并等待后台任务完成",
+    )
+    # A result topology/averaging/legend worker keeps the last complete scene
+    # visible and accepts only coalesced display requests. Keep the result
+    # ribbon visually stable during that short interval; save/export/query
+    # actions continue to require the fully idle state above.
+    result_view_ready = has_current_result and (
+        result_actions_idle or context.result_display_task_busy
+    )
+    result_view_reason = (
+        "当前结果不可用，或结果任务正在运行"
     )
     for key in (
         GuiActionKey.UNDEFORMED,
@@ -897,16 +966,33 @@ def derive_action_availability(
         GuiActionKey.SCALE,
         GuiActionKey.DISPLAY_SETTINGS,
         GuiActionKey.CONTOUR_OPTIONS,
+        GuiActionKey.DISPLAY_GROUP_VIEW_CUT,
     ):
-        set_state(
-            key,
-            has_result,
-            "当前没有可查看的分析结果",
-        )
+        set_state(key, result_view_ready, result_view_reason)
     set_state(
         GuiActionKey.FIELD,
+        has_result_catalog
+        and (result_actions_idle or context.result_display_task_busy),
+        "当前结果目录不可用，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.ANIMATION_SETTINGS,
+        has_current_result
+        and context.result_frames_available
+        and (result_actions_idle or context.result_display_task_busy),
+        "当前结果没有可用增量帧，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.QUERY_PROBE,
         has_result_catalog and result_actions_idle,
         "当前结果目录不可用，或结果任务正在运行",
+    )
+    set_state(
+        GuiActionKey.XY_DATA,
+        has_result_catalog
+        and context.result_frames_available
+        and result_actions_idle,
+        "当前结果没有可用增量帧，或结果任务正在运行",
     )
     set_state(
         GuiActionKey.QUERY,

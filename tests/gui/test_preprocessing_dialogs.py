@@ -153,6 +153,18 @@ def test_mesh_settings_exposes_supported_element_shapes_without_method_field() -
     assert volume.settings().cell_shape == "tetrahedron"
 
 
+def test_mesh_settings_dialog_preserves_automatic_mesh_controls() -> None:
+    _application()
+    dialog = MeshSettingsDialog(
+        MeshSettings(5.0, auto_level=4, strict_cell_shape=True),
+    )
+
+    edited = dialog.settings()
+
+    assert edited.auto_level == 4
+    assert edited.strict_cell_shape is True
+
+
 def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
     _application()
     dialog = LocalMeshControlDialog(
@@ -231,6 +243,8 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
     dialog = MeshControlsDialog(
         MeshSettings(
             1.0,
+            auto_level=4,
+            strict_cell_shape=True,
             local_controls=(
                 _control("edge:bottom", 0.25),
                 _control("edge:top", 0.5),
@@ -245,6 +259,24 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
     assert controls[0].target == LogicalEntityRef("edge:top")
     assert controls[0].size == 0.5
     assert "边 3" not in dialog.control_list.item(3).text()
+    edited = dialog.settings()
+    assert edited.auto_level == 4
+    assert edited.strict_cell_shape is True
+
+
+def test_mesh_control_manager_noop_preserves_the_complete_settings() -> None:
+    _application()
+    original = MeshSettings(
+        1.0,
+        order=2,
+        cell_shape="quadrilateral",
+        auto_level=5,
+        strict_cell_shape=True,
+        local_controls=(_control("edge:top", 0.5),),
+    )
+    dialog = MeshControlsDialog(original)
+
+    assert dialog.settings() == original
 
 
 def test_mesh_control_manager_edit_preserves_target_radius_falloff(

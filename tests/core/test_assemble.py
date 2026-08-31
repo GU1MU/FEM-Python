@@ -4,11 +4,16 @@ from time import perf_counter
 
 import numpy as np
 import pytest
-from scipy.sparse import coo_matrix
 
-from fem.assemble import assemble_global_stiffness, assemble_global_stiffness_sparse
-from fem.assemble import stiffness as stiffness_module
-from fem.core.mesh import Element2D, Element3D, Mesh2D, Node2D
+from fem.assembly import (
+    SparseAssembler,
+    assemble_global_stiffness,
+    assemble_global_stiffness_sparse,
+)
+from fem.model.mesh import Element2D, Element3D, Mesh2D, Node2D
+from fem.physics.contracts import LocalContribution
+from fem.physics.mechanics import get_recovery_service
+from fem.state import EvaluationContext, SolutionState
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
     make_hex20_stiffness_mesh,
@@ -93,33 +98,23 @@ def test_assembly_reports_unsupported_element_type_in_mixed_mesh():
         assemble_global_stiffness_sparse(mesh)
 
 
-def test_sparse_assembly_plan_uses_only_flat_exact_preallocations():
+def test_sparse_assembler_resolves_each_element_dof_mapping_once():
     mesh = make_mixed_tri3_quad4_mesh()
+    original = mesh.element_dofs
+    calls = 0
 
-    plan = stiffness_module._build_assembly_plan(mesh)
-    expected_dof_count = sum(len(mesh.element_dofs(elem)) for elem in mesh.elements)
-    expected_entry_count = sum(
-        len(mesh.element_dofs(elem)) ** 2 for elem in mesh.elements
-    )
+    def counted(element):
+        nonlocal calls
+        calls += 1
+        return original(element)
 
-    assert plan.dof_offsets.shape == (len(mesh.elements) + 1,)
-    assert plan.entry_offsets.shape == (len(mesh.elements) + 1,)
-    assert int(plan.dof_offsets[-1]) == expected_dof_count
-    assert plan.rows.shape == (expected_entry_count,)
-    assert plan.cols.shape == (expected_entry_count,)
-    assert all(
-        isinstance(values, np.ndarray) and values.ndim == 1
-        for values in (
-            plan.dof_offsets,
-            plan.entry_offsets,
-            plan.rows,
-            plan.cols,
-        )
-    )
-    assert not hasattr(plan, "__dict__")
+    mesh.element_dofs = counted
+    assemble_global_stiffness_sparse(mesh)
+
+    assert calls == len(mesh.elements)
 
 
-def test_sparse_assembly_sums_repeated_coo_entries(monkeypatch):
+def test_sparse_assembly_sums_repeated_element_contributions():
     mesh = make_truss_stiffness_mesh()
     first = mesh.elements[0]
     mesh.elements.append(
@@ -131,56 +126,41 @@ def test_sparse_assembly_sums_repeated_coo_entries(monkeypatch):
         )
     )
 
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            dof_count = len(mesh.element_dofs(elem))
-            return np.ones((dof_count, dof_count))
-
-    monkeypatch.setattr(
-        stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
+    dof_count = len(mesh.element_dofs(first))
+    assembler = SparseAssembler.from_displacement_mesh(
+        mesh,
+        _FixedLinearOperator(np.ones((dof_count, dof_count))),
+        require_symmetric_tangent=True,
     )
-
-    assembled = assemble_global_stiffness_sparse(mesh).toarray()
+    assembled = assembler.assemble(
+        SolutionState.zeros(assembler.dof_space),
+        context=EvaluationContext(load_factor=1.0),
+    ).tangent.toarray()
 
     assert np.array_equal(assembled, np.full(assembled.shape, 2.0))
 
 
-def test_sparse_assembly_preserves_zero_dof_kernel_shape_diagnostic(
-    monkeypatch,
-):
+def test_sparse_assembly_rejects_elements_without_nodes():
     mesh = make_truss_stiffness_mesh()
     mesh.elements[0].node_ids = []
     mesh.rebuild_dof_map()
 
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            return np.ones((1, 1))
-
-    monkeypatch.setattr(
-        stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=r"stiffness shape \(1, 1\) does not match 0 DOFs",
-    ):
-        assemble_global_stiffness_sparse(mesh)
+    with pytest.raises(ValueError, match="must contain at least one node"):
+        SparseAssembler.from_displacement_mesh(
+            mesh,
+            _FixedLinearOperator(np.ones((1, 1))),
+        )
 
 
 @pytest.mark.parametrize(
     ("failure", "expected_exception", "message"),
     [
-        ("shape", ValueError, "stiffness shape"),
-        ("nonfinite", ValueError, "contains non-finite values"),
-        ("asymmetric", ValueError, "stiffness is not symmetric"),
+        ("shape", ValueError, "element tangent shape must match dofs"),
+        ("nonfinite", ValueError, "element contribution must be finite"),
+        ("asymmetric", ValueError, "tangent is not symmetric"),
     ],
 )
-def test_sparse_assembly_preserves_kernel_output_diagnostics(
-    monkeypatch,
+def test_sparse_assembly_validates_local_contribution_diagnostics(
     failure,
     expected_exception,
     message,
@@ -195,26 +175,25 @@ def test_sparse_assembly_preserves_kernel_output_diagnostics(
     else:
         stiffness[0, 1] = 1.0
 
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            return stiffness
-
-    monkeypatch.setattr(
-        stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
+    assembler = SparseAssembler.from_displacement_mesh(
+        mesh,
+        _FixedLinearOperator(stiffness),
+        require_symmetric_tangent=True,
     )
 
     with pytest.raises(expected_exception, match=message):
-        assemble_global_stiffness_sparse(mesh)
+        assembler.assemble(
+            SolutionState.zeros(assembler.dof_space),
+            context=EvaluationContext(load_factor=1.0),
+        )
 
 
 @pytest.mark.parametrize(
     ("invalid_dof", "expected_exception", "message"),
     [
         (6, IndexError, r"out of bounds \[0, 6\)"),
-        (1.5, TypeError, "DOF index must be an integer"),
-        (True, TypeError, "DOF index must be an integer"),
+        (1.5, TypeError, "local DOF ids must be integers"),
+        (True, TypeError, "local DOF ids must be integers"),
     ],
 )
 def test_sparse_assembly_validates_custom_element_dof_indices(
@@ -231,7 +210,7 @@ def test_sparse_assembly_validates_custom_element_dof_indices(
         assemble_global_stiffness_sparse(mesh)
 
 
-def test_sparse_assembly_rejects_element_dof_mapping_length_changes():
+def test_sparse_assembly_does_not_require_repeatable_dof_side_effects():
     mesh = make_truss_stiffness_mesh()
     calls = 0
 
@@ -243,8 +222,10 @@ def test_sparse_assembly_rejects_element_dof_mapping_length_changes():
 
     mesh.element_dofs = changing_element_dofs
 
-    with pytest.raises(ValueError, match="DOF mapping changed"):
-        assemble_global_stiffness_sparse(mesh)
+    assembled = assemble_global_stiffness_sparse(mesh)
+
+    assert assembled.shape == (mesh.num_dofs, mesh.num_dofs)
+    assert calls == 1
 
 
 @pytest.mark.parametrize(
@@ -257,28 +238,32 @@ def test_assembly_requires_boolean_strict_option(assembler, strict):
         assembler(make_truss_stiffness_mesh(), strict=strict)
 
 
-def test_sparse_assembly_fast_path_only_skips_symmetry(monkeypatch):
+def test_sparse_assembly_optional_symmetry_check_keeps_finite_validation():
     mesh = make_truss_stiffness_mesh()
     dof_count = len(mesh.element_dofs(mesh.elements[0]))
     asymmetric = np.eye(dof_count)
     asymmetric[0, 1] = 1.0
 
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            return asymmetric
-
-    monkeypatch.setattr(
-        stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
+    assembler = SparseAssembler.from_displacement_mesh(
+        mesh,
+        _FixedLinearOperator(asymmetric),
     )
-
-    assembled = assemble_global_stiffness_sparse(mesh, strict=False).toarray()
+    assembled = assembler.assemble(
+        SolutionState.zeros(assembler.dof_space),
+        context=EvaluationContext(load_factor=1.0),
+    ).tangent.toarray()
     assert np.array_equal(assembled, asymmetric)
 
     asymmetric[0, 0] = np.nan
-    with pytest.raises(ValueError, match="contains non-finite values"):
-        assemble_global_stiffness_sparse(mesh, strict=False)
+    with pytest.raises(ValueError, match="element contribution must be finite"):
+        invalid_assembler = SparseAssembler.from_displacement_mesh(
+            mesh,
+            _FixedLinearOperator(asymmetric),
+        )
+        invalid_assembler.assemble(
+            SolutionState.zeros(invalid_assembler.dof_space),
+            context=EvaluationContext(load_factor=1.0),
+        )
 
 
 def test_medium_mixed_plane_assembly_matches_legacy_oracle_and_records_cost(
@@ -295,7 +280,7 @@ def test_medium_mixed_plane_assembly_matches_legacy_oracle_and_records_cost(
         lambda: _legacy_sparse_assembly_oracle(mesh)
     )
 
-    assert np.allclose(current.toarray(), legacy.toarray())
+    assert np.allclose(current.toarray(), legacy)
     record_property("current_assembly_seconds", current_seconds)
     record_property("legacy_assembly_seconds", legacy_seconds)
     record_property("current_tracemalloc_peak_bytes", current_peak)
@@ -363,33 +348,70 @@ def _make_medium_mixed_plane_mesh(cell_count):
 
 
 def _legacy_sparse_assembly_oracle(mesh):
-    stiffness_module._validate_mesh(mesh)
     node_lookup = {node.id: node for node in mesh.nodes}
-    row_blocks = []
-    col_blocks = []
-    data_blocks = []
+    assembled = np.zeros((mesh.num_dofs, mesh.num_dofs), dtype=float)
     for elem in mesh.elements:
-        element_stiffness = stiffness_module.get_element_kernel(
-            elem.type
-        ).stiffness(mesh, elem, node_lookup=node_lookup)
-        dofs = stiffness_module._validated_element_dofs(mesh, elem)
-        element_stiffness = stiffness_module._validate_element_stiffness(
-            element_stiffness,
-            len(dofs),
-            elem,
-            strict=True,
+        element_stiffness = np.asarray(
+            get_recovery_service(elem.type).stiffness(
+                mesh,
+                elem,
+                node_lookup=node_lookup,
+            ),
+            dtype=float,
         )
+        dofs = tuple(int(value) for value in mesh.element_dofs(elem))
+        assert element_stiffness.shape == (len(dofs), len(dofs))
         dof_array = np.asarray(dofs, dtype=np.int64)
-        row_blocks.append(np.repeat(dof_array, dof_array.size))
-        col_blocks.append(np.tile(dof_array, dof_array.size))
-        data_blocks.append(element_stiffness.reshape(-1))
-    rows = np.concatenate(row_blocks)
-    cols = np.concatenate(col_blocks)
-    data = np.concatenate(data_blocks)
-    return coo_matrix(
-        (data, (rows, cols)),
-        shape=(mesh.num_dofs, mesh.num_dofs),
-    ).tocsr()
+        assembled[np.ix_(dof_array, dof_array)] += element_stiffness
+    return assembled
+
+
+class _FixedLinearOperator:
+    """Test operator exercising the public local-contribution contract."""
+
+    def __init__(self, tangent):
+        self.tangent = tangent
+
+    def initialize(
+        self,
+        entity,
+        resources,
+        state,
+        properties=None,
+        *,
+        state_namespace,
+    ):
+        del entity, resources, state, properties, state_namespace
+
+    def evaluate(
+        self,
+        element,
+        reference_coordinates,
+        fields,
+        dofs,
+        resources,
+        state,
+        properties=None,
+        *,
+        context,
+        state_namespace,
+    ):
+        del (
+            element,
+            reference_coordinates,
+            resources,
+            state,
+            properties,
+            context,
+            state_namespace,
+        )
+        tangent = np.asarray(self.tangent, dtype=float)
+        local = np.asarray(fields["U"].values, dtype=float).reshape(-1)
+        return LocalContribution(
+            dofs=dofs,
+            residual=np.zeros(local.size, dtype=float),
+            tangent=tangent,
+        )
 
 
 def _measure_assembly(callback):

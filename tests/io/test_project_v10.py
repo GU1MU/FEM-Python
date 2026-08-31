@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,

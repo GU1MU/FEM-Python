@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from fem.core.mesh import (
+from fem.model.mesh import (
     Element2D,
     Element3D,
     Mesh2D,
@@ -10,8 +10,8 @@ from fem.core.mesh import (
     Node2D,
     Node3D,
 )
-from fem.core.model import FEMModel
-from fem.core.result import ModelResult
+from fem.model import FEMModel
+from fem.results import ModelResult
 
 
 def make_continuum_nodal_semantics_result() -> ModelResult:

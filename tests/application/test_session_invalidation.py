@@ -17,15 +17,16 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
     TokenStatus,
+    TransitionEffect,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     ElementSet,
     FEMModel,
     GravityLoad,
     MaterialDefinition,
 )
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -361,6 +362,50 @@ def test_topology_change_preserves_only_geometry_independent_steps() -> None:
     assert after.mesh_settings.local_controls == ()
 
 
+def test_topology_change_prunes_only_invalid_loads_inside_a_step() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    recipe = BoxGeometry("Box", 2.0, 1.0, 0.5)
+    region = NamedRegion(
+        "Region-A",
+        (_first_reference(recipe, "body"),),
+    )
+    mixed = AnalysisStep(
+        "Mixed",
+        gravity_loads=(
+            GravityLoad((0.0, -9.81, 0.0)),
+            GravityLoad((0.0, 1.0, 0.0), "Region-A"),
+        ),
+    )
+    session.replace_geometry((NativePart(),), recipe)
+    session.replace_named_regions((region,))
+    session.replace_mesh_settings(MeshSettings(1.0))
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 1.0}),),
+        (SectionDefinition("Solid", "Steel"),),
+        (RegionAssignment("Solid", "Region-A"),),
+        (mixed,),
+    )
+
+    delta = session.replace_geometry(
+        (NativePart(),),
+        RectangleGeometry("Plate", 3.0, 2.0),
+    )
+    after = session.snapshot()
+
+    assert after.steps == (
+        AnalysisStep(
+            "Mixed",
+            gravity_loads=(GravityLoad((0.0, -9.81, 0.0)),),
+        ),
+    )
+    assert delta.effects == {
+        TransitionEffect.NAMED_REGIONS_CLEARED,
+        TransitionEffect.ASSIGNMENTS_CLEARED,
+        TransitionEffect.STEP_TARGETS_CLEARED,
+    }
+
+
 @pytest.mark.parametrize(
     "operation",
     [
@@ -626,7 +671,8 @@ def test_removing_a_referenced_named_region_is_rejected_without_side_effects() -
 def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects() -> None:
     session = _session_with_artifacts()
     snapshot = session.snapshot()
-    snapshot.model.materials["Steel"].properties["E"] = 99.0
+    with pytest.raises(TypeError):
+        snapshot.model.materials["Steel"].properties["E"] = 99.0
     snapshot.sections[0].properties["tag"] = "changed"
     with pytest.raises(FrozenInstanceError):
         snapshot.named_regions["Region-A"].references += (
@@ -638,7 +684,8 @@ def test_snapshots_and_task_inputs_do_not_expose_authoritative_mutable_objects()
         )
 
     validation = session.prepare_validation("Step-A")
-    validation.model.materials["Steel"].properties["E"] = 77.0
+    with pytest.raises(TypeError):
+        validation.model.materials["Steel"].properties["E"] = 77.0
 
     fresh = session.snapshot()
     assert fresh.model.materials["Steel"].properties["E"] == 1.0

@@ -13,7 +13,7 @@ from fem.application.native_scope_materialization import (
     NATIVE_PART_OWNERSHIP_KEY,
     mesh_references_for_logical_entities,
 )
-from fem.core.model import AnalysisStep, FEMModel, SurfaceLoad
+from fem.model import AnalysisStep, FEMModel, SurfaceLoad
 from fem.geometry import (
     BoxGeometry,
     LogicalEntityRef,

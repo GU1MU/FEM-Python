@@ -4,7 +4,7 @@ from time import perf_counter
 
 import numpy as np
 
-from fem.boundary.step import boundary_for_step
+from fem.analysis.compilation.boundary.step import boundary_for_step
 from fem.post.vtk import cells as vtk_cells
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry, pyvista_cell_array

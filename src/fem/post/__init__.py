@@ -1,4 +1,10 @@
-from . import displacement, fields, path, polar, stress, vtk
+"""Pure post-processing algorithms, loaded without result-domain cycles."""
+
+from __future__ import annotations
+
+from importlib import import_module
+from types import ModuleType
+
 from .fields import (
     ResultRegionKey,
     ResultRegionSignature,
@@ -26,3 +32,11 @@ __all__ = [
     "stress",
     "vtk",
 ]
+
+
+def __getattr__(name: str) -> ModuleType:
+    if name not in {"displacement", "fields", "path", "polar", "stress", "vtk"}:
+        raise AttributeError(name)
+    module = import_module(f"{__name__}.{name}")
+    globals()[name] = module
+    return module

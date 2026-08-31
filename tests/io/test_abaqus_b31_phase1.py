@@ -3,11 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import get_element_kernel
-from fem.elements.beam_frame import BEAM_LOCAL_Y_REFERENCE_KEY
-from fem.elements.beam_section import parse_beam2_section
-from fem.elements.line import _beam2_b31_interpolation
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.model.beam_frame import BEAM_LOCAL_Y_REFERENCE_KEY
+from fem.model.beam_section import parse_beam2_section
+from fem.physics.mechanics.operators.line import _beam2_b31_interpolation
 
 
 _E = 210.0e9

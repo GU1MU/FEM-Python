@@ -1,4 +1,4 @@
-"""Modal dialogs for the currently supported linear-static analysis inputs."""
+"""Modal dialogs for the supported analysis inputs."""
 
 from __future__ import annotations
 
@@ -24,9 +24,13 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QInputDialog,
     QPushButton,
+    QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -37,21 +41,42 @@ from fem.application import (
     RegionRef,
     require_region_kind,
 )
-from fem.application.results import OutputRequestProjection
-from fem.core.model import (
+from fem.results import OutputRequestProjection
+from fem.analysis import is_nlgeom_enabled
+from fem.model import (
     AnalysisStep,
     BodyForce,
     DisplacementConstraint,
+    DampingModel,
+    DynamicIntegrationMethod,
+    DynamicProcedureKind,
+    DynamicStepControls,
+    GeometryMode,
     EdgeLoad,
     GravityLoad,
+    InitialConditionSet,
     LineLoad,
+    MassMatrixPolicy,
     NodalLoad,
     OutputRequest,
     SurfaceLoad,
+    TimeAmplitude,
 )
-from fem.steps.factory import static
+from fem.model.authoring import (
+    static,
+    transient_dynamic,
+    update_dynamic_step,
+    update_static_step,
+)
+from fem.model import (
+    NewtonStrategy,
+    StaticControlMode,
+    StaticFormulation,
+    StaticStepControls,
+)
 
 from .dialogs import AdaptivePrecisionDoubleSpinBox, configure_form_layout
+from .analysis_presentation import analysis_step_label
 
 
 _SCOPE_NOT_REPORTED = object()
@@ -132,22 +157,602 @@ def _authoring_candidate_message(decision: AuthoringCapability) -> str:
 
 
 class StaticStepDialog(QDialog):
-    def __init__(self, name: str, parent=None) -> None:
+    def __init__(
+        self,
+        name: str,
+        parent=None,
+        *,
+        current: AnalysisStep | None = None,
+        nlgeom: bool = False,
+        controls: StaticStepControls | None = None,
+    ) -> None:
+        """Edit the public static-step settings.
+
+        The constitutive material is selected by the model definition.  This
+        dialog owns only the analysis-step controls and never exposes an
+        implementation-specific return-mapping name.
+        """
         super().__init__(parent)
-        self.setWindowTitle("创建静力分析步")
+        self._procedure = "static"
+        self._original_step: AnalysisStep | None = None
+        self._initial_conditions = InitialConditionSet()
+        self._dynamic_controls = DynamicStepControls()
+        self._dynamic_procedure_kind = DynamicProcedureKind.IMPLICIT
+        if current is not None:
+            if type(current) is not AnalysisStep:
+                raise TypeError("current must be exactly AnalysisStep or None")
+            self._original_step = deepcopy(current)
+            self._procedure = (
+                "dynamic"
+                if str(current.procedure).strip().casefold() == "dynamic"
+                else "static"
+            )
+            if self._procedure == "dynamic":
+                dynamic_controls = current.controls
+                if not isinstance(dynamic_controls, DynamicStepControls):
+                    dynamic_controls = DynamicStepControls.from_metadata(
+                        current.metadata
+                    )
+                self._dynamic_controls = dynamic_controls
+                self._dynamic_procedure_kind = dynamic_controls.procedure_kind
+                self._initial_conditions = current.initial_conditions
+                nlgeom = (
+                    current.formulation is StaticFormulation.NONLINEAR
+                    or current.geometry_mode is GeometryMode.FINITE_STRAIN
+                )
+                controls = None
+            else:
+                nlgeom = is_nlgeom_enabled(current)
+                controls = current.controls
+                if controls is None and nlgeom:
+                    controls = StaticStepControls.from_metadata(current.metadata)
+        else:
+            self._original_step = None
+        if controls is None:
+            controls = StaticStepControls()
+        if type(controls) is not StaticStepControls:
+            raise TypeError("controls must be StaticStepControls or None")
+        self.controls = controls
         self.name_edit = QLineEdit(name, self)
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow("分析步名称", self.name_edit)
+        self.procedure_combo = QComboBox(self)
+        self.procedure_combo.addItem("线性静力", "static")
+        # Keep the historical ``dynamic`` data value for implicit dynamics so
+        # project/UI callers that only know the original dynamic entry still
+        # select the same procedure.  The visible choices now mirror the
+        # Abaqus split between implicit and explicit direct integration.
+        self.procedure_combo.addItem("动力学-隐式", "dynamic")
+        self.procedure_combo.addItem("动力学-显式", "dynamic_explicit")
+        selected_procedure = self._procedure
+        if self._procedure == "dynamic" and (
+            self._dynamic_procedure_kind is DynamicProcedureKind.EXPLICIT
+        ):
+            selected_procedure = "dynamic_explicit"
+        self.procedure_combo.setCurrentIndex(
+            self.procedure_combo.findData(selected_procedure)
+        )
+        form.addRow("分析类型", self.procedure_combo)
+        self.nlgeom_check = QCheckBox("启用几何非线性（NLGEOM）", self)
+        self.nlgeom_check.setChecked(bool(nlgeom))
+        form.addRow("几何非线性", self.nlgeom_check)
+        self.initial_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.initial_increment_spin.setRange(1.0e-12, 1.0)
+        self.initial_increment_spin.setValue(controls.initial_increment)
+        self.initial_increment_spin.setToolTip(
+            "从当前步起始状态开始的载荷因子增量。"
+        )
+        self.maximum_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.maximum_increment_spin.setRange(1.0e-12, 1.0)
+        self.maximum_increment_spin.setValue(controls.maximum_increment)
+        self.maximum_increment_spin.setToolTip(
+            "自动增长时允许使用的最大载荷因子增量。"
+        )
+        self.maximum_increments_spin = QSpinBox(self)
+        self.maximum_increments_spin.setRange(1, 1_000_000)
+        self.maximum_increments_spin.setValue(controls.maximum_increments)
+        self.maximum_increments_spin.setToolTip(
+            "整个分析步允许的最大增量数。"
+        )
+        self.minimum_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.minimum_increment_spin.setRange(1.0e-16, 1.0)
+        self.minimum_increment_spin.setValue(controls.minimum_increment)
+        self.minimum_increment_spin.setToolTip(
+            "自动切步允许的最小载荷因子增量。"
+        )
+        self.growth_factor_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.growth_factor_spin.setRange(1.0000001, 10.0)
+        self.growth_factor_spin.setValue(controls.growth_factor)
+        self.growth_factor_spin.setToolTip(
+            "每次满足增长条件时，下一增量相对于当前增量的精确倍数。"
+        )
+        self.growth_iteration_threshold_spin = QSpinBox(self)
+        self.growth_iteration_threshold_spin.setRange(1, 100_000)
+        self.growth_iteration_threshold_spin.setValue(
+            controls.growth_iteration_threshold
+        )
+        self.incrementation_mode_combo = QComboBox(self)
+        self.incrementation_mode_combo.addItem("固定增量", "fixed")
+        self.incrementation_mode_combo.addItem("自动增量", "automatic")
+        mode = (
+            "automatic"
+            if controls.automatic_cutback or controls.adaptive_growth
+            else "fixed"
+        )
+        self.incrementation_mode_combo.setCurrentIndex(
+            self.incrementation_mode_combo.findData(mode)
+        )
+        self.incrementation_mode_combo.setToolTip(
+            "固定增量只按初始增量推进；自动增量允许失败切回和收敛增长。"
+        )
+        self.control_mode_combo = QComboBox(self)
+        for mode, label in (
+            (StaticControlMode.LOAD, "载荷控制"),
+            (StaticControlMode.DISPLACEMENT, "位移控制"),
+            (StaticControlMode.MIXED, "混合控制"),
+        ):
+            self.control_mode_combo.addItem(label, mode.value)
+        mode_index = self.control_mode_combo.findData(
+            controls.control_mode.value
+        )
+        self.control_mode_combo.setCurrentIndex(max(0, mode_index))
+        self.control_mode_combo.setToolTip(
+            "决定增量因子作用于外载、位移约束或两者。"
+        )
+        self.newton_strategy_combo = QComboBox(self)
+        for strategy, label in (
+            (NewtonStrategy.FULL, "Full Newton（每次更新切线）"),
+            (NewtonStrategy.MODIFIED, "Modified Newton（增量内复用切线）"),
+        ):
+            self.newton_strategy_combo.addItem(label, strategy.value)
+        strategy_index = self.newton_strategy_combo.findData(
+            controls.newton_strategy.value
+        )
+        self.newton_strategy_combo.setCurrentIndex(max(0, strategy_index))
+        self.line_search_check = QCheckBox("启用 Newton 线搜索", self)
+        self.line_search_check.setChecked(controls.line_search)
+        self.predictor_check = QCheckBox("启用增量预测", self)
+        self.predictor_check.setChecked(controls.predictor)
+        self.automatic_cutback_check = QCheckBox("失败时自动切步", self)
+        self.automatic_cutback_check.setChecked(controls.automatic_cutback)
+        self.adaptive_growth_check = QCheckBox("收敛较快时自动放大增量", self)
+        self.adaptive_growth_check.setChecked(controls.adaptive_growth)
+        self.newton_max_iterations_spin = QSpinBox(self)
+        self.newton_max_iterations_spin.setRange(1, 100_000)
+        self.newton_max_iterations_spin.setValue(
+            controls.newton_max_iterations
+        )
+        self.residual_tolerance_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.residual_tolerance_spin.setRange(1.0e-16, 1.0e15)
+        self.residual_tolerance_spin.setValue(controls.residual_tolerance)
+        self.residual_tolerance_spin.setToolTip(
+            "Newton 收敛的绝对残差容差。"
+        )
+        self.relative_residual_tolerance_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.relative_residual_tolerance_spin.setRange(1.0e-16, 1.0e15)
+        self.relative_residual_tolerance_spin.setValue(
+            controls.relative_residual_tolerance
+        )
+        self.displacement_tolerance_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.displacement_tolerance_spin.setRange(1.0e-16, 1.0e15)
+        self.displacement_tolerance_spin.setValue(
+            controls.displacement_tolerance
+        )
+        self.energy_tolerance_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.energy_tolerance_spin.setRange(1.0e-16, 1.0e15)
+        self.energy_tolerance_spin.setValue(controls.energy_tolerance)
+        self.constraint_tolerance_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.constraint_tolerance_spin.setRange(1.0e-16, 1.0e15)
+        self.constraint_tolerance_spin.setValue(controls.constraint_tolerance)
+
+        basic_form = QFormLayout()
+        configure_form_layout(basic_form)
+        basic_form.addRow("控制方式", self.control_mode_combo)
+        basic_form.addRow("增量方式", self.incrementation_mode_combo)
+        basic_page = QWidget(self)
+        basic_page.setLayout(basic_form)
+
+        increment_form = QFormLayout()
+        configure_form_layout(increment_form)
+        increment_form.addRow("初始增量", self.initial_increment_spin)
+        increment_form.addRow("最小增量", self.minimum_increment_spin)
+        increment_form.addRow("最大增量", self.maximum_increment_spin)
+        increment_form.addRow("最大增量数", self.maximum_increments_spin)
+        increment_form.addRow("失败时自动切步", self.automatic_cutback_check)
+        increment_form.addRow("收敛后自动增长", self.adaptive_growth_check)
+        increment_form.addRow("增长倍数", self.growth_factor_spin)
+        increment_form.addRow(
+            "增长触发迭代数",
+            self.growth_iteration_threshold_spin,
+        )
+        increment_page = QWidget(self)
+        increment_page.setLayout(increment_form)
+
+        newton_form = QFormLayout()
+        configure_form_layout(newton_form)
+        newton_form.addRow("最大迭代次数", self.newton_max_iterations_spin)
+        newton_form.addRow("Newton 策略", self.newton_strategy_combo)
+        newton_form.addRow("线搜索", self.line_search_check)
+        newton_form.addRow("增量预测", self.predictor_check)
+        newton_form.addRow("绝对残差容差", self.residual_tolerance_spin)
+        newton_form.addRow(
+            "相对残差容差",
+            self.relative_residual_tolerance_spin,
+        )
+        newton_form.addRow("位移修正容差", self.displacement_tolerance_spin)
+        newton_form.addRow("能量容差", self.energy_tolerance_spin)
+        newton_form.addRow("约束容差", self.constraint_tolerance_spin)
+        newton_page = QWidget(self)
+        newton_page.setLayout(newton_form)
+
+        settings_tabs = QTabWidget(self)
+        settings_tabs.addTab(basic_page, "基本")
+        settings_tabs.addTab(increment_page, "增量控制")
+        settings_tabs.addTab(newton_page, "Newton 与收敛")
+
+        dynamic_controls = self._dynamic_controls
+        dynamic_form = QFormLayout()
+        configure_form_layout(dynamic_form)
+        self.dynamic_time_period_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_time_period_spin.setRange(1.0e-12, 1.0e15)
+        self.dynamic_time_period_spin.setValue(dynamic_controls.time_period)
+        self.dynamic_time_period_spin.setToolTip("当前动力学步的总时间。")
+        self.dynamic_initial_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_initial_increment_spin.setRange(1.0e-12, 1.0e15)
+        self.dynamic_initial_increment_spin.setValue(
+            dynamic_controls.initial_time_increment
+        )
+        self.dynamic_minimum_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_minimum_increment_spin.setRange(1.0e-16, 1.0e15)
+        self.dynamic_minimum_increment_spin.setValue(
+            dynamic_controls.minimum_time_increment
+        )
+        self.dynamic_maximum_increment_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_maximum_increment_spin.setRange(1.0e-12, 1.0e15)
+        self.dynamic_maximum_increment_spin.setValue(
+            dynamic_controls.maximum_time_increment
+        )
+        self.dynamic_maximum_increments_spin = QSpinBox(self)
+        self.dynamic_maximum_increments_spin.setRange(1, 1_000_000)
+        self.dynamic_maximum_increments_spin.setValue(
+            dynamic_controls.maximum_increments
+        )
+        self.dynamic_mass_matrix_combo = QComboBox(self)
+        self.dynamic_mass_matrix_combo.addItem("一致质量", MassMatrixPolicy.CONSISTENT.value)
+        self.dynamic_mass_matrix_combo.addItem("集中质量", MassMatrixPolicy.LUMPED.value)
+        self.dynamic_mass_matrix_combo.setCurrentIndex(
+            self.dynamic_mass_matrix_combo.findData(
+                dynamic_controls.mass_matrix.value
+            )
+        )
+        self.dynamic_damping_combo = QComboBox(self)
+        self.dynamic_damping_combo.addItem("无阻尼", DampingModel.NONE.value)
+        self.dynamic_damping_combo.addItem(
+            "Rayleigh 阻尼",
+            DampingModel.RAYLEIGH.value,
+        )
+        self.dynamic_damping_combo.setCurrentIndex(
+            self.dynamic_damping_combo.findData(
+                dynamic_controls.damping_model.value
+            )
+        )
+        self.dynamic_rayleigh_mass_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_rayleigh_mass_spin.setRange(0.0, 1.0e15)
+        self.dynamic_rayleigh_mass_spin.setValue(dynamic_controls.rayleigh_mass)
+        self.dynamic_rayleigh_stiffness_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_rayleigh_stiffness_spin.setRange(0.0, 1.0e15)
+        self.dynamic_rayleigh_stiffness_spin.setValue(
+            dynamic_controls.rayleigh_stiffness
+        )
+        amplitude_points = dynamic_controls.amplitude.points
+        amplitude_start = amplitude_points[0][1]
+        amplitude_end = amplitude_points[-1][1]
+        self.dynamic_amplitude_start_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_amplitude_start_spin.setRange(-1.0e15, 1.0e15)
+        self.dynamic_amplitude_start_spin.setValue(amplitude_start)
+        self.dynamic_amplitude_end_spin = AdaptivePrecisionDoubleSpinBox(
+            self,
+            input_decimals=16,
+        )
+        self.dynamic_amplitude_end_spin.setRange(-1.0e15, 1.0e15)
+        self.dynamic_amplitude_end_spin.setValue(amplitude_end)
+        initial_condition_text = (
+            "已定义（编辑时保持不变）"
+            if not self._initial_conditions.is_empty
+            else "默认零初始条件"
+        )
+        self.dynamic_initial_condition_label = QLabel(
+            initial_condition_text,
+            self,
+        )
+        self.dynamic_initial_condition_label.setToolTip(
+            "当前阶段沿用模型中的初始位移、速度和加速度；不会因编辑分析步而丢失。"
+        )
+        dynamic_form.addRow("总时间", self.dynamic_time_period_spin)
+        dynamic_form.addRow("初始时间增量", self.dynamic_initial_increment_spin)
+        dynamic_form.addRow("最小时间增量", self.dynamic_minimum_increment_spin)
+        dynamic_form.addRow("最大时间增量", self.dynamic_maximum_increment_spin)
+        dynamic_form.addRow("最大增量数", self.dynamic_maximum_increments_spin)
+        dynamic_form.addRow("质量矩阵", self.dynamic_mass_matrix_combo)
+        dynamic_form.addRow("阻尼模型", self.dynamic_damping_combo)
+        dynamic_form.addRow("Rayleigh 质量系数", self.dynamic_rayleigh_mass_spin)
+        dynamic_form.addRow(
+            "Rayleigh 刚度系数",
+            self.dynamic_rayleigh_stiffness_spin,
+        )
+        dynamic_form.addRow("幅值（起点）", self.dynamic_amplitude_start_spin)
+        dynamic_form.addRow("幅值（终点）", self.dynamic_amplitude_end_spin)
+        dynamic_form.addRow("初始条件", self.dynamic_initial_condition_label)
+        dynamic_page = QWidget(self)
+        dynamic_page.setLayout(dynamic_form)
+
+        settings_stack = QStackedWidget(self)
+        settings_stack.addWidget(settings_tabs)
+        settings_stack.addWidget(dynamic_page)
+        self.settings_tabs = settings_tabs
+        self.settings_stack = settings_stack
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(settings_stack)
         layout.addWidget(_buttons(self))
+        self.procedure_combo.currentIndexChanged.connect(
+            self._sync_procedure_controls
+        )
+        self.procedure_combo.currentIndexChanged.connect(
+            self._sync_dynamic_procedure_controls
+        )
+        self.incrementation_mode_combo.currentIndexChanged.connect(
+            self._sync_nonlinear_controls
+        )
+        self.automatic_cutback_check.toggled.connect(
+            self._sync_nonlinear_controls
+        )
+        self.adaptive_growth_check.toggled.connect(
+            self._sync_nonlinear_controls
+        )
+        self.dynamic_damping_combo.currentIndexChanged.connect(
+            self._sync_dynamic_damping_controls
+        )
+        self._sync_nonlinear_controls()
+        self._sync_procedure_controls()
+        self._sync_dynamic_procedure_controls()
+        self._sync_dynamic_damping_controls()
+
+    def _sync_nonlinear_controls(self, *_args: object) -> None:
+        automatic = (
+            self.incrementation_mode_combo.currentData() == "automatic"
+        )
+        self.automatic_cutback_check.setEnabled(automatic)
+        self.adaptive_growth_check.setEnabled(automatic)
+        self.minimum_increment_spin.setEnabled(
+            automatic and self.automatic_cutback_check.isChecked()
+        )
+        self.maximum_increment_spin.setEnabled(automatic)
+        self.growth_factor_spin.setEnabled(
+            automatic and self.adaptive_growth_check.isChecked()
+        )
+        self.growth_iteration_threshold_spin.setEnabled(
+            automatic and self.adaptive_growth_check.isChecked()
+        )
+
+    def _sync_procedure_controls(self, *_args: object) -> None:
+        procedure = self.procedure_combo.currentData()
+        dynamic = procedure in {"dynamic", "dynamic_explicit"}
+        self._procedure = "dynamic" if dynamic else "static"
+        self.settings_stack.setCurrentIndex(1 if dynamic else 0)
+        self.nlgeom_check.setEnabled(True)
+        if dynamic:
+            self._dynamic_procedure_kind = (
+                DynamicProcedureKind.EXPLICIT
+                if procedure == "dynamic_explicit"
+                else DynamicProcedureKind.IMPLICIT
+            )
+            self.setWindowTitle(
+                "创建显式动力学分析步"
+                if self._dynamic_procedure_kind is DynamicProcedureKind.EXPLICIT
+                else "创建隐式动力学分析步"
+            )
+        else:
+            self.setWindowTitle("创建静力分析步")
+
+    def _sync_dynamic_procedure_controls(self, *_args: object) -> None:
+        explicit = (
+            self.procedure_combo.currentData() == "dynamic_explicit"
+        )
+        if explicit:
+            self.dynamic_mass_matrix_combo.setCurrentIndex(
+                self.dynamic_mass_matrix_combo.findData(
+                    MassMatrixPolicy.LUMPED.value
+                )
+            )
+        self.dynamic_mass_matrix_combo.setEnabled(not explicit)
+        self.dynamic_mass_matrix_combo.setToolTip(
+            "显式动力学固定使用集中质量。"
+            if explicit
+            else "隐式动力学可使用一致质量或集中质量。"
+        )
+
+    def _sync_dynamic_damping_controls(self, *_args: object) -> None:
+        rayleigh = (
+            self.dynamic_damping_combo.currentData()
+            == DampingModel.RAYLEIGH.value
+        )
+        self.dynamic_rayleigh_mass_spin.setEnabled(rayleigh)
+        self.dynamic_rayleigh_stiffness_spin.setEnabled(rayleigh)
 
     def step(self):
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("分析步名称不能为空")
-        return static(name)
+        if self.procedure_combo.currentData() in {
+            "dynamic",
+            "dynamic_explicit",
+        }:
+            base = self._dynamic_controls
+            time_period = self.dynamic_time_period_spin.value()
+            explicit = (
+                self.procedure_combo.currentData() == "dynamic_explicit"
+            )
+            dynamic_controls = DynamicStepControls(
+                time_period=time_period,
+                initial_time_increment=self.dynamic_initial_increment_spin.value(),
+                minimum_time_increment=self.dynamic_minimum_increment_spin.value(),
+                maximum_time_increment=self.dynamic_maximum_increment_spin.value(),
+                maximum_increments=self.dynamic_maximum_increments_spin.value(),
+                # The visible analysis type is the source of truth.  Do not
+                # reuse the previous step's hidden integration method when
+                # an explicit step is switched to implicit (or vice versa).
+                integration_method=(
+                    DynamicIntegrationMethod.CENTRAL_DIFFERENCE
+                    if explicit
+                    else DynamicIntegrationMethod.NEWMARK
+                ),
+                beta=base.beta,
+                gamma=base.gamma,
+                mass_matrix=(
+                    MassMatrixPolicy.LUMPED
+                    if explicit
+                    else MassMatrixPolicy(
+                        self.dynamic_mass_matrix_combo.currentData()
+                    )
+                ),
+                damping_model=DampingModel(
+                    self.dynamic_damping_combo.currentData()
+                ),
+                rayleigh_mass=self.dynamic_rayleigh_mass_spin.value(),
+                rayleigh_stiffness=self.dynamic_rayleigh_stiffness_spin.value(),
+                amplitude=TimeAmplitude(
+                    (
+                        (0.0, self.dynamic_amplitude_start_spin.value()),
+                        (time_period, self.dynamic_amplitude_end_spin.value()),
+                    )
+                ),
+                procedure_kind=(
+                    DynamicProcedureKind.EXPLICIT
+                    if explicit
+                    else DynamicProcedureKind.IMPLICIT
+                ),
+            )
+            formulation = (
+                StaticFormulation.NONLINEAR
+                if self.nlgeom_check.isChecked()
+                else StaticFormulation.LINEAR
+            )
+            if self._original_step is not None:
+                return update_dynamic_step(
+                    self._original_step,
+                    name=name,
+                    controls=dynamic_controls,
+                    initial_conditions=self._initial_conditions,
+                    formulation=formulation,
+                )
+            return transient_dynamic(
+                name,
+                controls=dynamic_controls,
+                initial_conditions=self._initial_conditions,
+                formulation=formulation,
+            )
+        automatic = (
+            self.incrementation_mode_combo.currentData() == "automatic"
+        )
+        controls = StaticStepControls(
+            initial_increment=self.initial_increment_spin.value(),
+            maximum_increments=self.maximum_increments_spin.value(),
+            maximum_increment=self.maximum_increment_spin.value(),
+            newton_max_iterations=self.newton_max_iterations_spin.value(),
+            residual_tolerance=self.residual_tolerance_spin.value(),
+            control_mode=StaticControlMode(
+                self.control_mode_combo.currentData()
+            ),
+            relative_residual_tolerance=(
+                self.relative_residual_tolerance_spin.value()
+            ),
+            displacement_tolerance=self.displacement_tolerance_spin.value(),
+            energy_tolerance=self.energy_tolerance_spin.value(),
+            constraint_tolerance=self.constraint_tolerance_spin.value(),
+            newton_strategy=NewtonStrategy(
+                self.newton_strategy_combo.currentData()
+            ),
+            line_search=self.line_search_check.isChecked(),
+            predictor=self.predictor_check.isChecked(),
+            automatic_cutback=(
+                automatic and self.automatic_cutback_check.isChecked()
+            ),
+            minimum_increment=self.minimum_increment_spin.value(),
+            adaptive_growth=(
+                automatic and self.adaptive_growth_check.isChecked()
+            ),
+            growth_factor=self.growth_factor_spin.value(),
+            growth_iteration_threshold=(
+                self.growth_iteration_threshold_spin.value()
+            ),
+        )
+        formulation = (
+            StaticFormulation.NONLINEAR
+            if self.nlgeom_check.isChecked()
+            else StaticFormulation.LINEAR
+        )
+        if self._original_step is not None:
+            return update_static_step(
+                self._original_step,
+                name=name,
+                formulation=formulation,
+                controls=controls,
+            )
+        return static(
+            name,
+            controls=controls,
+            formulation=formulation,
+        )
 
 
 @dataclass(frozen=True)
@@ -1297,11 +1902,11 @@ def _is_required_displacement_output(request: OutputRequest) -> bool:
 def _compact_output_request(request: OutputRequest) -> OutputRequest:
     if type(request) is not OutputRequest:
         raise TypeError("request must be exactly OutputRequest")
-    return OutputRequest(
-        request.kind,
-        request.target,
-        tuple(request.variables),
-    )
+    # A view/edit dialog must never rebuild an output request from only the
+    # visible variables.  Imported metadata, source evidence, and the name
+    # are part of the persisted model state even when this UI cannot edit
+    # them yet.
+    return deepcopy(request)
 
 
 def _visible_output_request_candidates(
@@ -1321,6 +1926,22 @@ def _visible_output_request_candidates(
         for variable in allowed
         if variable in first_by_variable
     )
+
+
+def _unique_analysis_name(base: str, existing: Sequence[object]) -> str:
+    """Return a readable copy name without colliding in one manager scope."""
+
+    names = {
+        str(value).strip().casefold()
+        for value in existing
+        if value is not None and str(value).strip()
+    }
+    candidate = f"{str(base).strip()}-副本"
+    suffix = 2
+    while candidate.casefold() in names:
+        candidate = f"{str(base).strip()}-副本{suffix}"
+        suffix += 1
+    return candidate
 
 
 class AnalysisDefinitionManagerDialog(QDialog):
@@ -1432,13 +2053,19 @@ class AnalysisDefinitionManagerDialog(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.edit_button = QPushButton("编辑", self)
+        self.copy_button = QPushButton("复制", self)
+        self.rename_button = QPushButton("重命名", self)
         self.delete_button = QPushButton("删除", self)
         self.edit_button.clicked.connect(self._edit)
+        self.copy_button.clicked.connect(self._copy)
+        self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemDoubleClicked.connect(lambda _item: self._edit())
         self.table.itemSelectionChanged.connect(self._update_buttons)
         controls = QHBoxLayout()
         controls.addWidget(self.edit_button)
+        controls.addWidget(self.copy_button)
+        controls.addWidget(self.rename_button)
         controls.addWidget(self.delete_button)
         controls.addStretch(1)
         buttons = _buttons(self)
@@ -1458,7 +2085,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     "分析步",
                     step.name,
                     step.name,
-                    "线性静力" if step.procedure == "static" else step.procedure,
+                    analysis_step_label(step),
                 ),
                 ("step", step_index, None),
             )
@@ -1760,7 +2387,11 @@ class AnalysisDefinitionManagerDialog(QDialog):
         step = self.steps[step_index]
         row = self.table.currentRow()
         if kind == "step":
-            dialog = StaticStepDialog(step.name, self)
+            dialog = StaticStepDialog(
+                step.name,
+                self,
+                current=step,
+            )
             if not dialog.exec():
                 return
             try:
@@ -1779,7 +2410,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                     f"分析步名称已存在：{updated.name}",
                 )
                 return
-            step.name = updated.name
+            self.steps[step_index] = updated
         elif kind == "boundary":
             current = step.boundaries[int(item_index)]
             current_region = RegionRef(
@@ -2029,6 +2660,130 @@ class AnalysisDefinitionManagerDialog(QDialog):
             )
         self._refresh(max(0, self.table.currentRow() - 1))
 
+    def _copy(self) -> None:
+        selected = self._selected()
+        if selected is None:
+            return
+        kind, step_index, item_index = selected
+        step = self.steps[step_index]
+        if kind == "step":
+            if step.name.strip().casefold() == "initial":
+                return
+            clone = deepcopy(step)
+            clone.name = _unique_analysis_name(
+                clone.name,
+                (candidate.name for candidate in self.steps),
+            )
+            self.steps.insert(step_index + 1, clone)
+            self._refresh(self.table.currentRow() + 1)
+            return
+        collection_name = {
+            "boundary": "boundaries",
+            "node_load": "cloads",
+            "edge_load": "edge_loads",
+            "surface_load": "surface_loads",
+            "line_load": "line_loads",
+            "body_load": "body_loads",
+            "gravity_load": "gravity_loads",
+            "output": "outputs",
+        }.get(kind)
+        if collection_name is None or item_index is None:
+            return
+        collection = list(getattr(step, collection_name))
+        source = collection[int(item_index)]
+        base_name = getattr(source, "name", None) or {
+            "boundary": "位移边界",
+            "node_load": "节点力",
+            "edge_load": "边力",
+            "surface_load": "面力",
+            "line_load": "线力",
+            "body_load": "体力",
+            "gravity_load": "重力",
+            "output": "输出请求",
+        }.get(kind, "对象")
+        clone = replace(
+            deepcopy(source),
+            name=_unique_analysis_name(
+                str(base_name),
+                (getattr(candidate, "name", None) for candidate in collection),
+            ),
+        )
+        collection.insert(int(item_index) + 1, clone)
+        setattr(step, collection_name, tuple(collection))
+        self._refresh(self.table.currentRow() + 1)
+
+    def _rename(self) -> None:
+        selected = self._selected()
+        if selected is None:
+            return
+        kind, step_index, item_index = selected
+        step = self.steps[step_index]
+        if kind == "step":
+            if step.name.strip().casefold() == "initial":
+                return
+            current = step.name
+            values = (candidate.name for candidate in self.steps)
+            target = "分析步"
+        else:
+            collection_name = {
+                "boundary": "boundaries",
+                "node_load": "cloads",
+                "edge_load": "edge_loads",
+                "surface_load": "surface_loads",
+                "line_load": "line_loads",
+                "body_load": "body_loads",
+                "gravity_load": "gravity_loads",
+                "output": "outputs",
+            }.get(kind)
+            if collection_name is None or item_index is None:
+                return
+            collection = tuple(getattr(step, collection_name))
+            current = getattr(collection[int(item_index)], "name", None) or ""
+            values = (
+                getattr(candidate, "name", None)
+                for candidate in collection
+            )
+            target = "分析对象"
+        value, accepted = QInputDialog.getText(
+            self,
+            f"重命名{target}",
+            f"{target}名称：",
+            text=str(current),
+        )
+        if not accepted:
+            return
+        name = str(value).strip()
+        if not name or name == current:
+            return
+        if any(
+            existing is not None and str(existing).casefold() == name.casefold()
+            and str(existing) != str(current)
+            for existing in values
+        ):
+            QMessageBox.warning(self, "分析定义", f"名称已存在：{name}")
+            return
+        if kind == "step":
+            step.name = name
+            self._refresh(self.table.currentRow())
+            return
+        collection_name = {
+            "boundary": "boundaries",
+            "node_load": "cloads",
+            "edge_load": "edge_loads",
+            "surface_load": "surface_loads",
+            "line_load": "line_loads",
+            "body_load": "body_loads",
+            "gravity_load": "gravity_loads",
+            "output": "outputs",
+        }[kind]
+        collection = list(getattr(step, collection_name))
+        collection[int(item_index)] = replace(
+            collection[int(item_index)],
+            name=name,
+        )
+        setattr(step, collection_name, tuple(collection))
+        self._refresh(self.table.currentRow())
+
     def _step(self, name: str) -> AnalysisStep:
         return next(step for step in self.steps if step.name == name)
 
@@ -2067,6 +2822,12 @@ class AnalysisDefinitionManagerDialog(QDialog):
             == "initial"
             and bool(self.steps[selected[1]].outputs)
         )
+        protects_initial_output = (
+            selected is not None
+            and selected[0] == "output"
+            and self.steps[selected[1]].name.strip().casefold()
+            == "initial"
+        )
         output_step_is_editable = (
             is_output
             and self.steps[selected[1]].name.strip().casefold()
@@ -2081,6 +2842,32 @@ class AnalysisDefinitionManagerDialog(QDialog):
         )
         self.edit_button.setEnabled(
             selected is not None
+            and (
+                not is_output
+                or self._output_view_capability.can_enter
+            )
+        )
+        self.copy_button.setEnabled(
+            selected is not None
+            and not (
+                selected[0] == "step"
+                and self.steps[selected[1]].name.strip().casefold()
+                == "initial"
+            )
+            and not protects_initial_output
+            and (
+                not is_output
+                or self._output_view_capability.can_enter
+            )
+        )
+        self.rename_button.setEnabled(
+            selected is not None
+            and not (
+                selected[0] == "step"
+                and self.steps[selected[1]].name.strip().casefold()
+                == "initial"
+            )
+            and not protects_initial_output
             and (
                 not is_output
                 or self._output_view_capability.can_enter

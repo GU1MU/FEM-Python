@@ -12,7 +12,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, ProjectSnapshot
-from fem.core.model import DisplacementConstraint
+from fem.model import DisplacementConstraint
 from fem.io.project import LoadedProject
 from fem_agent.tools.registry import ToolExecutionContext
 import fem_gui.main_window as main_window_module

@@ -9,7 +9,7 @@ import pyvista
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldLocation,
     FieldMaterializationKey,
@@ -173,7 +173,9 @@ def test_shape_change_reuses_result_actor_surface_and_selection_pipelines() -> N
     viewport._update_result_layer()
     rendered_grid = viewport._result_grid
     rendered_actor = viewport._actors["result"]
+    rendered_edges = viewport._actors["result_edges"]
     rendered_surface = viewport._result_render_surface
+    rendered_scalar_bar = next(iter(viewport._plotter.scalar_bars.values()))
     pipeline_actors = {
         kind: pipeline.actor
         for kind, pipeline in viewport._mesh_scope_highlight_pipelines.items()
@@ -184,7 +186,9 @@ def test_shape_change_reuses_result_actor_surface_and_selection_pipelines() -> N
 
     assert viewport._result_grid is rendered_grid
     assert viewport._actors["result"] is rendered_actor
+    assert viewport._actors["result_edges"] is rendered_edges
     assert viewport._result_render_surface is rendered_surface
+    assert next(iter(viewport._plotter.scalar_bars.values())) is rendered_scalar_bar
     assert {
         kind: pipeline.actor
         for kind, pipeline in viewport._mesh_scope_highlight_pipelines.items()

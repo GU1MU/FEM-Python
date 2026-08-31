@@ -7,8 +7,8 @@ import pytest
 
 from fem.io import inp as abaqus
 from fem.application import RegionRef, resolve_effective_beam_frames
-from fem.elements.beam_section import parse_beam2_section
-from fem.solvers.static_linear import solve
+from fem.model.beam_section import parse_beam2_section
+from fem.analysis.linear_static import solve
 from tests.helpers.file_builders import write_inp
 from tests.io.test_abaqus_b31_phase2 import _ABAQUS_DLOAD_ORACLE
 

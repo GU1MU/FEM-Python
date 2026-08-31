@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 from dataclasses import replace
 import os
@@ -22,10 +23,9 @@ from fem.application import (
     ValidationRecord,
     run_static_preflight,
 )
-from fem.application.results import build_solve_result_bundle
 from fem.geometry import PlateWithHoleGeometry
 from fem.mesh.settings import MeshSettings
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,

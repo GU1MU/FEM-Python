@@ -7,7 +7,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, UnitContext
-from fem.core.model import MaterialDefinition
+from fem.model import MaterialDefinition
 from fem.geometry import (
     SketchCircle,
     SketchGeometry,

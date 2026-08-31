@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QHeaderView, QToolButton
 
 from fem.application import NamedRegion, RegionRef, SectionDefinition
-from fem.core.model import MaterialDefinition
+from fem.model import MaterialDefinition
 from fem.geometry import LogicalEntityRef
 from fem_gui.analysis_definition_dialogs import LoadDialog, OutputRequestDialog
 from fem_gui.main_window import FEMMainWindow

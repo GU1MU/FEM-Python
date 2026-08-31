@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 
 import csv
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     PhysicalQuantity,
     ResultArchiveModelProjection,
@@ -30,25 +31,24 @@ from fem.application.results import (
     execute_output_requests,
     prepare_result_export_snapshot,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     FEMModel,
     NodalLoad,
     OutputRequest,
 )
-from fem.elements import (
+from fem.model import (
     BEAM_FRAME_FIELD_KEY,
     BeamFrameField,
-    get_element_kernel,
 )
 from fem.io import load_result_archive, save_result_archive
 from fem.io.result_csv import dumps_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.post.stress import beam as beam_stress
 from fem.post.stress.beam import recover_integration_point_stress
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 from fem_gui.result_presentation import (
     result_provider_section_point_labels,
 )
@@ -524,11 +524,11 @@ def test_public_section_forces_keep_typed_ip_identity_across_consumers(
         for index in range(step.childCount())
     }
     for label, expected_components in (
-        ("截面力 SF（积分点）", ("N", "Vy", "Vz")),
-        ("截面矩 SM（积分点）", ("T", "My", "Mz")),
+        ("截面力 SF", ("N", "Vy", "Vz")),
+        ("截面矩 SM", ("T", "My", "Mz")),
     ):
         item = variables[label]
-        assert "积分点" in item.text(0)
+        assert "积分点" not in item.text(0)
         assert tuple(
             item.child(index).text(0)
             for index in range(item.childCount())

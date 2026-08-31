@@ -17,7 +17,11 @@ from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
 from fem.geometry import LogicalEntityRef, NATIVE_GEOMETRY_TYPES
-from fem.geometry.part_namespace import part_id_sort_key
+from fem.geometry.part_namespace import (
+    namespace_part_logical_id,
+    part_id_from_logical_id,
+    part_id_sort_key,
+)
 from fem.selection import edges as mesh_edges
 from fem.selection import faces as mesh_faces
 
@@ -556,12 +560,17 @@ def build_scope_selection_topology(
     model: Any,
     recipe: object | None = None,
     *,
+    part_id: str | None = None,
     feature_angle_degrees: float = 30.0,
 ) -> ScopeSelectionTopology:
     """Prefer exact native CAD ownership and infer imported mesh features."""
 
     if isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-        exact = _native_scope_selection_topology(model, recipe)
+        exact = _native_scope_selection_topology(
+            model,
+            recipe,
+            part_id=part_id,
+        )
         if exact.mesh_references:
             return exact
     return _inferred_scope_selection_topology(
@@ -573,6 +582,8 @@ def build_scope_selection_topology(
 def _native_scope_selection_topology(
     model: Any,
     recipe: object,
+    *,
+    part_id: str | None = None,
 ) -> ScopeSelectionTopology:
     preview = build_geometry_preview(recipe)
     logical_ids = {
@@ -613,10 +624,18 @@ def _native_scope_selection_topology(
         }.get(logical.kind)
         if mesh_kind is None:
             continue
+        lookup = logical
+        if (
+            part_id is not None
+            and part_id_from_logical_id(logical.logical_id) is None
+        ):
+            lookup = LogicalEntityRef(
+                namespace_part_logical_id(part_id, logical.logical_id)
+            )
         try:
             expanded = mesh_references_for_logical_entities(
                 model,
-                (logical,),
+                (lookup,),
                 mesh_kind=mesh_kind,
             )
         except ValueError:

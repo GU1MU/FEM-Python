@@ -18,13 +18,13 @@ from fem.application import (
     definitions_from_model,
     normalize_model_definitions,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BeamOrientation,
     ElementSet,
     MaterialDefinition,
     SectionAssignment,
 )
-from fem.elements import BeamOrientation
 from fem.geometry.recipes import BoxGeometry
 
 
@@ -528,7 +528,8 @@ def test_projection_returns_owned_editable_definitions() -> None:
     model.steps = [AnalysisStep("Step-1", metadata={"nested": {"value": 1}})]
 
     projected = definitions_from_model(model)
-    model.materials["Steel"].properties["E"] = 99.0
+    with pytest.raises(TypeError):
+        model.materials["Steel"].properties["E"] = 99.0
     model.steps[0].metadata["nested"]["value"] = 99
 
     assert projected.materials[0].properties["E"] == 1.0

@@ -14,19 +14,23 @@ from fem.application.definitions import (
 )
 from fem.application.feature_history import derive_feature_history
 from fem.application.session import ProjectSnapshot
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
+    BeamOrientation,
     DisplacementConstraint,
+    DynamicProcedureKind,
+    DynamicStepControls,
     EdgeLoad,
     GravityLoad,
+    InitialConditionSet,
     LineLoad,
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
     OutputSourceEvidence,
     SurfaceLoad,
+    TimeAmplitude,
 )
-from fem.elements import BeamOrientation
 from fem.geometry.recipes import (
     BooleanGeometry,
     BoxGeometry,
@@ -62,6 +66,7 @@ from fem.io.project_v2 import (
     loads_project_v2,
     save_project_v2,
 )
+from fem.analysis import resolve_analysis_request
 from fem.mesh.settings import LocalMeshControl, MeshSettings, MeshSizeFalloff
 
 
@@ -133,6 +138,68 @@ def test_v2_native_authoring_round_trip_is_canonical_and_utf8():
     assert "\"entity_id\"" not in dumped
     assert "\"line_element_type\"" not in dumped
     assert dumps_project_v2(reopened) == dumped
+
+
+def test_v2_dynamic_step_round_trip_rehydrates_typed_execution_inputs():
+    original = _snapshot()
+    controls = DynamicStepControls(
+        time_period=0.4,
+        initial_time_increment=0.1,
+        maximum_increments=4,
+        mass_matrix="lumped",
+        damping_model="rayleigh",
+        rayleigh_mass=0.02,
+        rayleigh_stiffness=0.001,
+        amplitude=TimeAmplitude(((0.0, 0.0), (0.4, 1.0))),
+    )
+    initial_conditions = InitialConditionSet(
+        displacement={0: 0.0},
+        velocity={1: 0.25},
+    )
+    dynamic_step = replace(
+        original.analysis_definitions[0],
+        name="Dynamic",
+        procedure="dynamic",
+        controls=controls,
+        initial_conditions=initial_conditions,
+        metadata={"user_note": "transient"},
+    )
+    snapshot = replace(original, analysis_definitions=(dynamic_step,))
+
+    reopened = loads_project_v2(dumps_project_v2(snapshot))
+    restored = reopened.analysis_definitions[0]
+    request = resolve_analysis_request(restored)
+
+    assert restored.procedure == "dynamic"
+    assert request.controls == controls
+    assert request.step.initial_conditions.to_metadata() == (
+        initial_conditions.to_metadata()
+    )
+
+
+def test_v2_explicit_dynamic_step_round_trip_preserves_procedure_kind():
+    original = _snapshot()
+    controls = DynamicStepControls(
+        time_period=0.2,
+        initial_time_increment=0.05,
+        maximum_increments=4,
+        procedure_kind=DynamicProcedureKind.EXPLICIT,
+    )
+    dynamic_step = replace(
+        original.analysis_definitions[0],
+        name="Explicit Dynamic",
+        procedure="dynamic",
+        controls=controls,
+        metadata={"user_note": "central difference"},
+    )
+    snapshot = replace(original, analysis_definitions=(dynamic_step,))
+
+    reopened = loads_project_v2(dumps_project_v2(snapshot))
+    request = resolve_analysis_request(reopened.analysis_definitions[0])
+
+    assert request.controls.procedure_kind is DynamicProcedureKind.EXPLICIT
+    assert request.controls.integration_method.value == "central_difference"
+    assert request.controls.mass_matrix.value == "lumped"
 
 
 @pytest.mark.parametrize(

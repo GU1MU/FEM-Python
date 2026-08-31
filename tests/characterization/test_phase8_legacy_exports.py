@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fem.core.mesh import Element2D, Mesh2D, Node2D
+from fem.model.mesh import Element2D, Mesh2D, Node2D
 from fem.post import vtk
 
 

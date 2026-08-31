@@ -14,7 +14,7 @@ from fem.application import (
     SectionDefinition,
     generate_fem_model,
 )
-from fem.core.model import (
+from fem.model import (
     DisplacementConstraint,
     MaterialDefinition,
     NodeSet,
@@ -24,7 +24,7 @@ from fem.geometry import (
     RectangleGeometry,
     namespace_part_logical_id,
 )
-from fem.steps.factory import static
+from fem.model.authoring import static
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry

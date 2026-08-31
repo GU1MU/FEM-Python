@@ -13,7 +13,7 @@ import pytest
 
 import fem.io as fem_io
 import fem.io.result_vtk as result_vtk_module
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldData,
     FieldMaterializationKey,
@@ -1309,7 +1309,7 @@ def test_fresh_base_only_process_writes_and_reads_with_optional_imports_blocked(
         for name in ("pyvista", "vtkmodules", "PySide6", "PyQt6"):
             sys.modules[name] = None
 
-        from fem.application.results import (
+        from fem.results import (
             FieldPosition,
             FieldRequest,
             ResultFieldId,

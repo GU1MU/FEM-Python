@@ -14,9 +14,9 @@ from fem.application import (
     RegionRef,
     SectionDefinition,
 )
-from fem.core.model import MaterialDefinition
-from fem.elements import BeamOrientation
-from fem.materials import MaterialPropertyError, SectionPropertyError
+from fem.model import MaterialDefinition
+from fem.model import BeamOrientation
+from fem.analysis import MaterialPropertyError, SectionPropertyError
 from fem_gui.model_dialogs import (
     RegionAssignmentDialog,
     SectionEditDialog,

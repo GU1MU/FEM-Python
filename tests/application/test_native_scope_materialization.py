@@ -10,6 +10,7 @@ from fem.application import (
     NamedRegionEditBatch,
     NativePart,
     RegionAssignment,
+    SessionStateError,
     SectionDefinition,
 )
 from fem.application.native_scope_materialization import (
@@ -18,10 +19,11 @@ from fem.application.native_scope_materialization import (
 )
 from fem.application import native_scope_materialization as scope_materialization
 from fem.application.preprocessing import generate_fem_model
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     MaterialDefinition,
+    UnitContext,
 )
 from fem.geometry import (
     BoxGeometry,
@@ -237,7 +239,7 @@ def test_wire_point_and_member_scopes_use_the_existing_line_mesh() -> None:
 
 
 @pytest.mark.gmsh
-def test_remeshing_invalidates_mesh_scopes_and_their_dependents() -> None:
+def test_remeshing_rejects_legacy_mesh_scopes_without_clearing_inputs() -> None:
     recipe = RectangleGeometry("RemeshScope", 2.0, 1.0)
     settings = MeshSettings(0.25)
     model = generate_fem_model(recipe, settings)
@@ -287,12 +289,110 @@ def test_remeshing_invalidates_mesh_scopes_and_their_dependents() -> None:
         ),
     )
 
-    delta = session.replace_mesh_settings(MeshSettings(0.2))
-    snapshot = session.snapshot()
+    before_remesh = session.snapshot()
+    with pytest.raises(SessionStateError, match="无法安全迁移"):
+        session.replace_mesh_settings(MeshSettings(0.2))
+    after_remesh = session.snapshot()
 
-    assert not snapshot.named_regions
-    assert not snapshot.assignments
-    assert not snapshot.steps
-    assert snapshot.model is None
-    assert snapshot.artifact is None
-    assert delta.effects
+    assert after_remesh == before_remesh
+
+
+@pytest.mark.gmsh
+def test_remeshing_rebuilds_logical_scopes_and_preserves_definitions() -> None:
+    recipe = RectangleGeometry("LogicalRemeshScope", 2.0, 1.0)
+    settings = MeshSettings(0.25)
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry((NativePart(),), recipe)
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "Pinned",
+                (LogicalEntityRef("point:bottom-left"),),
+            ),
+            NamedRegion(
+                "PlateDomain",
+                (LogicalEntityRef("face:domain"),),
+            ),
+        )
+    )
+    session.replace_mesh_settings(settings)
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
+        (SectionDefinition("Plate", "Steel", properties={"thickness": 1.0}),),
+        (RegionAssignment("Plate", "PlateDomain"),),
+        (
+            AnalysisStep(
+                "Load",
+                boundaries=(
+                    DisplacementConstraint("Pinned", 1, 2, 0.0),
+                ),
+            ),
+        ),
+    )
+    first_task = session.prepare_mesh_generation()
+    first_model = generate_fem_model(first_task)
+    session.accept_generated_model(first_task.token, first_model)
+    before_remesh = session.snapshot()
+
+    delta = session.replace_mesh_settings(MeshSettings(0.2))
+    after_remesh = session.snapshot()
+
+    assert not delta.effects
+    assert after_remesh.named_regions == before_remesh.named_regions
+    assert after_remesh.materials == before_remesh.materials
+    assert after_remesh.sections == before_remesh.sections
+    assert after_remesh.assignments == before_remesh.assignments
+    assert after_remesh.steps == before_remesh.steps
+    assert after_remesh.model is None
+    assert after_remesh.artifact is None
+
+    second_task = session.prepare_mesh_generation()
+    second_model = generate_fem_model(second_task)
+    session.accept_generated_model(second_task.token, second_model)
+    installed = session.snapshot()
+    assert installed.model is not None
+    assert installed.model.node_sets["Pinned"].node_ids
+    assert installed.model.element_sets["PlateDomain"].element_ids
+    assert installed.assignments == before_remesh.assignments
+    assert installed.steps == before_remesh.steps
+
+
+@pytest.mark.gmsh
+def test_part_mesh_setting_change_invalidates_face_scope_before_remesh() -> None:
+    recipe = BoxGeometry("PartRemeshScope", 2.0, 1.0, 0.5)
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "Part remesh scope",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+    )
+    session.replace_part_mesh_settings(
+        "P1",
+        MeshSettings(0.5, cell_shape="tetrahedron"),
+    )
+    first_task = session.prepare_mesh_generation()
+    first_model = generate_fem_model(first_task)
+    assert session.accept_generated_model(
+        first_task.token,
+        first_model,
+    ).accepted
+
+    face = mesh_faces.boundary(first_model.mesh)[0]
+    session.replace_named_regions(
+        (
+            NamedRegion(
+                "LoadedFace",
+                (MeshEntityRef.face(*face, part_id="P1"),),
+            ),
+        )
+    )
+    assert session.snapshot().named_regions
+
+    before_remesh = session.snapshot()
+    with pytest.raises(SessionStateError, match="无法安全迁移"):
+        session.replace_part_mesh_settings(
+            "P1",
+            MeshSettings(0.2, cell_shape="tetrahedron"),
+        )
+    assert session.snapshot() == before_remesh

@@ -8,7 +8,7 @@ import pytest
 
 from fem.application import ModelSession, RevisionConflictError
 from fem.application.capabilities import describe_session_authoring
-from fem.application.results import (
+from fem.results import (
     ElementResultInspectionRequest,
     FieldState,
     NodeResultInspectionRequest,
@@ -28,7 +28,7 @@ from fem.io import (
     write_result_csv,
     write_result_vtk,
 )
-from fem.application.results import project_scalar_field_topology
+from fem.results import project_scalar_field_topology
 from tests.io.test_result_archive_v1 import _snapshot
 from tests.helpers.phase8_result_characterization import (
     make_beam_field_characterization_result,

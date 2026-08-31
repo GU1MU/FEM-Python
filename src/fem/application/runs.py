@@ -8,21 +8,21 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Mapping
 
-from fem.core.result import ModelResult
+from fem.results import ModelResult
 
-from .results.data import (
+from fem.results.data import (
     ResultMaterializationPatch,
     ResultMaterializationSnapshot,
 )
-from .results.execution import (
+from fem.results.execution import (
     OutputExecutionStatus,
     ResultExecutionReport,
 )
-from .results._ownership import (
+from fem.results._ownership import (
     deep_owned_materialization,
     deep_owned_result,
 )
-from .results.provider import ResultProvider, restore_result_provider
+from fem.results.provider import ResultProvider, restore_result_provider
 
 
 B31_BEAM_FORMULATION = "abaqus-b31-linear-timoshenko-v1"
@@ -67,6 +67,21 @@ class AnalysisRun:
     @property
     def has_result(self) -> bool:
         return self.status is RunStatus.SUCCEEDED and self.result_id is not None
+
+    @property
+    def has_partial_result(self) -> bool:
+        """Whether a failed or cancelled run retained converged increments."""
+
+        return (
+            self.status in {RunStatus.FAILED, RunStatus.CANCELLED}
+            and self.result_id is not None
+        )
+
+    @property
+    def has_displayable_result(self) -> bool:
+        """Whether this run can open a successful or partial result view."""
+
+        return self.has_result or self.has_partial_result
 
     @property
     def elapsed_seconds(self) -> float | None:

@@ -13,7 +13,7 @@ from fem.application import (
     ScopedDefinitionBatch,
     SectionDefinition,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     EdgeLoad,

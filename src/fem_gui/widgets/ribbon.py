@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QTabBar,
     QToolButton,
     QVBoxLayout,
+    QSizePolicy,
     QWidget,
 )
 
@@ -43,16 +44,35 @@ class RibbonGroup(QFrame):
         *,
         large: bool = False,
         compact: bool = False,
+        tile: bool = False,
     ) -> QToolButton:
-        """添加一个绑定现有 QAction 的大按钮或两行小按钮。"""
+        """添加绑定现有 QAction 的大按钮、方形按钮或两行小按钮。"""
         button = QToolButton(self)
         button.setDefaultAction(action)
-        if large:
+        text_width = button.fontMetrics().horizontalAdvance(action.text())
+        if tile:
+            button.setObjectName("ribbonTileButton")
+            button.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextUnderIcon
+            )
+            button.setIconSize(QSize(30, 30))
+            button.setFixedSize(92, 68)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Fixed,
+            )
+            self._content.addWidget(button)
+            self._small_grid = None
+            self._small_count = 0
+        elif large:
             button.setObjectName("ribbonLargeButton")
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             button.setIconSize(QSize(34, 34))
             button.setFixedHeight(60)
-            button.setMinimumWidth(54)
+            # Keep the complete command label visible.  A fixed 54 px
+            # minimum works for pictograms, but elides longer labels such as
+            # Keep semantic command labels visible when the page is laid out tightly.
+            button.setMinimumWidth(max(54, text_width + 16))
             self._content.addWidget(button)
             # Keep later compact commands in a new run so a large command
             # inserted between two compact runs remains in its declared
@@ -64,11 +84,12 @@ class RibbonGroup(QFrame):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             button.setIconSize(QSize(24, 24))
             button.setFixedHeight(30)
-            button.setMinimumWidth(72)
-            # Commands such as “位移边界条件” need about 125 px with the
-            # application font.  The previous 118 px cap clipped those labels
-            # and even shorter commands such as “导出 CSV”.
-            button.setMaximumWidth(146)
+            # Reserve room for the icon, the inter-item gap and the text.
+            # The previous fixed 72 px minimum allowed labels such as
+            # “导出 CSV” to be elided inside a two-column group.
+            button_width = max(72, text_width + 38)
+            button.setMinimumWidth(button_width)
+            button.setMaximumWidth(max(146, button_width))
             if compact:
                 button.setObjectName("ribbonCompactButton")
                 self._content.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -88,6 +109,12 @@ class RibbonGroup(QFrame):
 
     def add_widget(self, widget: QWidget) -> None:
         """添加分析步等真实上下文控件。"""
+        # A real widget starts a new horizontal segment.  Without resetting
+        # the small-button grid, a later small action would be appended to a
+        # grid that is already positioned before this widget, making the
+        # visual order differ from the declared order.
+        self._small_grid = None
+        self._small_count = 0
         self._content.addWidget(widget)
 
 
@@ -117,6 +144,10 @@ class RibbonWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("ribbonWidget")
         self.setFixedHeight(110)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)

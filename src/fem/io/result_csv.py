@@ -13,13 +13,13 @@ from typing import Any, TextIO
 
 import numpy as np
 
-from fem.elements.beam_section import BeamSectionPoint
-from fem.application.results.data import (
+from fem.model.beam_section import BeamSectionPoint
+from fem.results.data import (
     FieldLocation,
     ResultExportSnapshot,
     ResultMaterializationSnapshot,
 )
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -30,7 +30,7 @@ from fem.application.results.fields import (
     ResultVariable,
     ScalarFieldSelection,
 )
-from fem.application.results.query import (
+from fem.results.query import (
     ResultQueryResult,
     evaluate_result_query,
 )
@@ -1337,33 +1337,9 @@ def _csv_location(location: FieldLocation) -> FieldLocation:
 
 
 def _location_identity(location: FieldLocation) -> tuple[object, ...]:
-    association = location.association
-    if association is FieldAssociation.NODE:
-        return association, location.node_id
-    if association is FieldAssociation.ELEMENT:
-        return association, location.element_id
-    if association is FieldAssociation.INTEGRATION_POINT:
-        return association, location.element_id, location.integration_point
-    if association is FieldAssociation.ELEMENT_NODE:
-        return (
-            association,
-            location.element_id,
-            location.local_node,
-            location.node_id,
-            location.section_point,
-        )
-    if association is FieldAssociation.NODE_REGION:
-        return association, location.node_id, location.region_key
-    if location.averaged:
-        return association, location.node_id, location.region_key, True
-    return (
-        association,
-        location.node_id,
-        location.region_key,
-        False,
-        location.element_id,
-        location.local_node,
-    )
+    if type(location) is not FieldLocation:
+        raise TypeError("location must be FieldLocation")
+    return location.identity_key()
 
 
 def _format_float(value: float) -> str:

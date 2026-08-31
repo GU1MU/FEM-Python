@@ -1,9 +1,11 @@
 import numpy as np
 import pytest
 
-from fem import materials, steps
-from fem.core.model import ElementSet, FEMModel, MaterialDefinition, NodeSet
-from fem.solvers import static_linear
+from fem import materials
+from fem.model import authoring as steps
+from fem.model import add_material, assign_section
+from fem.model import ElementSet, FEMModel, MaterialDefinition, NodeSet
+from fem.analysis import linear_static as static_linear
 from tests.helpers.mesh_builders import (
     make_hex20_stiffness_mesh,
     make_mixed_hex8_tet4_mesh,
@@ -17,8 +19,8 @@ def test_core_model_supports_hand_written_mesh_model_solve_result_flow():
     mesh = model.mesh
 
     material = materials.linear_elastic.material("steel", E=100.0, nu=0.3)
-    materials.add(model, material)
-    section = materials.assign(model, "steel", "bar", area=2.0)
+    add_material(model, material)
+    section = assign_section(model, "steel", "bar", area=2.0)
     step = steps.static("pull")
     steps.displacement(step, "fixed", components=(1, 2, 3))
     steps.displacement(step, 2, components=(2, 3))
@@ -48,7 +50,7 @@ def test_gravity_and_unified_solve_keep_static_steps_independent():
         loaded_set_name="tip",
     )
     mesh = model.mesh
-    materials.add(
+    add_material(
         model,
         materials.linear_elastic.material(
             "steel",
@@ -57,7 +59,7 @@ def test_gravity_and_unified_solve_keep_static_steps_independent():
             rho=2.0,
         ),
     )
-    materials.assign(model, "steel", "bar", area=2.0)
+    assign_section(model, "steel", "bar", area=2.0)
 
     initial = steps.static("Initial")
     steps.displacement(initial, "fixed", components=(1, 2, 3))
@@ -92,10 +94,10 @@ def test_mixed_solid_model_assigns_materials_by_element_set_and_solves():
 
     steel = materials.linear_elastic.material("steel", E=210.0, nu=0.3)
     aluminum = materials.linear_elastic.material("aluminum", E=120.0, nu=0.25)
-    materials.add(model, steel)
-    materials.add(model, aluminum)
-    materials.assign(model, "steel", "hexes")
-    materials.assign(model, "aluminum", "tets")
+    add_material(model, steel)
+    add_material(model, aluminum)
+    assign_section(model, "steel", "hexes")
+    assign_section(model, "aluminum", "tets")
 
     step = steps.static("pull")
     steps.displacement(step, "fixed", components=(1, 2, 3))
@@ -142,10 +144,10 @@ def test_mixed_quadratic_plane_model_assigns_materials_by_element_set_and_solves
 
     steel = materials.linear_elastic.material("steel", E=210.0, nu=0.3)
     aluminum = materials.linear_elastic.material("aluminum", E=120.0, nu=0.25)
-    materials.add(model, steel)
-    materials.add(model, aluminum)
-    materials.assign(model, "steel", "triangles")
-    materials.assign(model, "aluminum", "quads")
+    add_material(model, steel)
+    add_material(model, aluminum)
+    assign_section(model, "steel", "triangles")
+    assign_section(model, "aluminum", "quads")
 
     step = steps.static("pull")
     steps.displacement(step, "fixed", components=(1, 2))

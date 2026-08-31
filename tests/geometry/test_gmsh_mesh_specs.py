@@ -14,6 +14,7 @@ def test_mesh_package_exports_exact_canonical_contracts() -> None:
     assert meshing.__all__ == [
         "AutoMeshSpec",
         "GmshMeshRef",
+        "importer",
         "MeshCellShapeError",
         "MeshControlConflictError",
         "MeshFieldOwnershipError",
@@ -39,6 +40,7 @@ def test_mesh_package_exports_exact_canonical_contracts() -> None:
         value = getattr(meshing, name)
         assert value is getattr(owner, name)
         assert value.__module__ == owner.__name__
+    assert meshing.importer.__name__ == "fem.mesh.gmsh.importer"
 
 
 def test_mesh_spec_fields_defaults_and_signatures_are_public_contract() -> None:

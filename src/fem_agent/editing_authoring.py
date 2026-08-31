@@ -26,12 +26,12 @@ from fem.application import (
     evaluate_native_line_load_candidate,
     validate_logical_reference,
 )
-from fem.application.results import project_output_request
+from fem.results import project_output_request
 from fem.application.changes import SessionDelta
 from fem.application.native_scope_materialization import (
     mesh_references_for_logical_entities,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     BodyForce,
     DisplacementConstraint,

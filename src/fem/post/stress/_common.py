@@ -4,8 +4,9 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from ...elements import canonical_element_type, get_element_kernel
-from ...core.mesh import Mesh3D
+from ...elements import canonical_element_type
+from ...physics.mechanics import get_recovery_service
+from fem.model import Mesh3D
 
 
 TET_CENTROID = (0.25, 0.25, 0.25)
@@ -51,7 +52,7 @@ def nodal_stress(
     gauss_order: int | None,
 ):
     """Return element nodal stress through the element kernel."""
-    kernel = get_element_kernel(elem.type)
+    kernel = get_recovery_service(elem.type)
     if gauss_order is None:
         return kernel.nodal_stress(mesh, elem, U, node_lookup_)
     return kernel.nodal_stress(mesh, elem, U, node_lookup_, gauss_order)
@@ -63,4 +64,4 @@ def element_volume(
     node_lookup_: dict[int, Any],
 ) -> float:
     """Return element volume through the element kernel."""
-    return float(get_element_kernel(elem.type).volume(mesh, elem, node_lookup_))
+    return float(get_recovery_service(elem.type).volume(mesh, elem, node_lookup_))

@@ -1,6 +1,6 @@
 """Headless application lifecycle contracts for FEM front ends."""
 
-from fem.elements import BeamOrientation
+from fem.model import BeamOrientation
 
 from .beam_frames import (
     BeamFrameReport,
@@ -133,7 +133,24 @@ from .runs import (
     ResultRecord,
     RunStatus,
 )
-from .results.archive import ResultArchiveSaveSnapshot, ResultFileState
+from .run_monitor import (
+    AttemptRecord,
+    AttemptStatus,
+    DynamicIncrementRecord,
+    NewtonIterationRecord,
+    RunDiagnostics,
+    RunDiagnosticsSnapshot,
+    RunMessage,
+    SolveMonitor,
+    snapshot_map,
+)
+from fem.results.archive import ResultFileState
+from .result_archive import ResultArchiveSaveSnapshot
+from .result_workflow import (
+    SolveResultBundle,
+    build_solve_result_bundle,
+    validate_solve_result_model_identity,
+)
 from .preprocessing import (
     LogicalRecipeTopologyResolver,
     TopologyResolutionError,
@@ -145,6 +162,15 @@ from .preflight import (
     run_static_preflight,
     safe_prepare_static_preflight,
     safe_static_preflight,
+)
+from .analysis_execution import (
+    AnalysisConvergenceError,
+    AnalysisSolverKind,
+    analysis_request_for_step,
+    analysis_solver_kind,
+    prepare_linear_analysis,
+    selected_analysis_step,
+    solve_analysis,
 )
 from .project_validation import (
     analysis_step_has_native_region_target,
@@ -187,11 +213,16 @@ from .session import (
     SessionStateError,
     compile_named_region_edit,
 )
-from .units import UnitContext
+from fem.model.units import UnitContext
 from .validation import ValidationRecord, ValidationStamp
 
 __all__ = [
     "AnalysisRun",
+    "AnalysisConvergenceError",
+    "AnalysisSolverKind",
+    "AttemptRecord",
+    "AttemptStatus",
+    "DynamicIncrementRecord",
     "ANALYSIS_OBJECT_COLLECTIONS",
     "ArtifactKind",
     "AuthoringCapability",
@@ -222,6 +253,7 @@ __all__ = [
     "ModelCapabilityReport",
     "ModelDefinitions",
     "ModelSession",
+    "NewtonIterationRecord",
     "NamedRegion",
     "NamedRegionEditBatch",
     "NamedRegionEditTaskSnapshot",
@@ -265,6 +297,12 @@ __all__ = [
     "ResultTaskSnapshot",
     "RevisionConflictError",
     "RunStatus",
+    "RunDiagnostics",
+    "RunDiagnosticsSnapshot",
+    "RunMessage",
+    "SolveMonitor",
+    "SolveResultBundle",
+    "snapshot_map",
     "SectionDefinition",
     "ScopedDefinitionBatch",
     "SessionDelta",
@@ -291,6 +329,9 @@ __all__ = [
     "analysis_step_has_native_region_target",
     "analysis_steps_have_native_region_targets",
     "analysis_object_namespace",
+    "analysis_request_for_step",
+    "analysis_solver_kind",
+    "prepare_linear_analysis",
     "compatibility_analysis_name",
     "compile_model_definitions",
     "compile_named_region_edit",
@@ -333,6 +374,10 @@ __all__ = [
     "run_static_preflight",
     "safe_static_preflight",
     "safe_prepare_static_preflight",
+    "selected_analysis_step",
+    "solve_analysis",
+    "build_solve_result_bundle",
+    "validate_solve_result_model_identity",
     "validate_logical_reference",
     "validate_logical_references",
     "validate_native_authoring_context",

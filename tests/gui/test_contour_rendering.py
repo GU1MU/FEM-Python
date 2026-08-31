@@ -15,7 +15,9 @@ from fem_gui.visualization.contour_rendering import (
     build_shaded_contour_surface,
     contour_surface_options,
     extract_contour_edges,
+    extract_dataset_surface,
     style_contour_edges,
+    update_contour_edge_geometry,
 )
 
 
@@ -169,6 +171,20 @@ def test_solid_and_bold_contour_styles_keep_original_edges() -> None:
     assert style_contour_edges(line, "bold") is line
 
 
+def test_extracted_contour_edges_follow_updated_result_points() -> None:
+    grid = pyvista.ImageData(dimensions=(4, 4, 1)).cast_to_unstructured_grid()
+    edges = extract_contour_edges(grid, CONTOUR_EDGE_GEOMETRY)
+    original = np.asarray(edges.points).copy()
+
+    grid.points = np.asarray(grid.points) + (0.25, -0.5, 0.0)
+
+    assert update_contour_edge_geometry(edges, grid)
+    np.testing.assert_allclose(
+        edges.points,
+        original + (0.25, -0.5, 0.0),
+    )
+
+
 def test_shaded_surface_culls_internal_faces_without_averaging_scalars() -> None:
     points = np.asarray(
         (
@@ -210,7 +226,7 @@ def test_shaded_surface_culls_internal_faces_without_averaging_scalars() -> None
         point_scalars=True,
     )
 
-    assert grid.extract_surface(algorithm="dataset_surface").n_cells == 8
+    assert extract_dataset_surface(grid).n_cells == 8
     assert shaded.n_cells == 6
     assert shaded.n_points == 18
     assert shaded.point_data.active_normals is not None

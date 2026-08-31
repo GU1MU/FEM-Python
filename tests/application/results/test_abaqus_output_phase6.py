@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     OutputExecutionStatus,
     ResultSourceKey,
@@ -12,7 +12,7 @@ from fem.application.results import (
     execute_output_requests,
 )
 from fem.io import inp
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 
 
 def _write_b31_output_deck(tmp_path: Path) -> Path:

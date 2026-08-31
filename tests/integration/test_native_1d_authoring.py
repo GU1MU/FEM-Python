@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import numpy as np
 import pytest
@@ -20,15 +21,14 @@ from fem.application.native_scope_materialization import (
 from fem.application.preflight import run_static_preflight
 from fem.application.preprocessing import generate_fem_model
 from fem.application.feature_history import derive_feature_history
-from fem.application.results import (
+from fem.results import (
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
-    build_solve_result_bundle,
     build_result_provider,
     prepare_result_export_snapshot,
 )
-from fem.core.model import (
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     LineLoad,
@@ -47,7 +47,7 @@ from fem.io.result_csv import read_result_csv, write_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.io.project_v3 import load_project_v3, save_project_v3
 from fem.mesh.settings import LocalMeshControl, MeshSettings
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
 
 
 def _connected_wire() -> WireGeometry:

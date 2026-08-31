@@ -45,6 +45,7 @@ class TransitionEffect(str, Enum):
     LOCAL_CONTROLS_CLEARED = "local_controls_cleared"
     ASSIGNMENTS_CLEARED = "assignments_cleared"
     STEPS_CLEARED = "steps_cleared"
+    STEP_TARGETS_CLEARED = "step_targets_cleared"
     MESH_SHAPE_NORMALIZED = "mesh_shape_normalized"
 
 

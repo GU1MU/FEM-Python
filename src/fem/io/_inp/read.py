@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ...core.model import FEMModel
+from fem.model import FEMModel
 from ..inp import (
     _InpSourceSpan,
     InpImportResult,

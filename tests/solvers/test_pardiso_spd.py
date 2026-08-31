@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from scipy.sparse import csc_matrix, csr_matrix
 
-from fem import solvers
-from fem.solvers import _pardiso_spd
+from fem import solver as solvers
+from fem.solver import _pardiso_spd
 
 
 @pytest.fixture

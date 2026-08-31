@@ -1,32 +1,32 @@
 from __future__ import annotations
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
 
 from copy import deepcopy
 
 import numpy as np
 import pytest
 
-from fem.assemble import assemble_global_stiffness
+from fem.assembly import assemble_global_stiffness
 from fem.application import ModelSession, resolve_effective_beam_frames
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     FEMModel,
     LineLoad,
     NodalLoad,
 )
-from fem.core.result import ModelResult
-from fem.elements import (
+from fem.results import ModelResult
+from fem.model import (
     BEAM_FRAME_FIELD_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamFrameField,
     BeamFrameFieldInvalidError,
-    get_element_kernel,
     resolve_beam_frame,
 )
 from fem.post.stress.beam import recover_integration_point_stress
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 
 
 def _beam_properties(field: BeamFrameField | None = None) -> dict[str, object]:

@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from copy import copy, deepcopy
 from typing import Any
 
-from fem.core.model import (
+from fem.model import (
     Edge,
     ElementEdge,
     ElementFace,

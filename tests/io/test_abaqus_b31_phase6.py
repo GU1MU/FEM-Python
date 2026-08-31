@@ -9,7 +9,7 @@ from fem.application.runs import (
     B31_RECOVERY_CONTRACT,
     B31_RESULT_POSITION,
 )
-from fem.core.model import AnalysisStep, FEMModel
+from fem.model import AnalysisStep, FEMModel
 from fem.io import load_result_archive, save_result_archive
 from fem.post.stress import beam
 from tests.helpers.phase8_result_characterization import (

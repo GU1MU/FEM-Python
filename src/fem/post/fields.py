@@ -163,7 +163,7 @@ def result_region_key_for_element(element: Any) -> ResultRegionKey:
         }
         raw_frame_field = props.get("beam_frame_field")
         if raw_frame_field is not None:
-            from fem.elements import BeamFrameField
+            from fem.model import BeamFrameField
 
             if type(raw_frame_field) is BeamFrameField:
                 excluded.update(

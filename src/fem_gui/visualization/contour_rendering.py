@@ -8,6 +8,8 @@ import numpy as np
 
 CONTOUR_RENDER_SHADED = "shaded"
 CONTOUR_RENDER_FILLED = "filled"
+CONTOUR_RENDER_WIREFRAME = "wireframe"
+CONTOUR_RENDER_HIDDEN_LINE = "hidden_line"
 
 CONTOUR_EDGE_ALL = "all"
 CONTOUR_EDGE_EXTERIOR = "exterior"
@@ -21,17 +23,47 @@ _NORMAL_SOURCE_POINT_ID = "normal_source_point_id"
 _NORMAL_SOURCE_CELL_ID = "normal_source_cell_id"
 _SCALAR_SOURCE_POINT_ID = "scalar_source_point_id"
 _SCALAR_SOURCE_CELL_ID = "scalar_source_cell_id"
+_EDGE_SOURCE_POINT_ID = "edge_source_point_id"
+
+
+def extract_dataset_surface(dataset: Any, **options: Any) -> Any:
+    """Extract a surface across supported PyVista versions."""
+
+    try:
+        return dataset.extract_surface(
+            algorithm="dataset_surface",
+            **options,
+        )
+    except TypeError as error:
+        if "unexpected keyword argument 'algorithm'" not in str(error):
+            raise
+        return dataset.extract_surface(**options)
 
 
 def contour_surface_options(
     render_mode: str,
     *,
     is_line_mesh: bool,
-) -> dict[str, float | bool]:
-    """Return PyVista lighting options for one contour render mode."""
+) -> dict[str, Any]:
+    """Return PyVista rendering options for one contour render mode."""
 
     if render_mode == CONTOUR_RENDER_FILLED:
         return {
+            "lighting": False,
+            "smooth_shading": False,
+        }
+    if render_mode == CONTOUR_RENDER_WIREFRAME:
+        return {
+            "style": "wireframe",
+            "lighting": False,
+            "smooth_shading": False,
+        }
+    if render_mode == CONTOUR_RENDER_HIDDEN_LINE:
+        # VTK's surface representation plus a separately extracted geometry
+        # edge layer gives a stable hidden-line view across backends.  The
+        # caller owns the edge extraction so result scalars remain untouched.
+        return {
+            "style": "surface",
             "lighting": False,
             "smooth_shading": False,
         }
@@ -49,7 +81,7 @@ def contour_surface_options(
 def build_shaded_contour_surface(
     dataset: Any,
     cells: tuple[tuple[int, ...], ...],
-    point_keys: tuple[tuple[int, int], ...],
+    point_keys: tuple[tuple[object, ...], ...],
     *,
     scalar_name: str,
     point_scalars: bool,
@@ -57,7 +89,7 @@ def build_shaded_contour_surface(
     """Build an exterior scalar surface with geometry-owned point normals."""
 
     canonical_points: list[np.ndarray] = []
-    canonical_by_key: dict[tuple[int, int], int] = {}
+    canonical_by_key: dict[tuple[object, ...], int] = {}
     point_to_canonical = np.empty(len(point_keys), dtype=np.int64)
     source_points = np.asarray(dataset.points)
     for point_index, key in enumerate(point_keys):
@@ -94,13 +126,13 @@ def build_shaded_contour_surface(
         connected.n_cells,
         dtype=np.int64,
     )
-    surface = connected.extract_surface(
-        algorithm="dataset_surface",
+    surface = extract_dataset_surface(
+        connected,
         pass_pointid=False,
         pass_cellid=False,
         nonlinear_subdivision=0,
     )
-    if int(surface.n_faces) == 0:
+    if int(surface.n_faces_strict) == 0:
         return dataset
 
     normal_surface = surface.compute_normals(
@@ -119,41 +151,88 @@ def build_shaded_contour_surface(
         normal_surface.cell_data[_NORMAL_SOURCE_CELL_ID],
         dtype=np.int64,
     )
+    # Materialize the VTK point array once.  Accessing ``normal_surface.points``
+    # inside the per-face/per-point mapping loop creates a new PyVista wrapper
+    # for every point and turns an otherwise linear NumPy operation into a
+    # Python <-> VTK round trip hotspot on large meshes.
+    normal_surface_points = np.asarray(normal_surface.points)
     normals = np.asarray(normal_surface.point_data.active_normals)
-    render_points: list[np.ndarray] = []
-    render_normals: list[np.ndarray] = []
-    render_source_points: list[int] = []
-    render_source_cells: list[int] = []
-    render_faces: list[int] = []
+    # ``faces`` is a VTK packed array: ``(n, p0, ..., p[n-1], ...)``.  Keep
+    # the packed layout, but decode the point ids once so the provenance
+    # remap below can be performed as array indexing instead of repeatedly
+    # calling ``tuple.index`` for every normal point.
+    face_counts: list[int] = []
+    face_offsets: list[int] = []
     cursor = 0
-    cell_index = 0
     while cursor < normal_faces.size:
         point_count = int(normal_faces[cursor])
-        normal_point_ids = normal_faces[
-            cursor + 1 : cursor + 1 + point_count
-        ]
-        source_cell_id = int(normal_source_cells[cell_index])
-        canonical_cell = canonical_cells[source_cell_id]
-        result_cell = cells[source_cell_id]
-        first_render_point = len(render_points)
-        render_faces.extend(
-            (point_count, *range(first_render_point, first_render_point + point_count))
-        )
-        for normal_point_id in normal_point_ids:
-            normal_index = int(normal_point_id)
-            canonical_point_id = int(normal_source_points[normal_index])
-            local_node = canonical_cell.index(canonical_point_id)
-            result_point_id = result_cell[local_node]
-            render_points.append(np.asarray(normal_surface.points[normal_index]))
-            render_normals.append(normals[normal_index])
-            render_source_points.append(result_point_id)
-        render_source_cells.append(source_cell_id)
+        if point_count <= 0 or cursor + point_count >= normal_faces.size:
+            raise ValueError("normal surface contains an invalid packed face")
+        face_offsets.append(cursor)
+        face_counts.append(point_count)
         cursor += point_count + 1
-        cell_index += 1
+    if cursor != normal_faces.size:
+        raise ValueError("normal surface packed faces are truncated")
+    if len(face_counts) != len(normal_source_cells):
+        raise ValueError("normal surface provenance does not match its faces")
+
+    face_offsets_array = np.asarray(face_offsets, dtype=np.int64)
+    face_counts_array = np.asarray(face_counts, dtype=np.int64)
+    point_mask = np.ones(normal_faces.size, dtype=bool)
+    point_mask[face_offsets_array] = False
+    normal_point_ids = normal_faces[point_mask]
+    if normal_point_ids.size != int(np.sum(face_counts_array)):
+        raise ValueError("normal surface packed face point count is invalid")
+
+    # The output point order is exactly the order of the source normal points;
+    # only the packed face point ids need to be renumbered.  This preserves the
+    # historical face and normal ordering while avoiding per-point Python lists.
+    packed_render_faces = normal_faces.copy()
+    packed_render_faces[point_mask] = np.arange(
+        normal_point_ids.size,
+        dtype=np.int64,
+    )
+
+    canonical_cell_count = len(canonical_cells)
+    max_cell_points = max(len(cell) for cell in canonical_cells)
+    canonical_cell_points = np.full(
+        (canonical_cell_count, max_cell_points),
+        -1,
+        dtype=np.int64,
+    )
+    result_cell_points = np.full_like(canonical_cell_points, -1)
+    for cell_index, (canonical_cell, result_cell) in enumerate(
+        zip(canonical_cells, cells, strict=True)
+    ):
+        if len(canonical_cell) != len(result_cell):
+            raise ValueError("canonical and result cell arities do not match")
+        width = len(canonical_cell)
+        canonical_cell_points[cell_index, :width] = canonical_cell
+        result_cell_points[cell_index, :width] = result_cell
+
+    source_cell_ids = np.asarray(normal_source_cells, dtype=np.int64)
+    point_source_cell_ids = np.repeat(source_cell_ids, face_counts_array)
+    canonical_point_ids = np.asarray(
+        normal_source_points[normal_point_ids],
+        dtype=np.int64,
+    )
+    matching_local_nodes = (
+        canonical_cell_points[point_source_cell_ids]
+        == canonical_point_ids[:, None]
+    )
+    if not np.all(np.any(matching_local_nodes, axis=1)):
+        raise ValueError("normal surface provenance cannot map to result cells")
+    local_nodes = np.argmax(matching_local_nodes, axis=1)
+    render_source_points = result_cell_points[
+        point_source_cell_ids,
+        local_nodes,
+    ]
+    render_points = normal_surface_points[normal_point_ids]
+    render_normals = normals[normal_point_ids]
 
     rendered = type(surface)(
         np.asarray(render_points, dtype=float),
-        faces=np.asarray(render_faces, dtype=np.int64),
+        faces=packed_render_faces,
     )
     rendered.point_data["Normals"] = np.asarray(render_normals, dtype=float)
     rendered.GetPointData().SetNormals(
@@ -164,7 +243,7 @@ def build_shaded_contour_surface(
         dtype=np.int64,
     )
     rendered.cell_data[_SCALAR_SOURCE_CELL_ID] = np.asarray(
-        render_source_cells,
+        source_cell_ids,
         dtype=np.int64,
     )
     bind_shaded_contour_scalars(
@@ -238,46 +317,89 @@ def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
 
     if edge_mode == CONTOUR_EDGE_NONE:
         return None
+
+    # A few lightweight viewport/test adapters expose only ``points``.  They
+    # cannot compute feature edges, but keeping the source dataset lets the
+    # caller still create its edge actor and preserves the old adapter
+    # contract.  Real PyVista datasets always take the branch below.
+    if not callable(getattr(dataset, "cast_to_unstructured_grid", None)):
+        return dataset
+
+    source = dataset.copy(deep=False)
+    source.point_data[_EDGE_SOURCE_POINT_ID] = np.arange(
+        source.n_points,
+        dtype=np.int64,
+    )
     if edge_mode == CONTOUR_EDGE_ALL:
-        return dataset.extract_all_edges(clear_data=True)
+        return _keep_edge_source_ids(
+            source.extract_all_edges(clear_data=False)
+        )
 
     connected_geometry = (
-        dataset.cast_to_unstructured_grid().clean()
+        source.cast_to_unstructured_grid().clean()
     )
-    surface = connected_geometry.extract_surface(
-        algorithm="dataset_surface"
-    ).clean()
+    surface = extract_dataset_surface(connected_geometry).clean()
     if edge_mode == CONTOUR_EDGE_EXTERIOR:
-        return surface.extract_all_edges(clear_data=True)
+        edges = surface.extract_all_edges(clear_data=False)
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_GEOMETRY:
         # Open surface boundaries preserve planar outer and hole contours;
         # angular features preserve solid-body geometric edges.
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             feature_angle=FEATURE_EDGE_ANGLE_DEGREES,
             boundary_edges=True,
             feature_edges=True,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_FEATURE:
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             feature_angle=FEATURE_EDGE_ANGLE_DEGREES,
             boundary_edges=False,
             feature_edges=True,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_FREE:
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             boundary_edges=True,
             feature_edges=False,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     raise ValueError(f"unknown contour edge mode: {edge_mode}")
+
+
+def update_contour_edge_geometry(edges: Any, dataset: Any) -> bool:
+    """Move already-extracted solid edges onto updated result points."""
+
+    point_data = getattr(edges, "point_data", None)
+    if point_data is None or _EDGE_SOURCE_POINT_ID not in point_data:
+        return False
+    source_ids = np.asarray(point_data[_EDGE_SOURCE_POINT_ID], dtype=np.int64)
+    source_points = np.asarray(dataset.points)
+    if (
+        source_ids.shape != (int(edges.n_points),)
+        or (source_ids.size and int(np.max(source_ids)) >= len(source_points))
+    ):
+        return False
+    edges.points = source_points[source_ids]
+    return True
+
+
+def _keep_edge_source_ids(edges: Any) -> Any:
+    for name in tuple(edges.point_data.keys()):
+        if name != _EDGE_SOURCE_POINT_ID:
+            del edges.point_data[name]
+    edges.cell_data.clear()
+    edges.field_data.clear()
+    return edges
 
 
 def style_contour_edges(edges: Any, edge_style: str) -> Any:
@@ -334,11 +456,14 @@ __all__ = [
     "CONTOUR_EDGE_GEOMETRY",
     "CONTOUR_EDGE_NONE",
     "CONTOUR_RENDER_FILLED",
+    "CONTOUR_RENDER_HIDDEN_LINE",
     "CONTOUR_RENDER_SHADED",
+    "CONTOUR_RENDER_WIREFRAME",
     "FEATURE_EDGE_ANGLE_DEGREES",
     "bind_shaded_contour_scalars",
     "build_shaded_contour_surface",
     "contour_surface_options",
     "extract_contour_edges",
     "style_contour_edges",
+    "update_contour_edge_geometry",
 ]

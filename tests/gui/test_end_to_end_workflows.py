@@ -16,10 +16,10 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
 )
-from fem.core.model import DisplacementConstraint, MaterialDefinition, NodalLoad
+from fem.model import DisplacementConstraint, MaterialDefinition, NodalLoad
 from fem.geometry import SketchGeometry, SketchRectangle
 from fem.mesh.settings import MeshSettings
-from fem.steps.factory import static
+from fem.model.authoring import static
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
     ResultArchiveModelProjection,
     ResultArchiveOrigin,
@@ -17,17 +17,17 @@ from fem.application.results import (
     build_result_provider,
     execute_output_requests,
 )
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.core.model import (
+from fem.model.mesh import Element3D, Mesh3D, Node3D
+from fem.model import (
     AnalysisStep,
     DisplacementConstraint,
     FEMModel,
     NodalLoad,
 )
-from fem.elements import get_element_kernel
-from fem.elements.beam_section import parse_beam2_section
+from fem.physics.mechanics import get_recovery_service as get_element_kernel
+from fem.model.beam_section import parse_beam2_section
 from fem.io import inp, load_result_archive, save_result_archive
-from fem.solvers import static_linear
+from fem.analysis import linear_static as static_linear
 
 
 _E = 210.0e9

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from fem.application.result_workflow import build_solve_result_bundle
 
 import os
 from time import monotonic
@@ -6,24 +7,35 @@ from time import monotonic
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from fem.application import MeshEntityRef
 from fem.io.inp import read
-from fem.application.results import (
+from fem.results import (
     FieldPosition,
+    ResultCellKind,
+    ResultDisplayComputation,
+    ResultDisplayQuery,
+    ResultDeformationMode,
     ResultFieldId,
+    ResultLegendMode,
     ResultVariable,
+    ResultValueLayout,
     ScalarFieldSelection,
-    build_solve_result_bundle,
 )
-from fem.solvers.static_linear import solve
+from fem.analysis.linear_static import solve
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
     DisplaySettingsDialog,
+    DisplayGroupViewCutDialog,
+    VisualizationOptionsDialog,
 )
+from fem_gui.view_cut_state import default_view_cut_settings
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.widgets.result_tree import ROLE_SELECTION
 
 
 def _application() -> QApplication:
@@ -160,6 +172,9 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
     assert not window._contour_options["show_maximum"]
     assert window._contour_options["show_coordinate_system"]
     assert window._contour_options["orientation"] == "vertical"
+    assert window._contour_options["legend_position"] == "auto"
+    assert window._contour_options["legend_label_count"] == "auto"
+    assert window._contour_options["legend_title"]
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["node_labels"].isChecked()
     assert not window.actions["element_labels"].isChecked()
@@ -196,7 +211,8 @@ def test_ribbon_modules_switch_between_result_contour_and_mesh(
 
     for module_name in ("分析", "模型", "网格"):
         window.ribbon.set_current(module_name)
-        assert window.viewport._result_render_payload is None
+        assert window.viewport.active_display_source == "model"
+        assert window.viewport._result_render_payload is not None
         assert window.viewport._geometry_preview is None
         assert window.viewport.artifact_id == window.document.artifact.artifact_id
         if module_name == "分析":
@@ -268,15 +284,23 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
     _wait_for_tasks(window)
-    element_nodal_selection = _assert_current_ribbon_selection(
+    resolved_nodal_selection = _assert_current_ribbon_selection(
         window,
         variable=ResultVariable.S,
-        position=FieldPosition.ELEMENT_NODAL,
-        render_position=FieldPosition.RESOLVED_NODAL,
+        position=FieldPosition.RESOLVED_NODAL,
     )
-    assert element_nodal_selection.component
-    assert window.result_position_combo.count() == 1
-    assert window.result_position_combo.currentText() == "节点"
+    assert resolved_nodal_selection.component
+    assert window.result_position_combo.count() == 4
+    assert tuple(
+        window.result_position_combo.itemData(index).position
+        for index in range(window.result_position_combo.count())
+    ) == (
+        FieldPosition.INTEGRATION_POINT,
+        FieldPosition.CENTROID,
+        FieldPosition.ELEMENT_NODAL,
+        FieldPosition.RESOLVED_NODAL,
+    )
+    assert window.result_position_combo.currentText() == "区域内节点平均"
 
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
@@ -307,7 +331,7 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
         window.viewport._result_render_payload.topology.deformation_scale
     )
     assert not window.result_scale_value.isEnabled()
-    assert window.result_scale_value.decimals() == 2
+    assert window.result_scale_value.decimals() == 12
     assert window.result_scale_value.text() == f"{automatic_scale:.2f}"
 
     window.result_scale_combo.setCurrentIndex(custom_index)
@@ -320,18 +344,25 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
 def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
-    opened: list[DisplaySettingsDialog] = []
+    opened: list[VisualizationOptionsDialog] = []
     window._exec_dialog = opened.append
 
     window.show_display_settings_dialog()
 
     assert len(opened) == 1
     dialog = opened[0]
-    assert dialog.windowTitle() == "显示设置"
+    assert dialog.windowTitle() == "显示与云图"
     dialog.engineering_format.setChecked(True)
     dialog.horizontal_orientation.setChecked(True)
     dialog.edge_style.setCurrentIndex(dialog.edge_style.findData("dashed"))
     dialog.edge_width.setValue(2.5)
+    dialog.legend_position.setCurrentIndex(
+        dialog.legend_position.findData("left")
+    )
+    dialog.legend_label_count.setCurrentIndex(
+        dialog.legend_label_count.findData("9")
+    )
+    dialog.legend_title.setChecked(False)
     dialog.show_ids.setChecked(True)
     dialog.apply()
 
@@ -339,7 +370,176 @@ def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
     assert window.viewport._contour["orientation"] == "horizontal"
     assert window.viewport._contour["edge_style"] == "dashed"
     assert window.viewport._contour["edge_width"] == 2.5
+    assert window.viewport._contour["legend_position"] == "left"
+    assert window.viewport._contour["legend_label_count"] == "9"
+    assert not window.viewport._contour["legend_title"]
     assert window.viewport._contour["show_ids"]
+    window.close()
+
+
+def test_lazy_stress_switch_keeps_result_controls_atomic_while_loading(
+    gui_inp_path,
+    monkeypatch,
+):
+    _application()
+    window = _solved_window(gui_inp_path)
+    _wait_for_tasks(window)
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    assert stress_index >= 0
+
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
+    previous = window.result_selection
+    previous_payload = window.viewport._result_render_payload
+    assert type(previous) is ScalarFieldSelection
+    assert previous.field_key.request.field_id.variable is ResultVariable.S
+
+    target = ScalarFieldSelection(previous.field_key, "S22")
+    monkeypatch.setattr(
+        main_window_module,
+        "_RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD",
+        0,
+    )
+    window._activate_result_selection(target)
+
+    assert window.busy
+    assert window.result_selection == previous
+    assert window.viewport._result_render_payload is previous_payload
+
+    application = _application()
+    deadline = monotonic() + 2.0
+    topology_task_observed = False
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        if window._active_result_topology_projection is None:
+            continue
+        topology_task_observed = True
+        assert window.result_selection == previous
+        assert window.viewport._result_render_payload is previous_payload
+        assert window.result_variable_combo.currentData() == (
+            previous.field_key.request.field_id.variable
+        )
+        assert window.result_component_combo.currentData() == previous
+        assert window.result_tree.currentItem().data(0, ROLE_SELECTION) == previous
+
+    assert topology_task_observed
+
+    _wait_for_tasks(window)
+    assert window.result_selection == target
+    assert window.result_component_combo.currentData() == target
+    assert window.viewport._result_render_payload.topology.selection == target
+    _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.S,
+        position=FieldPosition.RESOLVED_NODAL,
+    )
+    window.close()
+
+
+def test_result_edge_option_does_not_overwrite_model_mesh_edge_preference(
+    gui_inp_path,
+) -> None:
+    _application()
+    window = _solved_window(gui_inp_path)
+
+    assert window._model_edges_visible
+    window._contour_options["edges"] = False
+    window._apply_display(render=False)
+
+    assert not window.actions["edges"].isChecked()
+    assert window._model_edges_visible
+
+    window.ribbon.set_current("网格")
+    assert window.actions["edges"].isChecked()
+    assert window._model_edges_visible
+    window.close()
+
+
+def test_display_group_view_cut_applies_display_group_and_view_cut(gui_inp_path):
+    _application()
+    window = _solved_window(gui_inp_path)
+    opened: list[DisplayGroupViewCutDialog] = []
+    window._exec_dialog = opened.append
+
+    window.show_display_group_view_cut()
+
+    assert len(opened) == 1
+    dialog = opened[0]
+    assert dialog.windowTitle() == "显示组与视图切割"
+    dialog.tabs.setCurrentIndex(0)
+    dialog.display_group_new_button.click()
+    dialog.display_group_name_edit.setText("端部单元")
+    dialog.display_group_ids_edit.setText("1")
+    dialog.display_group_save_button.click()
+    dialog.display_group_apply_button.click()
+
+    dialog.tabs.setCurrentIndex(1)
+    dialog.view_cut_list.item(0).setCheckState(Qt.CheckState.Checked)
+    dialog.view_cut_positions["x"].value_edit.setValue(0.125)
+    dialog.view_cut_invert.setChecked(True)
+    dialog.apply()
+
+    assert window._active_display_group == "端部单元"
+    assert window._display_groups["端部单元"]["element_ids"] == (1,)
+    assert window._view_cut_settings["planes"]["x"] == {
+        "enabled": True,
+        "offset": pytest.approx(0.125),
+        "invert": True,
+    }
+    assert window.viewport.view_cut_settings()["planes"]["x"] == {
+        "enabled": True,
+        "offset": pytest.approx(0.125),
+        "invert": True,
+    }
+
+    window.show_display_group_view_cut()
+    restore_dialog = opened[-1]
+    restore_dialog.view_cut_all_button.click()
+    restore_dialog.apply()
+    assert not any(
+        window.viewport.view_cut_settings()["planes"][axis]["enabled"]
+        for axis in ("x", "y", "z")
+    )
+    window.close()
+
+
+def test_view_cut_extreme_position_keeps_result_recoverable(gui_inp_path):
+    _application()
+    window = _solved_window(gui_inp_path)
+    viewport = window.viewport
+    payload = viewport._result_render_payload
+    assert payload is not None
+    result_grid = payload.dataset
+    assert result_grid is not None
+    original_cells = int(result_grid.n_cells)
+    bounds = tuple(float(value) for value in result_grid.bounds)
+    half_x = (bounds[1] - bounds[0]) * 0.5
+    x_min, x_max = viewport.view_cut_motion_ranges()["x"]
+
+    assert 0.0 < x_max < half_x
+    assert -half_x < x_min < 0.0
+
+    viewport.set_view_cut(
+        {
+            "planes": {
+                "x": {
+                    "enabled": True,
+                    "offset": x_max,
+                    "invert": False,
+                },
+                "y": {"enabled": False, "offset": 0.0, "invert": False},
+                "z": {"enabled": False, "offset": 0.0, "invert": False},
+            }
+        },
+        render=False,
+    )
+    clipped = viewport._display_dataset(result_grid)
+    assert int(clipped.n_cells) > 0
+
+    viewport.set_view_cut(default_view_cut_settings(), render=False)
+    restored = viewport._display_dataset(result_grid)
+    assert int(restored.n_cells) == original_cells
     window.close()
 
 
@@ -347,7 +547,7 @@ def test_contour_dialog_auto_range_uses_current_result_extrema(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
     expected = window.viewport.current_contour_range()
-    opened: list[ContourSettingsDialog] = []
+    opened: list[VisualizationOptionsDialog] = []
     window._exec_dialog = opened.append
 
     window.show_contour_dialog()
@@ -355,6 +555,7 @@ def test_contour_dialog_auto_range_uses_current_result_extrema(gui_inp_path):
     assert expected is not None
     assert len(opened) == 1
     dialog = opened[0]
+    assert dialog.category_list.currentItem().text() == "云图显示"
     assert dialog.auto_range.isChecked()
     assert not dialog.minimum.isEnabled()
     assert not dialog.maximum.isEnabled()
@@ -386,10 +587,15 @@ def test_overlay_and_contour_style_update_existing_scene_state(gui_inp_path):
     assert window.viewport._contour["manual"]
     assert window.viewport._contour["averaging_threshold"] == 75.0
     assert not window.actions["edges"].isChecked()
+    query = window.viewport._result_render_payload.topology.display_query
+    assert type(query) is ResultDisplayQuery
+    assert query.legend.mode is ResultLegendMode.MANUAL
+    assert query.legend.minimum == 0.0
+    assert query.legend.maximum == 1.0
     window.close()
 
 
-def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
+def test_stress_keeps_position_model_internal_to_the_result_ribbon(gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
@@ -406,10 +612,11 @@ def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
     assert type(selection) is ScalarFieldSelection
     assert (
         selection.field_key.request.field_id.position
-        is FieldPosition.ELEMENT_NODAL
+        is FieldPosition.RESOLVED_NODAL
     )
-    assert window.result_position_combo.count() == 1
-    assert window.result_position_combo.currentText() == "节点"
+    assert window.result_position_combo.count() == 4
+    assert window.result_position_combo.currentText() == "区域内节点平均"
+    assert window.result_position_combo.isHidden()
     assert window.result_averaging_threshold.isHidden()
     rendered_selection = (
         window.viewport._result_render_payload.topology.selection
@@ -417,11 +624,6 @@ def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
     assert (
         rendered_selection.field_key.request.field_id.position
         is FieldPosition.RESOLVED_NODAL
-    )
-    assert (
-        rendered_selection.field_key.request.averaging_policy
-        .threshold_percent
-        == 75.0
     )
     window.close()
 
@@ -434,7 +636,17 @@ def test_stress_averaging_threshold_rebuilds_only_visual_field(gui_inp_path):
     window.result_variable_combo.setCurrentIndex(stress_index)
     window._result_variable_changed(stress_index)
     _wait_for_tasks(window)
+    resolved_index = window.result_position_combo.findData(
+        ResultFieldId(ResultVariable.S, FieldPosition.RESOLVED_NODAL)
+    )
+    assert resolved_index >= 0
+    window.result_position_combo.setCurrentIndex(resolved_index)
+    window._result_position_changed(resolved_index)
+    _wait_for_tasks(window)
     selected = window.result_selection
+    assert selected.field_key.request.field_id.position is FieldPosition.RESOLVED_NODAL
+    assert window.result_position_combo.isHidden()
+    assert window.result_averaging_threshold.isHidden()
 
     window._set_contour_options({"averaging_threshold": 25.0})
     _wait_for_tasks(window)
@@ -452,4 +664,81 @@ def test_stress_averaging_threshold_rebuilds_only_visual_field(gui_inp_path):
         .threshold_percent
         == 25.0
     )
+    window.close()
+
+
+def test_stress_position_choices_use_distinct_quad4_render_semantics(
+    gui_inp_path,
+):
+    _application()
+    window = _solved_window(gui_inp_path)
+
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
+
+    expected = {
+        FieldPosition.INTEGRATION_POINT: (
+            ResultValueLayout.POINT,
+            ResultCellKind.SAMPLE_VERTEX,
+        ),
+        FieldPosition.CENTROID: (
+            ResultValueLayout.CELL,
+            ResultCellKind.FEM_ELEMENT,
+        ),
+        FieldPosition.ELEMENT_NODAL: (
+            ResultValueLayout.POINT,
+            ResultCellKind.FEM_ELEMENT,
+        ),
+        FieldPosition.RESOLVED_NODAL: (
+            ResultValueLayout.POINT,
+            ResultCellKind.FEM_ELEMENT,
+        ),
+    }
+    for position, (layout, cell_kind) in expected.items():
+        index = window.result_position_combo.findData(
+            ResultFieldId(ResultVariable.S, position)
+        )
+        assert index >= 0
+        window.result_position_combo.setCurrentIndex(index)
+        window._result_position_changed(index)
+        _wait_for_tasks(window)
+
+        selection = window.result_selection
+        assert type(selection) is ScalarFieldSelection
+        assert selection.field_key.request.field_id.position is position
+        topology = window.viewport._result_render_payload.topology
+        assert topology.value_layout is layout
+        assert all(kind is cell_kind for kind in topology.cell_kinds)
+        query = topology.display_query
+        assert type(query) is ResultDisplayQuery
+        assert query.selection == topology.selection
+        assert query.deformation is ResultDeformationMode.DEFORMED
+        assert query.legend.mode is ResultLegendMode.PER_FRAME
+        assert query.effective_computation is {
+            FieldPosition.INTEGRATION_POINT: (
+                ResultDisplayComputation.INTEGRATION_POINT_MARKERS
+            ),
+            FieldPosition.CENTROID: ResultDisplayComputation.CENTROID_CELLS,
+            FieldPosition.ELEMENT_NODAL: (
+                ResultDisplayComputation.ELEMENT_NODAL_QUILT
+            ),
+            FieldPosition.RESOLVED_NODAL: (
+            ResultDisplayComputation.NODAL_AVERAGED
+            ),
+        }[position]
+        expected_title_label = {
+            FieldPosition.INTEGRATION_POINT: "积分点标记",
+            FieldPosition.CENTROID: "单元质心值",
+            FieldPosition.ELEMENT_NODAL: "单元节点（未平均）",
+            FieldPosition.RESOLVED_NODAL: "区域内节点平均",
+        }[position]
+        assert expected_title_label in window.viewport._contour_bar_args(
+            window.viewport._result_render_payload
+        )["title"]
+        if position is FieldPosition.RESOLVED_NODAL:
+            assert "节点平均" in window.status_panel.result_label.text()
+            assert "兼容字段" not in window.status_panel.result_label.text()
+
     window.close()

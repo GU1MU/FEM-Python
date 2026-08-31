@@ -7,7 +7,7 @@
       "symbol": "fem.post.stress.StressRecovery",
       "visibility": "public",
       "current_callers": [
-        "src/fem/application/results/_materializers.py"
+        "src/fem/results/_materializers.py"
       ],
       "target_batch": "Batch 1",
       "disposition": "retain_as_canonical_continuum_numeric_oracle",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.core.model import FEMModel
+from fem.model import FEMModel
 from fem.geometry.recipes import WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import ProposalState

@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = PROJECT_ROOT / "tests"
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 _SKIP_REASON_PREFIXES = (
+    "[legacy-v1]",
     "[slow-opt-in]",
     "[cloud-opt-in]",
     "[platform-capability]",

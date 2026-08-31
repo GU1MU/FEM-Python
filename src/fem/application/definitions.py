@@ -9,18 +9,19 @@ from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any, Callable
 
-from fem.core.model import MaterialDefinition, SectionAssignment
-from fem.elements import (
+from fem.model import (
     BEAM_ELEMENT_LOCAL_Y_REFERENCE_KEY,
     BEAM_FRAME_FIELD_KEY,
     BEAM_FRAME_FIELD_REFERENCE_KEY,
     BEAM_LOCAL_Y_REFERENCE_KEY,
     BeamOrientation,
     BeamOrientationError,
-    get_element_capabilities,
     parse_beam_orientation,
     resolve_beam_frame_field,
+    MaterialDefinition,
+    SectionAssignment,
 )
+from fem.elements import get_element_capabilities
 from fem.geometry.references import LogicalEntityRef, logical_ref_sort_key
 
 from .capabilities import RegionRef
@@ -733,8 +734,10 @@ class CompressedMeshEntityRefs(Sequence[MeshEntityRef]):
 class NamedRegion:
     """One user-authored scope on a generated finite-element mesh.
 
-    Logical references remain readable for compatibility with older project
-    files. New GUI authoring always stores :class:`MeshEntityRef` values.
+    Logical references describe the CAD/topology intent and survive mesh
+    regeneration. Mesh references remain supported for imported meshes and
+    older project files, but cannot be safely migrated after a new mesh is
+    generated without an explicit user re-selection.
     """
 
     name: str
@@ -1003,7 +1006,20 @@ def _normalize_model_definitions(
                     ),
                 )
             )
-        owned_materials_list.append(MaterialDefinition(name, properties))
+        owned_materials_list.append(
+            MaterialDefinition(
+                name,
+                properties,
+                constitutive_model=getattr(
+                    material,
+                    "constitutive_model",
+                    "linear_elastic",
+                ),
+                algorithm=getattr(material, "algorithm", None),
+                behaviors=getattr(material, "behaviors", ()),
+                description=getattr(material, "description", ""),
+            )
+        )
     owned_materials = tuple(owned_materials_list)
     owned_sections_list: list[SectionDefinition] = []
     for index, section in enumerate(deepcopy(tuple(section_values))):
@@ -1191,6 +1207,14 @@ def compile_model_definitions(
             material.name: MaterialDefinition(
                 material.name,
                 deepcopy(dict(material.properties)),
+                constitutive_model=getattr(
+                    material,
+                    "constitutive_model",
+                    "linear_elastic",
+                ),
+                algorithm=getattr(material, "algorithm", None),
+                behaviors=getattr(material, "behaviors", ()),
+                description=getattr(material, "description", ""),
             )
             for material in normalized.materials
         }
@@ -1244,7 +1268,7 @@ def compile_model_definitions(
                     model=None,
                     diagnostics=target_diagnostics,
                 )
-            from fem.materials import resolve_sections
+            from fem.analysis import resolve_sections
 
             resolution = resolve_sections(compiled)
             if resolution.issues:
@@ -1408,7 +1432,7 @@ def _compiled_orientation_diagnostics(
 ) -> tuple[PreflightDiagnostic, ...]:
     """Validate every authored explicit direction against its whole target."""
 
-    from fem.materials import (
+    from fem.analysis import (
         MaterialPropertyError,
         SectionCompatibilityError,
         SectionPropertyError,
@@ -1459,6 +1483,11 @@ def _compiled_orientation_diagnostics(
                         model,
                         element_id,
                         element,
+                    ),
+                    constitutive_model=getattr(
+                        material,
+                        "constitutive_model",
+                        None,
                     ),
                 )
             except (

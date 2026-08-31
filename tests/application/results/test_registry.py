@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from fem.application.results.fields import (
+from fem.results.fields import (
     FieldAssociation,
     FieldPosition,
     PhysicalQuantity,
     ResultFieldId,
     ResultVariable,
 )
-from fem.application.results.registry import (
+from fem.results.registry import (
     ElementResultProfile,
     FieldRecoveryKind,
     ResultModelFamily,

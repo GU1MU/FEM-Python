@@ -9,14 +9,16 @@ from typing import Any, ClassVar
 
 import numpy as np
 
-from ...core.result import ModelResult
-from ...elements import canonical_element_type, get_element_kernel
-from ...elements.beam_section import (
+from ...results import ModelResult
+from ...elements import canonical_element_type
+from ...physics.mechanics import get_recovery_service
+from ...model.beam_section import (
     BeamSectionPoint,
     BeamIntegrationPointForces,
     recover_integration_point_stress as recover_point_stress,
     parse_beam2_section,
 )
+
 from .._paths import prepare_output_path
 
 
@@ -326,7 +328,7 @@ def recover_integration_point_stress(
             raise ValueError(
                 f"Beam2 element {element_id} references missing mesh nodes"
             )
-        kernel = get_element_kernel(elem.type)
+        kernel = get_recovery_service(elem.type)
         forces = kernel.local_integration_point_forces(
             mesh,
             elem,

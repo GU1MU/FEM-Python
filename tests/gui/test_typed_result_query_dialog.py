@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
-from fem.application.results import (
+from fem.results import (
     FieldAssociation,
     FieldMaterializationKey,
     FieldPosition,
@@ -25,7 +25,10 @@ from fem.application.results import (
 )
 from fem.post.fields import encode_result_region_key
 from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
-from fem_gui.result_presentation import result_field_is_visible
+from fem_gui.result_presentation import (
+    result_field_is_visible,
+    result_region_display_labels,
+)
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
@@ -312,10 +315,15 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
     assert dialog.table.rowCount() == len(query_result.records)
     assert dialog.table.horizontalHeaderItem(5).text() == "区域"
     assert dialog.table.horizontalHeaderItem(6).text() == "平均状态"
+    region_labels = result_region_display_labels(
+        record.location.region_key
+        for record in query_result.records
+        if record.location.region_key is not None
+    )
     for row, record in enumerate(query_result.records):
         location = record.location
         assert dialog.record_at(row) == record
-        assert dialog.table.item(row, 0).text() == "节点"
+        assert dialog.table.item(row, 0).text() == "单元节点"
         assert dialog.table.item(row, 1).text() == str(location.node_id)
         assert dialog.table.item(row, 2).text() == (
             "" if location.element_id is None else str(location.element_id)
@@ -331,8 +339,12 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
         assert dialog.table.item(row, 5).text() == (
             ""
             if location.region_key is None
-            else encode_result_region_key(location.region_key)
+            else region_labels[location.region_key]
         )
+        if location.region_key is not None:
+            assert dialog.table.item(row, 5).toolTip() == (
+                encode_result_region_key(location.region_key)
+            )
         assert dialog.table.item(row, 6).text() == (
             "缺失"
             if location.averaged is None
@@ -340,7 +352,7 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
             if location.averaged
             else "否"
         )
-    assert "generation 1" in dialog.result_summary.text()
+    assert "结果版本 1" in dialog.result_summary.text()
 
     stale = replace(query_result, materialization_generation=0)
     with pytest.raises(ValueError, match="stale"):
