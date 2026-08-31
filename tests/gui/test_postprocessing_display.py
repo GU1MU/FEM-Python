@@ -25,6 +25,7 @@ from fem.results import (
     ScalarFieldSelection,
 )
 from fem.analysis.linear_static import solve
+import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.postprocessing_dialogs import (
     ContourSettingsDialog,
@@ -34,6 +35,7 @@ from fem_gui.postprocessing_dialogs import (
 )
 from fem_gui.view_cut_state import default_view_cut_settings
 from fem_gui.visualization.model_adapter import build_model_geometry
+from fem_gui.widgets.result_tree import ROLE_SELECTION
 
 
 def _application() -> QApplication:
@@ -372,6 +374,66 @@ def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
     assert window.viewport._contour["legend_label_count"] == "9"
     assert not window.viewport._contour["legend_title"]
     assert window.viewport._contour["show_ids"]
+    window.close()
+
+
+def test_lazy_stress_switch_keeps_result_controls_atomic_while_loading(
+    gui_inp_path,
+    monkeypatch,
+):
+    _application()
+    window = _solved_window(gui_inp_path)
+    _wait_for_tasks(window)
+    stress_index = window.result_variable_combo.findData(ResultVariable.S)
+    assert stress_index >= 0
+
+    window.result_variable_combo.setCurrentIndex(stress_index)
+    window._result_variable_changed(stress_index)
+    _wait_for_tasks(window)
+    previous = window.result_selection
+    previous_payload = window.viewport._result_render_payload
+    assert type(previous) is ScalarFieldSelection
+    assert previous.field_key.request.field_id.variable is ResultVariable.S
+
+    target = ScalarFieldSelection(previous.field_key, "S22")
+    monkeypatch.setattr(
+        main_window_module,
+        "_RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD",
+        0,
+    )
+    window._activate_result_selection(target)
+
+    assert window.busy
+    assert window.result_selection == previous
+    assert window.viewport._result_render_payload is previous_payload
+
+    application = _application()
+    deadline = monotonic() + 2.0
+    topology_task_observed = False
+    while window.busy and monotonic() < deadline:
+        application.processEvents()
+        if window._active_result_topology_projection is None:
+            continue
+        topology_task_observed = True
+        assert window.result_selection == previous
+        assert window.viewport._result_render_payload is previous_payload
+        assert window.result_variable_combo.currentData() == (
+            previous.field_key.request.field_id.variable
+        )
+        assert window.result_component_combo.currentData() == previous
+        assert window.result_tree.currentItem().data(0, ROLE_SELECTION) == previous
+
+    assert topology_task_observed
+
+    _wait_for_tasks(window)
+    assert window.result_selection == target
+    assert window.result_component_combo.currentData() == target
+    assert window.viewport._result_render_payload.topology.selection == target
+    _assert_current_ribbon_selection(
+        window,
+        variable=ResultVariable.S,
+        position=FieldPosition.RESOLVED_NODAL,
+    )
     window.close()
 
 

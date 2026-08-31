@@ -264,8 +264,18 @@ def solve(
     increment_index = 1
     attempt_index = 0
 
+    def check_cancelled_with_history() -> None:
+        try:
+            newton.check_cancelled(should_cancel)
+        except newton.SolveCancelled as error:
+            error.completed = IncrementalSolveResult(
+                tuple(completed),
+                tuple(attempts),
+            )
+            raise
+
     while pending:
-        newton.check_cancelled(should_cancel)
+        check_cancelled_with_history()
         factor = pending.pop(0)
         attempt_index += 1
         attempt_started = perf_counter()
@@ -311,7 +321,11 @@ def solve(
                 attempt_index=attempt_index,
                 should_cancel=should_cancel,
             )
-        except newton.SolveCancelled:
+        except newton.SolveCancelled as error:
+            error.completed = IncrementalSolveResult(
+                tuple(completed),
+                tuple(attempts),
+            )
             raise
         except Exception as exc:
             retry_factor = None
@@ -438,7 +452,9 @@ def solve(
                 cause=exc,
                 cutbacks=cutbacks,
             ) from exc
-        newton.check_cancelled(should_cancel)
+        # A Newton call that returned has committed this increment. Finish
+        # publishing that converged state before honoring cancellation at the
+        # next increment boundary.
         accepted_previous_solution = current
         current = result.solution
         evaluation = result.evaluation
@@ -448,7 +464,6 @@ def solve(
             evaluation = problem.evaluate(
                 replace(increment_context, solution=current)
             )
-        newton.check_cancelled(should_cancel)
         outputs = dict(evaluation.outputs)
         outputs["convergence"] = {
             "force_norm": _last_metric(result, "force_history"),

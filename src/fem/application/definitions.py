@@ -734,8 +734,10 @@ class CompressedMeshEntityRefs(Sequence[MeshEntityRef]):
 class NamedRegion:
     """One user-authored scope on a generated finite-element mesh.
 
-    Logical references remain readable for compatibility with older project
-    files. New GUI authoring always stores :class:`MeshEntityRef` values.
+    Logical references describe the CAD/topology intent and survive mesh
+    regeneration. Mesh references remain supported for imported meshes and
+    older project files, but cannot be safely migrated after a new mesh is
+    generated without an explicit user re-selection.
     """
 
     name: str

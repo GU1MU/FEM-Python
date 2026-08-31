@@ -133,7 +133,7 @@ def test_incremental_solver_commits_each_converged_load_factor():
 def test_incremental_solver_propagates_cancellation_between_increments():
     problem = _CancelAfterFirstCommitProblem()
 
-    with pytest.raises(newton.SolveCancelled):
+    with pytest.raises(newton.SolveCancelled) as caught:
         incremental.solve(
             problem,
             [0.25, 0.5],
@@ -141,6 +141,9 @@ def test_incremental_solver_propagates_cancellation_between_increments():
             should_cancel=lambda: problem.cancel_requested,
         )
 
+    assert [
+        item.load_factor for item in caught.value.completed.increments
+    ] == [0.25]
     assert problem.committed == pytest.approx(0.25)
     assert problem.trial == pytest.approx(0.25)
 

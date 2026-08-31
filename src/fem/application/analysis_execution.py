@@ -294,6 +294,17 @@ def _solve_analysis_impl(
             cause=error.cause,
             cutbacks=error.cutbacks,
         ) from error
+    except AnalysisCancelled as error:
+        if error.completed is not None and error.completed.increments:
+            error.partial_result = DEFAULT_ANALYSIS_EXECUTOR.materialize(
+                model,
+                selected,
+                request,
+                error.completed,
+                name=name,
+                prepared=prepared,
+            )
+        raise
     return DEFAULT_ANALYSIS_EXECUTOR.materialize(
         model,
         selected,

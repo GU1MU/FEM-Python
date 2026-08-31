@@ -14,6 +14,25 @@ from .compiled import CompiledAnalysis
 class AnalysisCancelled(RuntimeError):
     """Raised when cooperative cancellation reaches an analysis boundary."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        completed: incremental.IncrementalSolveResult | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        if (
+            completed is not None
+            and type(completed) is not incremental.IncrementalSolveResult
+        ):
+            raise TypeError(
+                "completed must be IncrementalSolveResult or None"
+            )
+        super().__init__(message)
+        self.completed = completed
+        self.partial_result = None
+        self.cause = cause
+
 
 def check_cancelled(should_cancel: Callable[[], bool] | None) -> None:
     if should_cancel is None:
@@ -65,7 +84,11 @@ def run_compiled_analysis(
             should_cancel=should_cancel,
         )
     except newton.SolveCancelled as exc:
-        raise AnalysisCancelled(str(exc)) from exc
+        raise AnalysisCancelled(
+            str(exc),
+            completed=getattr(exc, "completed", None),
+            cause=exc,
+        ) from exc
 
 
 __all__ = ["AnalysisCancelled", "check_cancelled", "run_compiled_analysis"]

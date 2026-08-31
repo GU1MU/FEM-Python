@@ -88,6 +88,7 @@ from ..visualization.contour_rendering import (
     extract_contour_edges,
     extract_dataset_surface,
     style_contour_edges,
+    update_contour_edge_geometry,
     update_shaded_contour_geometry,
 )
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
@@ -9520,8 +9521,28 @@ class FEMViewport(QWidget):
                     pipeline.algorithm.Modified()
             self._mesh_body_render_cache.clear()
             if self._display.contour_enabled and self._show_edges:
-                self._remove_actor("result_edges")
-                self._add_result_edges_layer(checked.dataset)
+                edge_actor = self._actors.get("result_edges")
+                edge_mapper = (
+                    None
+                    if edge_actor is None
+                    else getattr(edge_actor, "mapper", None)
+                )
+                edge_dataset = (
+                    None
+                    if edge_mapper is None
+                    else getattr(edge_mapper, "dataset", None)
+                )
+                if (
+                    edge_dataset is None
+                    or not update_contour_edge_geometry(
+                        edge_dataset,
+                        checked.dataset,
+                    )
+                ):
+                    self._remove_actor("result_edges")
+                    self._add_result_edges_layer(checked.dataset)
+                else:
+                    edge_mapper.Update()
         if self._result_render_surface is not None and not (
             bind_shaded_contour_scalars(
                 self._result_render_surface,
@@ -9539,18 +9560,21 @@ class FEMViewport(QWidget):
             mapper.scalar_visibility = True
             mapper.scalar_range = self._contour_data_range(checked)
         mapper.Update()
-        self._remove_scalar_bars()
         if self._display.contour_enabled and self._contour["legend"]:
-            scalar_bar = self._plotter.add_scalar_bar(
-                mapper=mapper,
-                render=False,
-                **self._contour_bar_args(checked),
-            )
-            self._configure_contour_bar(
-                checked,
-                mapper,
-                scalar_bar=scalar_bar,
-            )
+            if not self._update_reused_contour_bar(checked, mapper):
+                self._remove_scalar_bars()
+                scalar_bar = self._plotter.add_scalar_bar(
+                    mapper=mapper,
+                    render=False,
+                    **self._contour_bar_args(checked),
+                )
+                self._configure_contour_bar(
+                    checked,
+                    mapper,
+                    scalar_bar=scalar_bar,
+                )
+        else:
+            self._remove_scalar_bars()
         self._remove_actor("extrema")
         if (
             self._display.contour_enabled
@@ -9749,6 +9773,36 @@ class FEMViewport(QWidget):
         label_text = scalar_bar.GetLabelTextProperty()
         annotation_text.SetColor(*label_text.GetColor())
         annotation_text.SetFontSize(label_text.GetFontSize())
+
+    def _update_reused_contour_bar(
+        self,
+        payload: ResultRenderPayload,
+        mapper: Any,
+    ) -> bool:
+        """Retitle one same-field legend without replacing its VTK actor."""
+
+        if self._plotter is None:
+            return False
+        scalar_bars = getattr(self._plotter, "scalar_bars", None)
+        if scalar_bars is None or len(scalar_bars) != 1:
+            return False
+        scalar_bar = next(iter(scalar_bars.values()))
+        get_title = getattr(scalar_bar, "GetTitle", None)
+        set_title = getattr(scalar_bar, "SetTitle", None)
+        if not callable(get_title) or not callable(set_title):
+            return False
+        title = str(self._contour_bar_args(payload)["title"])
+        current_title = str(get_title() or "")
+        separator = " · 增量 "
+        if current_title.split(separator, 1)[0] != title.split(separator, 1)[0]:
+            return False
+        set_title(title)
+        self._configure_contour_bar(
+            payload,
+            mapper,
+            scalar_bar=scalar_bar,
+        )
+        return True
 
     def _add_result_edges_layer(
         self,

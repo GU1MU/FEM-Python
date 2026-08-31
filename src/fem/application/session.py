@@ -2012,6 +2012,7 @@ class ModelSession:
         )
         self._check_expected(expected)
         self._require_native()
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
         if unit_context is not None and type(unit_context) is not UnitContext:
             raise TypeError("unit_context must be UnitContext or None")
         if (
@@ -2158,6 +2159,8 @@ class ModelSession:
         before_regions = tuple(self._named_regions.values())
         before_assignments = self._assignments
         before_steps = self._steps
+        if self._artifact is not None:
+            _reject_unsafe_mesh_scope_migration(before_regions)
         if type(authenticate_geometry) is not bool:
             raise TypeError("authenticate_geometry must be a bool")
         candidate_recipe = recipe
@@ -2202,7 +2205,10 @@ class ModelSession:
             if assignment.region_name not in removed_region_names
         )
         candidate_steps = (
-            _without_geometry_dependent_steps(before_steps)
+            _without_geometry_dependent_steps(
+                before_steps,
+                removed_region_names,
+            )
             if _region_references((), before_steps) & removed_region_names
             else before_steps
         )
@@ -2261,11 +2267,26 @@ class ModelSession:
             or candidate_steps != before_steps
         ):
             changed.add(ChangeKind.DEFINITIONS)
+        effects = set(mesh_effects)
+        effects.update(
+            _reference_transition_effects(
+                before_regions,
+                candidate_regions,
+                before_assignments,
+                candidate_assignments,
+                before_steps,
+                candidate_steps,
+                references_preserved=(
+                    preserve
+                    or bool(rewrites and candidate_regions)
+                ),
+            )
+        )
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "Part geometry replaced",
-            effects=mesh_effects,
+            effects=effects,
         )
 
     def commit_face_sketch_boolean(
@@ -2452,6 +2473,10 @@ class ModelSession:
         ):
             raise SessionStateError("后续编辑与面草图特征状态冲突，无法完整恢复")
 
+        _reject_unsafe_mesh_scope_migration(
+            (*self._named_regions.values(), *expected_regions)
+        )
+
         replacement = record.before_part if undo else record.after_part
         regions = record.before_named_regions if undo else record.after_named_regions
         assignments = record.before_assignments if undo else record.after_assignments
@@ -2530,6 +2555,7 @@ class ModelSession:
         before_regions = tuple(self._named_regions.values())
         before_assignments = self._assignments
         before_steps = self._steps
+        _reject_unsafe_mesh_scope_migration(before_regions)
         primary_recipe = candidates[0]
         primary_regions = _transition_part_named_regions(
             before_regions,
@@ -2649,7 +2675,10 @@ class ModelSession:
             if assignment.region_name not in removed_names
         )
         after_steps = (
-            _without_geometry_dependent_steps(before_steps)
+            _without_geometry_dependent_steps(
+                before_steps,
+                removed_names,
+            )
             if _region_references((), before_steps) & removed_names
             else before_steps
         )
@@ -2693,6 +2722,15 @@ class ModelSession:
             mesh=True,
             model=True,
         )
+        effects = _reference_transition_effects(
+            before_regions,
+            after_regions,
+            before_assignments,
+            after_assignments,
+            before_steps,
+            after_steps,
+            references_preserved=True,
+        )
         return self._emit(
             {
                 ChangeKind.PROJECT_INPUTS,
@@ -2711,6 +2749,7 @@ class ModelSession:
                 if recipe_type is ExtrudedGeometry
                 else "Profiles swept into Parts"
             ),
+            effects=effects,
         )
 
     def replace_part_with_revolved_siblings(
@@ -2763,6 +2802,9 @@ class ModelSession:
             raise SessionStateError(
                 "extrusion.undo-reference-conflict: definitions changed"
             )
+        _reject_unsafe_mesh_scope_migration(
+            (*self._named_regions.values(), *record.before_named_regions)
+        )
         sibling_ids = {
             part.id for part in record.after_parts[1:]
         }
@@ -2834,26 +2876,11 @@ class ModelSession:
                 frozenset(),
                 "Part mesh settings unchanged",
             )
-        clears_mesh_scopes = _regions_use_mesh_entities(
-            self._named_regions.values()
-        )
-        candidate_steps = (
-            _without_geometry_dependent_steps(self._steps)
-            if clears_mesh_scopes
-            else self._steps
-        )
-        had_regions = clears_mesh_scopes and bool(self._named_regions)
-        had_assignments = clears_mesh_scopes and bool(self._assignments)
-        steps_cleared = candidate_steps != self._steps
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
         self._replace_part(updated)
         self._part_revisions[normalized] += 1
         self._active_part_id = normalized
         self._sync_active_part_projection()
-        if clears_mesh_scopes:
-            self._named_regions = {}
-            self._assignments = ()
-            self._steps = candidate_steps
-            self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         changed = {
@@ -2864,21 +2891,10 @@ class ModelSession:
             ChangeKind.RUNS,
             ChangeKind.DISPLAYED_RESULT,
         }
-        effects: set[TransitionEffect] = set()
-        if had_regions:
-            changed.add(ChangeKind.NAMED_REGIONS)
-            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
-        if had_assignments or steps_cleared:
-            changed.add(ChangeKind.DEFINITIONS)
-        if had_assignments:
-            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
-        if steps_cleared:
-            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "Part mesh settings replaced",
-            effects=effects,
         )
 
     def delete_native_part(
@@ -2905,6 +2921,7 @@ class ModelSession:
                 f"Part {normalized} is locked by an active Boolean result"
             )
         before_regions = tuple(self._named_regions.values())
+        _reject_unsafe_mesh_scope_migration(before_regions)
         before_assignments = self._assignments
         before_steps = self._steps
         candidate_regions = _remove_part_from_named_regions(
@@ -2920,7 +2937,10 @@ class ModelSession:
             if assignment.region_name not in removed_names
         )
         candidate_steps = (
-            _without_geometry_dependent_steps(before_steps)
+            _without_geometry_dependent_steps(
+                before_steps,
+                removed_names,
+            )
             if _region_references((), before_steps) & removed_names
             else before_steps
         )
@@ -2963,7 +2983,10 @@ class ModelSession:
             effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
         if candidate_steps != before_steps:
             changed.add(ChangeKind.DEFINITIONS)
-            effects.add(TransitionEffect.STEPS_CLEARED)
+            if len(candidate_steps) < len(before_steps):
+                effects.add(TransitionEffect.STEPS_CLEARED)
+            else:
+                effects.add(TransitionEffect.STEP_TARGETS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
@@ -2999,6 +3022,7 @@ class ModelSession:
                 frozenset(),
                 "Part suppression unchanged",
             )
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
         self._replace_part(replace(current, suppressed=suppressed))
         self._part_revisions[normalized] += 1
         if suppressed and self._active_part_id == normalized:
@@ -3062,6 +3086,7 @@ class ModelSession:
             raise ValueError("result Part name must not be empty")
         if any(part.name == normalized_name for part in self._parts):
             raise ValueError(f"Part name already exists: {normalized_name!r}")
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
 
         from .part_boolean import StrictPartBooleanResult
 
@@ -3115,7 +3140,10 @@ class ModelSession:
             if assignment.region_name not in removed_names
         )
         after_steps = (
-            _without_geometry_dependent_steps(before_steps)
+            _without_geometry_dependent_steps(
+                before_steps,
+                removed_names,
+            )
             if _region_references((), before_steps) & removed_names
             else before_steps
         )
@@ -3182,11 +3210,20 @@ class ModelSession:
             or after_steps != before_steps
         ):
             changed.add(ChangeKind.DEFINITIONS)
+        effects = _reference_transition_effects(
+            before_regions,
+            after_regions,
+            before_assignments,
+            after_assignments,
+            before_steps,
+            after_steps,
+            references_preserved=True,
+        )
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "Part Boolean applied",
-            effects={TransitionEffect.REFERENCES_PRESERVED},
+            effects=effects | {TransitionEffect.REFERENCES_PRESERVED},
         )
 
     def apply_body_boolean(
@@ -3354,6 +3391,9 @@ class ModelSession:
             raise SessionStateError(
                 "Part Boolean state changed after commit; undo later edits first"
             )
+        _reject_unsafe_mesh_scope_migration(
+            (*self._named_regions.values(), *record.before_named_regions)
+        )
         self._parts = tuple(
             part
             for part in self._parts
@@ -3416,6 +3456,7 @@ class ModelSession:
 
         self._check_expected(expected_session_revision)
         self._require_native()
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
         prior_parts = {part.id: part for part in self._parts}
         prior_part_revisions = dict(self._part_revisions)
         owned_parts = deepcopy(tuple(parts))
@@ -3561,7 +3602,10 @@ class ModelSession:
                 self._steps
                 if preserve_references
                 or referenced_step_regions.issubset(valid_region_names)
-                else _without_geometry_dependent_steps(self._steps)
+                else _without_geometry_dependent_steps(
+                    self._steps,
+                    referenced_step_regions - valid_region_names,
+                )
             )
         )
         if reverse_undo_record is not None and isinstance(
@@ -3591,9 +3635,8 @@ class ModelSession:
             assignment not in candidate_assignments
             for assignment in self._assignments
         )
-        steps_cleared = any(
-            step not in candidate_steps for step in self._steps
-        )
+        steps_cleared = len(candidate_steps) < len(self._steps)
+        step_targets_cleared = steps_changed and not steps_cleared
         definitions_changed = (
             not self._definitions_explicit
             or assignments_changed
@@ -3722,6 +3765,8 @@ class ModelSession:
             effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
         if steps_cleared:
             effects.add(TransitionEffect.STEPS_CLEARED)
+        elif step_targets_cleared:
+            effects.add(TransitionEffect.STEP_TARGETS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
@@ -3795,21 +3840,10 @@ class ModelSession:
                 expected_session_revision=expected_session_revision,
             )
         owned = deepcopy(settings)
-        clears_mesh_scopes = _regions_use_mesh_entities(
-            self._named_regions.values()
-        )
-        candidate_regions = () if clears_mesh_scopes else tuple(
-            self._named_regions.values()
-        )
-        candidate_assignments = () if clears_mesh_scopes else self._assignments
-        candidate_steps = (
-            _without_geometry_dependent_steps(self._steps)
-            if clears_mesh_scopes
-            else self._steps
-        )
-        had_regions = clears_mesh_scopes and bool(self._named_regions)
-        had_assignments = clears_mesh_scopes and bool(self._assignments)
-        steps_cleared = candidate_steps != self._steps
+        _reject_unsafe_mesh_scope_migration(self._named_regions.values())
+        candidate_regions = tuple(self._named_regions.values())
+        candidate_assignments = self._assignments
+        candidate_steps = self._steps
         if self._geometry_recipe is not None:
             if (
                 owned is not None
@@ -3836,11 +3870,6 @@ class ModelSession:
                 "local mesh controls require a geometry recipe"
             )
         self._mesh_settings = owned
-        if clears_mesh_scopes:
-            self._named_regions = {}
-            self._assignments = ()
-            self._steps = candidate_steps
-            self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(project=True, mesh=True, model=True)
         changed = {
@@ -3851,21 +3880,10 @@ class ModelSession:
             ChangeKind.RUNS,
             ChangeKind.DISPLAYED_RESULT,
         }
-        effects: set[TransitionEffect] = set()
-        if had_regions:
-            changed.add(ChangeKind.NAMED_REGIONS)
-            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
-        if had_assignments or steps_cleared:
-            changed.add(ChangeKind.DEFINITIONS)
-        if had_assignments:
-            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
-        if steps_cleared:
-            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "mesh settings replaced",
-            effects=effects,
         )
 
     def replace_named_regions(
@@ -4624,26 +4642,9 @@ class ModelSession:
     ) -> SessionDelta:
         self._check_expected(expected_session_revision)
         self._require_native()
-        clears_mesh_scopes = _regions_use_mesh_entities(
-            self._named_regions.values()
-        )
-        candidate_steps = (
-            _without_geometry_dependent_steps(self._steps)
-            if clears_mesh_scopes
-            else self._steps
-        )
-        had_regions = clears_mesh_scopes and bool(self._named_regions)
-        had_assignments = clears_mesh_scopes and bool(self._assignments)
-        steps_cleared = candidate_steps != self._steps
-        if clears_mesh_scopes:
-            self._named_regions = {}
-            self._assignments = ()
-            self._steps = candidate_steps
-            self._definitions_explicit = True
         self._drop_model_state()
         self._increment_domain_revisions(
             project=True,
-            mesh=clears_mesh_scopes,
             model=True,
         )
         changed = {
@@ -4653,21 +4654,10 @@ class ModelSession:
             ChangeKind.RUNS,
             ChangeKind.DISPLAYED_RESULT,
         }
-        effects: set[TransitionEffect] = set()
-        if had_regions:
-            changed.add(ChangeKind.NAMED_REGIONS)
-            effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
-        if had_assignments or steps_cleared:
-            changed.add(ChangeKind.DEFINITIONS)
-        if had_assignments:
-            effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
-        if steps_cleared:
-            effects.add(TransitionEffect.STEPS_CLEARED)
         return self._emit(
             changed,
             _MODEL_INVALIDATIONS,
             "generated model cleared",
-            effects=effects,
         )
 
     # ------------------------------------------------------------------
@@ -4804,7 +4794,8 @@ class ModelSession:
                 )
             if _regions_use_mesh_entities(self._named_regions.values()):
                 raise SessionStateError(
-                    "mesh scopes must be cleared before generating a new mesh"
+                    "generated-mesh scopes cannot be remeshed safely; reselect "
+                    "them in geometry selection mode or delete them explicitly"
                 )
             for part in active_parts:
                 if part.mesh_settings is None:
@@ -4865,7 +4856,8 @@ class ModelSession:
             raise SessionStateError("mesh generation requires geometry")
         if _regions_use_mesh_entities(self._named_regions.values()):
             raise SessionStateError(
-                "mesh scopes must be cleared before generating a new mesh"
+                "generated-mesh scopes cannot be remeshed safely; reselect "
+                "them in geometry selection mode or delete them explicitly"
             )
         require_complete_native_mesh_contract(
             self._geometry_recipe,
@@ -5038,7 +5030,6 @@ class ModelSession:
         self._named_regions = _bind_mesh_region_revisions(
             self._named_regions,
             self._mesh_input_revision,
-            allow_rebind=True,
         )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
@@ -5099,6 +5090,14 @@ class ModelSession:
             definitions = definitions_from_model(owned_model)
 
         previous_artifact = self._artifact
+        if _regions_use_mesh_entities(self._named_regions.values()):
+            if previous_artifact is None or not _same_mesh_topology(
+                previous_artifact.model,
+                owned_model,
+            ):
+                _reject_unsafe_mesh_scope_migration(
+                    self._named_regions.values()
+                )
         self._parts = validate_native_parts(candidate_parts)
         self._sync_active_part_projection()
         self._drop_computations()
@@ -5111,7 +5110,13 @@ class ModelSession:
         self._named_regions = _bind_mesh_region_revisions(
             self._named_regions,
             self._mesh_input_revision,
-            allow_rebind=True,
+            allow_rebind=(
+                previous_artifact is not None
+                and _same_mesh_topology(
+                    previous_artifact.model,
+                    owned_model,
+                )
+            ),
         )
         self._artifact = self._new_artifact(owned_model, "native")
         self._complete_token(token)
@@ -5506,7 +5511,31 @@ class ModelSession:
         timings: Mapping[str, float] | None,
         prepared_system: PreparedAnalysis | None,
         cache_candidate: PreparedAnalysis | None = None,
+        _final_status: RunStatus = RunStatus.SUCCEEDED,
+        _failure_error: Any | None = None,
     ) -> SessionDelta:
+        if type(_final_status) is not RunStatus:
+            raise TypeError("_final_status must be a RunStatus")
+        if _final_status not in {
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }:
+            raise ValueError("_final_status must be terminal")
+        if (
+            _final_status is RunStatus.SUCCEEDED
+            and _failure_error is not None
+        ):
+            raise ValueError(
+                "successful result acceptance cannot carry a failure error"
+            )
+        if (
+            _final_status in {RunStatus.FAILED, RunStatus.CANCELLED}
+            and _failure_error is None
+        ):
+            raise ValueError(
+                "partial terminal acceptance requires a terminal error"
+            )
         status = self._token_status_for(token, "solve")
         if status is not TokenStatus.CURRENT:
             return self._rejected(status, "stale run result")
@@ -5631,11 +5660,19 @@ class ModelSession:
             object.__setattr__(bundle, "_provider", None)
         self._runs[run.run_id] = replace(
             run,
-            status=RunStatus.SUCCEEDED,
+            status=_final_status,
             started_at=run.started_at or utc_now(),
             finished_at=utc_now(),
             result_id=result_id,
-            error=None,
+            error=(
+                None
+                if _final_status is RunStatus.SUCCEEDED
+                else str(_failure_error)
+            ),
+            cancellation_requested=(
+                run.cancellation_requested
+                or _final_status is RunStatus.CANCELLED
+            ),
             timings=owned_timings,
         )
         self._selected_run_id = run.run_id
@@ -5650,7 +5687,66 @@ class ModelSession:
                 ChangeKind.DISPLAYED_RESULT,
             },
             frozenset(),
-            "analysis run succeeded",
+            (
+                "analysis run succeeded"
+                if _final_status is RunStatus.SUCCEEDED
+                else (
+                    "analysis run failed with partial result"
+                    if _final_status is RunStatus.FAILED
+                    else "analysis run cancelled with partial result"
+                )
+            ),
+        )
+
+    def accept_run_failed_with_partial_result(
+        self,
+        token: TaskToken,
+        bundle: SolveResultBundle,
+        error: Any,
+    ) -> SessionDelta:
+        """Accept converged frames retained before a nonlinear failure.
+
+        The run remains failed and therefore does not become a successful
+        result.  Its result record is displayable only as a partial result so
+        users can inspect increments that converged before the failure.
+        """
+
+        if type(bundle) is not SolveResultBundle:
+            raise TypeError("bundle must be exactly SolveResultBundle")
+        if not bundle.result.frames:
+            raise ValueError(
+                "partial result must contain at least one converged frame"
+            )
+        return self._accept_run_succeeded(
+            token,
+            bundle,
+            timings=None,
+            prepared_system=None,
+            _final_status=RunStatus.FAILED,
+            _failure_error=error,
+        )
+
+    def accept_run_cancelled_with_partial_result(
+        self,
+        token: TaskToken,
+        bundle: SolveResultBundle,
+        error: Any = "analysis cancelled",
+    ) -> SessionDelta:
+        """Accept converged frames retained before a cancellation."""
+
+        if type(bundle) is not SolveResultBundle:
+            raise TypeError("bundle must be exactly SolveResultBundle")
+        if not bundle.result.frames:
+            raise ValueError(
+                "partial result must contain at least one converged frame"
+            )
+        return self._accept_run_succeeded(
+            token,
+            bundle,
+            timings=None,
+            prepared_system=None,
+            _final_status=RunStatus.CANCELLED,
+            _failure_error=error,
         )
 
     def accept_run_failed(
@@ -7140,7 +7236,7 @@ class ModelSession:
         if (
             run is None
             or record is None
-            or run.status is not RunStatus.SUCCEEDED
+            or not run.has_displayable_result
             or run.result_id != record.result_id
         ):
             return None
@@ -7554,8 +7650,6 @@ def _rewrite_named_region(
         if type(reference) is not LogicalEntityRef:
             return None
         targets = rewrites.get(reference.logical_id, ())
-        if not targets:
-            return None
         rewritten.extend(LogicalEntityRef(target) for target in targets)
     unique = tuple(
         dict.fromkeys(
@@ -8710,15 +8804,126 @@ def _without_mesh_topology_references(settings: Any) -> Any:
     return owned
 
 
+def _reference_transition_effects(
+    before_regions: Iterable[Any],
+    after_regions: Iterable[Any],
+    before_assignments: Iterable[Any],
+    after_assignments: Iterable[Any],
+    before_steps: Iterable[Any],
+    after_steps: Iterable[Any],
+    *,
+    references_preserved: bool = False,
+) -> set[TransitionEffect]:
+    """Describe only the authoring references changed by a geometry edit."""
+
+    prior_regions = tuple(before_regions)
+    current_regions = tuple(after_regions)
+    prior_assignments = tuple(before_assignments)
+    current_assignments = tuple(after_assignments)
+    prior_steps = tuple(before_steps)
+    current_steps = tuple(after_steps)
+    effects: set[TransitionEffect] = set()
+    if len(current_regions) < len(prior_regions):
+        effects.add(TransitionEffect.NAMED_REGIONS_CLEARED)
+    elif references_preserved and current_regions != prior_regions:
+        effects.add(TransitionEffect.REFERENCES_PRESERVED)
+    if current_assignments != prior_assignments:
+        effects.add(TransitionEffect.ASSIGNMENTS_CLEARED)
+    if len(current_steps) < len(prior_steps):
+        effects.add(TransitionEffect.STEPS_CLEARED)
+    prior_by_name = {
+        str(getattr(step, "name", index)): step
+        for index, step in enumerate(prior_steps)
+    }
+    current_by_name = {
+        str(getattr(step, "name", index)): step
+        for index, step in enumerate(current_steps)
+    }
+    if any(
+        prior_by_name[name] != current_by_name[name]
+        for name in prior_by_name.keys() & current_by_name.keys()
+    ):
+        effects.add(TransitionEffect.STEP_TARGETS_CLEARED)
+    return effects
+
+
 def _without_geometry_dependent_steps(
     steps: Iterable[Any],
+    invalid_region_names: Iterable[str],
 ) -> tuple[Any, ...]:
-    """Keep analysis steps whose inputs do not depend on geometry regions."""
+    """Remove only targets that point to regions invalidated by an edit.
 
-    return tuple(
-        step
-        for step in steps
-        if not analysis_step_has_native_region_target(step)
+    An analysis step is an independent authoring object.  Geometry changes
+    may invalidate one boundary or load inside it, but must not discard its
+    procedure, controls, outputs, or loads that target surviving regions.
+    """
+
+    invalid = frozenset(str(name) for name in invalid_region_names)
+    if not invalid:
+        return tuple(steps)
+    projected: list[Any] = []
+    for step in steps:
+        updates: dict[str, tuple[Any, ...]] = {}
+        for collection_name, field_name in (
+            ("boundaries", "target"),
+            ("cloads", "target"),
+            ("edge_loads", "edge"),
+            ("surface_loads", "surface"),
+            ("line_loads", "target"),
+            ("body_loads", "target"),
+            ("gravity_loads", "target"),
+        ):
+            values = tuple(getattr(step, collection_name, ()))
+            retained = tuple(
+                value
+                for value in values
+                if getattr(value, field_name, None) not in invalid
+            )
+            if retained != values:
+                updates[collection_name] = retained
+        if not updates:
+            projected.append(step)
+            continue
+        try:
+            candidate = replace(step, **updates)
+        except TypeError:
+            detached = deepcopy(step)
+            for collection_name, values in updates.items():
+                setattr(detached, collection_name, values)
+            candidate = detached
+        if _analysis_step_has_surviving_inputs(candidate):
+            projected.append(candidate)
+    return tuple(projected)
+
+
+def _analysis_step_has_surviving_inputs(step: Any) -> bool:
+    """Return whether a projected step still carries useful authoring data."""
+
+    if any(
+        bool(getattr(step, collection_name, ()))
+        for collection_name in (
+            "boundaries",
+            "cloads",
+            "surface_loads",
+            "outputs",
+            "edge_loads",
+            "line_loads",
+            "body_loads",
+            "gravity_loads",
+        )
+    ):
+        return True
+    if bool(getattr(step, "metadata", {})):
+        return True
+    if any(
+        getattr(step, field_name, None) is not None
+        for field_name in ("controls", "formulation", "geometry_mode", "options")
+    ):
+        return True
+    initial_conditions = getattr(step, "initial_conditions", None)
+    return any(
+        bool(getattr(initial_conditions, field_name, {}))
+        for field_name in ("displacement", "velocity", "acceleration")
     )
 
 
@@ -8735,13 +8940,80 @@ def _regions_use_mesh_entities(regions: Iterable[Any]) -> bool:
     )
 
 
+def _reject_unsafe_mesh_scope_migration(
+    regions: Iterable[Any],
+) -> None:
+    """Reject edits that would silently invalidate mesh-bound authoring.
+
+    Mesh entity IDs are derived from one generated mesh and do not carry
+    enough provenance to prove which CAD entity they represented after a
+    geometry or mesh change.  Rebinding those IDs to a new mesh revision is
+    therefore unsafe: it can silently move a load, section assignment, or
+    boundary condition to a different physical location.  Logical scopes
+    remain editable and are rematerialized during the next mesh generation.
+    """
+
+    if _regions_use_mesh_entities(regions):
+        raise SessionStateError(
+            "当前命名区域仍绑定旧网格实体，无法安全迁移到新的几何或网格；"
+            "为避免清除材料、截面、载荷和分析步骤，请先在几何选择模式下"
+            "重新保存作用域，或显式删除旧网格作用域后再继续。"
+        )
+
+
+def _same_mesh_topology(left_model: Any, right_model: Any) -> bool:
+    """Return whether two models expose the same mesh entity identities."""
+
+    left = getattr(left_model, "mesh", None)
+    right = getattr(right_model, "mesh", None)
+    if left is None or right is None or type(left) is not type(right):
+        return False
+
+    def node_key(node: Any) -> tuple[Any, ...]:
+        coordinates = tuple(
+            float(value)
+            for value in (
+                getattr(node, "x", None),
+                getattr(node, "y", None),
+                getattr(node, "z", None),
+            )
+            if value is not None
+        )
+        return int(node.id), coordinates
+
+    def element_key(element: Any) -> tuple[Any, ...]:
+        return (
+            int(element.id),
+            tuple(int(node_id) for node_id in element.node_ids),
+            str(getattr(element, "type", "")),
+        )
+
+    return (
+        int(getattr(left, "dofs_per_node", -1))
+        == int(getattr(right, "dofs_per_node", -1))
+        and tuple(sorted((node_key(node) for node in left.nodes)))
+        == tuple(sorted((node_key(node) for node in right.nodes)))
+        and tuple(
+            sorted((element_key(element) for element in left.elements))
+        )
+        == tuple(
+            sorted((element_key(element) for element in right.elements))
+        )
+    )
+
+
 def _bind_mesh_region_revisions(
     regions: Mapping[str, NamedRegion],
     mesh_revision: int,
     *,
     allow_rebind: bool = False,
 ) -> dict[str, NamedRegion]:
-    """Bind mesh scopes without materializing their compact references."""
+    """Bind mesh scopes without materializing their compact references.
+
+    Rebinding is opt-in and is safe only after the caller proves that the
+    mesh entity identities are unchanged.  Ordinary remeshing must continue
+    to fail closed instead of reusing stale element or node IDs.
+    """
 
     rebound: dict[str, NamedRegion] = {}
     for name, region in regions.items():
@@ -8764,6 +9036,6 @@ def _bind_mesh_region_revisions(
                     ),
                 ),
             )
-            continue
-        rebound[name] = region.bind_mesh_revision(mesh_revision)
+        else:
+            rebound[name] = region.bind_mesh_revision(mesh_revision)
     return rebound

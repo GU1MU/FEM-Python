@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import os
 from time import monotonic
 
@@ -498,12 +497,13 @@ def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
     bar.create_button.click()
     application.processEvents()
 
-    assert (
-        window.document.named_regions["PlateSurface"].references
-        == tuple(
-            replace(reference, part_id=window.document.active_part_id)
-            for reference in topology.mesh_references[geometry_face]
-        )
+    stored_references = window.document.named_regions[
+        "PlateSurface"
+    ].references
+    assert len(stored_references) == 1
+    assert stored_references[0].logical_id == (
+        f"face:{window.document.active_part_id}/"
+        f"{geometry_face.logical_id.split(':', 1)[1]}"
     )
     assert "PlateSurface" in window.document.model.element_sets
     assert len(resumed) == 1

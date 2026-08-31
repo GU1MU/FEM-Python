@@ -265,6 +265,52 @@ def test_polygonal_constraint_layout_prefers_geometric_corners():
     ]
 
 
+def test_polygonal_constraint_corners_ignore_collinear_xyz_ordered_nodes():
+    # This is the ordering produced by the boundary candidate sort for a
+    # 3-D rectangular face: all nodes along one coordinate are adjacent, so
+    # both boundary chains contain many collinear nodes.
+    points = np.asarray((
+        (100.0, 0.0, 0.0),
+        (100.0, 0.0, 5.0),
+        (100.0, 0.0, 10.0),
+        (100.0, 0.0, 15.0),
+        (100.0, 0.0, 20.0),
+        (100.0, 5.0, 0.0),
+        (100.0, 5.0, 20.0),
+        (100.0, 10.0, 0.0),
+        (100.0, 10.0, 20.0),
+        (100.0, 15.0, 0.0),
+        (100.0, 15.0, 20.0),
+        (100.0, 20.0, 0.0),
+        (100.0, 20.0, 20.0),
+        (100.0, 25.0, 0.0),
+        (100.0, 25.0, 20.0),
+        (100.0, 30.0, 0.0),
+        (100.0, 30.0, 20.0),
+        (100.0, 35.0, 0.0),
+        (100.0, 35.0, 20.0),
+        (100.0, 40.0, 0.0),
+        (100.0, 40.0, 20.0),
+        (100.0, 45.0, 0.0),
+        (100.0, 45.0, 20.0),
+        (100.0, 50.0, 0.0),
+        (100.0, 50.0, 5.0),
+        (100.0, 50.0, 10.0),
+        (100.0, 50.0, 15.0),
+        (100.0, 50.0, 20.0),
+    ))
+
+    selected = points[constraint_corner_indices(points, "medium")]
+
+    assert selected.shape == (4, 3)
+    assert sorted(map(tuple, selected)) == [
+        (100.0, 0.0, 0.0),
+        (100.0, 0.0, 20.0),
+        (100.0, 50.0, 0.0),
+        (100.0, 50.0, 20.0),
+    ]
+
+
 def test_symbol_length_uses_effective_sides_for_thin_models():
     thin_plate = np.array([[0.0, 0.0, 0.0], [100.0, 10.0, 0.001]])
     length = symbol_length(thin_plate)

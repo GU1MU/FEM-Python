@@ -319,7 +319,14 @@ class JobManagerDialog(QDialog):
         self.copy_button.setEnabled(terminal)
         self.rename_button.setEnabled(terminal)
         self.delete_button.setEnabled(terminal)
-        self.open_result_button.setEnabled(job is not None and job.has_result)
+        self.open_result_button.setEnabled(
+            job is not None and job.has_displayable_result
+        )
+        self.open_result_button.setText(
+            "打开部分结果"
+            if job is not None and job.has_partial_result
+            else "打开结果"
+        )
         self.monitor_button.setEnabled(job is not None)
 
     def _emit_submit(self) -> None:
@@ -685,7 +692,7 @@ class JobMonitorDialog(QDialog):
         if row is not None:
             self.table.selectRow(int(row))
         increment = self._selected_increment()
-        if increment is not None and self._job.has_result:
+        if increment is not None and self._job.has_displayable_result:
             self.resultFrameRequested.emit(self.job_name, increment)
 
     def _emit_selected_result_frame(self) -> None:
@@ -706,9 +713,15 @@ class JobMonitorDialog(QDialog):
                 RunStatus.CANCELLED,
             }
         )
-        self.open_result_button.setEnabled(self._job.has_result)
+        self.open_result_button.setEnabled(self._job.has_displayable_result)
+        self.open_result_button.setText(
+            "打开部分结果"
+            if self._job.has_partial_result
+            else "打开结果"
+        )
         self.jump_result_button.setEnabled(
-            self._job.has_result and self._selected_increment() is not None
+            self._job.has_displayable_result
+            and self._selected_increment() is not None
         )
 
     def _refresh_tabs(

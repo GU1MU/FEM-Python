@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
+import gc
 import logging
 import math
 from pathlib import Path
@@ -31,12 +32,12 @@ from fem.analysis import execution_plan_cache_scope
 from fem.io.inp import read_with_report as read_inp_with_report
 from fem.application import (
     AnalysisRun,
+    AnalysisConvergenceError,
     RunDiagnostics,
     RunDiagnosticsSnapshot,
     AuthoringCapability,
     AuthoringStatus,
     BeamFrameReport,
-    CompressedMeshEntityRefs,
     DefinitionEditBatch,
     DeleteIntent,
     DefinitionRejected,
@@ -455,6 +456,7 @@ _FULL_NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 20_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 _GLOBAL_LEGEND_BACKGROUND_FRAME_THRESHOLD = 4
 _RESULT_TOPOLOGY_BACKGROUND_ELEMENT_THRESHOLD = 2_000
+_ANIMATION_AUTO_TARGET_FRAMES = 120
 _RESULT_DISPLAY_TASK_NAMES = frozenset(
     {
         # These workers only prepare a field/frame for the next display
@@ -1184,6 +1186,10 @@ class FEMMainWindow(QMainWindow):
         self._result_frame_provider_cache: dict[
             tuple[ResultSourceKey, int, int], ResultProvider
         ] = {}
+        self._result_frame_combo_signature: (
+            tuple[ResultSourceKey | None, int, tuple[int, ...]] | None
+        ) = None
+        self._result_frame_combo_index_by_frame: dict[int, int] = {}
         self._result_probe_markers: list[
             tuple[str, tuple[float, float, float]]
         ] = []
@@ -1197,7 +1203,7 @@ class FEMMainWindow(QMainWindow):
         self._result_animation_start_frame: int | None = None
         self._result_animation_end_frame: int | None = None
         self._result_animation_loop = True
-        self._result_animation_frame_step = 1
+        self._result_animation_frame_step = 0
         self._result_animation_sampling_mode = "frame"
         self._result_animation_time_interval = 0.0
         self._result_animation_playback_mode = "loop"
@@ -1211,6 +1217,7 @@ class FEMMainWindow(QMainWindow):
         self._result_animation_direction = 1
         self._result_animation_hold_until = 0.0
         self._animation_lock_snapshot: dict[str, object] | None = None
+        self._result_animation_gc_was_enabled = False
         self.result_frame_combo: _ExactDataComboBox | None = None
         self.result_frame_first_button: QToolButton | None = None
         self.result_frame_previous_button: QToolButton | None = None
@@ -1964,8 +1971,8 @@ class FEMMainWindow(QMainWindow):
                     saved_animation.get("interval_ms", 250)
                 )
                 self._result_animation_frame_step = max(
-                    1,
-                    int(saved_animation.get("frame_step", 1)),
+                    0,
+                    int(saved_animation.get("frame_step", 0)),
                 )
                 self._result_animation_time_interval = max(
                     0.0,
@@ -1977,7 +1984,7 @@ class FEMMainWindow(QMainWindow):
                 )
             except (TypeError, ValueError):
                 self._result_animation_interval_ms = 250
-                self._result_animation_frame_step = 1
+                self._result_animation_frame_step = 0
                 self._result_animation_time_interval = 0.0
                 self._result_animation_speed = 1.0
             self._result_animation_loop = bool(saved_animation.get("loop", True))
@@ -3273,23 +3280,6 @@ class FEMMainWindow(QMainWindow):
                 "mesh.generate.unavailable",
                 "native geometry and mesh settings are required",
             )
-        has_mesh_scoped_regions = any(
-            isinstance(
-                getattr(region, "references", ()),
-                CompressedMeshEntityRefs,
-            )
-            for region in self.document.named_regions.values()
-        )
-        if self.document.model is not None or has_mesh_scoped_regions:
-            cleared = self.clear_generated_mesh(
-                self.document.session_revision
-            )
-            if cleared.diagnostic is not None:
-                return self._rejected_command(
-                    command_id,
-                    "mesh.generate.clear_failed",
-                    cleared.diagnostic.message,
-                )
         try:
             completion = GuiCommandCompletion(command_id)
             started = self._begin_mesh_generation(completion=completion)
@@ -3472,7 +3462,7 @@ class FEMMainWindow(QMainWindow):
                 error,
             )
         job = self.session.find_run(str(run_id))
-        if job is not None and job.has_result:
+        if job is not None and job.has_displayable_result:
             self._activate_job_result(job)
         return receipt
 
@@ -6459,7 +6449,15 @@ class FEMMainWindow(QMainWindow):
                         sampled.append(selected[-1])
                     if sampled:
                         return tuple(dict.fromkeys(sampled))
-        stride = max(1, int(self._result_animation_frame_step))
+        configured_stride = int(self._result_animation_frame_step)
+        stride = (
+            max(
+                1,
+                math.ceil(len(selected) / _ANIMATION_AUTO_TARGET_FRAMES),
+            )
+            if configured_stride == 0
+            else max(1, configured_stride)
+        )
         sampled = list(selected[::stride])
         if selected[-1] not in sampled:
             sampled.append(selected[-1])
@@ -6599,7 +6597,7 @@ class FEMMainWindow(QMainWindow):
         self._result_animation_start_frame = None
         self._result_animation_end_frame = None
         self._result_animation_loop = True
-        self._result_animation_frame_step = 1
+        self._result_animation_frame_step = 0
         self._result_animation_sampling_mode = "frame"
         self._result_animation_time_interval = 0.0
         self._result_animation_playback_mode = "loop"
@@ -6615,6 +6613,8 @@ class FEMMainWindow(QMainWindow):
         self._result_probe_pick_previous_mode = None
         self._result_frame_timer.setInterval(250)
         self._result_frame_provider_cache.clear()
+        self._result_frame_combo_signature = None
+        self._result_frame_combo_index_by_frame.clear()
         self._result_topology_template_cache.clear()
         self._result_global_legend_range_cache.clear()
         self._pending_result_provider_projection = None
@@ -6694,6 +6694,10 @@ class FEMMainWindow(QMainWindow):
 
     def _stop_result_animation(self, *, refresh: bool = True) -> None:
         self._result_frame_timer.stop()
+        if self._result_animation_gc_was_enabled:
+            gc.enable()
+            self._result_animation_gc_was_enabled = False
+            gc.collect()
         self._end_animation_locks()
         self._result_animation_direction = 1
         self._result_animation_hold_until = 0.0
@@ -6710,7 +6714,7 @@ class FEMMainWindow(QMainWindow):
         end = settings.get("end_frame")
         interval = settings.get("interval_ms")
         loop = settings.get("loop")
-        frame_step = settings.get("frame_step", 1)
+        frame_step = settings.get("frame_step", 0)
         sampling_mode = settings.get("sampling_mode", "frame")
         time_interval = settings.get("time_interval", 0.0)
         playback_mode = settings.get(
@@ -6735,7 +6739,7 @@ class FEMMainWindow(QMainWindow):
             or interval > 5000
             or type(loop) is not bool
             or type(frame_step) is not int
-            or frame_step < 1
+            or frame_step < 0
             or sampling_mode not in {"frame", "time"}
             or isinstance(time_interval, bool)
             or float(time_interval) < 0.0
@@ -6977,17 +6981,28 @@ class FEMMainWindow(QMainWindow):
                 self._result_animation_end_frame = frame_indices[-1]
         if self._result_frame_index not in sequence:
             self._result_frame_index = sequence[-1] if sequence else 0
+        frame_indices = (
+            () if provider is None else tuple(provider.frame_indices)
+        )
+        combo_signature = (
+            None if provider is None else provider.source,
+            -1 if provider is None else int(provider.snapshot.generation),
+            frame_indices,
+        )
         combo.blockSignals(True)
-        combo.clear()
-        if not sequence:
-            combo.addItem("—", None)
-        else:
-            if provider is not None and provider.frame_indices:
-                total = len(provider.frame_indices)
-                for frame_index in provider.frame_indices:
+        if combo_signature != self._result_frame_combo_signature:
+            combo.clear()
+            self._result_frame_combo_index_by_frame.clear()
+            if not sequence:
+                combo.addItem("—", None)
+            elif provider is not None and frame_indices:
+                total = len(frame_indices)
+                for item_index, frame_index in enumerate(frame_indices):
                     label = f"增量 {frame_index}/{total}"
                     combo.addItem(label, frame_index)
-                    item_index = combo.count() - 1
+                    self._result_frame_combo_index_by_frame[frame_index] = (
+                        item_index
+                    )
                     combo.setItemData(
                         item_index,
                         self._result_frame_info_text(
@@ -6998,8 +7013,14 @@ class FEMMainWindow(QMainWindow):
                     )
             else:
                 combo.addItem("最终结果", 0)
-            selected = combo.findData(self._result_frame_index)
-            combo.setCurrentIndex(selected if selected >= 0 else 0)
+                self._result_frame_combo_index_by_frame[0] = 0
+            self._result_frame_combo_signature = combo_signature
+        if sequence:
+            selected = self._result_frame_combo_index_by_frame.get(
+                self._result_frame_index,
+                0,
+            )
+            combo.setCurrentIndex(selected)
         combo.blockSignals(False)
         combo.setToolTip(
             "选择当前结果增量。\n"
@@ -7344,7 +7365,24 @@ class FEMMainWindow(QMainWindow):
             return
         self._set_result_frame(value)
 
-    def _set_result_frame(self, frame_index: int) -> None:
+    def _set_result_frame(
+        self,
+        frame_index: int,
+        *,
+        _from_animation: bool = False,
+    ) -> None:
+        """Request one result frame without letting playback outrun a worker.
+
+        Manual frame changes publish the requested index immediately so the
+        frame controls reflect the user's click while a display worker is
+        finishing.  Animation ticks are different: publishing an unrendered
+        index would make the worker's ``is_current`` guard reject the frame
+        currently being materialized, causing a slow animation to repeatedly
+        discard useful work.  Keep the committed index stable for animation
+        ticks and coalesce only the next request until the current frame is
+        ready.
+        """
+
         provider = self._current_result_provider()
         if provider is None:
             return
@@ -7352,20 +7390,24 @@ class FEMMainWindow(QMainWindow):
             return
         if self.busy:
             if self._result_display_request_pending():
-                self._queued_result_frame_request = (
+                request = (
                     provider.source,
                     int(provider.snapshot.generation),
                     int(frame_index),
                 )
+                request_changed = self._queued_result_frame_request != request
+                self._queued_result_frame_request = request
                 # Keep the user's latest selection visible while the previous
                 # display worker is being retired. The actual viewport commit
                 # is still deferred until the worker slot is idle.
-                self._result_frame_index = int(frame_index)
-                self._refresh_result_frame_controls(provider)
-                self.status_panel.set_state(
-                    "当前结果显示完成后切换增量……",
-                    3000,
-                )
+                if not _from_animation:
+                    self._result_frame_index = int(frame_index)
+                    self._refresh_result_frame_controls(provider)
+                if request_changed:
+                    self.status_panel.set_state(
+                        "当前结果显示完成后切换增量……",
+                        3000,
+                    )
             return
         previous = self._result_frame_index
         self._result_frame_index = frame_index
@@ -7481,8 +7523,11 @@ class FEMMainWindow(QMainWindow):
             self._result_animation_direction = 1
             initial = animation_sequence[0]
         if self._result_frame_index not in animation_sequence:
-            self._set_result_frame(initial)
+            self._set_result_frame(initial, _from_animation=True)
         self._result_animation_hold_until = 0.0
+        self._result_animation_gc_was_enabled = gc.isenabled()
+        if self._result_animation_gc_was_enabled:
+            gc.disable()
         self._result_frame_timer.start(
             max(
                 20,
@@ -7498,7 +7543,6 @@ class FEMMainWindow(QMainWindow):
         provider = self._current_result_provider()
         if (
             provider is None
-            or self.busy
             or not provider.frame_indices
         ):
             self._stop_result_animation()
@@ -7539,7 +7583,12 @@ class FEMMainWindow(QMainWindow):
                     self._stop_result_animation()
                     return
             target = frame_indices[target_position]
-        self._set_result_frame(target)
+        # A result-display worker may take longer than the animation interval.
+        # Keep the timer alive and let ``_set_result_frame`` coalesce this
+        # request; the next frame is submitted after the current worker is
+        # fully idle.  Stopping here makes ordinary lazy frame recovery look
+        # like an unexplained user pause.
+        self._set_result_frame(target, _from_animation=True)
 
     def _refresh_result_controls(self) -> None:
         provider = self._current_result_provider()
@@ -11381,6 +11430,7 @@ class FEMMainWindow(QMainWindow):
         if delta.effects & {
             TransitionEffect.ASSIGNMENTS_CLEARED,
             TransitionEffect.STEPS_CLEARED,
+            TransitionEffect.STEP_TARGETS_CLEARED,
         }:
             message += "；拓扑依赖失效"
         if TransitionEffect.MESH_SHAPE_NORMALIZED in delta.effects:
@@ -11434,6 +11484,7 @@ class FEMMainWindow(QMainWindow):
                 build_scope_selection_topology(
                     model,
                     self.document.geometry_recipe,
+                    part_id=self.document.active_part_id,
                 )
             )
         return self._scope_selection_topology_cache
@@ -11448,6 +11499,7 @@ class FEMMainWindow(QMainWindow):
                 scope_topology = build_scope_selection_topology(
                     model,
                     self.document.geometry_recipe,
+                    part_id=self.document.active_part_id,
                 )
                 self._scope_selection_topology_cache = scope_topology
             self._mesh_selection_topology_cache = (
@@ -11490,10 +11542,15 @@ class FEMMainWindow(QMainWindow):
             return
         artifact_id = artifact.artifact_id
         recipe = self.document.geometry_recipe
+        part_id = self.document.active_part_id
 
         def workload(context: TaskContext) -> object:
             context.report("正在分析网格作用域……")
-            scope_topology = build_scope_selection_topology(model, recipe)
+            scope_topology = build_scope_selection_topology(
+                model,
+                recipe,
+                part_id=part_id,
+            )
             context.checkpoint()
             context.report("正在准备边、面和体选择……")
             mesh_topology = build_mesh_selection_topology(
@@ -11595,6 +11652,7 @@ class FEMMainWindow(QMainWindow):
         *,
         requested_name: str | None = None,
         references: tuple[MeshEntityRef, ...] | None = None,
+        authoring_references: tuple[LogicalEntityRef, ...] | None = None,
         on_committed: Callable[[str], None] | None = None,
     ) -> str | None:
         references = (
@@ -11604,9 +11662,16 @@ class FEMMainWindow(QMainWindow):
         )
         if not references:
             return None
+        stored_references = (
+            references
+            if authoring_references is None
+            else tuple(authoring_references)
+        )
+        if not stored_references:
+            return None
         kind = references[0].kind
         for region in self.document.named_regions.values():
-            if region.references == references:
+            if region.references == stored_references:
                 return region.name
         if requested_name is None:
             dialog = NamedRegionDialog(
@@ -11632,7 +11697,7 @@ class FEMMainWindow(QMainWindow):
         regions = dict(self.document.named_regions)
         base_revision = self.document.session_revision
         try:
-            regions[name] = NamedRegion(name, references)
+            regions[name] = NamedRegion(name, stored_references)
             batch = NamedRegionEditBatch(
                 base_session_revision=base_revision,
                 regions=tuple(regions.values()),
@@ -11757,13 +11822,22 @@ class FEMMainWindow(QMainWindow):
         self,
         name: str,
         references: tuple[MeshEntityRef, ...],
+        authoring_references: tuple[LogicalEntityRef, ...] | None = None,
     ) -> bool:
         region = self.document.named_regions.get(str(name))
         if region is None:
             return False
         regions = dict(self.document.named_regions)
+        stored_references = (
+            references
+            if authoring_references is None
+            else tuple(authoring_references)
+        )
         try:
-            regions[region.name] = NamedRegion(region.name, references)
+            regions[region.name] = NamedRegion(
+                region.name,
+                stored_references,
+            )
             batch = NamedRegionEditBatch(
                 base_session_revision=self.document.session_revision,
                 regions=tuple(regions.values()),
@@ -12064,11 +12138,16 @@ class FEMMainWindow(QMainWindow):
         if not references:
             self.status_panel.set_state("请先选择至少一个对象", 3000)
             return
+        authoring_references = self._canonical_scope_authoring_selection()
         if self._pending_analysis_selection == "scope_edit":
             name = self._pending_named_region_edit_name
             if name is None:
                 return
-            if not self._commit_named_region_membership_edit(name, references):
+            if not self._commit_named_region_membership_edit(
+                name,
+                references,
+                authoring_references=authoring_references,
+            ):
                 return
             self._finish_scope_creation_from_bar(name)
             return
@@ -12076,6 +12155,7 @@ class FEMMainWindow(QMainWindow):
         name = self._create_region_from_current_mesh_selection(
             requested_name=bar.scope_name(),
             references=references,
+            authoring_references=authoring_references,
             on_committed=self._finish_scope_creation_from_bar,
         )
         if name is None:
@@ -16050,6 +16130,7 @@ class FEMMainWindow(QMainWindow):
         )
         run_monitor.start()
         self._run_diagnostics[job.run_id] = run_monitor
+        failure_payload: dict[str, object] = {}
 
         def workload(
             context: TaskContext,
@@ -16083,10 +16164,40 @@ class FEMMainWindow(QMainWindow):
                     should_cancel=lambda: context.is_cancelled,
                 )
             except AnalysisCancelled as error:
+                if error.partial_result is not None:
+                    try:
+                        failure_payload["partial_bundle"] = (
+                            build_solve_result_bundle(
+                                task,
+                                error.partial_result,
+                            )
+                        )
+                    except Exception:
+                        logging.exception(
+                            "failed to materialize cancelled nonlinear result"
+                        )
                 # The numerical layer deliberately does not import GUI task
                 # types. Convert its cooperative signal at this boundary so
                 # TaskWorker publishes the normal cancelled lifecycle.
                 context.checkpoint()
+                raise error
+            except AnalysisConvergenceError as error:
+                # Keep the structured partial result in this solve's closure.
+                # The generic task controller intentionally publishes ordinary
+                # failures as text; no failed-trial state is exposed here.
+                if error.partial_result is not None:
+                    try:
+                        failure_payload["partial_bundle"] = (
+                            build_solve_result_bundle(
+                                task,
+                                error.partial_result,
+                                cancellation=context,
+                            )
+                        )
+                    except Exception:
+                        logging.exception(
+                            "failed to materialize nonlinear partial result"
+                        )
                 raise error
             run_monitor.stage_changed("执行输出请求")
             context.report("正在执行输出请求……")
@@ -16152,19 +16263,27 @@ class FEMMainWindow(QMainWindow):
             lambda message, token=task.token, current_stage=stage: self._job_failed(
                 token,
                 message,
+                partial_bundle=failure_payload.get("partial_bundle"),
                 validation_failure=current_stage["name"] == "模型验证",
             ),
             task_name=f"作业 {job.name}",
-            on_cancelled=lambda token=task.token: self._job_cancelled(token),
+            on_cancelled=lambda token=task.token: self._job_cancelled(
+                token,
+                partial_bundle=failure_payload.get("partial_bundle"),
+            ),
             on_inactive_failure=(
                 lambda message, token=task.token, current_stage=stage: self._job_failed(
                     token,
                     message,
+                    partial_bundle=failure_payload.get("partial_bundle"),
                     validation_failure=current_stage["name"] == "模型验证",
                 )
             ),
             on_inactive_cancelled=(
-                lambda token=task.token: self._job_cancelled(token)
+                lambda token=task.token: self._job_cancelled(
+                    token,
+                    partial_bundle=failure_payload.get("partial_bundle"),
+                )
             ),
             apply_result=apply_result,
             completion=completion,
@@ -16299,12 +16418,25 @@ class FEMMainWindow(QMainWindow):
         token: object,
         message: str,
         *,
+        partial_bundle: object | None = None,
         validation_failure: bool = False,
     ) -> None:
         target_context = self._task_context_or_active()
-        self._apply_session_delta(
-            self.session.accept_run_failed(token, message)
-        )
+        if partial_bundle is not None:
+            try:
+                delta = self.session.accept_run_failed_with_partial_result(
+                    token,
+                    partial_bundle,
+                    message,
+                )
+            except (RuntimeError, TypeError, ValueError):
+                logging.exception(
+                    "failed to accept nonlinear partial result"
+                )
+                delta = self.session.accept_run_failed(token, message)
+        else:
+            delta = self.session.accept_run_failed(token, message)
+        self._apply_session_delta(delta)
         monitor = self._run_diagnostics.get(str(token.run_id))
         if monitor is not None:
             monitor.failed(message)
@@ -16315,6 +16447,8 @@ class FEMMainWindow(QMainWindow):
             target_context
         ):
             return
+        if job.has_partial_result:
+            self._activate_job_result(job)
         self._refresh_job_manager()
         state = "模型检查失败" if validation_failure else "分析失败"
         self.status_panel.set_state(f"{state}：{job.name}", 5000)
@@ -16323,11 +16457,27 @@ class FEMMainWindow(QMainWindow):
             message,
         )
 
-    def _job_cancelled(self, token: object) -> None:
+    def _job_cancelled(
+        self,
+        token: object,
+        *,
+        partial_bundle: object | None = None,
+    ) -> None:
         target_context = self._task_context_or_active()
-        self._apply_session_delta(
-            self.session.accept_run_cancelled(token)
-        )
+        if partial_bundle is not None:
+            try:
+                delta = self.session.accept_run_cancelled_with_partial_result(
+                    token,
+                    partial_bundle,
+                )
+            except (RuntimeError, TypeError, ValueError):
+                logging.exception(
+                    "failed to accept cancelled nonlinear partial result"
+                )
+                delta = self.session.accept_run_cancelled(token)
+        else:
+            delta = self.session.accept_run_cancelled(token)
+        self._apply_session_delta(delta)
         monitor = self._run_diagnostics.get(str(token.run_id))
         if monitor is not None:
             monitor.cancelled()
@@ -16338,8 +16488,15 @@ class FEMMainWindow(QMainWindow):
             target_context
         ):
             return
+        if job.has_partial_result:
+            self._activate_job_result(job)
         self._refresh_job_manager()
-        self.status_panel.set_state(f"分析已取消：{job.name}", 5000)
+        state = (
+            "分析已取消并保留部分结果"
+            if job.has_partial_result
+            else "分析已取消"
+        )
+        self.status_panel.set_state(f"{state}：{job.name}", 5000)
 
     def _activate_job_result(
         self,
@@ -16347,8 +16504,8 @@ class FEMMainWindow(QMainWindow):
         *,
         completion: bool = False,
     ) -> None:
-        """将一个已完成会话作业的结果接入现有后处理流程。"""
-        if not job.has_result:
+        """将一个成功或部分结果作业接入现有后处理流程。"""
+        if not job.has_displayable_result:
             return
         selection_delta = None
         if self.document.displayed_result_run_id != job.run_id:
@@ -16401,7 +16558,8 @@ class FEMMainWindow(QMainWindow):
         self._sync_step_combos()
         self.status_panel.set_result(self._result_status_text())
         if not completion:
-            self.status_panel.set_state(f"已打开结果：{job.name}", 5000)
+            label = "已打开部分结果" if job.has_partial_result else "已打开结果"
+            self.status_panel.set_state(f"{label}：{job.name}", 5000)
 
     def show_job_manager(self) -> JobManagerDialog | None:
         """显示唯一的会话作业管理器。"""
@@ -16637,9 +16795,9 @@ class FEMMainWindow(QMainWindow):
         return requested
 
     def open_job_result(self, name: str) -> None:
-        """打开一个已完成作业的内存结果，不重新求解。"""
+        """打开一个成功或部分完成作业的内存结果，不重新求解。"""
         job = self.session.find_run(name)
-        if job is None or not job.has_result:
+        if job is None or not job.has_displayable_result:
             return
         receipt = self.select_run_result(job.run_id)
         if receipt.diagnostic is not None:
@@ -16654,7 +16812,7 @@ class FEMMainWindow(QMainWindow):
         if type(increment) is not int or increment <= 0:
             return
         job = self.session.find_run(name)
-        if job is None or not job.has_result:
+        if job is None or not job.has_displayable_result:
             return
         if self.document.displayed_result_run_id != job.run_id:
             self.open_job_result(name)
@@ -17117,6 +17275,14 @@ class FEMMainWindow(QMainWindow):
         request = self._queued_result_frame_request
         if request is None or self.busy:
             return
+        # An animation tick can queue the next frame while the current frame's
+        # topology worker is finishing.  Commit that completed topology first;
+        # otherwise changing ``_result_frame_index`` below would make the
+        # already-computed frame look stale and discard the useful work.
+        if self._pending_result_topology_projection is not None:
+            self._flush_pending_result_topology_projection()
+            if self.busy:
+                return
         self._queued_result_frame_request = None
         source, generation, frame_index = request
         provider = self._current_result_provider()
@@ -17517,6 +17683,32 @@ class FEMMainWindow(QMainWindow):
                 self._selected_mesh_scope_refs,
                 key=mesh_entity_ref_sort_key,
             )
+        )
+
+    def _canonical_scope_authoring_selection(
+        self,
+    ) -> tuple[LogicalEntityRef, ...] | None:
+        """Return semantic scope refs in the active Part namespace."""
+
+        if (
+            self._pending_scope_kind not in {"edge", "face", "body"}
+            or not self._selected_geometry_refs
+        ):
+            return None
+        active_part_id = self.document.active_part_id
+        references = self._canonical_geometry_selection()
+        if active_part_id is None:
+            return references
+        return tuple(
+            reference
+            if part_id_from_logical_id(reference.logical_id) is not None
+            else LogicalEntityRef(
+                namespace_part_logical_id(
+                    active_part_id,
+                    reference.logical_id,
+                )
+            )
+            for reference in references
         )
 
     def _mesh_scope_selection_kind(self) -> str | None:
@@ -19558,38 +19750,14 @@ class FEMMainWindow(QMainWindow):
             previous_selection=self.result_selection,
         )
         if projection_spec is not None:
-            previous_selection = self.result_selection
-            self.result_selection = selection
-            if not self.result_tree.select_selection(
-                selection,
-                document_id=(
-                    None
-                    if active_context is None
-                    else active_context.document_id
-                ),
-                source=provider.source,
-            ):
-                self.result_selection = previous_selection
-                raise RuntimeError(
-                    "selected field disappeared from the result tree"
-                )
-            self._refresh_result_controls()
-            self.status_panel.set_result(self._result_status_text())
-            self._update_action_states()
             if self._begin_result_topology_projection(projection_spec):
+                # Keep the committed field and its controls unchanged until
+                # the worker-produced topology is ready.  Publishing the new
+                # selection here makes the ribbon/tree claim that S22 is
+                # displayed while the viewport still contains the previous
+                # RF/U payload.
                 self.status_panel.set_state("正在后台准备结果显示……")
                 return
-            self.result_selection = previous_selection
-            if previous_selection is not None:
-                self.result_tree.select_selection(
-                    previous_selection,
-                    document_id=(
-                        None
-                        if active_context is None
-                        else active_context.document_id
-                    ),
-                    source=provider.source,
-                )
         payload = self._build_result_render_payload(
             render_provider,
             render_selection,
@@ -20136,12 +20304,18 @@ class FEMMainWindow(QMainWindow):
         spec: _ResultTopologyProjectionSpec,
     ) -> bool:
         provider = self._current_result_provider()
+        active = self._active_result_topology_projection
+        selection_is_current = self.result_selection == spec.selection or (
+            active is spec
+            and self.result_selection == spec.previous_selection
+        )
         if (
             provider is None
             or provider.source != spec.provider.source
             or int(provider.snapshot.generation)
             != int(spec.provider.snapshot.generation)
-            or self.result_selection != spec.selection
+            or active is not spec
+            or not selection_is_current
             or self._result_frame_index
             != int(spec.template_key[2])
             or self._display.shape_mode != spec.shape_mode
@@ -20275,9 +20449,11 @@ class FEMMainWindow(QMainWindow):
             return
         self._pending_result_topology_projection = None
         spec, topology = pending
-        self._active_result_topology_projection = None
         if not self._result_topology_projection_is_current(spec):
+            if self._active_result_topology_projection is spec:
+                self._active_result_topology_projection = None
             return
+        self._active_result_topology_projection = None
         # A materialization completion and a topology-worker completion can
         # arrive in adjacent Qt turns. Re-check the immutable field state at
         # the commit boundary so a non-READY field never reaches the renderer.
@@ -20311,7 +20487,27 @@ class FEMMainWindow(QMainWindow):
                 payload,
                 provider=spec.provider,
                 selection=spec.selection,
+                render=False,
             )
+            active_context = self.workspace.active_document()
+            self.result_selection = spec.selection
+            if not self.result_tree.select_selection(
+                spec.selection,
+                document_id=(
+                    None
+                    if active_context is None
+                    else active_context.document_id
+                ),
+                source=spec.provider.source,
+            ):
+                self.result_selection = spec.previous_selection
+                raise RuntimeError(
+                    "selected field disappeared from the result tree"
+                )
+            self._refresh_result_controls()
+            self.status_panel.set_result(self._result_status_text())
+            self._update_action_states()
+            self.viewport.render()
             self.status_panel.set_state("结果显示已更新", 3000)
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             self._restore_failed_result_selection(spec)

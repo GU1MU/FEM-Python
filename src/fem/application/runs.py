@@ -69,6 +69,21 @@ class AnalysisRun:
         return self.status is RunStatus.SUCCEEDED and self.result_id is not None
 
     @property
+    def has_partial_result(self) -> bool:
+        """Whether a failed or cancelled run retained converged increments."""
+
+        return (
+            self.status in {RunStatus.FAILED, RunStatus.CANCELLED}
+            and self.result_id is not None
+        )
+
+    @property
+    def has_displayable_result(self) -> bool:
+        """Whether this run can open a successful or partial result view."""
+
+        return self.has_result or self.has_partial_result
+
+    @property
     def elapsed_seconds(self) -> float | None:
         if self.started_at is None:
             return None

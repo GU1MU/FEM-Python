@@ -4142,7 +4142,7 @@ class ResultAnimationDialog(QDialog):
                 sync_annotations,
             )
         )
-        frame_step = 1 if frame_step is None else int(frame_step)
+        frame_step = 0 if frame_step is None else int(frame_step)
         sampling_mode = "frame" if sampling_mode is None else str(sampling_mode)
         time_interval = 0.0 if time_interval is None else float(time_interval)
         playback_mode = (
@@ -4192,8 +4192,12 @@ class ResultAnimationDialog(QDialog):
         form.addRow("帧间隔", self.interval_spin)
 
         self.frame_step_spin = QSpinBox(self)
-        self.frame_step_spin.setRange(1, 1000000)
+        self.frame_step_spin.setRange(0, 1000000)
+        self.frame_step_spin.setSpecialValueText("自动")
         self.frame_step_spin.setValue(frame_step)
+        self.frame_step_spin.setToolTip(
+            "自动：按约 120 个显示帧播放；结果帧仍然全部保留"
+        )
         form.addRow("帧步长", self.frame_step_spin)
 
         self.sampling_combo = QComboBox(self)

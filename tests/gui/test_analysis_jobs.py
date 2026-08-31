@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 import pytest
 from PySide6.QtCore import QThread, Qt
 from PySide6.QtWidgets import (
@@ -20,12 +21,18 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-from fem.application import AnalysisRun, ModelSession, RunStatus
+from fem.application import (
+    AnalysisConvergenceError,
+    AnalysisRun,
+    ModelSession,
+    RunStatus,
+)
+from fem.analysis.incremental import IncrementalSolveResult
 from fem.model import StaticFormulation
 from fem.io.inp import read
-from fem.analysis import linear_static as static_linear
+from fem.analysis import AnalysisCancelled, linear_static as static_linear
+from fem.results import ModelResult, ResultFrame
 import fem.application.preflight as preflight_module
-from fem.solver.newton import SolveCancelled
 from fem_gui.analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from fem_gui.commands import GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
@@ -796,6 +803,75 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
     window.close()
 
 
+def test_failed_nonlinear_job_keeps_converged_frames_visible(monkeypatch):
+    _application()
+    window = FEMMainWindow()
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_show_error",
+        lambda title, message: shown.append((title, message)),
+    )
+    model = make_static_pull_truss_model()
+    window._model_loaded(Path("pull.inp"), (model, build_model_geometry(model)))
+    _accept_validation(window, "pull")
+
+    def fail_after_one_converged_frame(solve_model, step_name, **_kwargs):
+        step = next(
+            step for step in solve_model.steps if step.name == step_name
+        )
+        displacement = np.zeros(solve_model.mesh.num_dofs, dtype=float)
+        frame = ResultFrame(
+            model=solve_model,
+            step=step,
+            U=displacement,
+            reactions=np.zeros(solve_model.mesh.num_dofs, dtype=float),
+            frame_index=1,
+            load_factor=0.5,
+        )
+        partial = ModelResult(
+            model=solve_model,
+            step=step,
+            U=displacement,
+            reactions=np.zeros(solve_model.mesh.num_dofs, dtype=float),
+            frames=(frame,),
+        )
+        raise AnalysisConvergenceError(
+            "synthetic nonlinear failure",
+            failed_load_factor=1.0,
+            completed=IncrementalSolveResult(()),
+            partial_result=partial,
+            cause=RuntimeError("Newton did not converge"),
+        )
+
+    monkeypatch.setattr(
+        main_window_module,
+        "execute_analysis",
+        fail_after_one_converged_frame,
+    )
+
+    started = window._submit_job("Job-1", "pull")
+    assert started is not None
+    _wait_for_task(window)
+
+    failed = window.session.find_run(started.run_id)
+    current = window.session.current_result()
+    provider = window._current_result_provider()
+    assert failed is not None
+    assert failed.status is RunStatus.FAILED
+    assert not failed.has_result
+    assert failed.has_partial_result
+    assert current is not None
+    assert current.provenance.run_id == started.run_id
+    assert provider is not None
+    assert provider.frame_indices == (1,)
+    assert window.document.displayed_result_run_id == started.run_id
+    assert window.result_tree.topLevelItemCount() == 1
+    assert window.result_tree.topLevelItem(0).text(0) == "Job-1"
+    assert shown and shown[0][0] == "分析运行失败"
+    window.close()
+
+
 def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
     monkeypatch,
     gui_inp_path,
@@ -1065,14 +1141,39 @@ def test_job_manager_terminates_an_active_nonlinear_solver_without_waiting(
     solve_entered = Event()
     allow_solve_to_finish = Event()
 
-    def paused_nonlinear(*args, **kwargs):
-        del args
+    def paused_nonlinear(solve_model, step_name, **kwargs):
         should_cancel = kwargs["should_cancel"]
         solve_entered.set()
         while not should_cancel():
             if allow_solve_to_finish.wait(0.01):
                 raise RuntimeError("测试未能收到求解取消请求")
-        raise SolveCancelled("test nonlinear cancellation")
+        step = next(
+            step for step in solve_model.steps if step.name == step_name
+        )
+        displacement = np.zeros(solve_model.mesh.num_dofs, dtype=float)
+        partial = ModelResult(
+            model=solve_model,
+            step=step,
+            U=displacement,
+            reactions=np.zeros(solve_model.mesh.num_dofs, dtype=float),
+            frames=(
+                ResultFrame(
+                    model=solve_model,
+                    step=step,
+                    U=displacement,
+                    reactions=np.zeros(solve_model.mesh.num_dofs, dtype=float),
+                    frame_index=1,
+                    load_factor=0.5,
+                ),
+            ),
+        )
+        error = AnalysisCancelled(
+            "test nonlinear cancellation",
+            completed=IncrementalSolveResult(()),
+            cause=RuntimeError("user cancelled"),
+        )
+        error.partial_result = partial
+        raise error
 
     monkeypatch.setattr(
         main_window_module,
@@ -1103,6 +1204,13 @@ def test_job_manager_terminates_an_active_nonlinear_solver_without_waiting(
 
     cancelled = window.session.find_run(started.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
+    assert cancelled.has_partial_result
+    current = window.session.current_result()
+    provider = window._current_result_provider()
+    assert current is not None
+    assert current.provenance.run_id == started.run_id
+    assert provider is not None
+    assert provider.frame_indices == (1,)
     assert manager is not None
     assert manager.table.item(0, 3).text() == "已取消"
     manager.close()

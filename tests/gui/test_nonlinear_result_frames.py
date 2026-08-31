@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fem.application.result_workflow import build_solve_result_bundle
 
+import gc
 import os
 from pathlib import Path
 from time import monotonic
@@ -32,6 +33,26 @@ from tests.architecture.test_nlf30_gui_workflow import (
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_long_animation_uses_bounded_auto_display_sampling() -> None:
+    _application()
+    window = FEMMainWindow()
+
+    class _Provider:
+        frame_indices = tuple(range(1, 1732))
+
+    try:
+        sequence = window._result_animation_sequence(_Provider())
+        assert len(sequence) <= 121
+        assert sequence[0] == 1
+        assert sequence[-1] == 1731
+
+        window._result_animation_frame_step = 1
+        full_sequence = window._result_animation_sequence(_Provider())
+        assert len(full_sequence) == 1731
+    finally:
+        window.close()
 
 
 def test_nonlinear_quad4_result_frames_drive_display_without_replacing_session_result():
@@ -73,6 +94,16 @@ def test_nonlinear_quad4_result_frames_drive_display_without_replacing_session_r
         assert window.result_frame_combo.itemData(0) == 1
         assert window.result_frame_combo.itemData(1) == 2
         assert window.result_frame_combo.itemText(1) == "增量 2/2"
+        combo_row_mutations: list[str] = []
+        combo_model = window.result_frame_combo.model()
+        combo_model.rowsInserted.connect(
+            lambda *_args: combo_row_mutations.append("inserted")
+        )
+        combo_model.rowsRemoved.connect(
+            lambda *_args: combo_row_mutations.append("removed")
+        )
+        window._refresh_result_frame_controls(provider)
+        assert combo_row_mutations == []
         assert all(
             "λ=" not in window.result_frame_combo.itemText(index)
             and "Newton" not in window.result_frame_combo.itemText(index)
@@ -227,10 +258,40 @@ def test_nonlinear_quad4_result_frames_drive_display_without_replacing_session_r
         window.result_frame_speed_combo.setCurrentIndex(0)
         window._result_frame_speed_changed(0)
         assert window._result_frame_timer.interval() == 500
+        gc_was_enabled = gc.isenabled()
         window._toggle_result_animation()
         assert window._result_frame_timer.isActive()
+        if gc_was_enabled:
+            assert not gc.isenabled()
         window._toggle_result_animation()
         assert not window._result_frame_timer.isActive()
+        assert gc.isenabled() is gc_was_enabled
+
+        # A lazy frame may take longer than the playback interval.  A
+        # display-only worker must not be interpreted as a user stop, and the
+        # animation tick must coalesce the next frame instead of invalidating
+        # the frame that is currently being materialized.
+        window._set_result_frame(1)
+        window._result_frame_timer.start(1000)
+        started = window._start_task(
+            lambda _context: (QThread.msleep(100), None)[1],
+            lambda _value: None,
+            "动画回归测试",
+            task_name="结果字段按需加载",
+        )
+        assert started
+        assert window.busy
+        window._advance_result_animation()
+        assert window._result_frame_timer.isActive()
+        assert window._result_frame_index == 1
+        assert window._queued_result_frame_request is not None
+        window._stop_result_animation(refresh=False)
+        deadline = monotonic() + 2.0
+        while window.busy and monotonic() < deadline:
+            _application().processEvents()
+            QThread.msleep(1)
+        _application().processEvents()
+        assert not window.busy
 
         window._apply_result_animation_settings(
             {

@@ -17,6 +17,7 @@ from fem.application import (
     RegionAssignment,
     SectionDefinition,
     TokenStatus,
+    TransitionEffect,
 )
 from fem.model import (
     AnalysisStep,
@@ -359,6 +360,50 @@ def test_topology_change_preserves_only_geometry_independent_steps() -> None:
     assert after.assignments == ()
     assert not after.named_regions
     assert after.mesh_settings.local_controls == ()
+
+
+def test_topology_change_prunes_only_invalid_loads_inside_a_step() -> None:
+    session = ModelSession()
+    session.new_native_project()
+    recipe = BoxGeometry("Box", 2.0, 1.0, 0.5)
+    region = NamedRegion(
+        "Region-A",
+        (_first_reference(recipe, "body"),),
+    )
+    mixed = AnalysisStep(
+        "Mixed",
+        gravity_loads=(
+            GravityLoad((0.0, -9.81, 0.0)),
+            GravityLoad((0.0, 1.0, 0.0), "Region-A"),
+        ),
+    )
+    session.replace_geometry((NativePart(),), recipe)
+    session.replace_named_regions((region,))
+    session.replace_mesh_settings(MeshSettings(1.0))
+    session.replace_model_definitions(
+        (MaterialDefinition("Steel", {"E": 1.0}),),
+        (SectionDefinition("Solid", "Steel"),),
+        (RegionAssignment("Solid", "Region-A"),),
+        (mixed,),
+    )
+
+    delta = session.replace_geometry(
+        (NativePart(),),
+        RectangleGeometry("Plate", 3.0, 2.0),
+    )
+    after = session.snapshot()
+
+    assert after.steps == (
+        AnalysisStep(
+            "Mixed",
+            gravity_loads=(GravityLoad((0.0, -9.81, 0.0)),),
+        ),
+    )
+    assert delta.effects == {
+        TransitionEffect.NAMED_REGIONS_CLEARED,
+        TransitionEffect.ASSIGNMENTS_CLEARED,
+        TransitionEffect.STEP_TARGETS_CLEARED,
+    }
 
 
 @pytest.mark.parametrize(

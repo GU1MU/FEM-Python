@@ -23,6 +23,7 @@ _NORMAL_SOURCE_POINT_ID = "normal_source_point_id"
 _NORMAL_SOURCE_CELL_ID = "normal_source_cell_id"
 _SCALAR_SOURCE_POINT_ID = "scalar_source_point_id"
 _SCALAR_SOURCE_CELL_ID = "scalar_source_cell_id"
+_EDGE_SOURCE_POINT_ID = "edge_source_point_id"
 
 
 def extract_dataset_surface(dataset: Any, **options: Any) -> Any:
@@ -316,13 +317,6 @@ def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
 
     if edge_mode == CONTOUR_EDGE_NONE:
         return None
-    if edge_mode == CONTOUR_EDGE_ALL:
-        extractor = getattr(dataset, "extract_all_edges", None)
-        return (
-            dataset
-            if not callable(extractor)
-            else extractor(clear_data=True)
-        )
 
     # A few lightweight viewport/test adapters expose only ``points``.  They
     # cannot compute feature edges, but keeping the source dataset lets the
@@ -331,41 +325,81 @@ def extract_contour_edges(dataset: Any, edge_mode: str) -> Any | None:
     if not callable(getattr(dataset, "cast_to_unstructured_grid", None)):
         return dataset
 
+    source = dataset.copy(deep=False)
+    source.point_data[_EDGE_SOURCE_POINT_ID] = np.arange(
+        source.n_points,
+        dtype=np.int64,
+    )
+    if edge_mode == CONTOUR_EDGE_ALL:
+        return _keep_edge_source_ids(
+            source.extract_all_edges(clear_data=False)
+        )
+
     connected_geometry = (
-        dataset.cast_to_unstructured_grid().clean()
+        source.cast_to_unstructured_grid().clean()
     )
     surface = extract_dataset_surface(connected_geometry).clean()
     if edge_mode == CONTOUR_EDGE_EXTERIOR:
-        return surface.extract_all_edges(clear_data=True)
+        edges = surface.extract_all_edges(clear_data=False)
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_GEOMETRY:
         # Open surface boundaries preserve planar outer and hole contours;
         # angular features preserve solid-body geometric edges.
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             feature_angle=FEATURE_EDGE_ANGLE_DEGREES,
             boundary_edges=True,
             feature_edges=True,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_FEATURE:
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             feature_angle=FEATURE_EDGE_ANGLE_DEGREES,
             boundary_edges=False,
             feature_edges=True,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     if edge_mode == CONTOUR_EDGE_FREE:
-        return surface.extract_feature_edges(
+        edges = surface.extract_feature_edges(
             boundary_edges=True,
             feature_edges=False,
             manifold_edges=False,
             non_manifold_edges=False,
-            clear_data=True,
+            clear_data=False,
         )
+        return _keep_edge_source_ids(edges)
     raise ValueError(f"unknown contour edge mode: {edge_mode}")
+
+
+def update_contour_edge_geometry(edges: Any, dataset: Any) -> bool:
+    """Move already-extracted solid edges onto updated result points."""
+
+    point_data = getattr(edges, "point_data", None)
+    if point_data is None or _EDGE_SOURCE_POINT_ID not in point_data:
+        return False
+    source_ids = np.asarray(point_data[_EDGE_SOURCE_POINT_ID], dtype=np.int64)
+    source_points = np.asarray(dataset.points)
+    if (
+        source_ids.shape != (int(edges.n_points),)
+        or (source_ids.size and int(np.max(source_ids)) >= len(source_points))
+    ):
+        return False
+    edges.points = source_points[source_ids]
+    return True
+
+
+def _keep_edge_source_ids(edges: Any) -> Any:
+    for name in tuple(edges.point_data.keys()):
+        if name != _EDGE_SOURCE_POINT_ID:
+            del edges.point_data[name]
+    edges.cell_data.clear()
+    edges.field_data.clear()
+    return edges
 
 
 def style_contour_edges(edges: Any, edge_style: str) -> Any:
@@ -431,4 +465,5 @@ __all__ = [
     "contour_surface_options",
     "extract_contour_edges",
     "style_contour_edges",
+    "update_contour_edge_geometry",
 ]

@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 import gc
 
+import numpy as np
 import pytest
 
 from fem.application import (
@@ -16,6 +17,7 @@ from fem.application import (
 )
 from fem.results import (
     ResultMaterializationSnapshot,
+    ResultFrame,
     ResultTopologyProjection,
 )
 from fem.model import AnalysisStep, FEMModel
@@ -370,6 +372,49 @@ def test_pending_running_succeeded_lifecycle_and_provenance() -> None:
         ChangeKind.RESULTS,
         ChangeKind.DISPLAYED_RESULT,
     }
+
+
+def test_failed_run_retains_and_displays_converged_frames() -> None:
+    session = _session()
+    solve = session.prepare_solve("Step-A", "Job-1")
+    session.begin_run(solve.token)
+    matching_step = next(
+        step for step in solve.model.steps if step.name == solve.step_name
+    )
+    frame = ResultFrame(
+        model=solve.model,
+        step=matching_step,
+        U=np.zeros(solve.model.mesh.num_dofs),
+        reactions=np.zeros(solve.model.mesh.num_dofs),
+        frame_index=1,
+        load_factor=0.25,
+    )
+    base = make_solve_result_bundle(solve, marker=2.0)
+    partial = replace(base.result, frames=(frame,))
+    bundle = replace(base, result=partial)
+
+    delta = session.accept_run_failed_with_partial_result(
+        solve.token,
+        bundle,
+        "Newton failed at increment 2",
+    )
+
+    failed = session.find_run(solve.run_id)
+    current = session.current_result()
+    assert delta.accepted
+    assert failed is not None
+    assert failed.status is RunStatus.FAILED
+    assert not failed.has_result
+    assert failed.has_partial_result
+    assert failed.has_displayable_result
+    assert current is not None
+    assert current.provenance.run_id == solve.run_id
+    assert tuple(frame.frame_index for frame in current.result.frames) == (1,)
+    assert current.result.frames[0].load_factor == pytest.approx(0.25)
+
+    selected = session.select_result(solve.run_id)
+    assert selected.accepted
+    assert session.snapshot().displayed_result_run_id == solve.run_id
 
 
 def test_result_acceptance_deep_owns_all_public_result_views() -> None:

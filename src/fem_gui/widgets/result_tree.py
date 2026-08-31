@@ -932,6 +932,7 @@ def _successful_runs(projection: object) -> tuple[object, ...]:
         run
         for run in getattr(projection, "runs", ())
         if bool(getattr(run, "has_result", False))
+        or bool(getattr(run, "has_partial_result", False))
         or str(getattr(getattr(run, "status", None), "value", "")) == "succeeded"
     )
 
