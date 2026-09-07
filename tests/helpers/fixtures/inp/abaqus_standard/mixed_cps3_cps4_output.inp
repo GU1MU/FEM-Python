@@ -1,0 +1,33 @@
+*Heading
+Connected CPS4/CPS3 output execution fixture
+*Node
+1, 0., 0.
+2, 1., 0.
+3, 1., 1.
+4, 0., 1.
+5, 2., 0.5
+*Element, type=CPS4
+1, 1, 2, 3, 4
+*Element, type=CPS3
+2, 2, 5, 3
+*Elset, elset=DOMAIN
+1, 2
+*Nset, nset=FIXED
+1, 4
+*Material, name=ELASTIC
+*Elastic
+120., 0.25
+*Solid Section, elset=DOMAIN, material=ELASTIC
+1.
+*Step, name=LOAD
+*Static
+*Boundary
+FIXED, 1, 2, 0.
+*Cload
+5, 1, 1.
+*Output, field
+*Node Output
+RF, U
+*Element Output
+S
+*End Step

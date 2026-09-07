@@ -25,11 +25,6 @@ _STANDARD = (
     / "inp"
     / "abaqus_standard"
 )
-_MIXED_PLATE = (
-    Path(__file__).parents[2]
-    / "data"
-    / "MixedPlateCps3Cps4_PerforatedJob.inp"
-)
 
 
 def _source() -> ResultSourceKey:
@@ -135,7 +130,8 @@ def test_imported_abaqus_outputs_match_native_projection_and_execution() -> None
 
 
 def test_mixed_cps3_cps4_import_executes_u_rf_and_s_requests() -> None:
-    model = read(_MIXED_PLATE)
+    model = read(_STANDARD / "mixed_cps3_cps4_output.inp")
+    assert {element.type for element in model.mesh.elements} == {"Tri3", "Quad4"}
     step = next(item for item in model.steps if item.name == "LOAD")
 
     assert tuple(
