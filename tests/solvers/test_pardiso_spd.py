@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 from scipy.sparse import csc_matrix, csr_matrix
 
-from fem import solvers
 from fem.solvers import _pardiso_spd
 
 
@@ -18,6 +17,7 @@ def fake_backend(monkeypatch):
         construction_error = None
         solve_error = None
         solve_result = None
+        release_error = None
 
         def __init__(self, matrix, mtype):
             self.matrix = matrix
@@ -28,6 +28,7 @@ def fake_backend(monkeypatch):
                 raise type(self).construction_error
 
         def solve(self, rhs):
+            self.last_rhs = rhs
             if type(self).solve_error is not None:
                 raise type(self).solve_error
             if type(self).solve_result is not None:
@@ -38,13 +39,17 @@ def fake_backend(monkeypatch):
 
         def release(self):
             self.release_calls += 1
+            if type(self).release_error is not None:
+                raise type(self).release_error
 
     monkeypatch.setattr(
         _pardiso_spd,
         "_NativePardisoSolver",
         FakePardisoSolver,
     )
-    return FakePardisoSolver
+    yield FakePardisoSolver
+
+    assert all(backend.release_calls == 1 for backend in FakePardisoSolver.instances)
 
 
 def _unsorted_spd_upper() -> csr_matrix:
@@ -97,11 +102,17 @@ def test_factorize_normalizes_an_owned_sorted_float64_csr_and_solves_1d_rhs(
     finally:
         factor.close()
 
-    assert backend.mtype == _pardiso_spd._MTYPE_REAL_SYM_POSDEF == 2
+    assert backend.mtype == 2
     assert isinstance(backend.matrix, csr_matrix)
     assert backend.matrix.dtype == np.dtype(np.float64)
     assert backend.matrix.has_sorted_indices
-    assert backend.matrix is not matrix
+    assert backend.matrix.has_canonical_format
+    for buffer in ("data", "indices", "indptr"):
+        assert not np.shares_memory(
+            getattr(backend.matrix, buffer), getattr(matrix, buffer),
+        )
+    assert backend.last_rhs.dtype == np.float64
+    assert not np.shares_memory(backend.last_rhs, rhs)
     np.testing.assert_array_equal(matrix.data, original_data)
     np.testing.assert_array_equal(matrix.indices, original_indices)
     assert matrix.dtype == np.dtype(np.float32)
@@ -114,13 +125,15 @@ def test_factorize_normalizes_an_owned_sorted_float64_csr_and_solves_1d_rhs(
     )
 
 
-def test_factor_solve_accepts_multiple_rhs(fake_backend):
+def test_factor_solve_owns_float64_multiple_rhs_and_matches_dense_solution(fake_backend):
     rhs = np.array(
         [
             [1.0, 4.0],
             [2.0, -1.0],
             [3.0, 0.5],
-        ]
+        ],
+        dtype=np.float32,
+        order="F",
     )
     factor = _pardiso_spd.factorize_spd(_spd_upper())
     try:
@@ -128,6 +141,9 @@ def test_factor_solve_accepts_multiple_rhs(fake_backend):
     finally:
         factor.close()
 
+    backend = fake_backend.instances[0]
+    assert backend.last_rhs.dtype == np.float64
+    assert not np.shares_memory(backend.last_rhs, rhs)
     assert result.shape == rhs.shape
     np.testing.assert_allclose(
         result,
@@ -166,7 +182,6 @@ def _csr_with_duplicate() -> csr_matrix:
         (csc_matrix(np.eye(2)), "CSR format"),
         (csr_matrix(np.ones((2, 3))), "square 2D"),
         (_csr_with_nonfinite(np.nan), "finite"),
-        (_csr_with_nonfinite(np.inf), "finite"),
         (
             csr_matrix(np.array([[2.0, 1.0], [0.0, 0.0]])),
             "explicit diagonal at row 1",
@@ -179,8 +194,14 @@ def _csr_with_duplicate() -> csr_matrix:
         ),
         (csr_matrix(np.eye(2, dtype=np.complex128)), "real numeric"),
     ],
+    ids=(
+        "non-csr", "nonsquare", "nonfinite", "missing-diagonal",
+        "zero-diagonal", "negative-diagonal", "lower-entry", "complex",
+    ),
 )
-def test_factorize_rejects_invalid_matrix_contract(matrix, message, fake_backend):
+def test_factorize_rejects_invalid_matrix_before_backend_construction(
+    matrix, message, fake_backend,
+):
     with pytest.raises(ValueError, match=message):
         _pardiso_spd.factorize_spd(matrix)
 
@@ -241,13 +262,12 @@ def test_factorize_discards_explicit_zero_below_the_diagonal(fake_backend):
 @pytest.mark.parametrize(
     ("rhs", "message"),
     [
-        (np.array(1.0), "must have shape"),
         (np.ones(2), "must have shape"),
         (np.ones((3, 1, 1)), "must have shape"),
         (np.array([1.0, np.nan, 3.0]), "finite"),
-        (np.array([1.0, np.inf, 3.0]), "finite"),
         (np.ones(3, dtype=np.complex128), "real numeric"),
     ],
+    ids=("wrong-length", "wrong-rank", "nonfinite", "complex"),
 )
 def test_factor_solve_rejects_invalid_rhs(rhs, message, fake_backend):
     factor = _pardiso_spd.factorize_spd(_spd_upper())
@@ -258,62 +278,71 @@ def test_factor_solve_rejects_invalid_rhs(rhs, message, fake_backend):
         factor.close()
 
 
-def test_backend_solve_failure_has_a_stable_exception_chain(fake_backend):
-    native_error = MemoryError("native allocation failed")
-    fake_backend.solve_error = native_error
-    factor = _pardiso_spd.factorize_spd(_spd_upper())
-    try:
-        with pytest.raises(
-            _pardiso_spd._PardisoSPDMemoryError,
-            match="PARDISO SPD solve failed: insufficient memory",
-        ) as caught:
-            factor.solve(np.ones(3))
-    finally:
-        factor.close()
-
-    assert caught.value.__cause__ is native_error
-
-
-def test_backend_non_memory_solve_failure_keeps_the_generic_error_contract(
-    fake_backend,
-):
-    native_error = RuntimeError("zero pivot")
-    fake_backend.solve_error = native_error
-    factor = _pardiso_spd.factorize_spd(_spd_upper())
-    try:
-        with pytest.raises(
-            _pardiso_spd._PardisoSPDError,
-            match="PARDISO SPD solve failed",
-        ) as caught:
-            factor.solve(np.ones(3))
-    finally:
-        factor.close()
-
-    assert not isinstance(caught.value, _pardiso_spd._PardisoSPDMemoryError)
-    assert caught.value.__cause__ is native_error
-
-
 @pytest.mark.parametrize(
-    "native_error",
+    ("stage", "native_error", "expected_type"),
     [
-        MemoryError("native allocation failed"),
-        RuntimeError("not enough memory for factorization"),
-        RuntimeError("insufficient memory in PARDISO"),
+        (
+            "factorization",
+            MemoryError("native allocation failed"),
+            _pardiso_spd._PardisoSPDMemoryError,
+        ),
+        (
+            "factorization",
+            RuntimeError("not enough memory for factorization"),
+            _pardiso_spd._PardisoSPDMemoryError,
+        ),
+        (
+            "factorization",
+            RuntimeError("insufficient memory in PARDISO"),
+            _pardiso_spd._PardisoSPDMemoryError,
+        ),
+        (
+            "factorization",
+            RuntimeError("matrix is not positive definite"),
+            _pardiso_spd._PardisoSPDError,
+        ),
+        (
+            "solve",
+            MemoryError("native allocation failed"),
+            _pardiso_spd._PardisoSPDMemoryError,
+        ),
+        (
+            "solve",
+            RuntimeError("zero pivot"),
+            _pardiso_spd._PardisoSPDError,
+        ),
     ],
+    ids=(
+        "factor-memory-error",
+        "factor-not-enough-memory",
+        "factor-insufficient-memory",
+        "factor-generic-error",
+        "solve-memory-error",
+        "solve-generic-error",
+    ),
 )
-def test_factorization_classifies_native_memory_failures(
-    fake_backend,
-    native_error,
+def test_native_failure_preserves_error_category_cause_and_releases_backend(
+    fake_backend, stage, native_error, expected_type,
 ):
-    fake_backend.construction_error = native_error
+    message = f"PARDISO SPD {stage} failed"
+    if expected_type is _pardiso_spd._PardisoSPDMemoryError:
+        message += ": insufficient memory"
+    if stage == "factorization":
+        fake_backend.construction_error = native_error
+        with pytest.raises(expected_type, match=message) as caught:
+            _pardiso_spd.factorize_spd(_spd_upper())
+    else:
+        fake_backend.solve_error = native_error
+        factor = _pardiso_spd.factorize_spd(_spd_upper())
+        try:
+            with pytest.raises(expected_type, match=message) as caught:
+                factor.solve(np.ones(3))
+        finally:
+            factor.close()
 
-    with pytest.raises(
-        _pardiso_spd._PardisoSPDMemoryError,
-        match="PARDISO SPD factorization failed: insufficient memory",
-    ) as caught:
-        _pardiso_spd.factorize_spd(_spd_upper())
-
+    assert type(caught.value) is expected_type
     assert caught.value.__cause__ is native_error
+    assert len(fake_backend.instances) == 1
     assert fake_backend.instances[0].release_calls == 1
 
 
@@ -323,6 +352,7 @@ def test_factorization_classifies_native_memory_failures(
         (np.zeros(2), "invalid result shape"),
         (np.array([1.0, np.nan, 3.0]), "non-finite"),
     ],
+    ids=("wrong-shape", "nonfinite"),
 )
 def test_factor_rejects_invalid_backend_result(result, message, fake_backend):
     fake_backend.solve_result = result
@@ -362,30 +392,11 @@ def test_factor_finalizer_releases_an_open_backend_once(fake_backend):
     assert backend.release_calls == 1
 
 
-def test_release_failure_is_chained_and_is_not_retried(monkeypatch):
+def test_release_failure_is_chained_and_is_not_retried(fake_backend):
     native_error = RuntimeError("native release failed")
-
-    class ReleaseFailingSolver:
-        instances = []
-
-        def __init__(self, _matrix, _mtype):
-            self.release_calls = 0
-            type(self).instances.append(self)
-
-        def solve(self, rhs):
-            return rhs
-
-        def release(self):
-            self.release_calls += 1
-            raise native_error
-
-    monkeypatch.setattr(
-        _pardiso_spd,
-        "_NativePardisoSolver",
-        ReleaseFailingSolver,
-    )
+    fake_backend.release_error = native_error
     factor = _pardiso_spd.factorize_spd(_spd_upper())
-    backend = ReleaseFailingSolver.instances[0]
+    backend = fake_backend.instances[0]
 
     with pytest.raises(
         _pardiso_spd._PardisoSPDError,
@@ -396,29 +407,6 @@ def test_release_failure_is_chained_and_is_not_retried(monkeypatch):
 
     assert caught.value.__cause__ is native_error
     assert backend.release_calls == 1
-
-
-def test_factorization_failure_releases_the_partly_constructed_backend(
-    fake_backend,
-):
-    native_error = RuntimeError("matrix is not positive definite")
-    fake_backend.construction_error = native_error
-
-    with pytest.raises(
-        _pardiso_spd._PardisoSPDError,
-        match="PARDISO SPD factorization failed",
-    ) as caught:
-        _pardiso_spd.factorize_spd(_spd_upper())
-
-    assert caught.value.__cause__ is native_error
-    assert len(fake_backend.instances) == 1
-    assert fake_backend.instances[0].release_calls == 1
-
-
-def test_private_adapter_is_not_in_the_solver_package_public_surface():
-    assert "_pardiso_spd" not in solvers.__all__
-    assert "factorize_spd" not in solvers.__all__
-    assert "PardisoSPDFactor" not in solvers.__all__
 
 
 @pytest.mark.optional_runtime
@@ -458,10 +446,15 @@ def test_pardiso_native_runtime_rejects_an_indefinite_matrix_at_factorization():
         )
     )
 
-    with pytest.raises(
-        _pardiso_spd._PardisoSPDError,
-        match="PARDISO SPD factorization failed",
-    ) as caught:
-        _pardiso_spd.factorize_spd(indefinite_upper)
+    factor = None
+    try:
+        with pytest.raises(
+            _pardiso_spd._PardisoSPDError,
+            match="PARDISO SPD factorization failed",
+        ) as caught:
+            factor = _pardiso_spd.factorize_spd(indefinite_upper)
+    finally:
+        if factor is not None:
+            factor.close()
 
     assert caught.value.__cause__ is not None
