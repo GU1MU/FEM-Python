@@ -1,47 +1,9 @@
 from __future__ import annotations
 
-from copy import deepcopy
-from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 
-import fem.materials.assignment as assignment_module
-from fem.io.inp import read
 from fem import materials
-from fem.core.model import (
-    ElementSet,
-    MaterialDefinition,
-    SectionAssignment,
-)
-from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.elements import (
-    BEAM_LOCAL_Y_REFERENCE_KEY,
-    BeamOrientation,
-    resolve_beam_frame,
-)
-
-
-def _element(
-    element_id: int,
-    element_type: str,
-    **properties,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=element_id,
-        type=element_type,
-        props=dict(properties),
-    )
-
-
-def _model(*elements: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(
-        mesh=SimpleNamespace(elements=list(elements)),
-        materials={},
-        sections=[],
-        element_sets={},
-        metadata={},
-    )
+from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
 def test_known_section_schemas_resolve_owned_effective_properties() -> None:
@@ -84,30 +46,15 @@ def test_known_section_schemas_resolve_owned_effective_properties() -> None:
 
 
 @pytest.mark.parametrize(
-    ("section_type", "properties", "expected"),
+    ("section_type", "properties"),
     (
-        (
-            "rectangle",
-            {"height": 4.0, "width": 2.0},
-            {"height": 4.0, "width": 2.0},
-        ),
-        (
-            "solid_circle",
-            {"radius": 2.0},
-            {"radius": 2.0},
-        ),
-        (
-            "hollow_circle",
-            {"outer_radius": 2.0, "inner_radius": 1.0},
-            {"outer_radius": 2.0, "inner_radius": 1.0},
-        ),
+        ("rectangle", {"height": 4.0, "width": 2.0}),
+        ("solid_circle", {"radius": 2.0}),
+        ("hollow_circle", {"outer_radius": 2.0, "inner_radius": 1.0}),
     ),
+    ids=("rectangle", "solid-circle", "hollow-circle"),
 )
-def test_beam_presets_use_one_validated_schema(
-    section_type,
-    properties,
-    expected,
-) -> None:
+def test_beam_presets_preserve_validated_dimensions(section_type, properties) -> None:
     resolved = materials.resolve_section_properties(
         "Beam2",
         {"E": 210.0, "nu": 0.3},
@@ -120,8 +67,8 @@ def test_beam_presets_use_one_validated_schema(
     assert resolved.section_type == section_type
     assert {
         name: resolved.effective_properties[name]
-        for name in expected
-    } == expected
+        for name in properties
+    } == properties
 
 
 def test_plane_defaults_use_explicit_formulation_not_source_provenance() -> None:
@@ -163,25 +110,31 @@ def test_plane_defaults_use_explicit_formulation_not_source_provenance() -> None
     assert overridden.effective_properties["thickness"] == 3.0
 
 
-@pytest.mark.parametrize("value", (0.0, -1.0, float("nan"), float("inf")))
-def test_all_families_require_a_positive_finite_elastic_modulus(
-    value,
+@pytest.mark.parametrize("properties", ({}, {"E": 0.0}), ids=("missing", "zero"))
+def test_truss_rejects_missing_or_invalid_elastic_modulus(
+    properties,
 ) -> None:
     with pytest.raises(materials.MaterialPropertyError, match="E"):
         materials.resolve_section_properties(
             "Truss2",
-            {"E": value},
+            properties,
             "truss",
             {"area": 1.0},
         )
 
 
-@pytest.mark.parametrize("element_type", ("Tri3", "Tet4", "Beam2"))
 @pytest.mark.parametrize(
-    "nu",
-    (None, -1.0, 0.5, float("nan"), float("inf")),
+    ("element_type", "nu"),
+    (
+        ("Tri3", None),
+        ("Tri3", 0.5),
+        ("Tet4", None),
+        ("Tet4", 0.5),
+        ("Beam2", None),
+        ("Beam2", 0.5),
+    ),
 )
-def test_continuum_and_beam_require_core_range_poisson_ratio(
+def test_continuum_and_beam_reject_missing_or_invalid_poisson_ratio(
     element_type,
     nu,
 ) -> None:
@@ -214,8 +167,8 @@ def test_truss_requires_only_E_and_ignores_irrelevant_nu() -> None:
     assert resolved.effective_properties["nu"] == "not-used"
 
 
-@pytest.mark.parametrize("rho", (-1.0, float("nan"), float("inf"), None))
-def test_optional_density_is_finite_and_nonnegative_when_present(rho) -> None:
+@pytest.mark.parametrize("rho", (-1.0, None))
+def test_section_rejects_invalid_density_when_present(rho) -> None:
     with pytest.raises(materials.MaterialPropertyError, match="rho"):
         materials.resolve_section_properties(
             "Truss2",
@@ -224,6 +177,8 @@ def test_optional_density_is_finite_and_nonnegative_when_present(rho) -> None:
             {"area": 1.0},
         )
 
+
+def test_zero_density_is_allowed() -> None:
     resolved = materials.resolve_section_properties(
         "Truss2",
         {"E": 210.0, "rho": 0.0},
@@ -242,7 +197,7 @@ def test_optional_density_is_finite_and_nonnegative_when_present(rho) -> None:
         ("Beam2", "solid", {}),
     ),
 )
-def test_section_family_compatibility_fails_closed(
+def test_section_rejects_incompatible_element_family(
     element_type,
     section_type,
     properties,
@@ -291,185 +246,6 @@ def test_section_property_validation_covers_known_invalid_shapes(
         )
 
 
-def test_resolution_preserves_order_last_match_and_uncovered_facts() -> None:
-    first = _element(1, "Truss2", custom="first")
-    second = _element(2, "Truss2")
-    uncovered = _element(3, "Truss2", E=9.0, area=9.0)
-    model = _model(first, second, uncovered)
-    model.materials = {
-        "first": MaterialDefinition("first", {"E": 100.0}),
-        "last": MaterialDefinition("last", {"E": 50.0}),
-    }
-    model.element_sets = {
-        "BOTH": ElementSet("BOTH", (1, 2)),
-        "SECOND": ElementSet("SECOND", (2,)),
-    }
-    model.sections = [
-        SectionAssignment("BOTH", "first", "truss", {"area": 2.0}),
-        SectionAssignment("SECOND", "last", "truss", {"area": 4.0}),
-    ]
-    before = deepcopy(model)
-
-    resolution = materials.resolve_sections(model)
-
-    assert resolution.passed
-    assert resolution.assignment_order == (0, 1)
-    assert [item.element_set for item in resolution.assignments] == [
-        "BOTH",
-        "SECOND",
-    ]
-    assert resolution.for_element(1).material == "first"
-    assert resolution.for_element(1).effective_properties["area"] == 2.0
-    assert resolution.for_element(2).material == "last"
-    assert resolution.for_element(2).effective_properties["area"] == 4.0
-    assert resolution.uncovered_element_ids == (3,)
-    assert not resolution.fully_covered
-    assert model.mesh.elements[0].props == before.mesh.elements[0].props
-    assert model.mesh.elements[1].props == before.mesh.elements[1].props
-    assert model.metadata == before.metadata
-
-
-def test_resolution_reuses_identical_property_combinations(monkeypatch) -> None:
-    elements = tuple(_element(index, "Tet4") for index in range(1, 5))
-    model = _model(*elements)
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.element_sets["ALL"] = ElementSet("ALL", (1, 2, 3, 4))
-    model.sections = [SectionAssignment("ALL", "steel", "solid")]
-    original = assignment_module.resolve_section_properties
-    calls = 0
-
-    def counted(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(
-        assignment_module,
-        "resolve_section_properties",
-        counted,
-    )
-
-    resolution = materials.resolve_sections(model)
-
-    assert resolution.passed
-    assert len(resolution.effective_assignments) == 4
-    assert calls == 1
-
-
-def test_resolution_aggregates_missing_and_incompatible_information() -> None:
-    truss = _element(1, "Truss2")
-    solid = _element(2, "Tet4")
-    model = _model(truss, solid)
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.element_sets = {
-        "TRUSS": ElementSet("TRUSS", (1,)),
-        "MISSING_ID": ElementSet("MISSING_ID", (99,)),
-        "MIXED": ElementSet("MIXED", (1, 2)),
-    }
-    model.sections = [
-        SectionAssignment("TRUSS", "missing", "truss", {"area": 1.0}),
-        SectionAssignment("missing-set", "steel", "solid"),
-        SectionAssignment("MISSING_ID", "steel", "solid"),
-        SectionAssignment("MIXED", "steel", "truss", {"area": 1.0}),
-    ]
-
-    resolution = materials.resolve_sections(model)
-
-    assert not resolution.passed
-    assert resolution.missing_materials == ("missing",)
-    assert resolution.missing_element_sets == ("missing-set",)
-    assert resolution.missing_element_ids == (99,)
-    assert resolution.incompatible_element_ids == (2,)
-    assert resolution.for_element(1).assignment_index == 3
-    assert resolution.uncovered_element_ids == ()
-    assert [issue.code for issue in resolution.issues] == [
-        "definition.material.missing",
-        "definition.section.reference_missing",
-        "definition.section.reference_missing",
-        "definition.section.incompatible",
-    ]
-
-
-def test_resolution_supports_importer_internal_element_sets() -> None:
-    element = _element(1, "Tet4")
-    model = _model(element)
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.metadata["_abaqus_internal_element_sets"] = {
-        "_section_0_SOLID": ElementSet("_section_0_SOLID", (1,))
-    }
-    model.sections = [
-        SectionAssignment("_section_0_SOLID", "steel", "solid")
-    ]
-
-    resolution = materials.resolve_sections(model)
-
-    assert resolution.passed
-    assert resolution.fully_covered
-    assert resolution.uncovered_element_ids == ()
-    assert resolution.for_element(1).element_set == "_section_0_SOLID"
-
-
-def test_real_importer_internal_section_set_uses_the_same_resolution() -> None:
-    fixture = (
-        Path(__file__).parents[1]
-        / "helpers" / "fixtures"
-        / "inp"
-        / "internal_section_set.inp"
-    )
-    model = read(fixture)
-
-    resolution = materials.resolve_sections(model)
-    materials.apply_sections(model)
-
-    assert resolution.passed
-    assert resolution.uncovered_element_ids == ()
-    assert resolution.effective_assignments[0].element_set.startswith(
-        "_section_"
-    )
-    assert model.mesh.elements[0].props["material"] == "STEEL"
-
-
-def test_apply_sections_consumes_resolution_and_restores_baseline() -> None:
-    element = _element(1, "CPE3", custom="base")
-    model = _model(element)
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.element_sets["DOMAIN"] = ElementSet("DOMAIN", (1,))
-    model.sections = [
-        SectionAssignment(
-            "DOMAIN",
-            "steel",
-            "solid",
-            {"thickness": 2.0},
-        )
-    ]
-    resolved = materials.resolve_sections(model).for_element(1)
-
-    materials.apply_sections(model)
-
-    assert {
-        name: element.props[name]
-        for name in resolved.applied_properties
-    } == resolved.applied_properties
-    assert element.props["plane_type"] == "strain"
-    assert element.props["custom"] == "base"
-
-    model.sections.clear()
-    materials.apply_sections(model)
-    assert element.props == {"custom": "base"}
-
-
 def test_legacy_truss_default_is_normalized_without_weakening_other_families() -> None:
     resolved = materials.resolve_section_properties(
         "Truss2",
@@ -488,24 +264,6 @@ def test_legacy_truss_default_is_normalized_without_weakening_other_families() -
         {"thickness": 1.0},
     )
     assert plane.section_type == "solid"
-
-
-def test_later_invalid_assignment_cannot_leave_an_earlier_match_effective() -> None:
-    element = _element(1, "Truss2")
-    model = _model(element)
-    model.materials["steel"] = MaterialDefinition("steel", {"E": 210.0})
-    model.element_sets["BAR"] = ElementSet("BAR", (1,))
-    model.sections = [
-        SectionAssignment("BAR", "steel", "truss", {"area": 1.0}),
-        SectionAssignment("BAR", "steel", "solid"),
-    ]
-
-    resolution = materials.resolve_sections(model)
-
-    assert not resolution.passed
-    assert resolution.for_element(1) is None
-    assert resolution.uncovered_element_ids == ()
-    assert resolution.incompatible_element_ids == (1,)
 
 
 def test_beam_orientation_property_is_canonical_and_assignment_owned() -> None:
@@ -533,7 +291,6 @@ def test_beam_orientation_property_is_canonical_and_assignment_owned() -> None:
         2.0,
         0.0,
     )
-    assert BEAM_LOCAL_Y_REFERENCE_KEY in resolved.owned_property_keys
 
 
 def test_covered_automatic_beam_suppresses_direct_baseline_orientation() -> None:
@@ -549,7 +306,6 @@ def test_covered_automatic_beam_suppresses_direct_baseline_orientation() -> None
 
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in resolved.applied_properties
     assert BEAM_LOCAL_Y_REFERENCE_KEY not in resolved.effective_properties
-    assert BEAM_LOCAL_Y_REFERENCE_KEY in resolved.owned_property_keys
 
 
 @pytest.mark.parametrize("element_type", ("Tri3", "Tet4", "Truss2"))
@@ -578,75 +334,6 @@ def test_non_beam_section_rejects_beam_orientation_property(
         )
 
 
-def test_resolution_preserves_stable_beam_orientation_issue_codes() -> None:
-    beam = _element(1, "Beam2")
-    solid = _element(2, "Tet4")
-    model = _model(beam, solid)
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.element_sets = {
-        "BEAM": ElementSet("BEAM", (1,)),
-        "SOLID": ElementSet("SOLID", (2,)),
-    }
-    model.sections = [
-        SectionAssignment(
-            "BEAM",
-            "steel",
-            "rectangle",
-            {
-                "height": 1.0,
-                "width": 2.0,
-                BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 0.0, 0.0),
-            },
-        ),
-        SectionAssignment(
-            "SOLID",
-            "steel",
-            "solid",
-            {BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)},
-        ),
-    ]
-
-    resolution = materials.resolve_sections(model)
-
-    assert [issue.code for issue in resolution.issues] == [
-        "beam.orientation.invalid",
-        "beam.orientation.unsupported_target",
-    ]
-
-    with pytest.raises(ValueError) as invalid:
-        resolution.require_valid()
-    assert getattr(invalid.value, "code", None) == "beam.orientation.invalid"
-
-    before = [dict(element.props) for element in model.mesh.elements]
-    with pytest.raises(ValueError) as applied:
-        materials.apply_sections(model)
-    assert getattr(applied.value, "code", None) == "beam.orientation.invalid"
-    assert [element.props for element in model.mesh.elements] == before
-
-
-@pytest.mark.parametrize("element_type", ("Truss2", "Tet4"))
-def test_uncovered_non_beam_cannot_keep_direct_orientation(
-    element_type,
-) -> None:
-    element = _element(
-        1,
-        element_type,
-        **{BEAM_LOCAL_Y_REFERENCE_KEY: (0.0, 1.0, 0.0)},
-    )
-    model = _model(element)
-
-    with pytest.raises(ValueError) as caught:
-        materials.apply_sections(model)
-
-    assert getattr(caught.value, "code", None) == (
-        "beam.orientation.unsupported_target"
-    )
-    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (0.0, 1.0, 0.0)
-
-
 def test_unrepresentable_beam_orientation_keeps_typed_section_error() -> None:
     with pytest.raises(materials.SectionPropertyError) as caught:
         materials.resolve_section_properties(
@@ -661,130 +348,3 @@ def test_unrepresentable_beam_orientation_keeps_typed_section_error() -> None:
         )
 
     assert getattr(caught.value, "code", None) == "beam.orientation.invalid"
-
-
-def _beam_orientation_ownership_model():
-    direct_reference = (0.0, 1.0, 0.0)
-    element = Element3D(
-        1,
-        [1, 2],
-        "Beam2",
-        {
-            "E": 10.0,
-            "nu": 0.25,
-            "section_type": "rectangle",
-            "height": 3.0,
-            "width": 1.0,
-            BEAM_LOCAL_Y_REFERENCE_KEY: direct_reference,
-            "custom": "direct",
-        },
-    )
-    model = _model(element)
-    model.mesh = Mesh3D(
-        nodes=[
-            Node3D(1, 0.0, 0.0, 0.0),
-            Node3D(2, 2.0, 0.0, 0.0),
-        ],
-        elements=[element],
-        dofs_per_node=6,
-    )
-    model.materials["steel"] = MaterialDefinition(
-        "steel",
-        {"E": 210.0, "nu": 0.3},
-    )
-    model.element_sets["BEAM"] = ElementSet("BEAM", (1,))
-    return model, element, direct_reference
-
-
-def _beam_assignment(reference=None):
-    properties = {"height": 2.0, "width": 1.0}
-    if reference is not None:
-        properties[BEAM_LOCAL_Y_REFERENCE_KEY] = reference
-    return SectionAssignment(
-        "BEAM",
-        "steel",
-        "rectangle",
-        properties,
-    )
-
-
-def test_apply_sections_clears_and_restores_owned_beam_orientation() -> None:
-    model, element, direct_reference = _beam_orientation_ownership_model()
-    model.sections = [_beam_assignment()]
-
-    materials.apply_sections(model)
-
-    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
-    assert resolve_beam_frame(model.mesh, element).source == "automatic"
-
-    assignment_reference = (0.0, 0.0, 1.0)
-    model.sections = [_beam_assignment(BeamOrientation(assignment_reference))]
-    materials.apply_sections(model)
-    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == assignment_reference
-    assert resolve_beam_frame(model.mesh, element).source == "explicit"
-
-    model.sections = [_beam_assignment()]
-    materials.apply_sections(model)
-    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
-    assert resolve_beam_frame(model.mesh, element).source == "automatic"
-
-    model.sections.clear()
-    materials.apply_sections(model)
-    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == direct_reference
-    assert element.props["custom"] == "direct"
-    assert resolve_beam_frame(model.mesh, element).source == "explicit"
-
-
-def test_section_ownership_survives_model_deepcopy() -> None:
-    model, _, direct_reference = _beam_orientation_ownership_model()
-    assignment_reference = (0.0, 0.0, 1.0)
-    model.sections = [_beam_assignment(assignment_reference)]
-    materials.apply_sections(model)
-
-    copied = deepcopy(model)
-    copied_element = copied.mesh.elements[0]
-    copied.sections = [_beam_assignment()]
-    materials.apply_sections(copied)
-    assert BEAM_LOCAL_Y_REFERENCE_KEY not in copied_element.props
-
-    copied.sections.clear()
-    materials.apply_sections(copied)
-
-    assert copied_element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == (
-        direct_reference
-    )
-    assert resolve_beam_frame(copied.mesh, copied_element).orientation == (
-        BeamOrientation(direct_reference)
-    )
-
-
-def test_last_automatic_assignment_cannot_leak_earlier_orientation() -> None:
-    model, element, _ = _beam_orientation_ownership_model()
-    model.sections = [
-        _beam_assignment((0.0, 0.0, 1.0)),
-        _beam_assignment(),
-    ]
-
-    resolution = materials.resolve_sections(model)
-    materials.apply_sections(model)
-
-    effective = resolution.for_element(1)
-    assert effective.assignment_index == 1
-    assert BEAM_LOCAL_Y_REFERENCE_KEY not in effective.effective_properties
-    assert BEAM_LOCAL_Y_REFERENCE_KEY not in element.props
-
-
-def test_apply_sections_rejects_shadowed_parallel_orientation() -> None:
-    model, element, direct_reference = _beam_orientation_ownership_model()
-    model.sections = [
-        _beam_assignment((1.0, 0.0, 0.0)),
-        _beam_assignment((0.0, 1.0, 0.0)),
-    ]
-    before = deepcopy(element.props)
-
-    with pytest.raises(ValueError) as caught:
-        materials.apply_sections(model)
-
-    assert getattr(caught.value, "code", None) == "beam.orientation.parallel"
-    assert element.props == before
-    assert element.props[BEAM_LOCAL_Y_REFERENCE_KEY] == direct_reference

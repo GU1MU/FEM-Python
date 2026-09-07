@@ -9,7 +9,7 @@ pytest_plugins = ["pytester"]
 
 TESTS_ROOT = Path(__file__).resolve().parents[1]
 IMPORTER_NODEID = str(
-    TESTS_ROOT / "materials" / "test_section_capabilities.py"
+    TESTS_ROOT / "materials" / "test_section_assignment.py"
 ) + "::test_real_importer_internal_section_set_uses_the_same_resolution"
 
 
@@ -63,6 +63,6 @@ def test_collection_keeps_plain_real_names_and_gates_native_dependencies(
 
     assert result.ret == pytest.ExitCode.OK
     result.stdout.fnmatch_lines([
-        "*test_section_capabilities.py::test_real_importer_internal_section_set_uses_the_same_resolution",
+        "*test_section_assignment.py::test_real_importer_internal_section_set_uses_the_same_resolution",
         "1/5 tests collected (4 deselected)*",
     ])

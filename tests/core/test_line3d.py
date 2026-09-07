@@ -129,45 +129,6 @@ def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
     )
 
 
-@pytest.mark.parametrize(
-    ("props", "expected"),
-    [
-        (
-            {"section_type": "solid_circle", "radius": 2.0},
-            (4.0 * np.pi, 4.0 * np.pi, 4.0 * np.pi, 8.0 * np.pi),
-        ),
-        (
-            {
-                "section_type": "hollow_circle",
-                "outer_radius": 2.0,
-                "inner_radius": 1.0,
-            },
-            (3.0 * np.pi, 15.0 * np.pi / 4.0, 15.0 * np.pi / 4.0, 15.0 * np.pi / 2.0),
-        ),
-        (
-            {"section_type": "rectangle", "height": 4.0, "width": 1.0},
-            (4.0, 16.0 / 3.0, 1.0 / 3.0, 1.1043940392156846),
-        ),
-    ],
-)
-def test_beam2_standard_sections_derive_stiffness_properties(props, expected):
-    section = parse_beam2_section(props)
-
-    assert (section.area, section.Iyy, section.Izz, section.J) == pytest.approx(expected)
-
-
-def test_beam2_rectangle_uses_height_and_width_dimensions():
-    section = parse_beam2_section(
-        {"section_type": "rectangle", "height": 4.0, "width": 1.0}
-    )
-
-    assert section.height == 4.0
-    assert section.width == 1.0
-    assert (section.area, section.Iyy, section.Izz) == pytest.approx(
-        (4.0, 16.0 / 3.0, 1.0 / 3.0)
-    )
-
-
 def test_beam2_automatic_frame_maps_rectangle_width_to_local_y():
     mesh = _beam_mesh(props={"height": 4.0, "width": 1.0})
     frame = resolve_beam_frame(mesh, mesh.elements[0])
@@ -177,55 +138,6 @@ def test_beam2_automatic_frame_maps_rectangle_width_to_local_y():
     assert frame.local_z == pytest.approx((0.0, 0.0, 1.0))
     assert section.Iyy == pytest.approx(1.0 * 4.0**3 / 12.0)
     assert section.Izz == pytest.approx(4.0 * 1.0**3 / 12.0)
-
-
-def test_beam2_rectangle_dimension_swap_swaps_bending_inertias_only():
-    tall = parse_beam2_section(
-        {"section_type": "rectangle", "height": 4.0, "width": 1.0}
-    )
-    wide = parse_beam2_section(
-        {"section_type": "rectangle", "height": 1.0, "width": 4.0}
-    )
-
-    assert wide.area == pytest.approx(tall.area)
-    assert wide.J == pytest.approx(tall.J)
-    assert wide.Iyy == pytest.approx(tall.Izz)
-    assert wide.Izz == pytest.approx(tall.Iyy)
-
-
-def test_beam2_square_section_torsion_matches_abaqus_default_rect_coefficient():
-    section = parse_beam2_section(
-        {"section_type": "rectangle", "height": 2.0, "width": 2.0}
-    )
-
-    assert section.J == pytest.approx((169.0 / 1200.0) * 2.0**4)
-
-
-@pytest.mark.parametrize(
-    ("props", "message"),
-    [
-        ({}, "section_type"),
-        ({"section_type": "general"}, "section_type"),
-        ({"section_type": "solid_circle"}, "radius"),
-        ({"section_type": "solid_circle", "radius": 0.0}, "radius"),
-        ({"section_type": "solid_circle", "radius": np.inf}, "radius"),
-        (
-            {"section_type": "hollow_circle", "outer_radius": 1.0, "inner_radius": 1.0},
-            "outer_radius",
-        ),
-        (
-            {"section_type": "rectangle", "height": 1.0, "width": -1.0},
-            "width",
-        ),
-        (
-            {"section_type": "rectangle", "height": 1.0, "width": 2.0, "radius": 3.0},
-            "radius",
-        ),
-    ],
-)
-def test_beam2_standard_sections_reject_invalid_contracts(props, message):
-    with pytest.raises((KeyError, ValueError), match=message):
-        parse_beam2_section(props)
 
 
 def _beam_result(mesh, U, step=None):

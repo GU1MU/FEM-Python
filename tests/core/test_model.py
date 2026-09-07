@@ -2,11 +2,11 @@ from copy import copy, deepcopy
 from dataclasses import replace
 import pickle
 
-import numpy as np
 import pytest
 
 from fem import materials, selection, steps
 from fem.core import model as core_model
+from fem.post import result_region_key_for_element
 from fem.core.dof import DofMap
 from fem.core.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
 from fem.core.model import (
@@ -342,7 +342,7 @@ def test_model_element_info_returns_type_material_and_properties_by_element_id()
     assert "material" not in mesh.elements[1].props
 
 
-def test_apply_sections_stamps_stable_stress_region_signatures():
+def test_apply_sections_groups_equivalent_assignments_into_the_same_result_region():
     mesh = make_mixed_tri3_quad4_mesh()
     model = FEMModel(mesh=mesh)
     model.element_sets["triangles"] = ElementSet("triangles", (1,))
@@ -373,16 +373,22 @@ def test_apply_sections_stamps_stable_stress_region_signatures():
 
     materials.apply_sections(model)
 
-    first, second = mesh.elements
-    assert first.props["_stress_material_signature"] == second.props[
-        "_stress_material_signature"
+    first_region, second_region = [
+        result_region_key_for_element(element) for element in mesh.elements
     ]
-    assert first.props["_stress_section_signature"] == second.props[
-        "_stress_section_signature"
-    ]
-    assert hash(first.props["_stress_material_signature"])
-    assert hash(first.props["_stress_section_signature"])
-    assert "triangles" not in repr(first.props["_stress_section_signature"])
+    assert first_region == second_region
+    assert len({first_region, second_region}) == 1
+
+    model.sections[1] = replace(
+        model.sections[1],
+        properties={**model.sections[1].properties, "thickness": 2.0},
+    )
+    materials.apply_sections(model)
+
+    changed_region = result_region_key_for_element(mesh.elements[1])
+    assert changed_region.material_signature == first_region.material_signature
+    assert changed_region.section_signature != first_region.section_signature
+    assert len({first_region, changed_region}) == 2
 
 
 def test_model_element_info_raises_for_unknown_element_id():
@@ -664,20 +670,6 @@ def test_selection_can_build_model_sets_and_surfaces():
     assert fixed.node_ids == (1, 4, 5, 8)
     assert isinstance(load_surface, Surface)
     assert load_surface.faces == (ElementFace(1, 5, (2, 3, 7, 6)),)
-
-
-def test_linear_elastic_constitutive_matrices():
-    E = 210.0
-    nu = 0.3
-
-    plane_stress = materials.linear_elastic.plane_stress_matrix(E, nu)
-    plane_matrix = materials.linear_elastic.plane_matrix(E, nu, "stress")
-    solid = materials.linear_elastic.solid_3d_matrix(E, nu)
-
-    assert plane_stress.shape == (3, 3)
-    assert np.allclose(plane_matrix, plane_stress)
-    assert solid.shape == (6, 6)
-    assert plane_stress[0, 1] == pytest.approx(E * nu / (1.0 - nu ** 2))
 
 
 def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():

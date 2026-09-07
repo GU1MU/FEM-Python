@@ -1,10 +1,116 @@
 from __future__ import annotations
 
-from math import isfinite
+from math import isfinite, pi
 
 import pytest
 
 from fem.elements.beam_section import parse_beam2_section
+
+
+@pytest.mark.parametrize(
+    ("props", "expected"),
+    [
+        (
+            {"section_type": "solid_circle", "radius": 2.0},
+            (4.0 * pi, 4.0 * pi, 4.0 * pi, 8.0 * pi),
+        ),
+        (
+            {
+                "section_type": "hollow_circle",
+                "outer_radius": 2.0,
+                "inner_radius": 1.0,
+            },
+            (3.0 * pi, 15.0 * pi / 4.0, 15.0 * pi / 4.0, 15.0 * pi / 2.0),
+        ),
+        (
+            {"section_type": "rectangle", "height": 4.0, "width": 1.0},
+            (4.0, 16.0 / 3.0, 1.0 / 3.0, 1.1043940392156846),
+        ),
+    ],
+    ids=("solid-circle", "hollow-circle", "rectangle"),
+)
+def test_standard_sections_match_area_inertia_and_torsion_oracles(props, expected):
+    section = parse_beam2_section(props)
+
+    assert (section.area, section.Iyy, section.Izz, section.J) == pytest.approx(expected)
+
+
+def test_rectangle_dimension_swap_swaps_bending_inertias_only():
+    tall = parse_beam2_section(
+        {"section_type": "rectangle", "height": 4.0, "width": 1.0}
+    )
+    wide = parse_beam2_section(
+        {"section_type": "rectangle", "height": 1.0, "width": 4.0}
+    )
+
+    assert (tall.height, tall.width) == (4.0, 1.0)
+    assert (wide.height, wide.width) == (1.0, 4.0)
+    assert wide.area == pytest.approx(tall.area)
+    assert wide.J == pytest.approx(tall.J)
+    assert wide.Iyy == pytest.approx(tall.Izz)
+    assert wide.Izz == pytest.approx(tall.Iyy)
+
+
+def test_square_section_torsion_matches_abaqus_default_rect_coefficient():
+    section = parse_beam2_section(
+        {"section_type": "rectangle", "height": 2.0, "width": 2.0}
+    )
+
+    assert section.J == pytest.approx((169.0 / 1200.0) * 2.0**4)
+
+
+@pytest.mark.parametrize(
+    ("props", "message"),
+    [
+        ({}, "section_type"),
+        ({"section_type": "general"}, "section_type"),
+        ({"section_type": "solid_circle"}, "radius"),
+        (
+            {"section_type": "hollow_circle", "outer_radius": 1.0, "inner_radius": 1.0},
+            "outer_radius",
+        ),
+        (
+            {"section_type": "rectangle", "height": 1.0, "width": 2.0, "radius": 3.0},
+            "radius",
+        ),
+    ],
+    ids=(
+        "missing-section-type",
+        "unknown-section-type",
+        "missing-radius",
+        "equal-inner-outer-radii",
+        "extraneous-dimension",
+    ),
+)
+def test_rejects_invalid_section_definitions(props, message):
+    with pytest.raises((KeyError, ValueError), match=message):
+        parse_beam2_section(props)
+
+
+@pytest.mark.parametrize(
+    ("dimension", "value"),
+    [
+        ("height", 0.0),
+        ("height", -1.0),
+        ("height", float("nan")),
+        ("height", float("inf")),
+        ("height", -float("inf")),
+        ("width", 0.0),
+        ("width", -1.0),
+        ("radius", 0.0),
+        ("radius", float("inf")),
+    ],
+)
+def test_section_dimensions_reject_nonpositive_and_nonfinite_values(dimension, value):
+    props = (
+        {"section_type": "solid_circle", "radius": 1.0}
+        if dimension == "radius"
+        else {"section_type": "rectangle", "height": 1.0, "width": 1.0}
+    )
+    props[dimension] = value
+
+    with pytest.raises(ValueError, match=dimension):
+        parse_beam2_section(props)
 
 
 def _rectangle():
@@ -95,7 +201,7 @@ def test_hollow_circle_converges_to_thin_ring_cowper_limit() -> None:
     ids=("rectangle", "solid-circle", "hollow-circle"),
 )
 @pytest.mark.parametrize("poisson_ratio", [-0.99, 0.0, 0.499])
-def test_supported_section_cowper_factors_are_finite_positive_and_symmetric(
+def test_supported_section_shear_factors_are_finite_positive_and_symmetric(
     section,
     poisson_ratio: float,
 ) -> None:
@@ -113,7 +219,7 @@ def test_supported_section_cowper_factors_are_finite_positive_and_symmetric(
     [_rectangle(), _solid_circle(), _hollow_circle(0.2)],
     ids=("rectangle", "solid-circle", "hollow-circle"),
 )
-def test_effective_shear_rigidities_apply_cowper_factors(section) -> None:
+def test_effective_shear_rigidities_apply_section_correction_factors(section) -> None:
     shear_modulus = 79.0e9
     poisson_ratio = 0.3
     kappa_y, kappa_z = section.shear_correction_factors(poisson_ratio)
@@ -128,7 +234,7 @@ def test_effective_shear_rigidities_apply_cowper_factors(section) -> None:
 
 
 @pytest.mark.parametrize("poisson_ratio", [-1.0, 0.5, float("nan"), float("inf")])
-def test_cowper_factors_reject_invalid_poisson_ratio(poisson_ratio: float) -> None:
+def test_shear_correction_factors_reject_invalid_poisson_ratio(poisson_ratio: float) -> None:
     with pytest.raises(ValueError, match=r"-1 < nu < 0.5"):
         _rectangle().shear_correction_factors(poisson_ratio)
 
