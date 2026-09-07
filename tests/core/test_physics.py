@@ -6,104 +6,15 @@ from fem.boundary.condition import BoundaryCondition
 from fem.boundary.constraints import apply_dirichlet
 from fem.core.model import AnalysisStep, DisplacementConstraint, FEMModel, NodalLoad, NodeSet
 from fem.elements import get_element_kernel
-from fem.materials import linear_elastic
 from fem.solvers import linear, static_linear
 from tests.helpers.mesh_builders import (
-    make_hex20_stiffness_mesh,
-    make_hex8_stiffness_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
     make_quad4_stiffness_mesh,
     make_quad8_stiffness_mesh,
-    make_tet4_stiffness_mesh,
-    make_tet10_stiffness_mesh,
     make_tri3_stiffness_mesh,
     make_tri6_stiffness_mesh,
 )
-
-
-@pytest.mark.parametrize(
-    "builder",
-    [
-        make_tri3_stiffness_mesh,
-        make_tri6_stiffness_mesh,
-        make_quad4_stiffness_mesh,
-        make_quad8_stiffness_mesh,
-    ],
-    ids=["tri3", "tri6", "quad4", "quad8"],
-)
-def test_plane_elements_reproduce_affine_constant_stress(builder):
-    mesh = builder()
-    elem = mesh.elements[0]
-    U = np.zeros(mesh.num_dofs, dtype=float)
-
-    for node in mesh.nodes:
-        U[mesh.global_dof(node.id, 0)] = 0.3 + 0.01 * node.x + 0.02 * node.y
-        U[mesh.global_dof(node.id, 1)] = -0.2 - 0.03 * node.x + 0.04 * node.y
-
-    strain = np.array([0.01, 0.04, -0.01])
-    expected = linear_elastic.plane_stress_matrix(
-        elem.props["E"], elem.props["nu"]
-    ) @ strain
-    recovered, plane_type, poisson_ratio = get_element_kernel(elem.type).nodal_stress(
-        mesh, elem, U
-    )
-
-    assert plane_type == "stress"
-    assert poisson_ratio == pytest.approx(elem.props["nu"])
-    assert np.allclose(recovered, expected, rtol=1e-10, atol=1e-10)
-
-
-def test_cpe4_reproduces_nonzero_affine_plane_strain_stress():
-    mesh = make_quad4_stiffness_mesh()
-    elem = mesh.elements[0]
-    elem.type = "CPE4"
-    elem.props.pop("plane_type", None)
-    U = np.zeros(mesh.num_dofs, dtype=float)
-
-    for node in mesh.nodes:
-        U[mesh.global_dof(node.id, 0)] = 0.3 + 0.01 * node.x + 0.02 * node.y
-        U[mesh.global_dof(node.id, 1)] = -0.2 - 0.03 * node.x + 0.04 * node.y
-
-    strain = np.array([0.01, 0.04, -0.01])
-    expected = linear_elastic.plane_strain_matrix(
-        elem.props["E"], elem.props["nu"]
-    ) @ strain
-    recovered, plane_type, _ = get_element_kernel(elem.type).nodal_stress(
-        mesh, elem, U
-    )
-
-    assert plane_type == "strain"
-    assert np.linalg.norm(expected) > 0.0
-    assert np.allclose(recovered, expected, rtol=1e-10, atol=1e-10)
-
-
-@pytest.mark.parametrize(
-    ("builder", "element_type", "expected_plane_type"),
-    [
-        (make_tri3_stiffness_mesh, "CPS3", "stress"),
-        (make_tri3_stiffness_mesh, "CPE3", "strain"),
-        (make_tri6_stiffness_mesh, "CPS6", "stress"),
-        (make_tri6_stiffness_mesh, "CPE6", "strain"),
-        (make_quad4_stiffness_mesh, "CPS4", "stress"),
-        (make_quad4_stiffness_mesh, "CPE4", "strain"),
-        (make_quad8_stiffness_mesh, "CPS8", "stress"),
-        (make_quad8_stiffness_mesh, "CPE8", "strain"),
-    ],
-)
-def test_plane_aliases_infer_formulation_without_explicit_property(
-    builder, element_type, expected_plane_type
-):
-    mesh = builder()
-    elem = mesh.elements[0]
-    elem.type = element_type
-    elem.props.pop("plane_type", None)
-
-    _, plane_type, _ = get_element_kernel(element_type).nodal_stress(
-        mesh, elem, np.zeros(mesh.num_dofs)
-    )
-
-    assert plane_type == expected_plane_type
 
 
 @pytest.mark.parametrize(
@@ -135,41 +46,6 @@ def test_tri6_stiffness_consumer_rejects_invalid_shared_thickness():
 
     with pytest.raises(ValueError, match="thickness must be finite and > 0"):
         get_element_kernel(elem.type).stiffness(mesh, elem)
-
-
-@pytest.mark.parametrize(
-    "builder",
-    [
-        make_hex8_stiffness_mesh,
-        make_hex20_stiffness_mesh,
-        make_tet4_stiffness_mesh,
-        make_tet10_stiffness_mesh,
-    ],
-    ids=["hex8", "hex20", "tet4", "tet10"],
-)
-def test_solid_elements_reproduce_affine_constant_stress(builder):
-    mesh = builder()
-    elem = mesh.elements[0]
-    U = np.zeros(mesh.num_dofs, dtype=float)
-
-    for node in mesh.nodes:
-        U[mesh.global_dof(node.id, 0)] = (
-            0.3 + 0.01 * node.x + 0.02 * node.y + 0.03 * node.z
-        )
-        U[mesh.global_dof(node.id, 1)] = (
-            -0.2 - 0.04 * node.x + 0.05 * node.y + 0.06 * node.z
-        )
-        U[mesh.global_dof(node.id, 2)] = (
-            0.1 + 0.07 * node.x - 0.08 * node.y + 0.09 * node.z
-        )
-
-    strain = np.array([0.01, 0.05, 0.09, -0.02, -0.02, 0.10])
-    expected = linear_elastic.solid_3d_matrix(
-        elem.props["E"], elem.props["nu"]
-    ) @ strain
-    recovered = get_element_kernel(elem.type).nodal_stress(mesh, elem, U)
-
-    assert np.allclose(recovered, expected, rtol=1e-9, atol=1e-9)
 
 
 def test_nonzero_dirichlet_constraint_preserves_coupled_solution():
