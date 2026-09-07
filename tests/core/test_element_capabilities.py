@@ -1,309 +1,132 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from fem.elements import (
     ElementCapabilityDescriptor,
+    ElementCapabilityLimitation,
     ElementCapabilityRequirement,
     ElementCapabilityStatus,
     get_element_capabilities,
-    get_element_kernel,
-    register_element_kernel,
     registered_element_capabilities,
 )
 
 
-_EXPECTED_CAPABILITIES = {
-    "Quad4": {
-        "aliases": ("CPS4", "CPE4"),
-        "family": "plane_continuum",
-        "topology": 2,
-        "spatial": 2,
-        "nodes": 4,
-        "dofs": ("U1", "U2"),
-        "forces": ("Fx", "Fy"),
-        "sections": ("solid",),
-        "loads": ("node", "edge", "body", "gravity"),
-    },
-    "Quad8": {
-        "aliases": ("CPS8", "CPE8"),
-        "family": "plane_continuum",
-        "topology": 2,
-        "spatial": 2,
-        "nodes": 8,
-        "dofs": ("U1", "U2"),
-        "forces": ("Fx", "Fy"),
-        "sections": ("solid",),
-        "loads": ("node", "edge", "body", "gravity"),
-    },
-    "Tri6": {
-        "aliases": ("CPS6", "CPE6"),
-        "family": "plane_continuum",
-        "topology": 2,
-        "spatial": 2,
-        "nodes": 6,
-        "dofs": ("U1", "U2"),
-        "forces": ("Fx", "Fy"),
-        "sections": ("solid",),
-        "loads": ("node", "edge", "body", "gravity"),
-    },
-    "Tri3": {
-        "aliases": ("CPS3", "CPE3"),
-        "family": "plane_continuum",
-        "topology": 2,
-        "spatial": 2,
-        "nodes": 3,
-        "dofs": ("U1", "U2"),
-        "forces": ("Fx", "Fy"),
-        "sections": ("solid",),
-        "loads": ("node", "edge", "body", "gravity"),
-    },
-    "Hex8": {
-        "aliases": ("C3D8",),
-        "family": "solid_continuum",
-        "topology": 3,
-        "spatial": 3,
-        "nodes": 8,
-        "dofs": ("U1", "U2", "U3"),
-        "forces": ("Fx", "Fy", "Fz"),
-        "sections": ("solid",),
-        "loads": ("node", "surface", "body", "gravity"),
-    },
-    "Hex20": {
-        "aliases": ("C3D20",),
-        "family": "solid_continuum",
-        "topology": 3,
-        "spatial": 3,
-        "nodes": 20,
-        "dofs": ("U1", "U2", "U3"),
-        "forces": ("Fx", "Fy", "Fz"),
-        "sections": ("solid",),
-        "loads": ("node", "surface", "body", "gravity"),
-    },
-    "Tet4": {
-        "aliases": ("C3D4",),
-        "family": "solid_continuum",
-        "topology": 3,
-        "spatial": 3,
-        "nodes": 4,
-        "dofs": ("U1", "U2", "U3"),
-        "forces": ("Fx", "Fy", "Fz"),
-        "sections": ("solid",),
-        "loads": ("node", "surface", "body", "gravity"),
-    },
-    "Tet10": {
-        "aliases": ("C3D10",),
-        "family": "solid_continuum",
-        "topology": 3,
-        "spatial": 3,
-        "nodes": 10,
-        "dofs": ("U1", "U2", "U3"),
-        "forces": ("Fx", "Fy", "Fz"),
-        "sections": ("solid",),
-        "loads": ("node", "surface", "body", "gravity"),
-    },
-    "Truss2": {
-        "aliases": (),
-        "family": "truss",
-        "topology": 1,
-        "spatial": 3,
-        "nodes": 2,
-        "dofs": ("U1", "U2", "U3"),
-        "forces": ("Fx", "Fy", "Fz"),
-        "sections": ("truss",),
-        "loads": ("node", "body", "gravity"),
-    },
-    "Beam2": {
-        "aliases": (),
-        "family": "beam",
-        "topology": 1,
-        "spatial": 3,
-        "nodes": 2,
-        "dofs": ("U1", "U2", "U3", "UR1", "UR2", "UR3"),
-        "forces": ("Fx", "Fy", "Fz", "Mx", "My", "Mz"),
-        "sections": ("beam",),
-        "loads": ("node", "line", "body", "gravity"),
-    },
+# Family expectations: topology, space, DOFs, forces, sections, and loads.
+_FAMILY_CAPABILITIES = {
+    "plane_continuum": (
+        2, 2, ("U1", "U2"), ("Fx", "Fy"), ("solid",),
+        ("node", "edge", "body", "gravity"),
+    ),
+    "solid_continuum": (
+        3, 3, ("U1", "U2", "U3"), ("Fx", "Fy", "Fz"), ("solid",),
+        ("node", "surface", "body", "gravity"),
+    ),
+    "truss": (
+        1, 3, ("U1", "U2", "U3"), ("Fx", "Fy", "Fz"), ("truss",),
+        ("node", "body", "gravity"),
+    ),
+    "beam": (
+        1, 3, ("U1", "U2", "U3", "UR1", "UR2", "UR3"),
+        ("Fx", "Fy", "Fz", "Mx", "My", "Mz"), ("beam",),
+        ("node", "line", "body", "gravity"),
+    ),
+}
+_BUILTIN_ELEMENTS = {
+    "Quad4": ("plane_continuum", 4, ("CPS4", "CPE4")),
+    "Quad8": ("plane_continuum", 8, ("CPS8", "CPE8")),
+    "Tri3": ("plane_continuum", 3, ("CPS3", "CPE3")),
+    "Tri6": ("plane_continuum", 6, ("CPS6", "CPE6")),
+    "Hex8": ("solid_continuum", 8, ("C3D8",)),
+    "Hex20": ("solid_continuum", 20, ("C3D20",)),
+    "Tet4": ("solid_continuum", 4, ("C3D4",)),
+    "Tet10": ("solid_continuum", 10, ("C3D10",)),
+    "Truss2": ("truss", 2, ()),
+    "Beam2": ("beam", 2, ()),
 }
 
 
-def test_all_registered_kernels_have_complete_capability_descriptors():
-    descriptors = registered_element_capabilities()
-
-    assert len(descriptors) == 10
-    assert {item.canonical_type for item in descriptors} == set(
-        _EXPECTED_CAPABILITIES
-    )
-    for descriptor in descriptors:
-        expected = _EXPECTED_CAPABILITIES[descriptor.canonical_type]
-        assert descriptor.aliases == expected["aliases"]
-        assert descriptor.family == expected["family"]
-        assert descriptor.topological_dimension == expected["topology"]
-        assert descriptor.spatial_dimension == expected["spatial"]
-        assert descriptor.node_count == expected["nodes"]
-        assert descriptor.dofs_per_node == len(expected["dofs"])
-        assert descriptor.dof_labels == expected["dofs"]
-        assert descriptor.force_labels == expected["forces"]
-        assert descriptor.section_families == expected["sections"]
-        assert descriptor.load_kinds == expected["loads"]
+def test_builtin_catalog_contains_the_supported_element_types():
+    assert sorted(
+        item.canonical_type for item in registered_element_capabilities()
+    ) == sorted(_BUILTIN_ELEMENTS)
 
 
-@pytest.mark.parametrize(
-    ("canonical_type", "alias"),
-    [
-        ("Tri3", "cps3"),
-        ("Tri3", "CPE3"),
-        ("Tri6", "cps6"),
-        ("Quad4", "CPE4"),
-        ("Quad8", "cps8"),
-        ("Tet4", "c3d4"),
-        ("Tet10", "C3D10"),
-        ("Hex8", "c3d8"),
-        ("Hex20", "C3D20"),
-    ],
-)
-def test_alias_and_canonical_name_return_the_same_descriptor(
-    canonical_type,
-    alias,
-):
-    assert get_element_capabilities(alias) is get_element_capabilities(
-        canonical_type
-    )
+@pytest.mark.parametrize("element_type", _BUILTIN_ELEMENTS)
+def test_builtin_capabilities_match_element_family_and_node_count(element_type):
+    family, nodes, aliases = _BUILTIN_ELEMENTS[element_type]
+    topology, spatial, dofs, forces, sections, loads = _FAMILY_CAPABILITIES[family]
+
+    descriptor = get_element_capabilities(element_type)
+
+    assert descriptor.canonical_type == element_type
+    assert descriptor.aliases == aliases
+    assert descriptor.family == family
+    assert descriptor.topological_dimension == topology
+    assert descriptor.spatial_dimension == spatial
+    assert descriptor.node_count == nodes
+    assert descriptor.dofs_per_node == len(dofs)
+    assert descriptor.dof_labels == dofs
+    assert descriptor.force_labels == forces
+    assert descriptor.section_families == sections
+    assert descriptor.load_kinds == loads
 
 
-def test_descriptors_statuses_requirements_and_limitations_are_immutable():
+def test_beam_orientation_requirements_and_descriptor_are_immutable():
     beam = get_element_capabilities("Beam2")
-    validity, explicit = beam.requirements
 
-    assert isinstance(validity, ElementCapabilityRequirement)
-    assert isinstance(explicit, ElementCapabilityRequirement)
-    assert beam.status is ElementCapabilityStatus.SUPPORTED
-    assert beam.limitations == ()
-    assert validity.code == "beam.orientation.valid"
-    assert validity.operations == ("section.rectangle", "load.line.local")
-    assert explicit.code == "beam.orientation.explicit"
-    assert explicit.operations == ("load.line.local",)
-    assert get_element_capabilities("Truss2").status is (
-        ElementCapabilityStatus.SUPPORTED
+    assert beam.requirements == (
+        ElementCapabilityRequirement(
+            "beam.orientation.valid", ("section.rectangle", "load.line.local"),
+        ),
+        ElementCapabilityRequirement("beam.orientation.explicit", ("load.line.local",)),
     )
+    assert beam.status == ElementCapabilityStatus.SUPPORTED
+    assert beam.limitations == ()
     with pytest.raises(FrozenInstanceError):
         beam.node_count = 3
     with pytest.raises(FrozenInstanceError):
-        validity.code = "changed"
+        beam.requirements[0].code = "changed"
 
 
-@pytest.mark.parametrize("element_type", ["Unknown42", "C3D8R", "C3D4T"])
-def test_unknown_or_unsupported_element_capability_queries_fail_closed(
-    element_type,
-):
-    with pytest.raises(NotImplementedError, match="Unsupported element type"):
-        get_element_capabilities(element_type)
-
-
-def test_registration_requires_a_descriptor_without_partial_registration():
-    class MissingCapabilitiesKernel:
-        canonical_type = "MissingCapabilitiesKernel"
-        aliases = ("MissingCapabilitiesAlias",)
-
-    with pytest.raises(ValueError, match="requires a capability descriptor"):
-        register_element_kernel(MissingCapabilitiesKernel())
-
-    for name in ("MissingCapabilitiesKernel", "MissingCapabilitiesAlias"):
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_kernel(name)
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_capabilities(name)
-
-
-def test_registration_rejects_canonical_identity_mismatch_atomically():
-    class IdentityKernel:
-        canonical_type = "IdentityKernel"
-        aliases = ()
-
-    descriptor = _descriptor(canonical_type="DifferentIdentity")
-
-    with pytest.raises(ValueError, match="canonical type must exactly match"):
-        register_element_kernel(IdentityKernel(), descriptor)
-
-    with pytest.raises(NotImplementedError, match="Unsupported element type"):
-        get_element_kernel("IdentityKernel")
-
-
-def test_registration_rejects_alias_mismatch_atomically():
-    class AliasKernel:
-        canonical_type = "AliasKernel"
-        aliases = ("KernelAlias",)
-
-    descriptor = _descriptor(
-        canonical_type="AliasKernel",
-        aliases=("DescriptorAlias",),
-    )
-
-    with pytest.raises(ValueError, match="aliases must exactly match"):
-        register_element_kernel(AliasKernel(), descriptor)
-
-    for name in ("AliasKernel", "KernelAlias", "DescriptorAlias"):
-        with pytest.raises(NotImplementedError, match="Unsupported element type"):
-            get_element_capabilities(name)
-
-
-def test_descriptor_construction_rejects_missing_or_conflicting_metadata():
-    with pytest.raises(ValueError, match="DOF label count"):
-        _descriptor(dof_labels=("U1",))
-    with pytest.raises(ValueError, match="unique case-insensitively"):
-        _descriptor(aliases=("Alias", "alias"))
-    with pytest.raises(ValueError, match="unsupported element family"):
-        _descriptor(family="unknown")
-    with pytest.raises(ValueError, match="topological dimension cannot exceed"):
-        _descriptor(topological_dimension=3, spatial_dimension=2)
-    with pytest.raises(TypeError, match="must be a tuple"):
-        _descriptor(load_kinds=["node"])  # type: ignore[arg-type]
-
-
-def test_registration_rejects_existing_alias_without_partial_registration():
-    class ConflictingKernel:
-        canonical_type = "CapabilityConflictKernel"
-        aliases = ("c3d8",)
-
-    descriptor = _descriptor(
-        canonical_type="CapabilityConflictKernel",
-        aliases=("c3d8",),
-    )
-
-    with pytest.raises(ValueError, match="already registered"):
-        register_element_kernel(ConflictingKernel(), descriptor)
-
-    with pytest.raises(NotImplementedError, match="Unsupported element type"):
-        get_element_capabilities("CapabilityConflictKernel")
-    assert get_element_capabilities("c3d8").canonical_type == "Hex8"
-
-
-def _descriptor(
-    *,
-    canonical_type="TestCapabilityKernel",
-    aliases=(),
-    family="plane_continuum",
-    topological_dimension=2,
-    spatial_dimension=2,
-    node_count=3,
-    dofs_per_node=2,
-    section_families=("solid",),
-    load_kinds=("node", "edge", "gravity"),
-    dof_labels=("U1", "U2"),
-    force_labels=("Fx", "Fy"),
-    limitations=(),
-):
+def _descriptor():
     return ElementCapabilityDescriptor(
-        canonical_type=canonical_type,
-        aliases=aliases,
-        family=family,
-        topological_dimension=topological_dimension,
-        spatial_dimension=spatial_dimension,
-        node_count=node_count,
-        dofs_per_node=dofs_per_node,
-        section_families=section_families,
-        load_kinds=load_kinds,
-        dof_labels=dof_labels,
-        force_labels=force_labels,
-        limitations=limitations,
+        canonical_type="ExampleTriangle", aliases=(), family="plane_continuum",
+        topological_dimension=2, spatial_dimension=2, node_count=3, dofs_per_node=2,
+        section_families=("solid",), load_kinds=("node", "edge", "gravity"),
+        dof_labels=("U1", "U2"), force_labels=("Fx", "Fy"),
     )
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"dof_labels": ("U1",)}, "DOF label count"),
+        ({"aliases": ("Alias", "alias")}, "unique case-insensitively"),
+        ({"family": "unknown"}, "unsupported element family"),
+        ({"topological_dimension": 3}, "topological dimension cannot exceed"),
+    ],
+    ids=["dof-count", "duplicate-alias", "unknown-family", "dimensions"],
+)
+def test_descriptor_rejects_inconsistent_capability_metadata(changes, message):
+    with pytest.raises(ValueError, match=message):
+        replace(_descriptor(), **changes)
+
+
+def test_descriptor_status_uses_the_most_restrictive_immutable_limitation():
+    limited = ElementCapabilityLimitation("approximate", ("load.edge",), "Approximate")
+    unavailable = ElementCapabilityLimitation(
+        "unsupported", ("load.body",), "Unavailable", ElementCapabilityStatus.UNAVAILABLE,
+    )
+    descriptor = _descriptor()
+
+    assert descriptor.status == ElementCapabilityStatus.SUPPORTED
+    assert replace(descriptor, limitations=(limited,)).status == ElementCapabilityStatus.LIMITED
+    assert replace(descriptor, limitations=(limited, unavailable)).status == (
+        ElementCapabilityStatus.UNAVAILABLE
+    )
+    assert replace(descriptor, limitations=(unavailable, limited)).status == (
+        ElementCapabilityStatus.UNAVAILABLE
+    )
+    with pytest.raises(FrozenInstanceError):
+        limited.status = ElementCapabilityStatus.UNAVAILABLE

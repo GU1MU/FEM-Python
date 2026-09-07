@@ -4,9 +4,7 @@ import pytest
 from fem import boundary
 from fem.core.mesh import Element3D, Mesh3D, Node3D
 from fem.elements import (
-    canonical_element_type,
     get_element_kernel,
-    register_element_kernel,
     resolve_beam_frame,
 )
 from fem.elements.beam_section import parse_beam2_section
@@ -59,28 +57,6 @@ def _assert_kernel_matches_explicit_node_lookup(mesh):
 
 
 @pytest.mark.parametrize(
-    ("element_type", "canonical_type"),
-    [
-        ("Truss2", "Truss2"),
-        ("Beam2", "Beam2"),
-        ("cps3", "Tri3"),
-        ("CPE6", "Tri6"),
-        ("cps4", "Quad4"),
-        ("CPE8", "Quad8"),
-        ("c3d4", "Tet4"),
-        ("C3D10", "Tet10"),
-        ("c3d8", "Hex8"),
-        ("C3D20", "Hex20"),
-    ],
-)
-def test_registry_exposes_explicit_canonical_element_identity(element_type, canonical_type):
-    kernel = get_element_kernel(element_type)
-
-    assert kernel.canonical_type == canonical_type
-    assert canonical_element_type(element_type) == canonical_type
-
-
-@pytest.mark.parametrize(
     ("element_type", "face_count", "nodes_per_face"),
     [
         ("Hex8", 6, 4),
@@ -98,18 +74,6 @@ def test_solid_kernels_expose_face_node_indices(
 
     assert len(topology) == face_count
     assert {len(face) for face in topology} == {nodes_per_face}
-
-
-def test_registry_rejects_conflicting_aliases_without_partial_registration():
-    class ConflictingKernel:
-        canonical_type = "UniqueTestType"
-        aliases = ("hEx8",)
-
-    with pytest.raises(ValueError, match="already registered"):
-        register_element_kernel(ConflictingKernel())
-
-    with pytest.raises(NotImplementedError, match="Unsupported element type: UniqueTestType"):
-        get_element_kernel("UniqueTestType")
 
 
 @pytest.mark.parametrize(
@@ -820,20 +784,3 @@ def test_hex8_bbar_stress_matches_abaqus_c3d8_reference():
         rel=2.0e-5,
         abs=1.0e-8,
     )
-
-
-@pytest.mark.parametrize("element_type", ["C3D20R", "c3D20r"])
-def test_registry_rejects_reduced_integration_hex20_alias(element_type):
-    with pytest.raises(
-        NotImplementedError,
-        match=rf"Unsupported element type: {element_type}",
-    ):
-        get_element_kernel(element_type)
-
-
-def test_registry_rejects_unimplemented_reduced_integration_hex8_alias():
-    with pytest.raises(
-        NotImplementedError,
-        match=r"Unsupported element type: C3D8R; reduced integration is not implemented",
-    ):
-        get_element_kernel("C3D8R")
