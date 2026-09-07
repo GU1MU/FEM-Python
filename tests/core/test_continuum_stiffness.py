@@ -97,3 +97,17 @@ def test_solid_stiffness_reports_required_node_count_and_element_context(builder
 
     assert f"{element.type} element {element.id}" in str(error.value)
     assert f"requires {expected_count} nodes" in str(error.value)
+
+
+def test_tet10_quadratic_displacement_has_exact_strain_energy():
+    mesh = make_tet10_stiffness_mesh()
+    element = mesh.elements[0]
+    element.props.update(E=120.0, nu=0.25)
+    displacement = np.zeros(mesh.num_dofs)
+    for node in mesh.nodes:
+        displacement[mesh.global_dof(node.id, 0)] = node.x ** 2
+
+    stiffness = get_element_kernel("Tet10").stiffness(mesh, element)
+
+    # eps_xx=2x, sigma_xx=288x; integral(x^2) over the unit tetrahedron is 1/60.
+    assert 0.5 * displacement @ stiffness @ displacement == pytest.approx(4.8)

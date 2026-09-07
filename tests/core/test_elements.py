@@ -338,13 +338,18 @@ def test_tet_kernels_provide_body_force_and_face_traction(builder):
     mesh = builder()
     elem = mesh.elements[0]
     kernel = get_element_kernel(elem.type)
+    vector = np.array((2.0, -3.0, -6.0))
 
-    body = kernel.body_force(mesh, elem, (0.0, 0.0, -6.0))
+    body = kernel.body_force(mesh, elem, vector)
     face = kernel.face_traction(mesh, elem, 3, (0.0, 0.0, -2.0))
 
-    assert body.shape == (len(elem.node_ids) * 3,)
+    # Unit tetrahedron volume is 1/6. Quadratic corner weights are negative.
+    weights = (
+        np.full(4, 1.0 / 24.0) if elem.type == "Tet4"
+        else np.array([-1.0 / 120.0] * 4 + [1.0 / 30.0] * 6)
+    )
+    np.testing.assert_allclose(body.reshape(-1, 3), weights[:, None] * vector, atol=1e-14)
     assert face.shape == (len(elem.node_ids) * 3,)
-    assert float(body[2::3].sum()) == pytest.approx(-1.0)
     assert float(face[2::3].sum()) == pytest.approx(-1.0)
 
 
@@ -679,3 +684,22 @@ def test_hex8_bbar_stress_matches_abaqus_c3d8_reference():
         rel=2.0e-5,
         abs=1.0e-8,
     )
+
+
+def test_tet10_nodal_stress_recovers_quadratic_displacement_analytically():
+    mesh = make_tet10_stiffness_mesh()
+    element = mesh.elements[0]
+    element.props.update(E=120.0, nu=0.25)
+    displacement = np.zeros(mesh.num_dofs)
+    coordinates = {node.id: node.x for node in mesh.nodes}
+    for node in mesh.nodes:
+        displacement[mesh.global_dof(node.id, 0)] = node.x ** 2
+
+    stress = get_element_kernel("Tet10").nodal_stress(mesh, element, displacement)
+
+    # eps_xx=2x; E=120, nu=.25 give lambda=mu=48.
+    expected = np.array([
+        (288.0*x, 96.0*x, 96.0*x, 0.0, 0.0, 0.0)
+        for x in (coordinates[node_id] for node_id in element.node_ids)
+    ])
+    np.testing.assert_allclose(stress, expected, atol=1e-11)

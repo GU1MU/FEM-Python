@@ -104,9 +104,8 @@ def tet10_shape_funcs_grads(xi: float, eta: float, zeta: float):
 
 def tet10_gauss_points():
     """Return 4-point Hammer integration rule for Tet10."""
-    n = 0.58541020
-    a = (1.0 - n) / 4.0
-    b = (1.0 + 3.0 * n) / 4.0
+    a = (5.0 - np.sqrt(5.0)) / 20.0
+    b = (5.0 + 3.0 * np.sqrt(5.0)) / 20.0
     w = 1.0 / 24.0
     return [
         (a, a, a, w),

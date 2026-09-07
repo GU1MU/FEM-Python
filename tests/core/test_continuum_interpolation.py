@@ -3,6 +3,7 @@ import pytest
 
 from fem.elements.hexahedron import hex20_gauss_points, hex20_shape_funcs_grads
 from fem.elements.triangle import tri6_gauss_points, tri6_shape_funcs_grads
+from fem.elements.tetrahedron import tet10_gauss_points
 
 
 # Independent natural-node ordering, including edge midpoints.
@@ -59,16 +60,26 @@ def test_quadratic_shapes_interpolate_nodes_and_reproduce_affine_fields(
             ((0, 0), 0.5), ((1, 0), 1.0 / 6.0),
             ((2, 0), 1.0 / 12.0), ((1, 1), 1.0 / 24.0),
         ]),
+        (tet10_gauss_points, [
+            ((0, 0, 0), 1.0 / 6.0),
+            ((1, 0, 0), 1.0 / 24.0), ((0, 1, 0), 1.0 / 24.0),
+            ((0, 0, 1), 1.0 / 24.0),
+            ((2, 0, 0), 1.0 / 60.0), ((0, 2, 0), 1.0 / 60.0),
+            ((0, 0, 2), 1.0 / 60.0),
+            ((1, 1, 0), 1.0 / 120.0), ((1, 0, 1), 1.0 / 120.0),
+            ((0, 1, 1), 1.0 / 120.0),
+        ]),
         (hex20_gauss_points, [
             ((0, 0, 0), 8.0), ((4, 0, 0), 8.0 / 5.0),
             ((4, 2, 0), 8.0 / 15.0), ((2, 2, 2), 8.0 / 27.0),
             ((3, 2, 0), 0.0),
         ]),
     ],
-    ids=["unit-triangle", "reference-cube"],
+    ids=["unit-triangle", "unit-tetrahedron", "reference-cube"],
 )
 def test_quadrature_reproduces_analytic_monomial_moments(quadrature, moments):
     # Triangle: integral(x^a y^b) = a! b! / (a+b+2)!.
+    # Tetrahedron: integral(x^a y^b z^c) = a! b! c! / (a+b+c+3)!.
     # Cube [-1,1]^3: product of 2/(p+1) for even p, zero for any odd p.
     points = np.array(quadrature())
     coordinates, weights = points[:, :-1], points[:, -1]
