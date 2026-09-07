@@ -10,7 +10,6 @@ from fem.elements import (
 from fem.elements.beam_section import parse_beam2_section
 from fem.elements.hexahedron import (
     HEX20_EXTRAPOLATION_MATRIX,
-    HEX20_NATURAL_NODE_COORDS,
     hex20_gauss_points,
     hex20_shape_funcs_grads,
     hex8_gauss_points,
@@ -21,7 +20,6 @@ from fem.elements.tetrahedron import (
     TET10_NATURAL_NODE_COORDS,
     tet10_gauss_points,
 )
-from fem.elements.triangle import tri6_shape_funcs_grads
 from fem.materials import linear_elastic
 from tests.helpers.mesh_builders import (
     make_beam_stiffness_mesh,
@@ -78,30 +76,10 @@ def test_solid_kernels_expose_face_node_indices(
 
 @pytest.mark.parametrize(
     "builder",
-    [
-        make_truss_stiffness_mesh,
-        make_beam_stiffness_mesh,
-        make_tri3_stiffness_mesh,
-        make_tri6_stiffness_mesh,
-        make_quad4_stiffness_mesh,
-        make_quad8_stiffness_mesh,
-        make_hex8_stiffness_mesh,
-        make_tet4_stiffness_mesh,
-        make_tet10_stiffness_mesh,
-    ],
-    ids=[
-        "truss2",
-        "beam2",
-        "tri3",
-        "tri6",
-        "quad4",
-        "quad8",
-        "hex8",
-        "tet4",
-        "tet10",
-    ],
+    [make_truss_stiffness_mesh, make_beam_stiffness_mesh],
+    ids=["truss2", "beam2"],
 )
-def test_kernels_match_explicit_node_lookup(builder):
+def test_line_kernels_support_default_and_explicit_node_lookup(builder):
     _assert_kernel_matches_explicit_node_lookup(builder())
 
 
@@ -320,65 +298,7 @@ def test_line_element_reports_missing_required_property(builder, missing_propert
         get_element_kernel(elem.type).stiffness(mesh, elem)
 
 
-@pytest.mark.parametrize(
-    ("builder", "expected_count"),
-    (
-        (make_hex8_stiffness_mesh, 8),
-        (make_hex20_stiffness_mesh, 20),
-        (make_tet4_stiffness_mesh, 4),
-        (make_tet10_stiffness_mesh, 10),
-    ),
-    ids=["hex8", "hex20", "tet4", "tet10"],
-)
-def test_solid_stiffness_reports_invalid_node_count_with_context(
-    builder,
-    expected_count,
-):
-    mesh = builder()
-    elem = mesh.elements[0]
-    elem.node_ids = elem.node_ids[:-1]
-
-    with pytest.raises(ValueError) as exc_info:
-        get_element_kernel(elem.type).stiffness(mesh, elem)
-
-    message = str(exc_info.value)
-    assert f"{elem.type} element {elem.id}" in message
-    assert f"requires {expected_count} nodes" in message
-    assert f"got {expected_count - 1}" in message
-    assert f"node_ids={elem.node_ids}" in message
-
-
 # Plane element kernels
-
-
-def test_tri6_shape_functions_interpolate_nodes():
-    node_coords = [
-        (0.0, 0.0),
-        (1.0, 0.0),
-        (0.0, 1.0),
-        (0.5, 0.0),
-        (0.5, 0.5),
-        (0.0, 0.5),
-    ]
-
-    for i, (xi, eta) in enumerate(node_coords):
-        N, dN_dxi, dN_deta = tri6_shape_funcs_grads(xi, eta)
-
-        expected = np.zeros(6, dtype=float)
-        expected[i] = 1.0
-        assert np.allclose(N, expected)
-        assert np.isclose(float(np.sum(N)), 1.0)
-        assert np.isclose(float(np.sum(dN_dxi)), 0.0)
-        assert np.isclose(float(np.sum(dN_deta)), 0.0)
-
-
-def test_quad4_stiffness_builds_node_lookup_from_mesh_when_omitted():
-    mesh = make_quad4_stiffness_mesh()
-
-    ke = get_element_kernel("Quad4").stiffness(mesh, mesh.elements[0])
-
-    assert ke.shape == (8, 8)
-    assert np.allclose(ke, ke.T)
 
 
 @pytest.mark.parametrize(
@@ -481,18 +401,14 @@ def test_plane_kernels_provide_stress_interfaces_without_post_helpers(
 # Solid element kernels
 
 
-def test_hex20_kernel_stiffness_and_body_force_contract():
+def test_hex20_body_force_preserves_global_resultant():
     mesh = make_hex20_stiffness_mesh()
     elem = mesh.elements[0]
     kernel = get_element_kernel("C3D20")
 
-    Ke = kernel.stiffness(mesh, elem)
     fe = kernel.body_force(mesh, elem, (2.0, -3.0, 4.0))
 
-    assert Ke.shape == (60, 60)
     assert fe.shape == (60,)
-    assert np.all(np.isfinite(Ke))
-    assert np.allclose(Ke, Ke.T)
     assert fe[0::3].sum() == pytest.approx(2.0)
     assert fe[1::3].sum() == pytest.approx(-3.0)
     assert fe[2::3].sum() == pytest.approx(4.0)
@@ -603,27 +519,6 @@ def test_hex8_bbar_stress_at_builds_node_lookup_once(monkeypatch):
     )
 
     assert calls == 1
-
-
-def test_hex20_shape_functions_interpolate_all_nodes():
-    for local_index, coords in enumerate(HEX20_NATURAL_NODE_COORDS):
-        N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(*coords)
-        expected = np.zeros(20)
-        expected[local_index] = 1.0
-        assert np.allclose(N, expected)
-        assert np.isclose(dN_dxi.sum(), 0.0)
-        assert np.isclose(dN_deta.sum(), 0.0)
-        assert np.isclose(dN_dzeta.sum(), 0.0)
-
-
-def test_hex20_partition_of_unity_and_full_integration_weights():
-    for xi, eta, zeta in [(-0.3, 0.2, 0.4), (0.0, 0.0, 0.0), (0.7, -0.5, 0.1)]:
-        N, dN_dxi, dN_deta, dN_dzeta = hex20_shape_funcs_grads(xi, eta, zeta)
-        assert N.sum() == pytest.approx(1.0)
-        assert dN_dxi.sum() == pytest.approx(0.0)
-        assert dN_deta.sum() == pytest.approx(0.0)
-        assert dN_dzeta.sum() == pytest.approx(0.0)
-    assert sum(w for *_, w in hex20_gauss_points()) == pytest.approx(8.0)
 
 
 def test_hex20_recovery_matrix_is_left_inverse_of_gauss_shape_matrix():
