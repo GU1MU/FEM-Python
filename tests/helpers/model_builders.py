@@ -7,6 +7,7 @@ from fem.core.model import (
     NodalLoad,
     NodeSet,
 )
+from fem.elements import BEAM_LOCAL_Y_REFERENCE_KEY
 
 
 def make_simple_truss_mesh(E=100.0, area=2.0, length=1.0):
@@ -76,4 +77,34 @@ def make_two_step_static_pull_truss_model():
             AnalysisStep("pull2", cloads=[NodalLoad("TIP", 1, 200.0)]),
         ],
         name="bar",
+    )
+
+
+def make_line_load_beam_model(*, inclined=False, orientation=None):
+    end = (2.0, 3.0, 6.0) if inclined else (4.0, 0.0, 0.0)
+    properties = {
+        "E": 210.0,
+        "nu": 0.25,
+        "section_type": "rectangle",
+        "height": 3.0,
+        "width": 2.0,
+        "rho": 99.0,
+    }
+    if orientation is not None:
+        properties[BEAM_LOCAL_Y_REFERENCE_KEY] = orientation
+    mesh = Mesh3D(
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
+        elements=[
+            Element3D(
+                10,
+                [1, 2],
+                "Beam2",
+                properties,
+            )
+        ],
+        dofs_per_node=6,
+    )
+    return FEMModel(
+        mesh=mesh,
+        element_sets={"beams": ElementSet("beams", (10,))},
     )

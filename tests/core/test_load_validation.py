@@ -12,10 +12,9 @@ def _line_mesh(**properties):
     return mesh
 
 
-@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
-def test_body_force_assembly_rejects_nonfinite_vector_components(bad_value):
+def test_body_force_assembly_rejects_nonfinite_vector_components():
     mesh = _line_mesh()
-    bc = BoundaryCondition(body_forces=[ElementLoad(1, (bad_value, 0.0, 0.0))])
+    bc = BoundaryCondition(body_forces=[ElementLoad(1, (np.nan, 0.0, 0.0))])
 
     with pytest.raises(ValueError, match=r"body force vector components must be finite"):
         build_load_vector(mesh, bc)
@@ -86,3 +85,35 @@ def test_targeted_gravity_allows_zero_density_and_produces_zero_load():
     bc.add_gravity_element(1, 0.0, -9.81, 0.0)
 
     assert np.allclose(build_load_vector(mesh, bc), 0.0)
+
+
+@pytest.mark.parametrize(
+    ("method", "arguments", "message"),
+    [
+        ("add_displacement_dof", (0, np.nan), "prescribed displacement must be finite"),
+        ("add_nodal_force_dof", (0, np.inf), "nodal force must be finite"),
+        ("add_body_force_element", (1, -np.inf, 0.0), "load vector component must be finite"),
+    ],
+    ids=["displacement", "nodal-force", "body-force"],
+)
+def test_boundary_condition_rejects_nonfinite_scalar_values(method, arguments, message):
+    boundary = BoundaryCondition()
+
+    with pytest.raises(ValueError, match=message):
+        getattr(boundary, method)(*arguments)
+
+
+def test_boundary_condition_rejects_overflow_during_force_accumulation():
+    boundary = BoundaryCondition()
+    boundary.add_nodal_force_dof(0, np.finfo(float).max)
+
+    with pytest.raises(ValueError, match="accumulated nodal force at DOF 0 must be finite"):
+        boundary.add_nodal_force_dof(0, np.finfo(float).max)
+
+
+def test_load_assembly_rejects_nonfinite_direct_nodal_force_maps():
+    mesh = _line_mesh()
+    boundary = BoundaryCondition(nodal_forces={0: np.nan})
+
+    with pytest.raises(ValueError, match="nodal force at DOF 0 must be finite"):
+        build_load_vector(mesh, boundary)

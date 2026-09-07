@@ -1077,3 +1077,19 @@ def test_prevalidated_solve_skips_duplicate_validation_and_records_stages(monkey
         "反力与结果封装",
     }
     assert all(seconds >= 0.0 for seconds in timings.values())
+
+
+@pytest.mark.parametrize("invalid_target", ["K", "F"])
+def test_sparse_solver_rejects_nonfinite_system_data(invalid_target):
+    K = csr_matrix(np.eye(2))
+    F = np.ones(2)
+
+    if invalid_target == "K":
+        K.data[0] = np.nan
+        expected = "K must contain only finite values"
+    else:
+        F[0] = np.inf
+        expected = "F must contain only finite values"
+
+    with pytest.raises(ValueError, match=expected):
+        solvers.linear.solve(K, F)
