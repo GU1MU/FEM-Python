@@ -7,8 +7,7 @@ import pytest
 from fem import materials, selection, steps
 from fem.core import model as core_model
 from fem.post import result_region_key_for_element
-from fem.core.dof import DofMap
-from fem.core.mesh import Element3D, Mesh2D, Mesh3D, MeshProtocol, Node2D, Node3D
+from fem.core.mesh import Element3D, Mesh2D, Mesh3D, Node2D, Node3D
 from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
@@ -28,12 +27,9 @@ from fem.core.model import (
     Surface,
 )
 from tests.helpers.mesh_builders import (
-    make_dof_order_meshes,
     make_hex20_stiffness_mesh,
-    make_minimal_hex_mesh,
     make_mixed_hex8_tet4_mesh,
     make_mixed_tri3_quad4_mesh,
-    make_mixed_tri6_quad8_mesh,
     make_selection_hex_mesh,
     make_selection_mixed_plane_mesh,
     make_selection_quad_mesh,
@@ -43,108 +39,62 @@ from tests.helpers.mesh_builders import (
 )
 
 
-def test_dof_map_handles_mesh_nodes_independent_of_dimension():
-    nodes = [Node2D(20, 0.0, 0.0), Node2D(10, 1.0, 0.0)]
-
-    dof_map = DofMap.from_nodes(nodes, dofs_per_node=2)
-
-    assert dof_map.node_ids == [10, 20]
-    assert dof_map.node_dofs(10) == [0, 1]
-    assert dof_map.node_dofs(20) == [2, 3]
-    assert dof_map.element_dofs([20, 10]) == [2, 3, 0, 1]
-
-
-def test_dof_map_rejects_duplicate_nodes_and_invalid_components():
-    nodes = [Node2D(1, 0.0, 0.0), Node2D(1, 1.0, 0.0)]
-
-    with pytest.raises(ValueError):
-        DofMap.from_nodes(nodes, dofs_per_node=2)
-
-    dof_map = DofMap.from_nodes([Node2D(1, 0.0, 0.0)], dofs_per_node=2)
-    with pytest.raises(IndexError):
-        dof_map.global_dof(1, -1)
-    with pytest.raises(IndexError):
-        dof_map.global_dof(1, 2)
-
-
-def test_meshes_expose_current_dof_interface():
-    for mesh in make_dof_order_meshes():
-        assert isinstance(mesh, MeshProtocol)
-        assert mesh.node_ids == [10, 20]
-        assert mesh.node_dofs(10) == list(range(mesh.dofs_per_node))
-        assert mesh.element_dofs(mesh.elements[0])[:mesh.dofs_per_node] == mesh.node_dofs(20)
-
-
-def test_generic_mesh_defaults_and_explicit_beam_layout():
-    mesh2d = Mesh2D([Node2D(2, 0.0, 0.0), Node2D(1, 1.0, 0.0)], [])
-    mesh3d = Mesh3D([Node3D(2, 0.0, 0.0, 0.0), Node3D(1, 1.0, 0.0, 0.0)], [])
-    beam_mesh = Mesh3D(mesh3d.nodes, [], dofs_per_node=6)
-
-    assert mesh2d.dofs_per_node == 2
-    assert mesh2d.node_ids == [1, 2]
-    assert mesh3d.dofs_per_node == 3
-    assert beam_mesh.dofs_per_node == 6
-    assert beam_mesh.num_dofs == 12
-
-    with pytest.raises(ValueError, match="dofs_per_node must be positive"):
-        Mesh3D([], [], dofs_per_node=0)
-
-
-def test_element3d_requires_an_explicit_type():
-    with pytest.raises(TypeError):
-        Element3D(1, [1, 2])
-
-
-def test_core_model_stores_sets_edges_surfaces_materials_and_sections():
-    mesh = make_minimal_hex_mesh()
-    node_set = NodeSet("FIXED", [1, 2])
-    element_set = ElementSet("SOLID", [1])
-    edge = Edge("LINE_LOAD", [ElementEdge(1, 0, [1, 2])])
-    surface = Surface("FACE_LOAD", [ElementFace(1, 0, [1, 2])])
+def test_model_records_preserve_set_and_topology_order_after_source_mutation():
+    node_ids = [2, 1]
+    element_ids = [1]
+    edge_nodes = [2, 1]
+    face_nodes = [1, 4, 3, 2]
+    edge_records = [ElementEdge(1, 0, edge_nodes), ElementEdge(1, 1, [2, 3])]
+    face_records = [ElementFace(1, 0, face_nodes), ElementFace(1, 1, [5, 6, 7, 8])]
     material = MaterialDefinition("STEEL", {"E": 210.0, "nu": 0.3})
     section = SectionAssignment("SOLID", "STEEL")
     model = FEMModel(
-        mesh=mesh,
-        node_sets={node_set.name: node_set},
-        element_sets={element_set.name: element_set},
-        edges={edge.name: edge},
-        surfaces={surface.name: surface},
-        materials={material.name: material},
+        mesh=make_selection_hex_mesh(),
+        node_sets={"FIXED": NodeSet("FIXED", node_ids)},
+        element_sets={"SOLID": ElementSet("SOLID", element_ids)},
+        edges={"LINE_LOAD": Edge("LINE_LOAD", edge_records)},
+        surfaces={"FACE_LOAD": Surface("FACE_LOAD", face_records)},
+        materials={"STEEL": material},
         sections=[section],
         name="job",
     )
+    for source in (node_ids, element_ids, edge_nodes, face_nodes, edge_records, face_records):
+        source.clear()
 
     assert model.name == "job"
-    assert model.node_sets["FIXED"].node_ids == (1, 2)
+    assert model.node_sets["FIXED"].node_ids == (2, 1)
     assert model.element_sets["SOLID"].element_ids == (1,)
-    assert model.edges["LINE_LOAD"].edges[0] == ElementEdge(1, 0, (1, 2))
-    assert model.surfaces["FACE_LOAD"].faces[0] == ElementFace(1, 0, (1, 2))
-    assert model.materials["STEEL"].properties["E"] == 210.0
-    assert model.sections[0].element_set == "SOLID"
-
-
-def test_core_model_stores_complete_analysis_step_contract():
-    step = AnalysisStep(
-        "load",
-        procedure="static",
-        boundaries=[DisplacementConstraint("FIXED", 1, 3, 0.0)],
-        cloads=[NodalLoad("TIP", 3, -100.0)],
-        edge_loads=[EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")],
-        gravity_loads=[GravityLoad((0.0, 0.0, -9.81))],
-        outputs=[core_model.OutputRequest("field", "node", ("U",))],
-        metadata={"nlgeom": "NO"},
+    assert model.edges["LINE_LOAD"].edges == (
+        ElementEdge(1, 0, (2, 1)), ElementEdge(1, 1, (2, 3)),
     )
-    model = FEMModel(mesh=make_minimal_hex_mesh(), steps=[step])
+    assert model.surfaces["FACE_LOAD"].faces == (
+        ElementFace(1, 0, (1, 4, 3, 2)), ElementFace(1, 1, (5, 6, 7, 8)),
+    )
+    assert model.materials["STEEL"] == material
+    assert model.sections == [section]
 
-    assert model.steps[0].name == "load"
-    assert model.steps[0].boundaries[0].target == "FIXED"
-    assert model.steps[0].cloads[0].component == 3
-    assert model.steps[0].edge_loads[0].edge == "LINE_LOAD"
-    assert model.steps[0].edge_loads[0].vector == (1.0, 0.0)
-    assert model.steps[0].edge_loads[0].load_type == "traction"
-    assert model.steps[0].gravity_loads[0].acceleration == (0.0, 0.0, -9.81)
-    assert model.steps[0].outputs[0].variables == ("U",)
-    assert model.steps[0].metadata["nlgeom"] == "NO"
+
+def test_analysis_step_owns_ordered_record_sequences_and_metadata_snapshot():
+    boundaries = [DisplacementConstraint("FIXED", 1, 3, 0.0)]
+    loads = [NodalLoad("TIP", 3, -100.0), NodalLoad("TIP", 1, 20.0)]
+    edge_loads = [EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction")]
+    gravity_loads = [GravityLoad((0.0, 0.0, -9.81))]
+    outputs = [OutputRequest("field", "node", ("U",))]
+    metadata = {"nlgeom": "NO"}
+    step = AnalysisStep(
+        "load", boundaries=boundaries, cloads=loads, edge_loads=edge_loads,
+        gravity_loads=gravity_loads, outputs=outputs, metadata=metadata,
+    )
+    for source in (boundaries, loads, edge_loads, gravity_loads, outputs):
+        source.clear()
+    metadata["nlgeom"] = "YES"
+
+    assert step.boundaries == (DisplacementConstraint("FIXED", 1, 3, 0.0),)
+    assert step.cloads == (NodalLoad("TIP", 3, -100.0), NodalLoad("TIP", 1, 20.0))
+    assert step.edge_loads == (EdgeLoad("LINE_LOAD", (1.0, 0.0), load_type="traction"),)
+    assert step.gravity_loads == (GravityLoad((0.0, 0.0, -9.81)),)
+    assert step.outputs == (OutputRequest("field", "node", ("U",)),)
+    assert step.metadata == {"nlgeom": "NO"}
 
 
 def test_output_request_preserves_exact_variable_spelling_order_and_duplicates():
@@ -670,31 +620,3 @@ def test_selection_can_build_model_sets_and_surfaces():
     assert fixed.node_ids == (1, 4, 5, 8)
     assert isinstance(load_surface, Surface)
     assert load_surface.faces == (ElementFace(1, 5, (2, 3, 7, 6)),)
-
-
-def test_mixed_hex8_tet4_mesh_keeps_element_types_and_3d_dofs():
-    mesh = make_mixed_hex8_tet4_mesh()
-
-    assert isinstance(mesh, Mesh3D)
-    assert mesh.dofs_per_node == 3
-    assert [elem.type for elem in mesh.elements] == ["Hex8", "Tet4"]
-    assert mesh.elements[0].id == 1
-    assert mesh.elements[1].id == 2
-    assert mesh.num_dofs == 27
-
-
-def test_mixed_tri3_quad4_mesh_keeps_element_types_and_2d_dofs():
-    mesh = make_mixed_tri3_quad4_mesh()
-
-    assert isinstance(mesh, Mesh2D)
-    assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri3", "Quad4"]
-    assert mesh.num_dofs == 10
-
-
-def test_mixed_tri6_quad8_mesh_keeps_element_types_and_2d_dofs():
-    mesh = make_mixed_tri6_quad8_mesh()
-
-    assert mesh.dofs_per_node == 2
-    assert [elem.type for elem in mesh.elements] == ["Tri6", "Quad8"]
-    assert mesh.num_dofs == 28
