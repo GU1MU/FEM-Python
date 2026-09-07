@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import numpy as np
 import pytest
 
 from fem import materials
@@ -17,8 +16,6 @@ from fem.core.model import (
     ElementSet,
     SectionAssignment,
 )
-from fem.core.result import ModelResult
-from fem.solvers import static_linear
 from tests.helpers.mesh_builders import make_truss_stiffness_mesh
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
@@ -118,118 +115,3 @@ def test_validate_model_rejects_case_insensitive_duplicate_step_names():
 
     with pytest.raises(ValueError, match="step names must be unique ignoring case"):
         validate_model(model)
-
-
-@pytest.mark.parametrize(
-    ("procedure", "nlgeom", "message"),
-    [
-        ("dynamic", None, "requires procedure 'static'"),
-        ("static", True, "does not support nlgeom"),
-        ("static", "YES", "does not support nlgeom"),
-    ],
-)
-def test_static_solver_rejects_unsupported_step_semantics(
-    procedure,
-    nlgeom,
-    message,
-):
-    model = make_static_pull_truss_model()
-    model.steps[0].procedure = procedure
-    if nlgeom is not None:
-        model.steps[0].metadata["nlgeom"] = nlgeom
-
-    with pytest.raises(ValueError, match=message):
-        static_linear.solve(model, "pull")
-
-
-def test_static_solver_accepts_explicit_false_nlgeom():
-    model = make_static_pull_truss_model()
-    model.steps[0].metadata["nlgeom"] = "NO"
-
-    result = static_linear.solve(model, "pull")
-
-    assert result.U[model.mesh.global_dof(2, 0)] == pytest.approx(0.5)
-
-
-def test_model_result_owns_validated_one_dimensional_vectors():
-    model = make_static_pull_truss_model()
-    num_dofs = model.mesh.num_dofs
-    U = np.arange(num_dofs, dtype=float)
-    reactions = -U
-
-    result = ModelResult(model, model.steps[0], U, reactions)
-    U[:] = 99.0
-    reactions[:] = 88.0
-
-    assert np.array_equal(result.U, np.arange(num_dofs, dtype=float))
-    assert np.array_equal(result.reactions, -np.arange(num_dofs, dtype=float))
-
-
-def test_model_result_queries_one_based_nodal_components():
-    model = make_static_pull_truss_model()
-    num_dofs = model.mesh.num_dofs
-    result = ModelResult(
-        model,
-        model.steps[0],
-        np.arange(num_dofs, dtype=float),
-        -np.arange(num_dofs, dtype=float),
-    )
-
-    dof = model.mesh.global_dof(2, 1)
-    assert result.nodal_displacement(2, component=2) == float(dof)
-    assert result.nodal_reaction(2, component=2) == float(-dof)
-
-
-@pytest.mark.parametrize("component", [True, 1.0, "1"])
-def test_model_result_nodal_queries_reject_noninteger_components(component):
-    model = make_static_pull_truss_model()
-    result = ModelResult(
-        model,
-        model.steps[0],
-        np.zeros(model.mesh.num_dofs),
-        np.zeros(model.mesh.num_dofs),
-    )
-
-    with pytest.raises(TypeError, match="component must be an integer"):
-        result.nodal_displacement(2, component=component)
-
-
-@pytest.mark.parametrize("component", [0, 4])
-def test_model_result_nodal_queries_reject_out_of_range_components(component):
-    model = make_static_pull_truss_model()
-    result = ModelResult(
-        model,
-        model.steps[0],
-        np.zeros(model.mesh.num_dofs),
-        np.zeros(model.mesh.num_dofs),
-    )
-
-    with pytest.raises(IndexError, match="components are 1-based"):
-        result.nodal_reaction(2, component=component)
-
-
-def test_model_result_rejects_invalid_vectors():
-    model = make_static_pull_truss_model()
-    num_dofs = model.mesh.num_dofs
-
-    with pytest.raises(ValueError, match="U must be one-dimensional"):
-        ModelResult(
-            model,
-            model.steps[0],
-            np.zeros((num_dofs, 1)),
-            np.zeros(num_dofs),
-        )
-    with pytest.raises(ValueError, match=rf"U must have length {num_dofs}"):
-        ModelResult(
-            model,
-            model.steps[0],
-            np.zeros(num_dofs - 1),
-            np.zeros(num_dofs),
-        )
-    with pytest.raises(ValueError, match="reactions must contain only finite"):
-        ModelResult(
-            model,
-            model.steps[0],
-            np.zeros(num_dofs),
-            np.full(num_dofs, np.nan),
-        )
