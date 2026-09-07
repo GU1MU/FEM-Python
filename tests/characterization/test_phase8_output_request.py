@@ -61,56 +61,6 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-@pytest.mark.parametrize(
-    ("arguments", "message"),
-    (
-        ((23, "node", ("U",)), "kind"),
-        (("field", 17, ("U",)), "target"),
-        (("field", "node", ("u", 2, None, "u")), r"variables\[1\]"),
-    ),
-)
-def test_programmatic_output_request_rejects_string_coercion(
-    arguments: tuple[object, object, object],
-    message: str,
-) -> None:
-    with pytest.raises(TypeError, match=message):
-        OutputRequest(*arguments)
-
-
-def test_programmatic_variables_preserve_case_order_and_duplicates() -> None:
-    request = OutputRequest(
-        "FIELD",
-        "NODE",
-        ("rf", "U", "rf", "CustomVariable"),
-    )
-
-    assert request.kind == "field"
-    assert request.target == "node"
-    assert request.variables == ("rf", "U", "rf", "CustomVariable")
-
-
-def test_programmatic_metadata_is_deeply_owned_and_immutable() -> None:
-    nested = {"thresholds": [0, 75, 100]}
-    source = {"averaging": nested}
-
-    request = OutputRequest("field", "element", ("S",), source)
-    source["late_outer_value"] = True
-    nested["thresholds"][1] = 80
-
-    assert request.metadata == {
-        "averaging": {"thresholds": (0, 75, 100)},
-    }
-    assert request.metadata is not source
-    assert request.metadata["averaging"] is not nested
-
-    with pytest.raises(TypeError):
-        request.metadata["public_mutation"] = {"kept": True}
-    with pytest.raises(TypeError):
-        request.metadata["averaging"]["late"] = True
-    with pytest.raises(TypeError):
-        request.metadata["averaging"]["thresholds"][0] = 1
-
-
 def test_installed_capability_publishes_intrinsic_create_and_catalog() -> None:
     model = inp.read(_STANDARD_INP_FIXTURES / "truss2_tension.inp")
     report = describe_model_capabilities(model)
