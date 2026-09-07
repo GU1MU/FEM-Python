@@ -118,9 +118,10 @@ def test_position_transform_cancellation_never_caches_partial_field(
         recovery.collect(position, checkpoint=checkpoint)
 
     assert completed_records >= 1
-    assert position not in recovery._cache
+    completed_before_retry = completed_records
     cancellation_enabled = False
     retried = recovery.collect(position, checkpoint=checkpoint)
+    assert completed_records > completed_before_retry
     clean = StressRecovery(
         result.model.mesh,
         result.U,
@@ -159,12 +160,13 @@ def test_position_transform_final_checkpoint_precedes_cache_install(
     with pytest.raises(_RecoveryCancelled, match="final checkpoint"):
         recovery.collect(StressPosition.CENTROID, checkpoint=checkpoint)
 
-    assert StressPosition.CENTROID not in recovery._cache
+    transform_finished = False
     cancellation_enabled = False
     assert recovery.collect(
         StressPosition.CENTROID,
         checkpoint=checkpoint,
     ) == expected
+    assert transform_finished
 
 
 def test_resolved_nodal_cancellation_stops_between_input_records_and_retries(

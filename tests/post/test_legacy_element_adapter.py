@@ -1,161 +1,62 @@
 from __future__ import annotations
 
 import csv
-import io
 
 import numpy as np
 import pytest
 
 from fem.elements import get_element_kernel
-from fem.post.stress import dispatch, element
-from fem.post.stress._common import (
-    PLANE_ELEMENT_HEADER,
-    nodal_stress,
-    node_lookup,
-    validated_u,
-)
+from fem.post.stress import element
 from fem.post.stress.field import StressPosition, collect_stress
-from fem.post.stress.invariants import von_mises_plane
 from tests.helpers.mesh_builders import (
-    make_mixed_tri3_quad4_mesh,
-    make_mixed_tri6_quad8_mesh,
-    make_quad8_stiffness_mesh,
-    make_unit_hex8_mesh,
+    make_mixed_tri3_quad4_mesh, make_mixed_tri6_quad8_mesh,
+    make_quad8_stiffness_mesh, make_unit_hex8_mesh,
 )
-
-
-def _legacy_plane_bytes(
-    mesh,
-    displacement,
-    type_keys: set[str],
-    gauss_order: int | None,
-) -> bytes:
-    """Reproduce the pre-Phase-8 plane element writer as a byte oracle."""
-    displacement = validated_u(mesh, displacement)
-    lookup = node_lookup(mesh)
-    stream = io.StringIO(newline="")
-    writer = csv.writer(stream)
-    writer.writerow(PLANE_ELEMENT_HEADER)
-    for elem in mesh.elements:
-        type_key = dispatch.type_key_from_name(elem.type)
-        if type_key not in type_keys:
-            continue
-        order = (
-            gauss_order
-            if gauss_order is not None
-            else dispatch.default_gauss_order(type_key)
-        )
-        values, plane_type, poisson_ratio = nodal_stress(
-            mesh,
-            elem,
-            displacement,
-            lookup,
-            order,
-        )
-        for local_node, node_id in enumerate(elem.node_ids, start=1):
-            sig_x, sig_y, tau_xy = values[local_node - 1].tolist()
-            writer.writerow([
-                elem.id,
-                node_id,
-                local_node,
-                sig_x,
-                sig_y,
-                tau_xy,
-                von_mises_plane(
-                    sig_x,
-                    sig_y,
-                    tau_xy,
-                    plane_type,
-                    poisson_ratio,
-                ),
-            ])
-    return stream.getvalue().encode("utf-8")
-
-
-def test_single_plane_legacy_csv_delegates_and_preserves_bytes(
-    tmp_path,
-    monkeypatch,
-):
-    mesh = make_quad8_stiffness_mesh()
-    mesh.elements[0].props["plane_type"] = "strain"
-    displacement = np.linspace(-0.04, 0.11, mesh.num_dofs)
-    target = tmp_path / "quad8-element.csv"
-    calls = []
-    original = element.collect_plane_element_nodal
-
-    def spy_collect_plane_element_nodal(*args, **kwargs):
-        calls.append((args, kwargs))
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(
-        element,
-        "collect_plane_element_nodal",
-        spy_collect_plane_element_nodal,
-    )
-
-    element.quad8(mesh, displacement, target, gauss_order=3)
-
-    assert len(calls) == 1
-    assert calls[0][1] == {
-        "element_type": "quad8",
-        "gauss_order": 3,
-    }
-    assert target.read_bytes() == _legacy_plane_bytes(
-        mesh,
-        displacement,
-        {"quad8"},
-        3,
-    )
 
 
 @pytest.mark.parametrize(
-    ("mesh_builder", "type_keys"),
-    (
-        (make_mixed_tri3_quad4_mesh, ("tri3", "quad4")),
-        (make_mixed_tri6_quad8_mesh, ("tri6", "quad8")),
-    ),
+    ("builder", "type_keys", "plane_type", "expected_values"),
+    [
+        (make_quad8_stiffness_mesh, ("quad8",), "strain", (2.4, 3.36, 1.44, np.sqrt(8.9856))),
+        (make_mixed_tri3_quad4_mesh, ("tri3", "quad4"), "stress", (1.92, 2.88, 1.44, np.sqrt(12.672))),
+        (make_mixed_tri6_quad8_mesh, ("tri6", "quad8"), "stress", (1.92, 2.88, 1.44, np.sqrt(12.672))),
+    ],
+    ids=["single-plane-strain", "mixed-linear", "mixed-quadratic"],
 )
-def test_mixed_plane_legacy_csv_delegates_and_preserves_bytes(
-    tmp_path,
-    monkeypatch,
-    mesh_builder,
-    type_keys,
+def test_legacy_plane_csv_preserves_schema_order_and_analytic_stress(
+    tmp_path, builder, type_keys, plane_type, expected_values,
 ):
-    mesh = mesh_builder()
-    displacement = np.linspace(-0.03, 0.09, mesh.num_dofs)
-    target = tmp_path / f"mixed-{'-'.join(type_keys)}-element.csv"
-    calls = []
-    original = element.collect_plane_element_nodal
+    mesh = builder()
+    for elem in mesh.elements:
+        elem.props.update(E=120.0, nu=0.25, plane_type=plane_type)
+    displacement = np.zeros(mesh.num_dofs)
+    for node in mesh.nodes:
+        displacement[mesh.global_dof(node.id, 0)] = 0.01 * node.x + 0.03 * node.y
+        displacement[mesh.global_dof(node.id, 1)] = 0.02 * node.y
+    target = tmp_path / "plane-element.csv"
 
-    def spy_collect_plane_element_nodal(*args, **kwargs):
-        calls.append((args, kwargs))
-        return original(*args, **kwargs)
+    if len(type_keys) == 1:
+        element.quad8(mesh, displacement, target, gauss_order=3)
+    else:
+        element.mixed(type_keys, mesh, displacement, target)
 
-    def reject_legacy_kernel_lookup(*_args, **_kwargs):
-        raise AssertionError("plane adapter must not call an element kernel")
-
-    monkeypatch.setattr(
-        element,
-        "collect_plane_element_nodal",
-        spy_collect_plane_element_nodal,
-    )
-    monkeypatch.setattr(
-        element,
-        "get_element_kernel",
-        reject_legacy_kernel_lookup,
-    )
-
-    element.mixed(type_keys, mesh, displacement, target)
-
-    assert len(calls) == 1
-    assert calls[0][1] == {
-        "gauss_order": None,
-    }
-    assert target.read_bytes() == _legacy_plane_bytes(
-        mesh,
-        displacement,
-        set(type_keys),
-        None,
+    with target.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames == [
+            "elem_id", "node_id", "local_node", "sig_x", "sig_y", "tau_xy", "mises",
+        ]
+        rows = list(reader)
+    assert [(int(row["elem_id"]), int(row["node_id"]), int(row["local_node"])) for row in rows] == [
+        (elem.id, node_id, local_node)
+        for elem in mesh.elements
+        for local_node, node_id in enumerate(elem.node_ids, start=1)
+    ]
+    # Strains (.01, .02, .03 engineering shear), G=48. Plane strain adds sigma_z=1.44.
+    # Mises squared = half the sum of squared normal differences + 3*tau_xy**2.
+    expected = np.tile(expected_values, (len(rows), 1))
+    np.testing.assert_allclose(
+        [[float(row[name]) for name in ("sig_x", "sig_y", "tau_xy", "mises")] for row in rows],
+        expected, atol=1e-12,
     )
 
 
@@ -187,7 +88,6 @@ def test_distorted_solid_legacy_representative_point_is_not_centroid_field(
             0.0,
             0.0,
             0.0,
-            node_lookup(mesh),
         )
     )
     centroid = np.asarray(

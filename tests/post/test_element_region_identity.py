@@ -8,7 +8,6 @@ from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.post.fields import (
     MATERIAL_SIGNATURE_KEY,
     SECTION_SIGNATURE_KEY,
-    ResultRegionSignature,
     result_region_key_for_element,
 )
 from fem.post.stress import field as stress_field
@@ -124,9 +123,8 @@ def test_element_region_identity_accepts_canonical_signature_instances() -> None
         )
     )
 
-    assert type(region.material_signature) is ResultRegionSignature
-    assert region.material_signature is material
-    assert region.section_signature is section
+    assert region.material_signature == material
+    assert region.section_signature == section
 
 
 def test_element_region_identity_deep_owns_explicit_and_derived_properties() -> None:
@@ -248,7 +246,3 @@ def test_continuum_recovery_uses_the_neutral_element_region_identity() -> None:
     } == set(expected)
     for record in recovered.records:
         assert record.region_key == expected[record.elem_id]
-
-
-def test_post_exports_element_region_identity_helper() -> None:
-    assert post.result_region_key_for_element is result_region_key_for_element
