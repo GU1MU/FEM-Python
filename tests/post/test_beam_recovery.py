@@ -19,24 +19,120 @@ from fem.solvers import static_linear
 from tests.helpers.model_builders import make_line_load_beam_model
 
 
-def _beam_mesh() -> Mesh3D:
+def _beam_mesh(*, end=(4.0, 0.0, 0.0), props=None):
+    properties = {
+        "E": 210.0,
+        "nu": 0.25,
+        "section_type": "rectangle",
+        "height": 3.0,
+        "width": 2.0,
+        "rho": 4.0,
+    }
+    if props:
+        properties.update(props)
     return Mesh3D(
-        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, 2.0, 0.0, 0.0)],
-        elements=[
-            Element3D(
-                1,
-                [1, 2],
-                "Beam2",
-                {
-                    "E": 210.0e9,
-                    "nu": 0.3,
-                    "section_type": "rectangle",
-                    "height": 0.4,
-                    "width": 0.2,
-                },
+        nodes=[Node3D(1, 0.0, 0.0, 0.0), Node3D(2, *end)],
+        elements=[Element3D(1, [1, 2], "Beam2", properties)],
+        dofs_per_node=6,
+    )
+
+
+def _beam_result(mesh, U, step=None):
+    model = FEMModel(mesh=mesh)
+    selected_step = step or AnalysisStep("result")
+    return ModelResult(
+        model,
+        selected_step,
+        np.asarray(U, dtype=float),
+        np.zeros(mesh.num_dofs),
+    )
+
+
+def test_beam2_rigid_motion_recovers_zero_nodal_axial_stress():
+    mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
+    rigid = np.tile([0.4, -0.2, 0.7, 0.0, 0.0, 0.0], 2)
+
+    rows = beam.nodal_envelope(_beam_result(mesh, rigid))
+
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)], abs=1e-10
+    )
+
+
+def test_beam2_pure_tension_recovers_positive_stress_at_both_ends():
+    mesh = _beam_mesh()
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 0)] = 0.04
+    result = _beam_result(mesh, U)
+
+    rows = beam.nodal_envelope(result)
+
+    expected = 210.0 * 0.04 / 4.0
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(expected, expected, expected), (expected, expected, expected)]
+    )
+    assert beam.absolute_maximum(result) == pytest.approx(expected)
+
+
+def test_beam2_inclined_and_reversed_elements_preserve_physical_extrema():
+    inclined = _beam_mesh(end=(2.0, 3.0, 6.0))
+    rotation = resolve_beam_frame(
+        inclined,
+        inclined.elements[0],
+    ).rotation
+    local_displacement = np.zeros(12)
+    local_displacement[6] = 0.07
+    local_displacement[7] = 0.02
+    local_displacement[11] = 0.01
+    global_displacement = np.zeros(12)
+    for start in (0, 3, 6, 9):
+        global_displacement[start : start + 3] = rotation.T @ local_displacement[start : start + 3]
+
+    forward = beam.nodal_envelope(_beam_result(inclined, global_displacement))
+    reversed_mesh = _beam_mesh(end=(2.0, 3.0, 6.0))
+    reversed_mesh.elements[0].node_ids = [2, 1]
+    reversed_rows = beam.nodal_envelope(
+        _beam_result(reversed_mesh, global_displacement)
+    )
+
+    forward_by_node = {row.node_id: row for row in forward}
+    reversed_by_node = {row.node_id: row for row in reversed_rows}
+    for node_id in inclined.node_ids:
+        assert (
+            reversed_by_node[node_id].maximum,
+            reversed_by_node[node_id].minimum,
+            reversed_by_node[node_id].absolute_maximum,
+        ) == pytest.approx(
+            (
+                forward_by_node[node_id].maximum,
+                forward_by_node[node_id].minimum,
+                forward_by_node[node_id].absolute_maximum,
             )
+        )
+
+
+def test_beam2_shared_node_uses_maximum_minimum_envelope_without_averaging():
+    props = dict(_beam_mesh().elements[0].props)
+    mesh = Mesh3D(
+        nodes=[
+            Node3D(1, 0.0, 0.0, 0.0),
+            Node3D(2, 1.0, 0.0, 0.0),
+            Node3D(3, 2.0, 0.0, 0.0),
+        ],
+        elements=[
+            Element3D(1, [1, 2], "Beam2", dict(props)),
+            Element3D(2, [2, 3], "Beam2", dict(props)),
         ],
         dofs_per_node=6,
+    )
+    U = np.zeros(mesh.num_dofs)
+    U[mesh.global_dof(2, 0)] = 0.1
+
+    rows = beam.nodal_envelope(_beam_result(mesh, U))
+
+    assert [row.node_id for row in rows] == [1, 2, 3]
+    assert [(row.maximum, row.minimum, row.absolute_maximum) for row in rows] == pytest.approx(
+        [(21.0, 21.0, 21.0), (21.0, -21.0, 21.0), (-21.0, -21.0, 21.0)]
     )
 
 
@@ -56,10 +152,13 @@ def test_internal_end_actions_publish_both_transverse_shears(
     kernel = get_element_kernel("Beam2")
 
     forces = kernel.local_section_end_actions(mesh, element, displacement)
+    # Rectangle 3 by 2: Izz=2, Iyy=4.5; G=84, kappa=.85, B31 compensation=.25.
+    inertia = 2.0 if translation_component == 1 else 4.5
+    shear_rigidity = 0.85 * 84.0 * 6.0 / (1.0 + 0.25 * 4.0**2 * 6.0 / (12.0 * inertia))
+    expected_shear = shear_rigidity * 0.01 / 4.0
     assert [getattr(row, result_name) for row in forces] == pytest.approx(
-        [getattr(forces[0], result_name)] * 2
+        [expected_shear, expected_shear]
     )
-    assert abs(getattr(forces[0], result_name)) > 0.0
     assert [getattr(row, zero_result_name) for row in forces] == pytest.approx(
         [0.0, 0.0],
         abs=1.0e-12,
@@ -101,7 +200,6 @@ def test_end_resultants_reconstruct_balanced_local_nodal_actions() -> None:
     )
 
     assert reconstructed_action == pytest.approx(-local_load)
-    assert reconstructed_action + local_load == pytest.approx(np.zeros(12))
 
 
 def test_integration_point_recovery_keeps_shear_resultant_and_point_stress_semantics() -> None:
@@ -126,7 +224,7 @@ def test_integration_point_recovery_keeps_shear_resultant_and_point_stress_seman
         "Mz",
     )
     force = recovered.section_forces.rows[0]
-    assert force.Vy != 0.0
+    assert force.Vy == pytest.approx(0.85 * 84.0 * 6.0 / 2.0 * 0.01 / 4.0)
     assert force.Vz == pytest.approx(0.0)
     assert all(
         field.component_names
@@ -308,4 +406,26 @@ def test_explicit_orientation_section_end_actions_follow_reversal_convention():
     assert reversed_actions == pytest.approx(
         actions[::-1] * action_component_reversal,
         abs=1e-12,
+    )
+
+
+@pytest.mark.parametrize(
+    ("translation", "rotation", "sign", "curvature", "half_depth"),
+    [(1, 5, 1.0, 0.03, 1.0), (2, 4, -1.0, 0.02, 1.5)],
+    ids=["bend-about-z", "bend-about-y"],
+)
+def test_pure_bending_recovers_analytic_section_extrema_at_both_ends(
+    translation, rotation, sign, curvature, half_depth,
+):
+    mesh = _beam_mesh()
+    displacement = np.zeros(mesh.num_dofs)
+    displacement[mesh.global_dof(2, translation)] = sign * 0.5 * curvature * 4.0**2
+    displacement[mesh.global_dof(2, rotation)] = curvature * 4.0
+
+    rows = beam.nodal_envelope(_beam_result(mesh, displacement))
+
+    increment = 210.0 * curvature * half_depth
+    np.testing.assert_allclose(
+        [(row.maximum, row.minimum, row.absolute_maximum) for row in rows],
+        [(increment, -increment, increment)] * 2,
     )

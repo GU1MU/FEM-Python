@@ -52,7 +52,7 @@ def test_orientation_parser_takes_owned_float_tuple() -> None:
 
     assert orientation == BeamOrientation((0.0, 2.0, 0.0))
     assert orientation.local_y_reference == (0.0, 2.0, 0.0)
-    assert parse_beam_orientation(orientation) is orientation
+    assert parse_beam_orientation(orientation) == BeamOrientation((0.0, 2.0, 0.0))
 
 
 @pytest.mark.parametrize(
@@ -231,7 +231,7 @@ def test_explicit_frame_reverse_connectivity_keeps_y_and_reverses_x_z() -> None:
         ),
     ),
 )
-def test_automatic_frame_preserves_phase_3_global_axis_results(
+def test_automatic_frame_aligns_with_global_axes(
     end,
     expected,
 ) -> None:
@@ -244,7 +244,7 @@ def test_automatic_frame_preserves_phase_3_global_axis_results(
     assert frame.rotation == pytest.approx(expected, abs=1e-12)
 
 
-def test_automatic_frame_preserves_phase_3_near_global_z_fallback() -> None:
+def test_automatic_frame_uses_stable_near_global_z_fallback() -> None:
     mesh = _mesh((1e-14, 0.0, 1.0))
 
     frame = resolve_beam_frame(mesh, mesh.elements[0])
@@ -271,7 +271,10 @@ def test_frame_rotation_and_axis_views_cannot_be_made_writable() -> None:
         frame.local_y.setflags(write=True)
 
     copied = deepcopy(frame)
-    assert copied is frame
+    assert copied.length == frame.length
+    assert copied.source == frame.source
+    assert copied.orientation == frame.orientation
+    np.testing.assert_array_equal(copied.rotation, frame.rotation)
     assert not copied.rotation.flags.writeable
     with pytest.raises(ValueError):
         copied.rotation.setflags(write=True)

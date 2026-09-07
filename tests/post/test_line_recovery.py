@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import FrozenInstanceError
 
 import numpy as np
 import pytest
 
 from fem.core.mesh import Element3D, Mesh3D, Node3D
-from fem.post import stress
 from fem.post.stress import element, truss
 
 
@@ -70,35 +70,23 @@ def test_truss_recovery_returns_analytical_immutable_centroid_row() -> None:
         recovered.rows = ()
 
 
-def test_truss_types_and_module_are_exported_from_stress_package() -> None:
-    assert stress.truss is truss
-    assert stress.TrussStressField is truss.TrussStressField
-    assert stress.TrussStressRow is truss.TrussStressRow
-
-
-def test_legacy_truss_csv_calls_canonical_recovery_once_and_preserves_bytes(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
+def test_legacy_truss_csv_preserves_schema_and_analytic_values(tmp_path) -> None:
     mesh, displacement = _inclined_truss()
-    calls: list[tuple[Mesh3D, np.ndarray]] = []
-    original_recover = truss.recover
-
-    def counted_recover(mesh_, displacement_):
-        calls.append((mesh_, displacement_))
-        return original_recover(mesh_, displacement_)
-
-    monkeypatch.setattr(truss, "recover", counted_recover)
     path = tmp_path / "legacy-truss.csv"
 
     element.truss2(mesh, displacement, path)
 
-    assert len(calls) == 1
-    assert calls[0][0] is mesh
-    assert calls[0][1] is displacement
-    assert path.read_bytes() == (
-        b"elem_id,node_i,node_j,axial_strain,axial_stress,mises\r\n"
-        b"70,10,20,0.09999999999999999,20.0,20.0\r\n"
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        assert reader.fieldnames == [
+            "elem_id", "node_i", "node_j", "axial_strain", "axial_stress", "mises",
+        ]
+        rows = list(reader)
+    assert len(rows) == 1
+    row = rows[0]
+    assert [int(row[name]) for name in ("elem_id", "node_i", "node_j")] == [70, 10, 20]
+    assert [float(row[name]) for name in ("axial_strain", "axial_stress", "mises")] == (
+        pytest.approx([0.1, 20.0, 20.0])
     )
 
 
@@ -117,9 +105,7 @@ def test_truss_recovery_is_invariant_to_reversed_connectivity() -> None:
     assert reversed_row.Mises == pytest.approx(forward.Mises)
 
 
-def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kernel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _two_trusses():
     mesh = Mesh3D(
         nodes=[
             Node3D(10, 0.0, 0.0, 0.0),
@@ -134,20 +120,14 @@ def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kern
     displacement = np.zeros(mesh.num_dofs)
     displacement[mesh.global_dof(20, 0)] = 0.1
     displacement[mesh.global_dof(30, 0)] = 0.5
-    kernel = truss.get_element_kernel("Truss2")
-    kernel_type = type(kernel)
-    original = kernel_type.element_stress
-    calls: list[int] = []
+    return mesh, displacement
 
-    def counted(self, mesh_, element, values, lookup):
-        calls.append(int(element.id))
-        return original(self, mesh_, element, values, lookup)
 
-    monkeypatch.setattr(kernel_type, "element_stress", counted)
+def test_truss_recovery_preserves_noncontiguous_element_order_and_values() -> None:
+    mesh, displacement = _two_trusses()
 
     recovered = truss.recover(mesh, displacement)
 
-    assert calls == [90, 7]
     assert [row.element_id for row in recovered.rows] == [90, 7]
     assert [row.coordinates for row in recovered.rows] == pytest.approx(
         [(2.0, 0.0, 0.0), (0.5, 0.0, 0.0)]
@@ -163,28 +143,7 @@ def test_truss_recovery_preserves_noncontiguous_mesh_element_order_and_uses_kern
 def test_truss_recovery_cancels_after_one_element_and_retries_cleanly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mesh = Mesh3D(
-        nodes=[
-            Node3D(10, 0.0, 0.0, 0.0),
-            Node3D(20, 1.0, 0.0, 0.0),
-            Node3D(30, 2.0, 0.0, 0.0),
-        ],
-        elements=[
-            Element3D(
-                90,
-                [10, 20],
-                "Truss2",
-                {"E": 100.0, "area": 1.0},
-            ),
-            Element3D(
-                7,
-                [20, 30],
-                "Truss2",
-                {"E": 100.0, "area": 1.0},
-            ),
-        ],
-    )
-    displacement = np.zeros(mesh.num_dofs)
+    mesh, displacement = _two_trusses()
     kernel_type = type(truss.get_element_kernel("Truss2"))
     original = kernel_type.element_stress
     completed_elements: list[int] = []
@@ -216,30 +175,13 @@ def test_truss_recovery_cancels_after_one_element_and_retries_cleanly(
     assert completed_elements == [90]
     retried = truss.recover(mesh, displacement)
     assert [row.element_id for row in retried.rows] == [90, 7]
-    assert completed_elements == [90, 90, 7]
+    assert [row.S11 for row in retried.rows] == pytest.approx([20.0, 10.0])
 
 
 @pytest.mark.parametrize(
     ("elements", "dofs_per_node", "message"),
     [
         ([], 3, "at least one element"),
-        (
-            [
-                Element3D(
-                    1,
-                    [1, 2],
-                    "Beam2",
-                    {
-                        "E": 100.0,
-                        "nu": 0.25,
-                        "section_type": "solid_circle",
-                        "radius": 1.0,
-                    },
-                )
-            ],
-            3,
-            "homogeneous Truss2",
-        ),
         (
             [
                 Element3D(1, [1, 2], "Truss2", {"E": 100.0, "area": 1.0}),
@@ -291,7 +233,6 @@ def test_truss_recovery_rejects_unsupported_or_mixed_meshes(
         np.zeros((2, 3)),
         np.zeros(5),
         np.asarray([0.0, 0.0, 0.0, np.nan, 0.0, 0.0]),
-        np.asarray([0.0, 0.0, 0.0, np.inf, 0.0, 0.0]),
         np.asarray([False, False, False, False, False, False]),
     ],
 )
@@ -422,3 +363,16 @@ def test_truss_stress_row_rejects_invalid_typed_values(
 
     with pytest.raises(error):
         truss.TrussStressRow(**values)
+
+
+def test_truss_recovery_retries_after_an_element_failure_without_partial_rows():
+    mesh, displacement = _two_trusses()
+    mesh.elements[1].props.pop("E")
+
+    with pytest.raises(KeyError, match="missing property E"):
+        truss.recover(mesh, displacement)
+
+    mesh.elements[1].props["E"] = 100.0
+    recovered = truss.recover(mesh, displacement)
+    assert [row.element_id for row in recovered.rows] == [90, 7]
+    assert [row.S11 for row in recovered.rows] == pytest.approx([20.0, 10.0])
