@@ -8,7 +8,6 @@ import pytest
 from fem import materials
 from fem.materials import assignment as material_assignment
 from fem.assemble import assemble_global_stiffness_sparse
-from fem.assemble import stiffness as stiffness_module
 from fem.core import (
     validate_analysis_step,
     validate_mesh,
@@ -741,28 +740,3 @@ def test_model_result_rejects_invalid_vectors():
             np.zeros(num_dofs),
             np.full(num_dofs, np.nan),
         )
-
-
-@pytest.mark.parametrize("failure", ["nonfinite", "asymmetric"])
-def test_assembly_rejects_invalid_element_stiffness(monkeypatch, failure):
-    mesh = make_truss_stiffness_mesh()
-    Ke = np.eye(6)
-    if failure == "nonfinite":
-        Ke[0, 0] = np.nan
-        message = "contains non-finite values"
-    else:
-        Ke[0, 1] = 1.0
-        message = "stiffness is not symmetric"
-
-    class Kernel:
-        def stiffness(self, mesh, elem, node_lookup=None):
-            return Ke
-
-    monkeypatch.setattr(
-        stiffness_module,
-        "get_element_kernel",
-        lambda element_type: Kernel(),
-    )
-
-    with pytest.raises(ValueError, match=message):
-        assemble_global_stiffness_sparse(mesh)

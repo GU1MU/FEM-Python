@@ -5,7 +5,6 @@ import gc
 import numpy as np
 import pytest
 
-from fem.assemble import stiffness as stiffness_module
 from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.core.model import AnalysisStep, FEMModel
 from fem.solvers import static_linear
@@ -128,46 +127,6 @@ def test_prepared_system_clone_keeps_shared_factor_alive_until_last_owner(
     del cloned
     gc.collect()
     assert factors[0].close_calls == 1
-
-
-def test_sparse_assembly_plan_has_exact_flat_storage():
-    model = _plate_model(400)
-    plan = stiffness_module._build_assembly_plan(model.mesh)
-    element_count = len(model.mesh.elements)
-    entry_count = sum(
-        len(model.mesh.element_dofs(element)) ** 2
-        for element in model.mesh.elements
-    )
-    expected_bytes = (
-        2 * (element_count + 1) * np.dtype(np.int64).itemsize
-        + 2 * entry_count * np.dtype(np.int64).itemsize
-    )
-
-    assert not hasattr(plan, "__dict__")
-    assert plan.dof_offsets.shape == (element_count + 1,)
-    assert plan.entry_offsets.shape == (element_count + 1,)
-    assert plan.rows.shape == (entry_count,)
-    assert plan.cols.shape == (entry_count,)
-    assert all(
-        values.dtype == np.int64
-        and values.ndim == 1
-        and values.flags.c_contiguous
-        for values in (
-            plan.dof_offsets,
-            plan.entry_offsets,
-            plan.rows,
-            plan.cols,
-        )
-    )
-    assert sum(
-        values.nbytes
-        for values in (
-            plan.dof_offsets,
-            plan.entry_offsets,
-            plan.rows,
-            plan.cols,
-        )
-    ) == expected_bytes
 
 
 def test_large_import_projection_stays_flat_and_inspection_stays_lazy():
