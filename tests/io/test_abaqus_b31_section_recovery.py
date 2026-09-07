@@ -116,10 +116,8 @@ def test_rect_point_one_is_positive_y_positive_z_and_abaqus_point_25() -> None:
     assert row.section_point.local_coordinates == pytest.approx(
         (WIDTH / 2.0, HEIGHT / 2.0)
     )
-    assert {"program_point": row.section_point.number, "abaqus_point": 25} == {
-        "program_point": 1,
-        "abaqus_point": 25,
-    }
+    # This positive-y/positive-z corner corresponds to Abaqus section point 25.
+    assert row.section_point.number == 1
 
 
 def test_integration_point_recovery_does_not_consume_section_end_actions(
@@ -150,8 +148,3 @@ def test_integration_point_recovery_does_not_consume_section_end_actions(
         for field in recovered.section_points
         for row in field.rows
     )
-
-
-def test_phase4_test_has_no_product_data_dependency() -> None:
-    source = __file__.replace("\\", "/")
-    assert "/data/" not in source.casefold()

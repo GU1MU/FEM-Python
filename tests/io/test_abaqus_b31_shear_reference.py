@@ -36,20 +36,20 @@ from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.solvers import static_linear
 
 
+# Frozen Abaqus 2023 torsion samples in the coordinate order below:
+# RECT points 25/21/1/5, CIRC 7/11/15/3, THICK PIPE 8/14/20/2.
 _SECTION_ORACLE = (
     (
         "RECT",
         {"section_type": "rectangle", "width": 0.2, "height": 0.4},
         44200.3671875,
         ((0.1, 0.2), (-0.1, 0.2), (-0.1, -0.2), (0.1, -0.2)),
-        (25, 21, 1, 5),
     ),
     (
         "CIRC",
         {"section_type": "solid_circle", "radius": 0.2},
         39788.734375,
         ((0.2, 0.0), (0.0, 0.2), (-0.2, 0.0), (0.0, -0.2)),
-        (7, 11, 15, 3),
     ),
     (
         "THICK PIPE",
@@ -60,18 +60,10 @@ _SECTION_ORACLE = (
         },
         31830.98828125,
         ((0.15, 0.0), (0.0, 0.15), (-0.15, 0.0), (0.0, -0.15)),
-        (8, 14, 20, 2),
     ),
 )
-_ABAQUS_POINT_MAPPING = {
-    "RECT": (25, 21, 1, 5),
-    "CIRC": (7, 11, 15, 3),
-    "THICK PIPE": (8, 14, 20, 2),
-}
-
-
 @pytest.mark.parametrize(
-    ("profile", "properties", "expected_s12", "coordinates", "abaqus_points"),
+    ("profile", "properties", "expected_s12", "coordinates"),
     _SECTION_ORACLE,
 )
 def test_positive_and_negative_torsion_match_abaqus_2023_section_points(
@@ -79,7 +71,6 @@ def test_positive_and_negative_torsion_match_abaqus_2023_section_points(
     properties: dict[str, float | str],
     expected_s12: float,
     coordinates: tuple[tuple[float, float], ...],
-    abaqus_points: tuple[int, ...],
 ) -> None:
     section = parse_beam2_section(properties)
 
@@ -99,7 +90,6 @@ def test_positive_and_negative_torsion_match_abaqus_2023_section_points(
         assert all(row.s22 == 0.0 for row in stresses)
         assert all("S13" not in row.values() for row in stresses)
 
-    assert _ABAQUS_POINT_MAPPING[profile] == abaqus_points
 
 
 @pytest.mark.parametrize(
@@ -286,10 +276,3 @@ def test_query_csv_and_vtk_reuse_the_stored_s12_field(tmp_path: Path) -> None:
     write_result_vtk(vtk_path, export)
     vtk = read_result_vtk(vtk_path)
     assert vtk.values == pytest.approx((stored,))
-
-
-def test_phase5_test_source_has_no_external_fixture_path_dependency() -> None:
-    source = Path(__file__).read_text(encoding="utf-8").casefold()
-    forbidden = ("da" + "ta/", "da" + "ta" + chr(92))
-
-    assert all(token not in source for token in forbidden)

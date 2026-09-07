@@ -10,7 +10,7 @@ from fem.application import RegionRef, resolve_effective_beam_frames
 from fem.elements.beam_section import parse_beam2_section
 from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
-from tests.io.test_abaqus_b31_phase2 import _ABAQUS_DLOAD_ORACLE
+from tests.helpers.beam_reference_data import ABAQUS_B31_DLOAD_ORACLE
 
 
 STANDARD = (
@@ -53,7 +53,7 @@ def test_rect_a_b_axes_match_abaqus_b31_tip_deflection_oracle(
     # The B31 formulation (first-order interpolation with Abaqus shear and
     # slenderness compensation) deliberately diverges from the classical
     # cubic-interpolation Timoshenko closed form; the reference is the real
-    # Abaqus 2023 single-element RECT oracle from test_abaqus_b31_phase2,
+    # Abaqus 2023 single-element RECT oracle shared via beam_reference_data,
     # scaled linearly to this deck's 120 N/m distributed load.
     load = 120.0
     p1_path = write_inp(
@@ -72,8 +72,8 @@ def test_rect_a_b_axes_match_abaqus_b31_tip_deflection_oracle(
     p1_result = solve(p1_model, "LOAD")
     p2_result = solve(p2_model, "LOAD")
 
-    p1_oracle = _ABAQUS_DLOAD_ORACLE["P1"]
-    p2_oracle = _ABAQUS_DLOAD_ORACLE["P2"]
+    p1_oracle = ABAQUS_B31_DLOAD_ORACLE["P1"]
+    p2_oracle = ABAQUS_B31_DLOAD_ORACLE["P2"]
     p1_magnitude = float(p1_oracle["record"].rsplit(",", 1)[1])
     p2_magnitude = float(p2_oracle["record"].rsplit(",", 1)[1])
     expected_y = p1_oracle["tip"][1] * load / p1_magnitude

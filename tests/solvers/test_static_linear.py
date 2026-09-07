@@ -7,11 +7,14 @@ from fem.core.model import (
     AnalysisStep,
     DisplacementConstraint,
     ElementSet,
+    FEMModel,
+    NodeSet,
     MaterialDefinition,
     NodalLoad,
     SectionAssignment,
 )
 from fem.solvers import static_linear
+from tests.helpers.mesh_builders import make_mixed_hex8_tet4_mesh, make_mixed_tri3_quad4_mesh
 from tests.helpers.model_builders import (
     make_static_pull_truss_model,
     make_two_step_static_pull_truss_model,
@@ -167,3 +170,44 @@ def test_static_validation_and_solve_ignore_unselected_step_references():
     _assert_bar_result(result, 0.5, -100.0)
     with pytest.raises(KeyError, match="MISSING_IN_PULL2"):
         static_linear.validate_problem(model, "pull2")
+
+
+@pytest.mark.parametrize(
+    ("mesh_builder", "fixed_nodes", "loaded_node", "components"),
+    [
+        (make_mixed_tri3_quad4_mesh, (1, 4), 5, (1, 2)),
+        (make_mixed_hex8_tet4_mesh, (1, 4, 5, 8), 9, (1, 2, 3)),
+    ],
+    ids=["connected_plane", "connected_solid"],
+)
+def test_connected_mixed_models_preserve_global_force_balance(
+    mesh_builder, fixed_nodes, loaded_node, components
+):
+    mesh = mesh_builder()
+    model = FEMModel(
+        mesh=mesh,
+        node_sets={
+            "fixed": NodeSet("fixed", fixed_nodes),
+            "loaded": NodeSet("loaded", (loaded_node,)),
+        },
+        steps=[
+            AnalysisStep(
+                "pull",
+                boundaries=(
+                    DisplacementConstraint(
+                        "fixed", min(components), max(components), 0.0
+                    ),
+                ),
+                cloads=(NodalLoad("loaded", 1, 1.0),),
+            )
+        ],
+    )
+
+    result = static_linear.solve(model, "pull")
+
+    assert np.all(np.isfinite(result.U))
+    assert float(result.reactions[0::mesh.dofs_per_node].sum()) == pytest.approx(-1.0)
+    for component in range(1, mesh.dofs_per_node):
+        assert float(result.reactions[component::mesh.dofs_per_node].sum()) == pytest.approx(
+            0.0, abs=1e-10
+        )

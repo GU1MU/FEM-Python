@@ -43,7 +43,7 @@
       "symbol": "fem.post.stress.export.csv",
       "visibility": "public",
       "current_callers": [
-        "tests/post/test_post.py"
+        "tests/post/test_stress_csv.py"
       ],
       "target_batch": "Batch 6",
       "disposition": "retain_as_thin_legacy_post_adapter",
@@ -51,7 +51,7 @@
         "its schema and provenance differ from the planned current-result CSV contract"
       ],
       "golden_tests": [
-        "tests/post/test_post.py::test_canonical_csv_defaults_to_integration_points_and_writes_s33"
+        "tests/post/test_stress_csv.py::test_canonical_csv_defaults_to_integration_points_and_writes_s33"
       ]
     },
     {
@@ -59,7 +59,7 @@
       "symbol": "fem.post.stress.export.element",
       "visibility": "legacy_public",
       "current_callers": [
-        "tests/post/test_post.py"
+        "tests/post/test_stress_csv.py"
       ],
       "target_batch": "Batch 6",
       "disposition": "retain_as_deprecated_thin_compatibility_wrapper",
@@ -67,7 +67,7 @@
         "the exported stress position depends on element family"
       ],
       "golden_tests": [
-        "tests/post/test_post.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings"
+        "tests/post/test_stress_csv.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings"
       ]
     },
     {
@@ -75,7 +75,7 @@
       "symbol": "fem.post.stress.export.nodal",
       "visibility": "legacy_public",
       "current_callers": [
-        "tests/post/test_post.py",
+        "tests/post/test_stress_csv.py",
         "tests/io/test_line_io_post.py"
       ],
       "target_batch": "Batch 6",
@@ -84,7 +84,7 @@
         "it uses field.resolve threshold semantics and cannot recover Beam2 without ModelResult context"
       ],
       "golden_tests": [
-        "tests/post/test_post.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings",
+        "tests/post/test_stress_csv.py::test_deprecated_stress_export_wrappers_emit_explicit_warnings",
         "tests/io/test_line_io_post.py::test_beam2_direct_nodal_export_requires_result_load_context"
       ]
     },
@@ -111,7 +111,7 @@
       "visibility": "legacy_public",
       "current_callers": [
         "src/fem/post/vtk/export.py",
-        "tests/post/test_post.py"
+        "tests/post/test_vtk_consumers.py"
       ],
       "target_batch": "Batch 6",
       "disposition": "retain_as_isolated_file_import_compatibility_adapter",
@@ -129,7 +129,7 @@
       "current_callers": [
         "src/fem_agent/tools/exports.py",
         "tests/io/test_abaqus.py",
-        "tests/post/test_post.py"
+        "tests/post/test_vtk_consumers.py"
       ],
       "target_batch": "Batch 4",
       "disposition": "replace_current_result_path_with_direct_provider_serialization",
@@ -137,7 +137,7 @@
         "the current result path materializes CSV files and reads them back before writing VTK"
       ],
       "golden_tests": [
-        "tests/post/test_post.py::test_vtk_export_from_result_materializes_missing_csvs",
+        "tests/post/test_vtk_consumers.py::test_vtk_export_from_result_materializes_missing_csvs",
         "tests/characterization/test_phase8_legacy_exports.py::test_legacy_vtk_from_csv_semantics_match_golden"
       ]
     },

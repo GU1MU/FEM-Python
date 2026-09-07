@@ -4,6 +4,7 @@ from scipy.sparse import csr_matrix
 
 from fem.boundary.condition import BoundaryCondition
 from fem.boundary.constraints import apply_dirichlet
+from fem.solvers import linear
 
 
 @pytest.mark.parametrize("invalid_target", ["K", "F", "displacement"])
@@ -44,3 +45,20 @@ def test_dirichlet_application_accepts_column_vector_rhs():
 
     assert F_mod.shape == (2,)
     assert np.array_equal(F_mod, np.ones(2))
+
+
+def test_nonzero_dirichlet_constraint_preserves_coupled_solution():
+    K = csr_matrix([[2.0, -2.0], [-2.0, 2.0]])
+    F = np.zeros(2, dtype=float)
+    boundary = BoundaryCondition(prescribed_displacements={0: 0.25})
+
+    K_mod, F_mod = apply_dirichlet(K, F, boundary)
+    U = linear.solve(K_mod, F_mod)
+
+    np.testing.assert_allclose(K_mod.toarray(), [[1.0, 0.0], [0.0, 2.0]])
+    np.testing.assert_allclose(F_mod, [0.25, 0.5])
+    assert U == pytest.approx([0.25, 0.25])
+    assert K @ U - F == pytest.approx([0.0, 0.0])
+    np.testing.assert_array_equal(K.toarray(), [[2.0, -2.0], [-2.0, 2.0]])
+    np.testing.assert_array_equal(F, [0.0, 0.0])
+    assert boundary.prescribed_displacements == {0: 0.25}

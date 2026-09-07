@@ -27,21 +27,7 @@ from fem.solvers.static_linear import solve
 from tests.helpers.file_builders import write_inp
 
 
-# Abaqus 2023, one 2 m B31 element, integrated 0.2 x 0.1 RECT section,
-# E=210 GPa, nu=0.3, n1=(0, 1, 0), node 1 ENCASTRE.  Each static step
-# uses *DLOAD, OP=NEW so the two local transverse directions are independent.
-_ABAQUS_DLOAD_ORACLE = {
-    "P1": {
-        "record": "BEAM, P1, 500.0",
-        "tip": (1, 9.036414849106222e-05, 5, 7.142857066355646e-05),
-        "reaction": (1, -1000.0, 5, -1000.0),
-    },
-    "P2": {
-        "record": "BEAM, P2, -300.0",
-        "tip": (2, -2.155630209017545e-04, 4, 1.714285754133016e-04),
-        "reaction": (2, 600.0, 4, -600.0),
-    },
-}
+from tests.helpers.beam_reference_data import ABAQUS_B31_DLOAD_ORACLE
 
 
 def _b31_deck(
@@ -212,12 +198,12 @@ def _materialized_load_vector(model: FEMModel) -> np.ndarray:
     )
 
 
-@pytest.mark.parametrize("direction", tuple(_ABAQUS_DLOAD_ORACLE))
+@pytest.mark.parametrize("direction", tuple(ABAQUS_B31_DLOAD_ORACLE))
 def test_one_element_transverse_dload_matches_abaqus_2023_oracle(
     tmp_path,
     direction: str,
 ) -> None:
-    oracle = _ABAQUS_DLOAD_ORACLE[direction]
+    oracle = ABAQUS_B31_DLOAD_ORACLE[direction]
     model = _read_deck(
         tmp_path,
         f"minimal_{direction.lower()}_oracle.inp",

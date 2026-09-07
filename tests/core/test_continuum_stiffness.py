@@ -111,3 +111,35 @@ def test_tet10_quadratic_displacement_has_exact_strain_energy():
 
     # eps_xx=2x, sigma_xx=288x; integral(x^2) over the unit tetrahedron is 1/60.
     assert 0.5 * displacement @ stiffness @ displacement == pytest.approx(4.8)
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        make_tri3_stiffness_mesh,
+        make_quad4_stiffness_mesh,
+        make_quad8_stiffness_mesh,
+    ],
+    ids=["shared_triangle", "quad4", "quad8"],
+)
+@pytest.mark.parametrize("thickness", [0.0, -1.0, np.nan, np.inf, -np.inf])
+def test_plane_thickness_validators_reject_invalid_equivalence_classes(
+    builder,
+    thickness,
+):
+    mesh = builder()
+    elem = mesh.elements[0]
+    elem.props["thickness"] = thickness
+
+    with pytest.raises(ValueError, match="thickness must be finite and > 0"):
+        get_element_kernel(elem.type).stiffness(mesh, elem)
+
+
+
+def test_tri6_stiffness_consumer_rejects_invalid_shared_thickness():
+    mesh = make_tri6_stiffness_mesh()
+    elem = mesh.elements[0]
+    elem.props["thickness"] = 0.0
+
+    with pytest.raises(ValueError, match="thickness must be finite and > 0"):
+        get_element_kernel(elem.type).stiffness(mesh, elem)
