@@ -12,9 +12,8 @@ import pytest
 _GMSH_FIXTURE_NAMES = frozenset({"live_gmsh", "real_gmsh"})
 _INTEGRATION_TEST_ROOT = Path(__file__).resolve().parent / "integration"
 _PYTEST_TEMP_ROOT = (
-    Path(__file__).resolve().parents[1]
-    / "temp"
-    / "pytest-runtime"
+    Path(__file__).resolve().parent
+    / ".pytest-runtime"
     / "sandbox-compatible"
 )
 _GMSH_NUMERIC_OPTIONS = (
@@ -75,11 +74,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _requires_native_gmsh(item: pytest.Item) -> bool:
-    test_name = str(getattr(item, "originalname", item.name)).split("[", 1)[0]
     fixture_names = set(getattr(item, "fixturenames", ()))
     return (
         item.get_closest_marker("gmsh") is not None
-        or test_name.startswith("test_real_")
         or bool(fixture_names & _GMSH_FIXTURE_NAMES)
     )
 

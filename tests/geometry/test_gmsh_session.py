@@ -972,6 +972,7 @@ def test_nested_sessions_keep_independent_numeric_option_ledgers(
     assert gmsh.finalize_calls == 0
 
 
+@pytest.mark.gmsh
 def test_real_owned_session_close_finalizes_native_default_model() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
@@ -1000,6 +1001,7 @@ assert not bool(gmsh.isInitialized())
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.gmsh
 def test_real_owned_session_can_initialize_in_background_worker() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
@@ -1035,6 +1037,7 @@ assert not bool(gmsh.isInitialized())
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.gmsh
 def test_real_owned_session_preserves_added_duplicate_empty_model() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
@@ -1069,6 +1072,7 @@ finally:
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.gmsh
 def test_real_owned_session_preserves_replaced_default_model() -> None:
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""

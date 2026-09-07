@@ -9,6 +9,7 @@ agent-workspace/
 temp/
 __pycache__/
 .pytest_cache/
+/tests/.pytest-runtime/
 *.egg-info/
 .vscode/
 .env

@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QCloseEvent
@@ -944,6 +946,7 @@ def test_public_edit_type_validation_precedes_result_confirmation(
     window.close()
 
 
+@pytest.mark.gmsh
 def test_real_fempy_project_vertical_remains_openable(
     tmp_path: Path,
     monkeypatch,

@@ -3086,6 +3086,7 @@ def test_generated_handle_rejects_same_name_replacement_and_preserves_it(
 
 
 @pytest.mark.optional_runtime
+@pytest.mark.gmsh
 def test_real_gmsh_same_name_replacement_cannot_satisfy_old_reference() -> None:
     native_gmsh = pytest.importorskip(
         "gmsh",
