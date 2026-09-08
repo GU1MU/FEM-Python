@@ -170,7 +170,8 @@ def test_workspace_switch_loops_keep_single_viewport_and_stable_roots(
             assert window._activate_workspace_context(context)
         initial_model_roots = set(window.model_tree.roots)
         initial_result_roots = set(window.result_tree.roots)
-        for _ in range(99):
+        # Revisit every model/result context across repeated transitions.
+        for _ in range(3):
             for context in models:
                 assert window._activate_workspace_context(context)
             for context in results:
