@@ -73,7 +73,7 @@ def _proposal(session: ModelSession, proposal_id: str):
     )
 
 
-def test_a3_bridge_calls_no_mesh_work_before_gui_start_and_reject_is_noop() -> (
+def test_bridge_calls_no_mesh_work_before_gui_start_and_reject_is_noop() -> (
     None
 ):
     session = _session()
@@ -109,7 +109,7 @@ def test_a3_bridge_calls_no_mesh_work_before_gui_start_and_reject_is_noop() -> (
         ),
     ],
 )
-def test_a3_mesh_start_failure_consumes_token_without_session_change(
+def test_mesh_start_failure_consumes_token_without_session_change(
     starter,
 ) -> None:
     session = _session()
@@ -126,7 +126,7 @@ def test_a3_mesh_start_failure_consumes_token_without_session_change(
     assert session.snapshot() == before
 
 
-def test_a3_running_failure_cancel_and_stale_keep_current_model() -> None:
+def test_running_failure_cancel_and_stale_keep_current_model() -> None:
     for terminal in (
         ProposalState.FAILED,
         ProposalState.CANCELLED,
@@ -181,7 +181,7 @@ def test_a3_running_failure_cancel_and_stale_keep_current_model() -> None:
     assert session.snapshot() == current
 
 
-def test_a3_port_success_calls_atomic_session_accept() -> None:
+def test_port_success_calls_atomic_session_accept() -> None:
     session = _session()
     requests: list[AgentMeshTaskRequest] = []
     refreshes: list[int] = []
@@ -215,7 +215,7 @@ def test_a3_port_success_calls_atomic_session_accept() -> None:
     assert refreshes == []
 
 
-def test_a3_main_window_success_projects_exactly_once(
+def test_main_window_success_projects_exactly_once(
     monkeypatch,
 ) -> None:
     _application = QApplication.instance() or QApplication([])

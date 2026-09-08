@@ -198,7 +198,7 @@ def _h_slot_plate_2d_geometry() -> dict[str, object]:
     }
 
 
-def test_phase6_runtime_schema_retires_blank_composite_variants() -> None:
+def test_runtime_schema_retires_blank_composite_variants() -> None:
     _bridge, controller = _controller(ModelSession())
     definition = next(
         item
@@ -214,7 +214,7 @@ def test_phase6_runtime_schema_retires_blank_composite_variants() -> None:
     }
 
 
-def test_phase4_planar_h_slot_and_four_holes_are_one_exact_part() -> None:
+def test_planar_h_slot_and_four_holes_are_one_exact_part() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -236,7 +236,7 @@ def test_phase4_planar_h_slot_and_four_holes_are_one_exact_part() -> None:
     assert sum(profile.role == "hole" for profile in analysis.profiles) == 5
 
 
-def test_phase4_blank_s_path_slot_plate_is_one_final_solid_proposal() -> None:
+def test_blank_s_path_slot_plate_is_one_final_solid_proposal() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -272,7 +272,7 @@ def test_phase4_blank_s_path_slot_plate_is_one_final_solid_proposal() -> None:
     )
 
 
-def test_phase4_five_circular_holes_fit_extruded_preview_budget() -> None:
+def test_five_circular_holes_fit_extruded_preview_budget() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     profiles = [
@@ -320,7 +320,7 @@ def test_phase4_five_circular_holes_fit_extruded_preview_budget() -> None:
     assert "holes=5" in proposal.display_summary["summary"]
 
 
-def test_phase4_duplicate_polygon_vertex_returns_profile_input_diagnostic() -> None:
+def test_duplicate_polygon_vertex_returns_profile_input_diagnostic() -> None:
     session = ModelSession()
     _bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -359,7 +359,7 @@ def test_phase4_duplicate_polygon_vertex_returns_profile_input_diagnostic() -> N
     assert diagnostic["required_fields"] == ["profiles"]
 
 
-def test_phase4_blank_ring_is_one_atomic_final_3d_proposal_and_persistent() -> None:
+def test_blank_ring_is_one_atomic_final_3d_proposal_and_persistent() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     before = session.snapshot()
@@ -395,7 +395,7 @@ def test_phase4_blank_ring_is_one_atomic_final_3d_proposal_and_persistent() -> N
     assert reopened.parts[0].geometry_recipe == recipe
 
 
-def test_phase4_blank_composite_reject_keeps_session_empty() -> None:
+def test_blank_composite_reject_keeps_session_empty() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     before = session.snapshot()
@@ -420,7 +420,7 @@ def test_phase4_blank_composite_reject_keeps_session_empty() -> None:
     assert session.snapshot() == before
 
 
-def test_phase4_center_hole_plate_accepts_without_analysis_side_effects() -> None:
+def test_center_hole_plate_accepts_without_analysis_side_effects() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -473,7 +473,7 @@ def test_phase4_center_hole_plate_accepts_without_analysis_side_effects() -> Non
     assert snapshot.artifact is None
 
 
-def test_phase4_contour_order_does_not_choose_material_or_hole() -> None:
+def test_contour_order_does_not_choose_material_or_hole() -> None:
     normal = _ring_geometry()["profiles"]
     assert isinstance(normal, list)
     variants = (normal, list(reversed(normal)))
@@ -504,7 +504,7 @@ def test_phase4_contour_order_does_not_choose_material_or_hole() -> None:
     assert topologies[0].signature == topologies[1].signature
 
 
-def test_phase4_multiple_disjoint_material_profiles_fail_closed() -> None:
+def test_multiple_disjoint_material_profiles_fail_closed() -> None:
     session = ModelSession()
     _bridge, controller = _controller(session)
     before = session.snapshot()
@@ -527,7 +527,7 @@ def test_phase4_multiple_disjoint_material_profiles_fail_closed() -> None:
     assert session.snapshot() == before
 
 
-def test_phase4_explicit_provisional_summary_contains_all_dimensions() -> None:
+def test_explicit_provisional_summary_contains_all_dimensions() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     geometry = _ring_geometry(18.0, provisional=True)
@@ -561,7 +561,7 @@ def test_phase4_explicit_provisional_summary_contains_all_dimensions() -> None:
     assert session.snapshot().source_kind is None
 
 
-def test_phase4_stale_accept_keeps_blank_session() -> None:
+def test_stale_accept_keeps_blank_session() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -577,7 +577,7 @@ def test_phase4_stale_accept_keeps_blank_session() -> None:
     assert session.snapshot().source_kind is None
 
 
-def test_phase4_failed_composite_preflight_is_not_registered(monkeypatch) -> None:
+def test_failed_composite_preflight_is_not_registered(monkeypatch) -> None:
     import fem_gui.agent_authoring as agent_authoring
 
     def fail(_recipe):
@@ -596,7 +596,7 @@ def test_phase4_failed_composite_preflight_is_not_registered(monkeypatch) -> Non
     assert session.snapshot().source_kind is None
 
 
-def test_phase4_geometry_accept_enters_mesh_stage_and_exposes_mesh_tools() -> None:
+def test_geometry_accept_enters_mesh_stage_and_exposes_mesh_tools() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -625,7 +625,7 @@ def test_phase4_geometry_accept_enters_mesh_stage_and_exposes_mesh_tools() -> No
     assert "prepare_mesh_proposal" in {item.name for item in controller.definitions}
 
 
-def test_phase4_blank_path_sweep_accepts_one_body_and_reopens() -> None:
+def test_blank_path_sweep_accepts_one_body_and_reopens() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     before = session.snapshot()
@@ -648,7 +648,7 @@ def test_phase4_blank_path_sweep_accepts_one_body_and_reopens() -> None:
     assert reopened.parts[0].geometry_recipe == recipe
 
 
-def test_phase4_composite_path_enters_supported_tet_mesh_chain() -> None:
+def test_composite_path_enters_supported_tet_mesh_chain() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -664,7 +664,7 @@ def test_phase4_composite_path_enters_supported_tet_mesh_chain() -> None:
     assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
 
 
-def test_phase4_ring_replace_height_preserves_hole_lineage_and_meshes() -> None:
+def test_ring_replace_height_preserves_hole_lineage_and_meshes() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -695,7 +695,7 @@ def test_phase4_ring_replace_height_preserves_hole_lineage_and_meshes() -> None:
 
 
 @pytest.mark.parametrize("frame_strategy", ("fixed", "transport"))
-def test_phase4_path_sweep_hole_fixed_and_transport_save_and_tet(
+def test_path_sweep_hole_fixed_and_transport_save_and_tet(
     frame_strategy: str,
 ) -> None:
     session = ModelSession()
@@ -726,7 +726,7 @@ def test_phase4_path_sweep_hole_fixed_and_transport_save_and_tet(
 
 
 @pytest.mark.parametrize("frame_strategy", ("fixed", "transport"))
-def test_phase4_path_compiler_side_bindings_are_complete_and_disjoint(
+def test_path_compiler_side_bindings_are_complete_and_disjoint(
     frame_strategy: str,
 ) -> None:
     session = ModelSession()
@@ -794,7 +794,7 @@ def test_phase4_path_compiler_side_bindings_are_complete_and_disjoint(
         )
 
 
-def test_phase4_native_wire_recipe_passes_path_safety_but_path_values_do_not() -> None:
+def test_native_wire_recipe_passes_path_safety_but_path_values_do_not() -> None:
     wire = WireGeometry(
         "native-path",
         (

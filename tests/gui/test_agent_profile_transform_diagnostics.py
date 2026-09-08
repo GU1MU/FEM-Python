@@ -26,7 +26,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.geometry.test_profile_extrusion import two_profile_sketch
+from tests.helpers.profile_sketches import two_profile_sketch
 
 
 def _controller(session: ModelSession, refresh=None):
@@ -84,7 +84,7 @@ def _valid_path() -> dict[str, object]:
 
 
 @pytest.mark.parametrize("code", PROFILE_TRANSFORM_DIAGNOSTIC_CODES)
-def test_phase5_every_profile_transform_code_is_bounded_and_recoverable(code: str):
+def test_every_profile_transform_code_is_bounded_and_recoverable(code: str):
     diagnostic = profile_transform_diagnostic(
         code,
         operation="Profile extrusion",
@@ -102,7 +102,7 @@ def test_phase5_every_profile_transform_code_is_bounded_and_recoverable(code: st
     assert "mesh workaround" not in diagnostic["message"].casefold()
 
 
-def test_phase5_unknown_codes_fail_fast_and_recovery_text_matches_flags() -> None:
+def test_unknown_codes_fail_fast_and_recovery_text_matches_flags() -> None:
     with pytest.raises(ValueError, match="unknown Profile transform diagnostic code"):
         profile_transform_diagnostic(
             "profile-transform.unknown",
@@ -133,7 +133,7 @@ def test_phase5_unknown_codes_fail_fast_and_recovery_text_matches_flags() -> Non
     assert "reread" in retry["message"].casefold()
 
 
-def test_phase5_profile_messages_are_utf8_bounded_and_hide_local_paths() -> None:
+def test_profile_messages_are_utf8_bounded_and_hide_local_paths() -> None:
     diagnostic = profile_transform_diagnostic(
         "profile-transform.preflight-failed",
         operation="拉伸" * 100,
@@ -169,7 +169,7 @@ def test_phase5_profile_messages_are_utf8_bounded_and_hide_local_paths() -> None
         ),
     ],
 )
-def test_phase5_utf8_detail_keeps_complete_recovery_text(
+def test_utf8_detail_keeps_complete_recovery_text(
     retryable: bool,
     required_fields: tuple[str, ...],
     recovery: str,
@@ -187,7 +187,7 @@ def test_phase5_utf8_detail_keeps_complete_recovery_text(
     assert "Next input:" in message or "Next action:" in message
 
 
-def test_phase5_required_fields_are_bounded_and_deduplicated_before_recovery() -> None:
+def test_required_fields_are_bounded_and_deduplicated_before_recovery() -> None:
     diagnostic = profile_transform_diagnostic(
         "profile-transform.invalid-source-id",
         operation="Profile extrusion",
@@ -199,7 +199,7 @@ def test_phase5_required_fields_are_bounded_and_deduplicated_before_recovery() -
     assert "Next input:" in diagnostic["message"]
 
 
-def test_phase5_part_not_found_is_typed_and_keeps_snapshot() -> None:
+def test_part_not_found_is_typed_and_keeps_snapshot() -> None:
     session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
     _bridge, controller = _controller(session)
     before = session.snapshot()
@@ -214,7 +214,7 @@ def test_phase5_part_not_found_is_typed_and_keeps_snapshot() -> None:
     assert session.snapshot() == before
 
 
-def test_phase5_non_planar_blocks_while_legacy_exact_topology_is_transformable() -> None:
+def test_non_planar_blocks_while_legacy_exact_topology_is_transformable() -> None:
     non_planar = _session(CylinderGeometry("Solid", 1.0, 2.0))
     non_planar_refresh = []
     _bridge, non_planar_controller = _controller(
@@ -291,7 +291,7 @@ def test_phase5_non_planar_blocks_while_legacy_exact_topology_is_transformable()
     assert legacy_refresh == []
 
 
-def test_phase5_missing_profile_height_and_ambiguous_selection_have_next_inputs() -> None:
+def test_missing_profile_height_and_ambiguous_selection_have_next_inputs() -> None:
     session = _session(two_profile_sketch())
     _bridge, controller = _controller(session)
     missing_height = controller.dispatch(
@@ -317,7 +317,7 @@ def test_phase5_missing_profile_height_and_ambiguous_selection_have_next_inputs(
     assert diagnostic["candidates"]
 
 
-def test_phase5_invalid_source_and_stale_context_do_not_mutate_session() -> None:
+def test_invalid_source_and_stale_context_do_not_mutate_session() -> None:
     session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
     _bridge, controller = _controller(session)
     before = session.snapshot()
@@ -346,7 +346,7 @@ def test_phase5_invalid_source_and_stale_context_do_not_mutate_session() -> None
     assert session.snapshot() == before
 
 
-def test_phase5_path_boundary_reports_first_invalid_member_and_frame(monkeypatch) -> None:
+def test_path_boundary_reports_first_invalid_member_and_frame(monkeypatch) -> None:
     session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
     _bridge, controller = _controller(session)
     broken = _valid_path()
@@ -413,7 +413,7 @@ def test_phase5_path_boundary_reports_first_invalid_member_and_frame(monkeypatch
     assert session.snapshot().session_revision == 1
 
 
-def test_phase5_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> None:
+def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> None:
     session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
     refresh_count = []
     bridge, controller = _controller(session, lambda: refresh_count.append("refresh"))
@@ -509,7 +509,7 @@ def test_phase5_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch
     assert refresh_count == []
 
 
-def test_phase5_unexpected_body_count_diagnostic_preserves_draft(monkeypatch) -> None:
+def test_unexpected_body_count_diagnostic_preserves_draft(monkeypatch) -> None:
     session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
@@ -537,7 +537,7 @@ def test_phase5_unexpected_body_count_diagnostic_preserves_draft(monkeypatch) ->
 
 
 @pytest.mark.parametrize("dependency_error", [KeyError("dependency"), AttributeError("dependency")])
-def test_phase5_programming_errors_keep_generic_tool_contract(
+def test_programming_errors_keep_generic_tool_contract(
     monkeypatch,
     dependency_error,
 ) -> None:

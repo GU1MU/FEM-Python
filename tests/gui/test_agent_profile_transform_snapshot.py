@@ -57,7 +57,7 @@ def _context(revision: int = 4) -> AuthoringContext:
     )
 
 
-def test_phase1_snapshot_binds_revision_and_preserves_owner_cache() -> None:
+def test_snapshot_binds_revision_and_preserves_owner_cache() -> None:
     context = _context()
     controller = AuthoringWorkflowController(lambda: context, {})
 
@@ -102,7 +102,7 @@ def test_phase1_snapshot_binds_revision_and_preserves_owner_cache() -> None:
     assert fresh.workflow_stage == AuthoringWorkflowStage.STALE.value
 
 
-def test_phase1_snapshot_does_not_advertise_abstract_operations_as_tools() -> None:
+def test_snapshot_does_not_advertise_abstract_operations_as_tools() -> None:
     context = replace(
         _context(),
         capabilities=(
@@ -125,7 +125,7 @@ def test_phase1_snapshot_does_not_advertise_abstract_operations_as_tools() -> No
     )
 
 
-def test_phase1_snapshot_is_bounded_and_deterministically_clipped() -> None:
+def test_snapshot_is_bounded_and_deterministically_clipped() -> None:
     names = (
         "read_authoring_context",
         "prepare_geometry_edit",
@@ -182,7 +182,7 @@ def test_phase1_snapshot_is_bounded_and_deterministically_clipped() -> None:
     assert first.published_tool_names[:2] == names[:2]
 
 
-def test_phase1_unavailable_refresh_does_not_reuse_previous_document() -> None:
+def test_unavailable_refresh_does_not_reuse_previous_document() -> None:
     current: object = _context()
     controller = AuthoringWorkflowController(lambda: current, {})
     controller.refresh_turn_snapshot(("read_authoring_context",))
@@ -197,7 +197,7 @@ def test_phase1_unavailable_refresh_does_not_reuse_previous_document() -> None:
     assert controller.provider_snapshot.available is False
 
 
-def test_phase1_stale_review_projects_the_new_typed_binding() -> None:
+def test_stale_review_projects_the_new_typed_binding() -> None:
     old_context = _context()
     new_context = _context(revision=5)
     controller = AuthoringWorkflowController(lambda: old_context, {})
@@ -218,7 +218,7 @@ def test_phase1_stale_review_projects_the_new_typed_binding() -> None:
     assert snapshot.session_revision == new_context.binding.session_revision
 
 
-def test_phase1_runtime_publish_failures_atomically_drop_provider_cache(
+def test_runtime_publish_failures_atomically_drop_provider_cache(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -262,7 +262,7 @@ def test_phase1_runtime_publish_failures_atomically_drop_provider_cache(
         runtime.shutdown()
 
 
-def test_phase1_new_agent_session_rebinds_the_active_authoring_context(
+def test_new_agent_session_rebinds_the_active_authoring_context(
     tmp_path,
 ) -> None:
     context = AuthoringContext(
@@ -326,7 +326,7 @@ def test_phase1_new_agent_session_rebinds_the_active_authoring_context(
         runtime.shutdown()
 
 
-def test_phase1_runtime_binding_invalidation_hides_old_tools_until_rebind(
+def test_runtime_binding_invalidation_hides_old_tools_until_rebind(
     tmp_path,
 ) -> None:
     current = _context()
@@ -380,7 +380,7 @@ def test_phase1_runtime_binding_invalidation_hides_old_tools_until_rebind(
         runtime.shutdown()
 
 
-def test_phase1_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
+def test_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
     context = _context()
     controller = AuthoringWorkflowController(lambda: context, {})
     controller.observe_binding(context)
@@ -456,7 +456,7 @@ def _show_capabilities_response(call_id: str) -> ProviderResponse:
     )
 
 
-def test_phase1_audit_batches_rounds_into_one_atomic_write(
+def test_audit_batches_rounds_into_one_atomic_write(
     tmp_path, monkeypatch
 ) -> None:
     provider = FakeProvider(
@@ -491,7 +491,7 @@ def test_phase1_audit_batches_rounds_into_one_atomic_write(
     ] == [["show_capabilities"], ["show_capabilities"], []]
 
 
-def test_phase1_deferred_audit_flush_is_explicit_and_close_safe(
+def test_deferred_audit_flush_is_explicit_and_close_safe(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -531,7 +531,7 @@ def test_phase1_deferred_audit_flush_is_explicit_and_close_safe(
 
 
 @pytest.mark.parametrize("terminal", ["provider_error", "tool_limit"])
-def test_phase1_audit_batch_flushes_on_terminal_provider_paths(
+def test_audit_batch_flushes_on_terminal_provider_paths(
     tmp_path,
     monkeypatch,
     terminal,

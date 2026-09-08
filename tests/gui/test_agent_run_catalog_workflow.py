@@ -16,10 +16,10 @@ from fem_gui.agent_authoring import (
 )
 from fem_gui.agent_workspace_catalog import FEMWorkspaceCatalogPort
 from fem_gui.workspace import FEMWorkspace
-from tests.gui.test_agent_result_query_phase_a7 import (
-    STEP_NAME,
-    _query,
-    _solved_session,
+from tests.helpers.agent_result_fixtures import (
+    STATIC_STEP_NAME,
+    build_result_query,
+    make_solved_session,
 )
 from tests.helpers.preflight_builders import (
     failing_preflight_report,
@@ -32,7 +32,7 @@ from fem_agent.result_authoring import (
 
 
 def _second_success(session: ModelSession):
-    task = session.prepare_solve(STEP_NAME, "作业-stage1-2")
+    task = session.prepare_solve(STATIC_STEP_NAME, "作业-stage1-2")
     assert session.begin_run(task.token).accepted
     result = static_linear.solve(task.model, task.step_name, name="作业-stage1-2")
     assert session.accept_run_succeeded(
@@ -43,9 +43,9 @@ def _second_success(session: ModelSession):
 
 
 def test_two_runs_have_independent_result_catalogs_and_queries() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     first_run_id = session.snapshot().displayed_result_run_id
-    first_request = _query(
+    first_request = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -69,7 +69,7 @@ def test_two_runs_have_independent_result_catalogs_and_queries() -> None:
 
 
 def test_run_catalog_paginates_with_closed_document_identity() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     _second_success(session)
     authoring_bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
@@ -106,8 +106,8 @@ def test_run_catalog_paginates_with_closed_document_identity() -> None:
 
 
 def test_context_counts_history_without_claiming_a_displayed_result() -> None:
-    session = _solved_session()
-    request = _query(
+    session = make_solved_session()
+    request = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -202,7 +202,7 @@ def test_workspace_catalog_contains_model_and_result_without_paths(tmp_path) -> 
 
 
 def test_multistep_solve_requires_explicit_step_and_uses_job_supplier() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     session.replace_model_definitions(
         (),
         (),
@@ -265,7 +265,7 @@ def test_multistep_solve_requires_explicit_step_and_uses_job_supplier() -> None:
 
 
 def test_solve_proposal_dispatch_targets_bound_numeric_document() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     authoring_bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
     )
@@ -279,7 +279,7 @@ def test_solve_proposal_dispatch_targets_bound_numeric_document() -> None:
 
     outcome = controller.dispatch(
         "prepare_solve_proposal",
-        {"step_name": STEP_NAME},
+        {"step_name": STATIC_STEP_NAME},
         ToolExecutionContext(session.session_id, session.session_revision, "numeric"),
     )
 
@@ -290,7 +290,7 @@ def test_solve_proposal_dispatch_targets_bound_numeric_document() -> None:
 
 
 def test_results_ready_keeps_preflight_and_repeated_solve_tools() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     authoring_bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
     )
@@ -308,7 +308,7 @@ def test_results_ready_keeps_preflight_and_repeated_solve_tools() -> None:
 
 
 def test_multistep_preflight_requires_explicit_current_step() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     snapshot = session.snapshot()
     session.replace_model_definitions(
         snapshot.materials,

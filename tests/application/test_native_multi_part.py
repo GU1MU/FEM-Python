@@ -24,7 +24,7 @@ from fem.geometry import (
     RectangleGeometry,
 )
 from fem.mesh.settings import MeshSettings
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )

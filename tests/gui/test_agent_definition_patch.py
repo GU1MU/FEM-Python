@@ -31,7 +31,7 @@ from fem_gui.widgets.agent_chat import (
     AgentChatDrawer,
     _AGENT_CHAT_STYLESHEET,
 )
-from tests.agent.test_authoring_phase_a4 import _change
+from tests.helpers.agent_definition_fixtures import build_plate_definition_patch
 from tests.helpers.agent_session_fixtures import (
     _a4_plate_model as _plate_model,
     _a4_recipe as _recipe,
@@ -43,7 +43,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_a4_bridge_applies_once_and_gui_card_undoes_once() -> None:
+def test_bridge_applies_once_and_gui_card_undoes_once() -> None:
     application = _application()
     session = _session()
     full_refreshes: list[str] = []
@@ -57,7 +57,7 @@ def test_a4_bridge_applies_once_and_gui_card_undoes_once() -> None:
     bridge.bind_snapshot(session.snapshot())
     drawer = AgentChatDrawer(authoring_bridge=bridge)
 
-    record = bridge.apply_automatic_patch(_change(session))
+    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
     replay = bridge.apply_automatic_patch(record.patch)
 
     assert record.undo_available
@@ -152,7 +152,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
     drawer.close()
 
 
-def test_a4_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
+def test_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
     session = _session()
     port = SessionGeometryAuthoringPort(
         session,
@@ -161,7 +161,7 @@ def test_a4_automatic_port_rejects_destructive_inverse_as_forward_patch() -> Non
     )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
-    record = bridge.apply_automatic_patch(_change(session))
+    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
 
     with pytest.raises(ValueError, match="cannot overwrite or remove"):
         port.apply_patch(record.inverse_patch)
@@ -170,7 +170,7 @@ def test_a4_automatic_port_rejects_destructive_inverse_as_forward_patch() -> Non
     assert session.snapshot().materials
 
 
-def test_a4_revision_change_disables_old_undo_entry() -> None:
+def test_revision_change_disables_old_undo_entry() -> None:
     _application()
     session = _session()
     port = SessionGeometryAuthoringPort(
@@ -180,7 +180,7 @@ def test_a4_revision_change_disables_old_undo_entry() -> None:
     )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
-    record = bridge.apply_automatic_patch(_change(session))
+    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
     current = session.snapshot()
     session.replace_model_definitions(
         current.materials,
@@ -200,7 +200,7 @@ def test_a4_revision_change_disables_old_undo_entry() -> None:
     assert not bridge.can_undo_patch(record.patch.patch_id)
 
 
-def test_a4_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
+def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
     _application()
     session = _session()
     snapshot = session.snapshot()
@@ -247,11 +247,11 @@ def test_a4_result_invalidating_proposal_rejection_keeps_model_unchanged() -> No
     assert not session.snapshot().materials
 
 
-def test_a4_automatic_apply_fails_closed_if_port_sees_accepted_result(
+def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
     monkeypatch,
 ) -> None:
     session = _session()
-    patch = _change(session)
+    patch = build_plate_definition_patch(session)
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     result_snapshot = replace(
@@ -301,7 +301,7 @@ def test_a4_automatic_apply_fails_closed_if_port_sees_accepted_result(
     assert session.session_revision == snapshot.session_revision
 
 
-def test_a4_inverse_id_is_bounded_for_maximum_forward_id() -> None:
+def test_inverse_id_is_bounded_for_maximum_forward_id() -> None:
     session = _session()
     port = SessionGeometryAuthoringPort(
         session,
@@ -311,7 +311,7 @@ def test_a4_inverse_id_is_bounded_for_maximum_forward_id() -> None:
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
     snapshot = session.snapshot()
-    original = _change(session)
+    original = build_plate_definition_patch(session)
     patch = ModelPatch.create(
         patch_id="p" * 128,
         agent_session_id=original.agent_session_id,
@@ -334,7 +334,7 @@ def test_a4_inverse_id_is_bounded_for_maximum_forward_id() -> None:
     assert len(record.inverse_patch.patch_id) <= 128
 
 
-def test_a4_main_window_definition_projection_does_not_rebuild_mesh_actors(
+def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
     monkeypatch,
 ) -> None:
     _application()
@@ -357,7 +357,7 @@ def test_a4_main_window_definition_projection_does_not_rebuild_mesh_actors(
     session.accept_agent_generated_model(task.token, _plate_model())
     window._rebuild_full_projection()
     window.agent_authoring_bridge.bind_snapshot(session.snapshot())
-    patch = _change(session)
+    patch = build_plate_definition_patch(session)
     actor_rebuilds: list[object] = []
     monkeypatch.setattr(
         window.viewport,

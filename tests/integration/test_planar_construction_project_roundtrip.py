@@ -23,10 +23,10 @@ from fem_agent.authoring import ProposalState
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import ToolExecutionContext
-from tests.gui.test_agent_planar_construction_ir import (
-    _ControllerDynamicTools,
-    _controller,
-    _tool,
+from tests.helpers.agent_planar_construction import (
+    ControllerDynamicTools,
+    make_planar_authoring_controller,
+    tool_response,
 )
 
 
@@ -138,7 +138,7 @@ def test_phase7_h_plate_preview_mesh_disk_roundtrip_and_edit(
 ) -> None:
     del real_gmsh
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
 
     result = _dispatch(
@@ -262,7 +262,7 @@ def test_phase7_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> No
         "difference",
     }
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     result = _dispatch(
         controller,
         _planar_arguments(construction, part_function="通用组合槽板"),
@@ -320,7 +320,7 @@ def test_phase7_u_path_stroke_preview_mesh_and_disk_roundtrip(
         "result_node_id": "result",
     }
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     result = _dispatch(
         controller,
         _planar_arguments(construction, part_function="U 形定宽路径槽板"),
@@ -348,7 +348,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
 ) -> None:
     del real_gmsh
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     planar = _dispatch(
         controller,
         _planar_arguments(_h_plate(), part_function="后续拉伸的 H 槽板"),
@@ -357,7 +357,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
     bridge.accept_from_gui_control(planar.data["proposal_id"])
     current = session.snapshot()
     part = current.parts[0]
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     read = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": part.id},
@@ -411,8 +411,8 @@ def test_phase7_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
 ) -> None:
     del real_gmsh
     session = ModelSession()
-    bridge, controller = _controller(session)
-    dynamic = _ControllerDynamicTools(controller)
+    bridge, controller = make_planar_authoring_controller(session)
+    dynamic = ControllerDynamicTools(controller)
     arguments = {
         "part_function": "直接生成带组合槽的厚板",
         "construction": _h_plate(),
@@ -423,7 +423,7 @@ def test_phase7_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
         },
     }
     provider = FakeProvider(
-        [_tool("direct-extrusion", "prepare_planar_construction_proposal", arguments)]
+        [tool_response("direct-extrusion", "prepare_planar_construction_proposal", arguments)]
     )
     engine = AgentSessionEngine(
         tmp_path / "phase7-direct-extrusion",

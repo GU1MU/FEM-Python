@@ -81,7 +81,7 @@ def _strict_session() -> tuple[ModelSession, str]:
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("frame", ("fixed", "transport"))
-def test_phase3_real_path_sweep_proves_volume_caps_sides_and_frame(frame: str) -> None:
+def test_real_path_sweep_proves_volume_caps_sides_and_frame(frame: str) -> None:
     recipe = _path(frame)
 
     with model(f"phase3-path-{frame}", dimension=3) as cad:
@@ -107,7 +107,7 @@ def test_phase3_real_path_sweep_proves_volume_caps_sides_and_frame(frame: str) -
         RotatedGeometry(_path("fixed"), "y", 37.0),
     ),
 )
-def test_phase3_path_sweep_rigid_transform_rebinds_all_lineage(recipe) -> None:
+def test_path_sweep_rigid_transform_rebinds_all_lineage(recipe) -> None:
     with model(f"phase3-path-transform-{type(recipe).__name__}", dimension=3) as cad:
         compiled = compile_recipe(cad, recipe)
 
@@ -119,7 +119,7 @@ def test_phase3_path_sweep_rigid_transform_rebinds_all_lineage(recipe) -> None:
 
 
 @pytest.mark.gmsh
-def test_phase3_path_sweep_remeshes_as_one_tet_solid() -> None:
+def test_path_sweep_remeshes_as_one_tet_solid() -> None:
     recipe = _path()
 
     coarse = generate_fem_model(
@@ -137,7 +137,7 @@ def test_phase3_path_sweep_remeshes_as_one_tet_solid() -> None:
 
 
 @pytest.mark.gmsh
-def test_phase3_half_full_revolve_and_cross_axis_rejection() -> None:
+def test_half_full_revolve_and_cross_axis_rejection() -> None:
     profile = RectangleGeometry("Profile", 2.0, 1.0)
     for angle in (180.0, 360.0):
         with model(f"phase3-revolve-{angle:g}", dimension=3) as cad:
@@ -157,7 +157,7 @@ def test_phase3_half_full_revolve_and_cross_axis_rejection() -> None:
             )
 
 
-def test_phase3_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -> None:
+def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -> None:
     profile = RectangleGeometry("Profile", 1.0, 1.0)
     points = (
         WirePoint("A", 0.0, 0.0, 0.0),
@@ -220,7 +220,7 @@ def test_phase3_path_rejects_disconnected_branch_self_intersection_and_zero_segm
         )
 
 
-def test_phase3_runtime_schema_is_strict_for_revolve_and_ordered_path() -> None:
+def test_runtime_schema_is_strict_for_revolve_and_ordered_path() -> None:
     session, _source = _strict_session()
     _bridge, controller = _controller(session)
     revolution = next(
@@ -253,7 +253,7 @@ def test_phase3_runtime_schema_is_strict_for_revolve_and_ordered_path() -> None:
     )
 
 
-def test_phase3_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
+def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     monkeypatch.setattr(agent_authoring, "_preflight_derived_geometry", lambda _recipe: None)
@@ -285,7 +285,7 @@ def test_phase3_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) ->
 
 
 @pytest.mark.gmsh
-def test_phase3_agent_path_proposal_is_atomic_revision_bound_and_persistent() -> None:
+def test_agent_path_proposal_is_atomic_revision_bound_and_persistent() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     before = session.snapshot()
@@ -328,7 +328,7 @@ def test_phase3_agent_path_proposal_is_atomic_revision_bound_and_persistent() ->
     assert reopened.parts[0].geometry_recipe == recipe
 
 
-def test_phase3_stale_path_proposal_does_not_mutate() -> None:
+def test_stale_path_proposal_does_not_mutate() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     prepared = controller.dispatch(
@@ -353,7 +353,7 @@ def test_phase3_stale_path_proposal_does_not_mutate() -> None:
     assert session.snapshot() == stale_state
 
 
-def test_phase3_preflight_failure_and_gui_reject_are_atomic() -> None:
+def test_preflight_failure_and_gui_reject_are_atomic() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     before = session.snapshot()

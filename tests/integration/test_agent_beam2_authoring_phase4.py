@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from tests.helpers.agent_beam_fixtures import (
+    BEAM_STEP_NAME,
+    apply_line_scopes_and_material,
+    apply_beam_definitions,
+)
+
 from math import isfinite
 from pathlib import Path
 
@@ -12,187 +18,16 @@ from fem.io.project import load_project, save_project
 from fem_agent.authoring import ModelPatch, ProposalState
 from fem_agent.definition_action_authoring import create_definition_change
 from fem_gui.agent_authoring import authoring_context_from_snapshot
-from tests.integration.test_agent_truss2_authoring_phase3 import (
-    _apply,
-    _export,
-    _meshed_session,
-    _solve,
+from tests.helpers.agent_line_fixtures import (
+    apply_definition_action,
+    export_line_result,
+    make_meshed_line_session,
+    solve_authoring_session,
 )
-from tests.gui.test_agent_authoring_recovery_phase_a8 import (
-    _dispatch,
-    _production_controller,
+from tests.helpers.agent_authoring_workflows import (
+    dispatch_authoring_tool,
+    make_authoring_controller,
 )
-
-
-STEP_NAME = "分析步-梁"
-
-
-def _base_scopes_and_material(controller: object, session: ModelSession) -> None:
-    for action, parameters, suffix in (
-        (
-            "create_named_region",
-            {
-                "name": "点-固定端",
-                "part_id": "P1",
-                "logical_ids": ["point:Root"],
-                "mesh_kind": "node",
-            },
-            "root-region",
-        ),
-        (
-            "create_named_region",
-            {
-                "name": "点-自由端",
-                "part_id": "P1",
-                "logical_ids": ["point:Tip"],
-                "mesh_kind": "node",
-            },
-            "tip-region",
-        ),
-        (
-            "create_named_region",
-            {
-                "name": "域-梁",
-                "part_id": "P1",
-                "logical_ids": ["edge:Bar"],
-                "mesh_kind": "element",
-            },
-            "beam-region",
-        ),
-        (
-            "create_material",
-            {
-                "name": "材料-钢",
-                "properties": {"E": 210000.0, "nu": 0.3},
-            },
-            "material",
-        ),
-    ):
-        _apply(controller, session, action, parameters, suffix)
-
-
-def _beam_definition_actions(
-    controller: object,
-    session: ModelSession,
-) -> None:
-    _base_scopes_and_material(controller, session)
-    for action, parameters, suffix in (
-        (
-            "create_section",
-            {
-                "name": "截面-矩形梁",
-                "material": "材料-钢",
-                "section_type": "rectangle",
-                "properties": {"height": 20.0, "width": 10.0},
-            },
-            "section",
-        ),
-        (
-            "assign_section",
-            {
-                "section_name": "截面-矩形梁",
-                "region_name": "域-梁",
-                "local_y_reference": [0.0, 1.0, 0.0],
-            },
-            "assignment",
-        ),
-        ("create_static_step", {"name": STEP_NAME}, "step"),
-        (
-            "create_boundary_condition",
-            {
-                "name": "位移-固定端",
-                "step_name": STEP_NAME,
-                "target_scope": "点-固定端",
-                "target_kind": "node_set",
-                "first_component": 1,
-                "last_component": 6,
-                "value": 0.0,
-                "unit": "mm",
-                "distribution": "uniform",
-                "confirmed": True,
-            },
-            "fixed",
-        ),
-        (
-            "create_load",
-            {
-                "name": "载荷-轴向力",
-                "step_name": STEP_NAME,
-                "target_scope": "点-自由端",
-                "entity_type": "node",
-                "load_type": "nodal",
-                "component": 1,
-                "vector": None,
-                "magnitude": 1000.0,
-                "direction": "global_x",
-                "unit": "N",
-                "distribution": "concentrated",
-                "confirmed": True,
-            },
-            "axial-force",
-        ),
-        (
-            "create_load",
-            {
-                "name": "载荷-横向力",
-                "step_name": STEP_NAME,
-                "target_scope": "点-自由端",
-                "entity_type": "node",
-                "load_type": "nodal",
-                "component": 2,
-                "vector": None,
-                "magnitude": -100.0,
-                "direction": "global_y",
-                "unit": "N",
-                "distribution": "concentrated",
-                "confirmed": True,
-            },
-            "bending-force",
-        ),
-        (
-            "create_load",
-            {
-                "name": "载荷-扭矩",
-                "step_name": STEP_NAME,
-                "target_scope": "点-自由端",
-                "entity_type": "node",
-                "load_type": "nodal",
-                "component": 4,
-                "vector": None,
-                "magnitude": 500.0,
-                "direction": "global_rx",
-                "unit": "N*mm",
-                "distribution": "concentrated",
-                "confirmed": True,
-            },
-            "torque",
-        ),
-        (
-            "create_result_request",
-            {
-                "name": "结果请求-节点",
-                "step_name": STEP_NAME,
-                "target": "node",
-                "variables": ["U", "RF"],
-                "units": ["mm", "N"],
-                "confirmed": True,
-            },
-            "node-output",
-        ),
-        (
-            "create_result_request",
-            {
-                "name": "结果请求-应力",
-                "step_name": STEP_NAME,
-                "target": "element",
-                "variables": ["S"],
-                "units": ["MPa"],
-                "confirmed": True,
-            },
-            "element-output",
-        ),
-    ):
-        _apply(controller, session, action, parameters, suffix)
 
 
 def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
@@ -200,13 +35,13 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     tmp_path: Path,
 ) -> None:
     del real_gmsh
-    session = _meshed_session("Beam2")
-    controller, bridge = _production_controller(session)
-    _beam_definition_actions(controller, session)
+    session = make_meshed_line_session("Beam2")
+    controller, bridge = make_authoring_controller(session)
+    apply_beam_definitions(controller, session)
 
     assignment = session.snapshot().assignments[0]
     assert assignment.beam_orientation == BeamOrientation((0.0, 1.0, 0.0))
-    result = _solve(controller, bridge, session)
+    result = solve_authoring_session(controller, bridge, session)
     tip_id = result.model.node_sets["点-自由端"].node_ids[0]
     root_id = result.model.node_sets["点-固定端"].node_ids[0]
 
@@ -243,7 +78,7 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assert all(isfinite(value) for value in result.U)
 
     before_proposal = session.snapshot()
-    proposed = _dispatch(
+    proposed = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -284,8 +119,8 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assert after_rejection.steps == before_proposal.steps
     assert any(run.has_result for run in after_rejection.runs)
 
-    csv_files = _export(result, tmp_path / "artifacts", "beam-csv", "csv")
-    vtk_files = _export(result, tmp_path / "artifacts", "beam-vtk", "vtk")
+    csv_files = export_line_result(result, tmp_path / "artifacts", "beam-csv", "csv")
+    vtk_files = export_line_result(result, tmp_path / "artifacts", "beam-vtk", "vtk")
     assert any(path.suffix == ".csv" for path in csv_files)
     vtk_path = next(path for path in vtk_files if path.suffix == ".vtk")
     assert "CELL_TYPES 1\n3\n" in vtk_path.read_text(encoding="utf-8")
@@ -308,8 +143,8 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     task = reopened.prepare_mesh_generation()
     regenerated = generate_fem_model(task)
     assert reopened.accept_generated_model(task.token, regenerated).accepted
-    reopened_controller, reopened_bridge = _production_controller(reopened)
-    reopened_result = _solve(reopened_controller, reopened_bridge, reopened)
+    reopened_controller, reopened_bridge = make_authoring_controller(reopened)
+    reopened_result = solve_authoring_session(reopened_controller, reopened_bridge, reopened)
     reopened_tip = reopened_result.model.node_sets["点-自由端"].node_ids[0]
     assert reopened_result.nodal_displacement(reopened_tip, 4) == pytest.approx(
         expected_twist
@@ -332,16 +167,16 @@ def test_agent_supports_existing_circular_beam_sections(
     properties: dict[str, float],
 ) -> None:
     del real_gmsh
-    session = _meshed_session("Beam2")
-    controller, _ = _production_controller(session)
-    _apply(
+    session = make_meshed_line_session("Beam2")
+    controller, _ = make_authoring_controller(session)
+    apply_definition_action(
         controller,
         session,
         "create_material",
         {"name": "材料-钢", "properties": {"E": 210000.0, "nu": 0.3}},
         "material",
     )
-    _apply(
+    apply_definition_action(
         controller,
         session,
         "create_section",
@@ -360,9 +195,9 @@ def test_agent_supports_existing_circular_beam_sections(
 
 def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
     del real_gmsh
-    session = _meshed_session("Beam2")
-    controller, _ = _production_controller(session)
-    _base_scopes_and_material(controller, session)
+    session = make_meshed_line_session("Beam2")
+    controller, _ = make_authoring_controller(session)
+    apply_line_scopes_and_material(controller, session)
 
     for suffix, parameters in (
         (
@@ -385,7 +220,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         ),
     ):
         before = session.snapshot()
-        rejected = _dispatch(
+        rejected = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -395,7 +230,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         assert not rejected.ok
         assert session.snapshot() == before
 
-    _apply(
+    apply_definition_action(
         controller,
         session,
         "create_section",
@@ -412,7 +247,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         ("parallel-orientation", [1.0, 0.0, 0.0]),
     ):
         before = session.snapshot()
-        rejected = _dispatch(
+        rejected = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -429,10 +264,10 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         assert not rejected.ok
         assert session.snapshot() == before
 
-    truss_session = _meshed_session("Truss2")
-    truss_controller, _ = _production_controller(truss_session)
-    _base_scopes_and_material(truss_controller, truss_session)
-    _apply(
+    truss_session = make_meshed_line_session("Truss2")
+    truss_controller, _ = make_authoring_controller(truss_session)
+    apply_line_scopes_and_material(truss_controller, truss_session)
+    apply_definition_action(
         truss_controller,
         truss_session,
         "create_section",
@@ -445,7 +280,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         "beam-section",
     )
     before = truss_session.snapshot()
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         truss_controller,
         truss_session,
         "apply_model_definition",
@@ -462,7 +297,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
     assert not rejected.ok
     assert truss_session.snapshot() == before
 
-    _apply(
+    apply_definition_action(
         truss_controller,
         truss_session,
         "create_section",
@@ -475,7 +310,7 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         "truss-section",
     )
     before = truss_session.snapshot()
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         truss_controller,
         truss_session,
         "apply_model_definition",
@@ -495,10 +330,10 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
 
 def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
     del real_gmsh
-    session = _meshed_session("Beam2")
-    controller, _ = _production_controller(session)
-    _base_scopes_and_material(controller, session)
-    _apply(controller, session, "create_static_step", {"name": STEP_NAME}, "step")
+    session = make_meshed_line_session("Beam2")
+    controller, _ = make_authoring_controller(session)
+    apply_line_scopes_and_material(controller, session)
+    apply_definition_action(controller, session, "create_static_step", {"name": BEAM_STEP_NAME}, "step")
 
     snapshot = session.snapshot()
     boundary = create_definition_change(
@@ -513,7 +348,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         action="create_boundary_condition",
         parameters={
             "name": "位移-固定端",
-            "step_name": STEP_NAME,
+            "step_name": BEAM_STEP_NAME,
             "target_scope": "点-固定端",
             "target_kind": "node_set",
             "first_component": 1,
@@ -542,7 +377,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         action="create_load",
         parameters={
             "name": "载荷-扭矩",
-            "step_name": STEP_NAME,
+            "step_name": BEAM_STEP_NAME,
             "target_scope": "点-自由端",
             "entity_type": "node",
             "load_type": "nodal",
@@ -564,7 +399,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "create_boundary_condition",
             {
                 "name": "位移-非法混合",
-                "step_name": STEP_NAME,
+                "step_name": BEAM_STEP_NAME,
                 "target_scope": "点-固定端",
                 "target_kind": "node_set",
                 "first_component": 1,
@@ -580,7 +415,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "create_load",
             {
                 "name": "载荷-错误力矩单位",
-                "step_name": STEP_NAME,
+                "step_name": BEAM_STEP_NAME,
                 "target_scope": "点-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
@@ -598,7 +433,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "create_load",
             {
                 "name": "载荷-错误力矩方向",
-                "step_name": STEP_NAME,
+                "step_name": BEAM_STEP_NAME,
                 "target_scope": "点-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
@@ -613,7 +448,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         ),
     ):
         before = session.snapshot()
-        rejected = _dispatch(
+        rejected = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -623,13 +458,13 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         assert not rejected.ok
         assert session.snapshot() == before
 
-    _apply(
+    apply_definition_action(
         controller,
         session,
         "create_boundary_condition",
         {
             "name": "位移-纯转动",
-            "step_name": STEP_NAME,
+            "step_name": BEAM_STEP_NAME,
             "target_scope": "点-固定端",
             "target_kind": "node_set",
             "first_component": 4,

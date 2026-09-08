@@ -48,7 +48,7 @@ from fem_gui.agent_workspace import (
     read_export_ledger,
 )
 from fem_gui.widgets.agent_chat import ModelViewportOverlayHost
-from tests.gui.test_agent_result_query_phase_a7 import _solved_session
+from tests.helpers.agent_result_fixtures import make_solved_session
 
 
 _FIELD_REF = "U@nodes:c0"
@@ -341,7 +341,7 @@ def test_display_context_port_reports_unavailability(tmp_path: Path) -> None:
 
 
 def _controller_with_export(tmp_path: Path):
-    session = _solved_session()
+    session = make_solved_session()
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(exist_ok=True)
     workspace = UserWorkspace(workspace_id="ws-ctl", root=workspace_root)

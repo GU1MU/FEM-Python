@@ -38,14 +38,14 @@ from fem_gui.agent_authoring import (
 from fem_gui.model_iteration import ModelIterationService, geometry_edit_policy
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.workspace import FEMWorkspace
-from tests.geometry.test_profile_extrusion import profile_face_id, two_profile_sketch
-from tests.gui.test_agent_exact_boolean_phase4 import (
-    _body_call,
-    _multi_body_session,
-    _part_call,
-    _part_session,
+from tests.helpers.profile_sketches import profile_face_id, two_profile_sketch
+from tests.helpers.agent_boolean_fixtures import (
+    build_body_boolean_call,
+    make_multi_body_session,
+    build_part_boolean_call,
+    make_boolean_part_session,
 )
-from tests.gui.test_agent_result_query_phase_a7 import _solved_session
+from tests.helpers.agent_result_fixtures import make_solved_session
 
 
 def _single_profile_session() -> tuple[ModelSession, object, str]:
@@ -256,12 +256,12 @@ def test_derived_profile_branch_display_matches_top_level_impact(kind: str) -> N
 @pytest.mark.parametrize("kind", ("part", "body"))
 def test_boolean_operations_branch_without_mutating_source(kind: str) -> None:
     session = (
-        _part_session(
+        make_boolean_part_session(
             BoxGeometry("Target", 2.0, 1.0, 1.0),
             MovedGeometry(BoxGeometry("Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0),
         )
         if kind == "part"
-        else _multi_body_session()
+        else make_multi_body_session()
     )
     session.replace_model_definitions(
         (MaterialDefinition("Steel", {"E": 1.0}),), (), (), ()
@@ -275,7 +275,7 @@ def test_boolean_operations_branch_without_mutating_source(kind: str) -> None:
     source_before = source.session.snapshot()
     prepared = controller.dispatch(
         "prepare_geometry_edit",
-        _part_call("fuse") if kind == "part" else _body_call("fuse"),
+        build_part_boolean_call("fuse") if kind == "part" else build_body_boolean_call("fuse"),
         ToolExecutionContext("agent-phase7", session.session_revision, kind),
     )
     assert prepared.ok, prepared.summary
@@ -381,7 +381,7 @@ def test_profile_branch_activation_failure_rolls_back_workspace_and_binding(
 
 
 def test_profile_branch_retains_source_result_and_records_lineage() -> None:
-    source_session = _solved_session()
+    source_session = make_solved_session()
     source_run_id = source_session.snapshot().displayed_result_run_id
     assert source_run_id is not None
     workspace = FEMWorkspace()

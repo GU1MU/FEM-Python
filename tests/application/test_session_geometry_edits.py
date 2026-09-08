@@ -37,7 +37,7 @@ from tests.helpers.result_builders import (
     assert_result_records_equivalent,
     make_solve_result_bundle,
 )
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )

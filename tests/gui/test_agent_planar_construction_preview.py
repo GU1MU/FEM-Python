@@ -21,9 +21,9 @@ from fem_agent.tools.registry import ToolExecutionContext
 from fem_gui.agent_authoring import AgentProposalPreview
 from fem_gui.geometry_preview import GeometryPreview
 from fem_gui.main_window import FEMMainWindow
-from tests.gui.test_agent_planar_construction_ir import (
-    _arguments,
-    _controller,
+from tests.helpers.agent_planar_construction import (
+    build_planar_arguments,
+    make_planar_authoring_controller,
 )
 
 
@@ -113,15 +113,15 @@ def _split_then_cut_arguments() -> dict[str, object]:
     }
 
 
-def test_phase5_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
+def test_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     changes: list[tuple[str, AgentProposalPreview | None]] = []
     bridge.set_preview_listener(
         lambda proposal_id, preview: changes.append((proposal_id, preview))
     )
 
-    result = _dispatch(controller, _arguments(), "planar-preview")
+    result = _dispatch(controller, build_planar_arguments(), "planar-preview")
 
     assert result.ok, result.summary
     proposal_id = result.data["proposal_id"]
@@ -151,7 +151,7 @@ def test_phase5_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     assert '"points"' not in provider_payload
     assert changes[-1] == (proposal_id, preview)
 
-    other_bridge, _controller_unused = _controller(session)
+    other_bridge, _controller_unused = make_planar_authoring_controller(session)
     with pytest.raises(AuthoringContractError, match="does not match"):
         other_bridge.register_proposal(
             bridge._records[proposal_id].proposal,
@@ -168,9 +168,9 @@ def test_phase5_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     assert controller.planar_construction_audit[-1].terminal_state == "rejected"
 
 
-def test_phase5_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> None:
-    bridge, controller = _controller(ModelSession())
-    arguments = deepcopy(_arguments())
+def test_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> None:
+    bridge, controller = make_planar_authoring_controller(ModelSession())
+    arguments = deepcopy(build_planar_arguments())
     arguments["output"] = {
         "kind": "extrusion",
         "profile_selection": "unique_material_profile",
@@ -205,21 +205,21 @@ def test_phase5_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> N
     assert proposal_id not in bridge._proposal_previews
 
 
-def test_phase5_accept_success_failure_cancel_and_detach_clear_preview(
+def test_accept_success_failure_cancel_and_detach_clear_preview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    result = _dispatch(controller, _arguments(), "accept-success")
+    bridge, controller = make_planar_authoring_controller(session)
+    result = _dispatch(controller, build_planar_arguments(), "accept-success")
     proposal_id = result.data["proposal_id"]
     receipt = bridge.accept_from_gui_control(proposal_id)
     assert receipt.state is ProposalState.SUCCEEDED
     assert proposal_id not in bridge._proposal_previews
 
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
-    result = _dispatch(controller, _arguments(), "accept-failure")
+    result = _dispatch(controller, build_planar_arguments(), "accept-failure")
     proposal_id = result.data["proposal_id"]
 
     def fail_accept(_proposal_id):
@@ -231,8 +231,8 @@ def test_phase5_accept_success_failure_cancel_and_detach_clear_preview(
     assert session.snapshot() == before
     assert proposal_id not in bridge._proposal_previews
 
-    bridge, controller = _controller(ModelSession())
-    result = _dispatch(controller, _arguments(), "cancel")
+    bridge, controller = make_planar_authoring_controller(ModelSession())
+    result = _dispatch(controller, build_planar_arguments(), "cancel")
     proposal_id = result.data["proposal_id"]
     assert bridge.cancel_pending_proposals_from_gui("provider cancelled") == (
         proposal_id,
@@ -240,8 +240,8 @@ def test_phase5_accept_success_failure_cancel_and_detach_clear_preview(
     assert bridge._records[proposal_id].state is ProposalState.CANCELLED
     assert proposal_id not in bridge._proposal_previews
 
-    bridge, controller = _controller(ModelSession())
-    result = _dispatch(controller, _arguments(), "detach")
+    bridge, controller = make_planar_authoring_controller(ModelSession())
+    result = _dispatch(controller, build_planar_arguments(), "detach")
     proposal_id = result.data["proposal_id"]
     changes = []
     bridge.set_preview_listener(lambda item, preview: changes.append((item, preview)))
@@ -250,9 +250,9 @@ def test_phase5_accept_success_failure_cancel_and_detach_clear_preview(
     assert changes == [(proposal_id, None)]
 
 
-def test_phase5_session_rebind_and_drawer_close_restore_committed_preview() -> None:
-    bridge, controller = _controller(ModelSession())
-    result = _dispatch(controller, _arguments(), "session-switch")
+def test_session_rebind_and_drawer_close_restore_committed_preview() -> None:
+    bridge, controller = make_planar_authoring_controller(ModelSession())
+    result = _dispatch(controller, build_planar_arguments(), "session-switch")
     proposal_id = result.data["proposal_id"]
     other = ModelSession()
     bridge.bind_snapshot(other.snapshot(), document_id="document-other")
@@ -425,12 +425,12 @@ def test_phase5_session_rebind_and_drawer_close_restore_committed_preview() -> N
         ),
     ],
 )
-def test_phase5_actual_diagnostic_retry_can_revise_same_ir(
+def test_actual_diagnostic_retry_can_revise_same_ir(
     first: dict[str, object],
     revised: dict[str, object],
     code: str,
 ) -> None:
-    _bridge, controller = _controller(ModelSession())
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     request = {"part_function": "恢复测试", "construction": first, "output": "planar"}
     failed = _dispatch(controller, request, f"actual-{code.replace('.', '-')}-1")
     assert failed.data["diagnostic"]["code"] == code
@@ -473,7 +473,7 @@ def test_phase5_actual_diagnostic_retry_can_revise_same_ir(
         "planar-ir.stale-context",
     ],
 )
-def test_phase5_stable_diagnostics_are_provider_safe(
+def test_stable_diagnostics_are_provider_safe(
     monkeypatch: pytest.MonkeyPatch,
     code: str,
 ) -> None:
@@ -489,9 +489,9 @@ def test_phase5_stable_diagnostics_are_provider_safe(
         )
 
     monkeypatch.setattr("fem_gui.agent_authoring.compile_planar_construction", fail)
-    bridge, controller = _controller(ModelSession())
+    bridge, controller = make_planar_authoring_controller(ModelSession())
 
-    result = _dispatch(controller, _arguments(), f"diagnostic-{code.replace('.', '-')}")
+    result = _dispatch(controller, build_planar_arguments(), f"diagnostic-{code.replace('.', '-')}")
 
     assert not result.ok
     assert result.data["diagnostic"] == {
@@ -506,8 +506,8 @@ def test_phase5_stable_diagnostics_are_provider_safe(
     assert not bridge._records
 
 
-def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_retry_requires_allowed_slice_change_and_resets_next_turn() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     first = _dispatch(controller, _missing_reference(), "first")
     same = _dispatch(controller, _missing_reference(), "same")
     assert first.data["retry"]["retryable"] is True
@@ -527,7 +527,7 @@ def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> No
         "blocker": None,
     }
 
-    _bridge, controller = _controller(ModelSession())
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     first = _dispatch(controller, _missing_reference(), "allowed-first")
     unrelated = _missing_reference()
     unrelated["construction"]["name"] = "unrelated change"
@@ -535,7 +535,7 @@ def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> No
     assert first.data["retry"]["retryable"] is True
     assert blocked.data["retry"]["retryable"] is False
 
-    _bridge, controller = _controller(ModelSession())
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     _dispatch(controller, _missing_reference("missing-a"), "changed-first")
     changed = _dispatch(controller, _missing_reference("missing-b"), "changed-second")
     exhausted = _dispatch(controller, _missing_reference("missing-c"), "changed-third")
@@ -544,8 +544,8 @@ def test_phase5_retry_requires_allowed_slice_change_and_resets_next_turn() -> No
     assert "three attempts" in exhausted.data["retry"]["blocker"]
 
 
-def test_phase5_split_material_diagnostic_identifies_source_and_topology() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_split_material_diagnostic_identifies_source_and_topology() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     first = _dispatch(controller, _split_then_cut_arguments(), "split-first")
 
     assert not first.ok
@@ -598,7 +598,7 @@ def test_phase5_split_material_diagnostic_identifies_source_and_topology() -> No
     assert accepted.ok, accepted.data
 
 
-def test_phase5_invalid_output_is_rejected_before_cad_compilation(
+def test_invalid_output_is_rejected_before_cad_compilation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected_compile(_construction, **_kwargs):
@@ -608,8 +608,8 @@ def test_phase5_invalid_output_is_rejected_before_cad_compilation(
         "fem_gui.agent_authoring.compile_planar_construction",
         unexpected_compile,
     )
-    bridge, controller = _controller(ModelSession())
-    arguments = _arguments()
+    bridge, controller = make_planar_authoring_controller(ModelSession())
+    arguments = build_planar_arguments()
     arguments["output"] = {"kind": "planar", "height": 10.0}
 
     result = _dispatch(controller, arguments, "invalid-output")
@@ -620,7 +620,7 @@ def test_phase5_invalid_output_is_rejected_before_cad_compilation(
     assert not bridge._records
 
 
-def test_phase5_fourth_planar_attempt_is_blocked_before_compilation(
+def test_fourth_planar_attempt_is_blocked_before_compilation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compile_calls = 0
@@ -642,10 +642,10 @@ def test_phase5_fourth_planar_attempt_is_blocked_before_compilation(
         "fem_gui.agent_authoring.compile_planar_construction",
         fail_compile,
     )
-    _bridge, controller = _controller(ModelSession())
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     results = []
     for index in range(4):
-        arguments = _arguments()
+        arguments = build_planar_arguments()
         arguments["construction"]["nodes"][0]["width"] = 100.0 + index
         results.append(_dispatch(controller, arguments, f"attempt-{index}"))
 
@@ -656,8 +656,8 @@ def test_phase5_fourth_planar_attempt_is_blocked_before_compilation(
     assert results[-1].data["retry"]["retryable"] is False
 
 
-def test_phase5_retry_accepts_allowed_top_level_result_change() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_retry_accepts_allowed_top_level_result_change() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     request = _missing_reference()
     request["construction"]["result_node_id"] = "missing-result"
     first = _dispatch(controller, request, "result-first")
@@ -668,8 +668,8 @@ def test_phase5_retry_accepts_allowed_top_level_result_change() -> None:
     assert second.data["retry"]["attempt"] == 2
 
 
-def test_phase5_audit_is_bounded_and_contains_no_geometry_payload() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_audit_is_bounded_and_contains_no_geometry_payload() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     result = _dispatch(controller, _missing_reference(), "audit")
     assert not result.ok
     record = controller.planar_construction_audit[-1]

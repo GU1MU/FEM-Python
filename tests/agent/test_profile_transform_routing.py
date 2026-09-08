@@ -82,7 +82,7 @@ def _refusal() -> ProviderResponse:
     )
 
 
-def test_phase2_route_hint_distinguishes_transform_and_mesh_intents() -> None:
+def test_route_hint_distinguishes_transform_and_mesh_intents() -> None:
     extrusion = geometry_route_hint("把这个截面加厚到 20 mm")
     assert extrusion is not None
     assert extrusion.requested_operation == "extrude_profiles"
@@ -109,7 +109,7 @@ def test_phase2_route_hint_distinguishes_transform_and_mesh_intents() -> None:
     assert ambiguous.missing_fields == ("sweep_type",)
 
 
-def test_phase2_route_hint_covers_bilingual_transform_fields_and_arbitrary_size() -> None:
+def test_route_hint_covers_bilingual_transform_fields_and_arbitrary_size() -> None:
     english_extrude = geometry_route_hint("extrude this profile by 10 mm")
     assert english_extrude is not None
     assert english_extrude.requested_operation == "extrude_profiles"
@@ -159,7 +159,7 @@ def test_phase2_route_hint_covers_bilingual_transform_fields_and_arbitrary_size(
     assert geometry_route_hint("普通聊天") is None
 
 
-def test_phase2_guard_retry_allows_a_clarification_before_the_probe(tmp_path) -> None:
+def test_guard_retry_allows_a_clarification_before_the_probe(tmp_path) -> None:
     provider = FakeProvider(
         [
             _refusal(),
@@ -200,7 +200,7 @@ def test_phase2_guard_retry_allows_a_clarification_before_the_probe(tmp_path) ->
     assert "route_hint" in context
 
 
-def test_phase2_guard_allows_a_first_round_missing_field_question(tmp_path) -> None:
+def test_guard_allows_a_first_round_missing_field_question(tmp_path) -> None:
     provider = FakeProvider(
         [
             ProviderResponse(
@@ -225,7 +225,7 @@ def test_phase2_guard_allows_a_first_round_missing_field_question(tmp_path) -> N
     )
 
 
-def test_phase2_guard_retry_continues_after_the_required_probe(tmp_path) -> None:
+def test_guard_retry_continues_after_the_required_probe(tmp_path) -> None:
     provider = FakeProvider(
         [
             _refusal(),
@@ -271,7 +271,7 @@ def test_phase2_guard_retry_continues_after_the_required_probe(tmp_path) -> None
     assert "当前几何能力检查未完成，请重试。" not in visible
 
 
-def test_phase2_refusal_correction_allows_read_only_discovery(tmp_path) -> None:
+def test_refusal_correction_allows_read_only_discovery(tmp_path) -> None:
     feature_catalog = ToolDefinition(
         "read_geometry_feature_catalog",
         "Read bounded native geometry features.",
@@ -340,7 +340,7 @@ def test_phase2_refusal_correction_allows_read_only_discovery(tmp_path) -> None:
     assert "当前几何能力检查未完成，请重试。" not in visible
 
 
-def test_phase2_guard_second_refusal_returns_local_recovery(tmp_path) -> None:
+def test_guard_second_refusal_returns_local_recovery(tmp_path) -> None:
     provider = FakeProvider([_refusal(), _refusal()])
     engine = AgentSessionEngine(
         tmp_path / "agent-private",
@@ -375,7 +375,7 @@ def test_phase2_guard_second_refusal_returns_local_recovery(tmp_path) -> None:
     ]
 
 
-def test_phase2_guard_allows_typed_unsupported_and_mesh_intent(tmp_path) -> None:
+def test_guard_allows_typed_unsupported_and_mesh_intent(tmp_path) -> None:
     unsupported_provider = FakeProvider([_refusal()])
     unsupported_engine = AgentSessionEngine(
         tmp_path / "unsupported",
@@ -400,7 +400,7 @@ def test_phase2_guard_allows_typed_unsupported_and_mesh_intent(tmp_path) -> None
     assert len(mesh_provider.requests) == 1
 
 
-def test_phase2_guard_does_not_intercept_missing_fields_diagnostics_or_cancel(
+def test_guard_does_not_intercept_missing_fields_diagnostics_or_cancel(
     tmp_path,
 ) -> None:
     cases = (
@@ -432,7 +432,7 @@ def test_phase2_guard_does_not_intercept_missing_fields_diagnostics_or_cancel(
         )
 
 
-def test_phase2_guard_does_not_repeat_after_probe_call(tmp_path) -> None:
+def test_guard_does_not_repeat_after_probe_call(tmp_path) -> None:
     provider = FakeProvider(
         [
             ProviderResponse(
@@ -467,7 +467,7 @@ def test_phase2_guard_does_not_repeat_after_probe_call(tmp_path) -> None:
     )
 
 
-def test_phase2_guard_requires_published_transform_tools(tmp_path) -> None:
+def test_guard_requires_published_transform_tools(tmp_path) -> None:
     provider = FakeProvider([_refusal()])
     engine = AgentSessionEngine(
         tmp_path / "tools-unpublished",
@@ -485,7 +485,7 @@ def test_phase2_guard_requires_published_transform_tools(tmp_path) -> None:
     )
 
 
-def test_phase2_route_audit_is_bounded_json(tmp_path) -> None:
+def test_route_audit_is_bounded_json(tmp_path) -> None:
     provider = FakeProvider(
         [
             ProviderResponse(

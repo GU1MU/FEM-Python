@@ -25,7 +25,7 @@ from fem.io.project_v4 import (
     decode_project_v4,
     encode_project_v4,
 )
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )

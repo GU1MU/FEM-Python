@@ -71,7 +71,7 @@ def _proven_cut(base, tool, model_name: str):
         ).geometry
 
 
-def test_phase1_geometry_catalog_tool_schema_accepts_optional_part_filter() -> None:
+def test_geometry_catalog_tool_schema_accepts_optional_part_filter() -> None:
     schema = geometry_feature_catalog_tool_schema()
 
     assert schema["name"] == GEOMETRY_FEATURE_CATALOG_TOOL_NAME
@@ -89,7 +89,7 @@ def test_phase1_geometry_catalog_tool_schema_accepts_optional_part_filter() -> N
     }
 
 
-def test_phase1_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> None:
+def test_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "Model",
@@ -126,7 +126,7 @@ def test_phase1_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> No
     assert not before.mesh_current
 
 
-def test_phase1_geometry_catalog_filters_part_and_rejects_unknown_part() -> None:
+def test_geometry_catalog_filters_part_and_rejects_unknown_part() -> None:
     blank = ModelSession()
     blank_controller = _controller(blank)
     assert GEOMETRY_FEATURE_CATALOG_TOOL_NAME not in {
@@ -156,7 +156,7 @@ def test_phase1_geometry_catalog_filters_part_and_rejects_unknown_part() -> None
     assert not missing.ok
 
 
-def test_phase1_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() -> None:
+def test_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() -> None:
     plate = RectangleGeometry("Plate", 100.0, 300.0)
     h_tool = planar_polygon_geometry(
         "H slot",
@@ -284,7 +284,7 @@ def test_phase1_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() ->
     assert definition.parameters["properties"]["part_id"] == {"const": "P1"}
 
 
-def test_phase1_scoped_geometry_edit_schema_rejects_sketch_ids_before_handler() -> None:
+def test_scoped_geometry_edit_schema_rejects_sketch_ids_before_handler() -> None:
     plate = RectangleGeometry("Plate", 100.0, 300.0)
     tool = planar_polygon_geometry(
         "Wrong cut",
@@ -389,7 +389,7 @@ def test_phase1_scoped_geometry_edit_schema_rejects_sketch_ids_before_handler() 
     assert incomplete_tool.data["error"]["path"] == "arguments.edit.tool.height"
 
 
-def test_phase1_replaces_planar_boolean_feature_and_replays_later_history(
+def test_replaces_planar_boolean_feature_and_replays_later_history(
     real_gmsh,
 ) -> None:
     del real_gmsh
@@ -497,7 +497,7 @@ def test_phase1_replaces_planar_boolean_feature_and_replays_later_history(
     assert features[1]["bounding_box"] == [3.5, 3.5, 6.5, 6.5]
 
 
-def test_phase1_stale_geometry_read_resynchronizes_without_unknown_tool(
+def test_stale_geometry_read_resynchronizes_without_unknown_tool(
     tmp_path,
 ) -> None:
     session = ModelSession()
@@ -524,7 +524,7 @@ def test_phase1_stale_geometry_read_resynchronizes_without_unknown_tool(
     assert controller.stage.value != "cancelled"
 
 
-def test_phase1_planar_edit_verifies_general_feature_clearance(real_gmsh) -> None:
+def test_planar_edit_verifies_general_feature_clearance(real_gmsh) -> None:
     del real_gmsh
     plate = RectangleGeometry("Plate", 100.0, 300.0)
     h_tool = planar_polygon_geometry(
@@ -636,7 +636,7 @@ def test_phase1_planar_edit_verifies_general_feature_clearance(real_gmsh) -> Non
     assert proof["verified"] is True
 
 
-def test_phase1_geometry_catalog_omitted_count_uses_all_active_parts() -> None:
+def test_geometry_catalog_omitted_count_uses_all_active_parts() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "Many Parts",

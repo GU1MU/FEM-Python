@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from tests.helpers.agent_planar_construction import (
+    tool_response,
+    text_response,
+    ControllerDynamicTools,
+    make_planar_authoring_controller,
+    build_planar_arguments,
+    dispatch_planar_construction,
+)
+
 from copy import deepcopy
 import json
 
@@ -9,109 +18,14 @@ from fem import geometry as geometry_runtime
 from fem.application import ModelSession, derive_feature_history
 from fem.geometry import BooleanGeometry, SketchGeometry
 from fem_agent.authoring import AgentProposal, ProposalState
-from fem_agent.authoring_runtime import (
-    AuthoringTurnSnapshot,
-    AuthoringWorkflowStage,
-)
+from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.engine import AgentSessionEngine, EngineEventType
-from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolCall
 from fem_agent.providers.fake import FakeProvider
-from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
-from fem_gui.agent_authoring import (
-    AgentAuthoringBridge,
-    SessionGeometryAuthoringPort,
-    SessionResultQueryPort,
-    create_session_authoring_workflow_controller,
-)
-from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
 
 
-def _tool(call_id: str, name: str, arguments: dict[str, object]) -> ProviderResponse:
-    return ProviderResponse(
-        AssistantMessage(
-            "assistant",
-            tool_calls=(ToolCall(call_id, name, arguments),),
-        ),
-        finish_reason="tool_calls",
-    )
-
-
-def _text(value: str) -> ProviderResponse:
-    return ProviderResponse(
-        AssistantMessage("assistant", content=value),
-        finish_reason="stop",
-    )
-
-
-class _ControllerDynamicTools:
-    def __init__(self, controller) -> None:
-        self.controller = controller
-        self._snapshot = controller.set_published_tool_names(
-            tuple(item.name for item in controller.definitions)
-        )
-
-    @property
-    def definitions(self):
-        return tuple(self.controller.definitions)
-
-    @property
-    def provider_snapshot(self) -> AuthoringTurnSnapshot:
-        return self._snapshot
-
-    def refresh_turn_snapshot(self, published_tool_names=()):
-        names = tuple(published_tool_names) or tuple(
-            item.name for item in self.controller.definitions
-        )
-        self._snapshot = self.controller.set_published_tool_names(names)
-        return self._snapshot
-
-    def dispatch(self, name, arguments, context):
-        return self.controller.dispatch(name, arguments, context)
-
-
-def _controller(session: ModelSession):
-    holder: dict[str, object] = {}
-
-    def refresh() -> None:
-        bridge.bind_snapshot(session.snapshot())
-        controller = holder.get("controller")
-        if controller is not None:
-            controller.observe_binding(bridge.context)  # type: ignore[arg-type]
-
-    bridge = AgentAuthoringBridge(SessionGeometryAuthoringPort(session, refresh))
-    bridge.bind_snapshot(session.snapshot())
-    controller = create_session_authoring_workflow_controller(
-        session,
-        bridge,
-        AgentResultQueryBridge(SessionResultQueryPort(session)),
-    )
-    holder["controller"] = controller
-    return bridge, controller
-
-
-def _h_plate_construction() -> dict[str, object]:
-    return deepcopy(EXPECTED_H_CONSTRUCTION)
-
-
-def _arguments() -> dict[str, object]:
-    return {
-        "part_function": "带组合槽和四角孔的二维板",
-        "construction": _h_plate_construction(),
-        "output": "planar",
-    }
-
-
-def _dispatch(controller, *, key: str = "phase3"):
-    return controller.dispatch(
-        "prepare_planar_construction_proposal",
-        _arguments(),
-        ToolExecutionContext("phase3-planar", 0, key),
-    )
-
-
-def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_publishes_strict_schema_and_bounded_context() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     definition = next(
         item
         for item in controller.definitions
@@ -233,9 +147,9 @@ def test_phase3_publishes_strict_schema_and_bounded_context() -> None:
     assert "occ" not in serialized
 
 
-def test_phase3_rejects_misanchored_cutters_before_presenting_a_card() -> None:
+def test_rejects_misanchored_cutters_before_presenting_a_card() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
     construction = {
         "schema_version": 1,
@@ -296,12 +210,12 @@ def test_phase3_rejects_misanchored_cutters_before_presenting_a_card() -> None:
     assert session.snapshot() == before
 
 
-def test_phase3_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None:
+def test_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
 
-    result = _dispatch(controller)
+    result = dispatch_planar_construction(controller)
 
     assert result.ok, result.summary
     assert session.snapshot() == before
@@ -401,10 +315,10 @@ def test_phase3_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() 
     )
 
 
-def test_phase3_planar_object_output_normalizes_to_the_same_2d_recipe() -> None:
+def test_planar_object_output_normalizes_to_the_same_2d_recipe() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    arguments = _arguments()
+    bridge, controller = make_planar_authoring_controller(session)
+    arguments = build_planar_arguments()
     arguments["output"] = {"kind": "planar"}
 
     result = controller.dispatch(
@@ -423,8 +337,8 @@ def test_phase3_planar_object_output_normalizes_to_the_same_2d_recipe() -> None:
 
 def test_agent_appends_a_second_round_path_slot_as_a_new_cut_feature() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    initial = _dispatch(controller, key="feature-history-initial")
+    bridge, controller = make_planar_authoring_controller(session)
+    initial = dispatch_planar_construction(controller, key="feature-history-initial")
     assert initial.ok, initial.summary
     initial_receipt = bridge.accept_from_gui_control(str(initial.data["proposal_id"]))
     assert initial_receipt.state is ProposalState.SUCCEEDED
@@ -518,8 +432,8 @@ def test_closed_path_slot_edit_returns_same_representation_repair_guidance(
     edit: dict[str, object],
 ) -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    initial = _dispatch(controller, key="closed-slot-initial")
+    bridge, controller = make_planar_authoring_controller(session)
+    initial = dispatch_planar_construction(controller, key="closed-slot-initial")
     receipt = bridge.accept_from_gui_control(str(initial.data["proposal_id"]))
     assert receipt.state is ProposalState.SUCCEEDED
     controller.record_proposal_state("geometry", receipt.state, receipt.message)
@@ -575,10 +489,10 @@ def test_closed_path_slot_edit_returns_same_representation_repair_guidance(
     ]
 
 
-def test_phase3_accept_refreshes_revision_before_clearing_pending_operation() -> None:
+def test_accept_refreshes_revision_before_clearing_pending_operation() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    result = _dispatch(controller, key="accept-refresh-order")
+    bridge, controller = make_planar_authoring_controller(session)
+    result = dispatch_planar_construction(controller, key="accept-refresh-order")
     bridge.set_lifecycle_listener(
         lambda proposal, state, message: controller.record_proposal_state(
             proposal.proposal_kind.value,
@@ -596,18 +510,18 @@ def test_phase3_accept_refreshes_revision_before_clearing_pending_operation() ->
     )
 
 
-def test_phase3_fake_provider_uses_one_card_and_continues_from_new_snapshot(
+def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     tmp_path,
 ) -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
-    dynamic = _ControllerDynamicTools(controller)
+    bridge, controller = make_planar_authoring_controller(session)
+    dynamic = ControllerDynamicTools(controller)
     provider = FakeProvider(
         [
-            _tool(
+            tool_response(
                 "prepare-ir",
                 "prepare_planar_construction_proposal",
-                _arguments(),
+                build_planar_arguments(),
             )
         ]
     )
@@ -644,8 +558,8 @@ def test_phase3_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     controller.record_proposal_state("geometry", receipt.state, receipt.message)
     dynamic.refresh_turn_snapshot(tuple(item.name for item in controller.definitions))
     provider.queue(
-        _tool("read-new", "read_authoring_context", {}),
-        _text("二维部件已进入后续建模阶段。"),
+        tool_response("read-new", "read_authoring_context", {}),
+        text_response("二维部件已进入后续建模阶段。"),
     )
     continuation = engine.continue_after_proposal(
         proposal_id,
@@ -673,13 +587,13 @@ def test_phase3_fake_provider_uses_one_card_and_continues_from_new_snapshot(
 
 
 @pytest.mark.parametrize("terminal", ["reject", "stale"])
-def test_phase3_reject_and_stale_keep_the_blank_session_unchanged(
+def test_reject_and_stale_keep_the_blank_session_unchanged(
     terminal: str,
 ) -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
-    result = _dispatch(controller, key=terminal)
+    result = dispatch_planar_construction(controller, key=terminal)
     proposal_id = result.data["proposal_id"]
 
     if terminal == "reject":
@@ -694,11 +608,11 @@ def test_phase3_reject_and_stale_keep_the_blank_session_unchanged(
     assert session.snapshot() == before
 
 
-def test_phase3_invalid_ir_fails_without_a_card_or_model_change() -> None:
+def test_invalid_ir_fails_without_a_card_or_model_change() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
-    arguments = _arguments()
+    arguments = build_planar_arguments()
     arguments["construction"]["nodes"][-1]["subtract"] = ["missing"]
 
     result = controller.dispatch(
@@ -715,11 +629,11 @@ def test_phase3_invalid_ir_fails_without_a_card_or_model_change() -> None:
     assert session.snapshot() == before
 
 
-def test_phase3_cancel_and_accept_failure_keep_session_unchanged(monkeypatch) -> None:
+def test_cancel_and_accept_failure_keep_session_unchanged(monkeypatch) -> None:
     cancelled_session = ModelSession()
-    _cancelled_bridge, cancelled_controller = _controller(cancelled_session)
+    _cancelled_bridge, cancelled_controller = make_planar_authoring_controller(cancelled_session)
     cancelled_before = cancelled_session.snapshot()
-    result = _dispatch(cancelled_controller, key="cancel")
+    result = dispatch_planar_construction(cancelled_controller, key="cancel")
     assert result.ok
 
     cancelled_controller.cancel_turn("provider operation cancelled")
@@ -727,9 +641,9 @@ def test_phase3_cancel_and_accept_failure_keep_session_unchanged(monkeypatch) ->
     assert cancelled_session.snapshot() == cancelled_before
 
     failed_session = ModelSession()
-    failed_bridge, failed_controller = _controller(failed_session)
+    failed_bridge, failed_controller = make_planar_authoring_controller(failed_session)
     failed_before = failed_session.snapshot()
-    failed = _dispatch(failed_controller, key="failed-accept")
+    failed = dispatch_planar_construction(failed_controller, key="failed-accept")
 
     def fail_commit(*_args, **_kwargs) -> None:
         raise RuntimeError("injected commit failure")
@@ -745,9 +659,9 @@ def test_phase3_cancel_and_accept_failure_keep_session_unchanged(monkeypatch) ->
     assert failed_session.snapshot() == failed_before
 
 
-def test_phase3_legacy_planar_profiles_remains_callable_and_auditable() -> None:
+def test_legacy_planar_profiles_remains_callable_and_auditable() -> None:
     session = ModelSession()
-    _bridge, controller = _controller(session)
+    _bridge, controller = make_planar_authoring_controller(session)
     assert {item.name for item in controller.definitions} >= {
         "prepare_geometry_proposal",
         "prepare_planar_construction_proposal",

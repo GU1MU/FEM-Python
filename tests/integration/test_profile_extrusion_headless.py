@@ -18,7 +18,7 @@ from fem.geometry import (
 from fem.application.native_regions import RecipeRegionSelector
 from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     hole_profile_sketch,
     profile_face_id,
     two_profile_sketch,

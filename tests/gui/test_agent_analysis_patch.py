@@ -67,7 +67,7 @@ def _items(tree: ModelTree):
     return values
 
 
-def test_a5_model_tree_uses_named_stable_edit_identity() -> None:
+def test_model_tree_uses_named_stable_edit_identity() -> None:
     _application()
     model = FEMModel(Mesh2D([], []), name="模型-板", steps=[_step()])
     tree = ModelTree()
@@ -92,7 +92,7 @@ def test_a5_model_tree_uses_named_stable_edit_identity() -> None:
     assert by_kind["output"].text(0) == "U"
 
 
-def test_a5_manager_displays_name_separate_from_target_identity() -> None:
+def test_manager_displays_name_separate_from_target_identity() -> None:
     _application()
     dialog = AnalysisDefinitionManagerDialog(
         [_step()],

@@ -32,7 +32,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.gui.test_agent_result_query_phase_a7 import STEP_NAME, _solved_session
+from tests.helpers.agent_result_fixtures import STATIC_STEP_NAME, make_solved_session
 from tests.helpers.agent_session_fixtures import (
     _a5_analysis as _analysis,
     _a5_session as _session,
@@ -91,14 +91,14 @@ def _solve_again_with_double_load(
         snapshot.assignments,
         (doubled.to_step(),),
     )
-    validation = session.prepare_validation(STEP_NAME)
+    validation = session.prepare_validation(STATIC_STEP_NAME)
     report = run_static_preflight(
         validation.model,
         validation.step_name,
         token=validation.token,
     )
     assert session.accept_validation(validation.token, report).accepted
-    task = session.prepare_solve(STEP_NAME, "作业-比较候选")
+    task = session.prepare_solve(STATIC_STEP_NAME, "作业-比较候选")
     assert session.begin_run(task.token).accepted
     result = static_linear.solve(task.model, task.step_name, name="作业-比较候选")
     assert session.accept_run_succeeded(
@@ -121,7 +121,7 @@ def _controller(session: ModelSession):
 
 
 def test_comparison_query_and_schema_are_closed_and_round_trip_provider_safe() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     baseline, candidate = _solve_again_with_double_load(session)
     request = _comparison_query(baseline, candidate)
 
@@ -158,7 +158,7 @@ def test_comparison_query_and_schema_are_closed_and_round_trip_provider_safe() -
 
 
 def test_two_accepted_runs_compare_in_order_with_signed_delta_and_no_mutation() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     baseline, candidate = _solve_again_with_double_load(session)
     port = SessionResultQueryPort(session)
     before = (
@@ -285,7 +285,7 @@ def test_bridge_preserves_query_only_ports_and_rejects_wrong_provenance() -> Non
 def test_comparison_fails_closed_for_foreign_stale_and_unavailable_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _solved_session()
+    session = make_solved_session()
     baseline, candidate = _solve_again_with_double_load(session)
     port = SessionResultQueryPort(session)
 
@@ -368,8 +368,8 @@ def test_comparison_fails_closed_for_foreign_stale_and_unavailable_inputs(
 
 def test_comparison_tool_visibility_tracks_retained_result_count() -> None:
     empty = _session()
-    one = _solved_session()
-    two = _solved_session()
+    one = make_solved_session()
+    two = make_solved_session()
     _solve_again_with_double_load(two)
 
     assert "compare_accepted_results" not in {

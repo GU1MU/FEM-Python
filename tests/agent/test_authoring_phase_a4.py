@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.helpers.agent_definition_fixtures import (
+    build_plate_definition_patch,
+)
+
 from dataclasses import replace
 
 import pytest
@@ -13,20 +17,10 @@ from fem.application import (
     ScopedDefinitionBatch,
     UnitContext,
 )
-from fem.application.native_scope_materialization import (
-    NATIVE_PART_OWNERSHIP_KEY,
-    NATIVE_SCOPE_CATALOG_KEY,
-)
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel
-from fem.geometry import (
-    PlateWithHoleGeometry,
-    SketchCircle,
-    SketchRectangle,
-)
+from fem.application.native_scope_materialization import NATIVE_SCOPE_CATALOG_KEY
+from fem.geometry import SketchCircle, SketchRectangle
 from fem.mesh.settings import MeshSettings
 from fem.io.project import dumps_project, loads_project
-from fem.selection import edges as mesh_edges
 from fem_agent.authoring import AgentProposal, ModelPatch, ProposalKind
 from fem_agent.definition_authoring import (
     ScopeSelectionError,
@@ -41,28 +35,8 @@ from fem_gui.agent_authoring import authoring_context_from_snapshot
 
 from tests.helpers.agent_session_fixtures import (
     _a4_plate_model as _plate_model,
-    _a4_recipe as _recipe,
     _a4_session as _session,
 )
-
-
-def _change(session: ModelSession):
-    snapshot = session.snapshot()
-    return create_scope_definition_change(
-        patch_id="patch-a4",
-        proposal_id="proposal-a4",
-        agent_session_id="agent-a4",
-        turn_id="turn-a4",
-        source_tool_call_ids=("call-a4",),
-        context=authoring_context_from_snapshot(snapshot),
-        snapshot=snapshot,
-        draft_revision=4,
-        material_function="结构钢",
-        material_properties={"E": 210000.0, "nu": 0.3},
-        section_function="平面应力",
-        plane_type="stress",
-        thickness=2.0,
-    )
 
 
 def test_a4_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None:
@@ -147,7 +121,7 @@ def test_a4_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
 def test_a4_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
     session = _session()
     before = session.snapshot()
-    patch = _change(session)
+    patch = build_plate_definition_patch(session)
     assert type(patch) is ModelPatch
     batch = scoped_definition_batch_from_operations(
         patch.operations,
@@ -178,7 +152,7 @@ def test_a4_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
 
 def test_a4_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
     session = _session()
-    patch = _change(session)
+    patch = build_plate_definition_patch(session)
     snapshot = session.snapshot()
     batch = scoped_definition_batch_from_operations(
         patch.operations,
@@ -244,7 +218,7 @@ def test_a4_existing_result_turns_change_into_confirmation_proposal() -> None:
 
 def test_a4_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
     session = _session()
-    patch = _change(session)
+    patch = build_plate_definition_patch(session)
     before = session.snapshot()
     session.apply_scoped_definition_batch(
         scoped_definition_batch_from_operations(

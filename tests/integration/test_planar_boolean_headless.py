@@ -40,7 +40,7 @@ from fem.io.project_v6 import (
 )
 from fem.mesh.settings import MeshSettings
 from fem_gui.geometry_preview import build_strict_planar_boolean_preview
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )

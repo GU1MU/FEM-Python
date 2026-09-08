@@ -26,7 +26,7 @@ from fem_gui.main_window import FEMMainWindow
 from fem_gui.geometry_preview import build_geometry_preview
 from fem_gui.preprocessing_dialogs import ExtrudeGeometryDialog
 from fem_gui.widgets.viewport import FEMViewport
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     hole_profile_sketch,
     profile_face_id,
     two_profile_sketch,

@@ -34,7 +34,7 @@ from fem_gui.agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 from fem_gui.main_window import FEMMainWindow
-from tests.gui.test_agent_result_query_phase_a7 import _solved_session
+from tests.helpers.agent_result_fixtures import make_solved_session
 
 
 def _three_hole_sketch() -> SketchGeometry:
@@ -312,7 +312,7 @@ def test_main_window_geometry_edit_uses_in_place_then_automatic_branch() -> None
 def test_branch_preserves_source_result_without_result_loss_confirmation() -> None:
     QApplication.instance() or QApplication([])
     window = FEMMainWindow()
-    solved = _solved_session()
+    solved = make_solved_session()
     source = window.workspace.active_document()
     assert source is not None
     window.session = solved

@@ -26,7 +26,7 @@ from fem_gui.geometry_preview import build_geometry_preview
 from fem_gui.icons import icon
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.preprocessing_dialogs import SweepGeometryDialog
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )

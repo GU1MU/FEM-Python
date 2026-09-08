@@ -188,7 +188,7 @@ def _max_nodes_ir() -> dict[str, object]:
     }
 
 
-def test_phase6_provider_schema_has_one_planar_path_and_is_measured() -> None:
+def test_provider_schema_has_one_planar_path_and_is_measured() -> None:
     _bridge, controller = _controller(ModelSession())
     definitions = {item.name: item for item in controller.definitions}
     general = definitions["prepare_geometry_proposal"]
@@ -233,7 +233,7 @@ def test_phase6_provider_schema_has_one_planar_path_and_is_measured() -> None:
         ),
     ),
 )
-def test_phase6_new_planar_requests_route_only_to_ir(
+def test_new_planar_requests_route_only_to_ir(
     user_text: str,
     operation: str,
     dimension: int,
@@ -249,14 +249,14 @@ def test_phase6_new_planar_requests_route_only_to_ir(
     assert hint.missing_fields == missing
 
 
-def test_phase6_existing_profile_transform_route_remains_dedicated() -> None:
+def test_existing_profile_transform_route_remains_dedicated() -> None:
     hint = geometry_route_hint("将当前二维轮廓拉伸 20 mm")
 
     assert hint is not None and hint.is_transform
     assert hint.required_prepare_tool == "prepare_profile_extrusion"
 
 
-def test_phase6_follow_up_planar_cut_routes_through_geometry_edit_tools() -> None:
+def test_follow_up_planar_cut_routes_through_geometry_edit_tools() -> None:
     hint = geometry_route_hint("当然，切除出S形状的槽即可")
 
     assert hint is not None and hint.is_edit
@@ -273,7 +273,7 @@ def test_phase6_follow_up_planar_cut_routes_through_geometry_edit_tools() -> Non
     assert regenerate is not None and regenerate.is_edit
 
 
-def test_phase6_legacy_decoder_is_deprecated_and_project_stores_only_recipe() -> None:
+def test_legacy_decoder_is_deprecated_and_project_stores_only_recipe() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
     result = controller.dispatch(
@@ -334,7 +334,7 @@ def test_phase6_legacy_decoder_is_deprecated_and_project_stores_only_recipe() ->
     )
 
 
-def test_phase6_provider_round_audit_proves_schema_route_and_one_call(tmp_path) -> None:
+def test_provider_round_audit_proves_schema_route_and_one_call(tmp_path) -> None:
     session = ModelSession()
     _bridge, controller = _controller(session)
     dynamic = _ControllerDynamicTools(controller)
@@ -382,7 +382,7 @@ def test_phase6_provider_round_audit_proves_schema_route_and_one_call(tmp_path) 
     )
 
 
-def test_phase6_validation_budget_and_overbudget_never_enter_occ(monkeypatch) -> None:
+def test_validation_budget_and_overbudget_never_enter_occ(monkeypatch) -> None:
     start = perf_counter()
     ir = PlanarConstructionIR.from_dict(_max_nodes_ir())
     canonical = ir.canonical_json()
@@ -438,7 +438,7 @@ def test_phase6_validation_budget_and_overbudget_never_enter_occ(monkeypatch) ->
     assert entered_occ is False
 
 
-def test_phase6_boolean_compile_and_preview_stay_within_local_budget() -> None:
+def test_boolean_compile_and_preview_stay_within_local_budget() -> None:
     construction = deepcopy(EXPECTED_H_CONSTRUCTION)
     start = perf_counter()
     compiled = compile_planar_construction(PlanarConstructionIR.from_dict(construction))

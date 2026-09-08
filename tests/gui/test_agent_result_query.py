@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from tests.helpers.agent_result_fixtures import (
+    STATIC_STEP_NAME,
+    make_solved_session,
+    make_accepted_result_source,
+    build_result_query,
+)
+
 import math
 import os
 
@@ -8,10 +15,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from fem.application import (
-    ScopedDefinitionBatch,
-    run_static_preflight,
-)
 from fem.application.results import (
     FieldPosition,
     FieldRequest,
@@ -36,87 +39,11 @@ from fem_gui.main_window import FEMMainWindow
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.helpers.agent_session_fixtures import (
-    _a5_analysis as _analysis,
-    _a5_session as _session,
-)
-
-
-STEP_NAME = "分析步-静力"
+from tests.helpers.agent_session_fixtures import _a5_session as _session
 
 
 def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
-
-
-def _solved_session():
-    session = _session()
-    snapshot = session.snapshot()
-    delta = session.apply_scoped_definition_batch(
-        ScopedDefinitionBatch(
-            session.session_revision,
-            tuple(snapshot.named_regions.values()),
-            snapshot.materials,
-            snapshot.sections,
-            snapshot.assignments,
-            (_analysis().to_step(),),
-        )
-    )
-    assert delta.accepted
-
-    validation = session.prepare_validation(STEP_NAME)
-    report = run_static_preflight(
-        validation.model,
-        validation.step_name,
-        token=validation.token,
-    )
-    assert report.passed
-    assert session.accept_validation(validation.token, report).accepted
-
-    solve_task = session.prepare_solve(STEP_NAME, "作业-A7")
-    assert session.begin_run(solve_task.token).accepted
-    result = static_linear.solve(
-        solve_task.model,
-        solve_task.step_name,
-        name="作业-A7",
-    )
-    assert session.accept_run_succeeded(
-        solve_task.token,
-        build_solve_result_bundle(solve_task, result),
-    ).accepted
-    return session
-
-
-def _source(value: ResultSourceKey) -> AcceptedResultSource:
-    return AcceptedResultSource(
-        result_id=value.result_id,
-        session_id=value.session_id,
-        artifact_id=value.artifact_id,
-        model_revision=value.model_revision,
-        step_name=value.step_name,
-        run_id=value.run_id,
-    )
-
-
-def _query(
-    session,
-    *,
-    variable: AgentResultVariable,
-    component: str,
-    position: str,
-    region: str,
-    aggregation: AgentResultAggregation,
-) -> AgentResultQuery:
-    source, generation = session.current_result_identity()
-    return AgentResultQuery(
-        variable=variable,
-        component=component,
-        position=position,
-        region=region,
-        aggregation=aggregation,
-        expected_source=_source(source),
-        expected_materialization_generation=generation,
-    )
 
 
 def _native_records(session, request: AgentResultQuery):
@@ -155,15 +82,15 @@ def _native_records(session, request: AgentResultQuery):
     return provider.query(query).records
 
 
-def test_a7_catalog_exposes_only_bounded_ready_identity_and_units() -> None:
-    session = _solved_session()
+def test_catalog_exposes_only_bounded_ready_identity_and_units() -> None:
+    session = make_solved_session()
 
     response = SessionResultQueryPort(session).catalog()
 
     assert response.ok
     catalog = response.catalog
     source, generation = session.current_result_identity()
-    assert catalog.source == _source(source)
+    assert catalog.source == make_accepted_result_source(source)
     assert catalog.materialization_generation == generation == 0
     assert tuple(
         (
@@ -210,10 +137,10 @@ def test_a7_catalog_exposes_only_bounded_ready_identity_and_units() -> None:
         assert forbidden not in encoded
 
 
-def test_a7_reads_three_milestone_result_types_with_units_and_identity() -> None:
-    session = _solved_session()
+def test_reads_three_milestone_result_types_with_units_and_identity() -> None:
+    session = make_solved_session()
     port = SessionResultQueryPort(session)
-    displacement = _query(
+    displacement = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -221,7 +148,7 @@ def test_a7_reads_three_milestone_result_types_with_units_and_identity() -> None
         region="all_nodes",
         aggregation=AgentResultAggregation.MAXIMUM,
     )
-    stress = _query(
+    stress = build_result_query(
         session,
         variable=AgentResultVariable.STRESS,
         component="Mises",
@@ -229,7 +156,7 @@ def test_a7_reads_three_milestone_result_types_with_units_and_identity() -> None
         region="域-板体",
         aggregation=AgentResultAggregation.ABSOLUTE_EXTREME,
     )
-    reaction = _query(
+    reaction = build_result_query(
         session,
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
@@ -260,7 +187,7 @@ def test_a7_reads_three_milestone_result_types_with_units_and_identity() -> None
         assert scalar.source == displacement.expected_source
         assert scalar.materialization_generation == 0
         assert scalar.source.run_id
-        assert scalar.source.step_name == STEP_NAME
+        assert scalar.source.step_name == STATIC_STEP_NAME
 
 
 @pytest.mark.parametrize(
@@ -271,11 +198,11 @@ def test_a7_reads_three_milestone_result_types_with_units_and_identity() -> None
         AgentResultAggregation.ABSOLUTE_EXTREME,
     ),
 )
-def test_a7_stress_extrema_match_native_records_and_keep_signed_value(
+def test_stress_extrema_match_native_records_and_keep_signed_value(
     aggregation: AgentResultAggregation,
 ) -> None:
-    session = _solved_session()
-    request = _query(
+    session = make_solved_session()
+    request = build_result_query(
         session,
         variable=AgentResultVariable.STRESS,
         component="S11",
@@ -306,11 +233,11 @@ def test_a7_stress_extrema_match_native_records_and_keep_signed_value(
     assert scalar.location.element_id == expected.location.element_id
 
 
-def test_a7_fixed_region_reaction_sum_deduplicates_each_node() -> None:
-    session = _solved_session()
+def test_fixed_region_reaction_sum_deduplicates_each_node() -> None:
+    session = make_solved_session()
     provider = session.current_result_provider()
     assert provider.named_region_node_ids("边-固定端") == (4, 1)
-    request = _query(
+    request = build_result_query(
         session,
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
@@ -326,7 +253,7 @@ def test_a7_fixed_region_reaction_sum_deduplicates_each_node() -> None:
     assert len(_native_records(session, request)) == 2
 
 
-def test_a7_public_provider_region_resolution_is_exact_and_fail_closed() -> None:
+def test_public_provider_region_resolution_is_exact_and_fail_closed() -> None:
     result = make_continuum_nodal_semantics_result()
     result.model.node_sets["重复"] = NodeSet("重复", (1, 2, 1))
     result.model.node_sets["空节点"] = NodeSet("空节点", ())
@@ -361,14 +288,14 @@ def test_a7_public_provider_region_resolution_is_exact_and_fail_closed() -> None
     assert wrong_entity.value.code == "result.query.region_entity_unsupported"
 
 
-def test_a7_no_result_component_region_and_position_fail_without_value() -> None:
+def test_no_result_component_region_and_position_fail_without_value() -> None:
     empty = SessionResultQueryPort(_session())
     stale_source = AcceptedResultSource(
         "result-none",
         "session-none",
         "artifact-none",
         0,
-        STEP_NAME,
+        STATIC_STEP_NAME,
         "run-none",
     )
     no_result = empty.query(
@@ -385,9 +312,9 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
     assert no_result.scalar is None
     assert no_result.diagnostics[0].code == "result.query.source_unavailable"
 
-    session = _solved_session()
+    session = make_solved_session()
     port = SessionResultQueryPort(session)
-    bad_component = _query(
+    bad_component = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="U9",
@@ -395,7 +322,7 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
         region="all_nodes",
         aggregation=AgentResultAggregation.MAXIMUM,
     )
-    bad_region = _query(
+    bad_region = build_result_query(
         session,
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
@@ -403,7 +330,7 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
         region="域-板体",
         aggregation=AgentResultAggregation.SUM,
     )
-    unpublished_region = _query(
+    unpublished_region = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -411,7 +338,7 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
         region="内部-未发布",
         aggregation=AgentResultAggregation.MAXIMUM,
     )
-    bad_position = _query(
+    bad_position = build_result_query(
         session,
         variable=AgentResultVariable.STRESS,
         component="Mises",
@@ -438,10 +365,10 @@ def test_a7_no_result_component_region_and_position_fail_without_value() -> None
     )
 
 
-def test_a7_rejects_stale_source_generation_and_keeps_historical_run_addressable() -> None:
-    session = _solved_session()
+def test_rejects_stale_source_generation_and_keeps_historical_run_addressable() -> None:
+    session = make_solved_session()
     port = SessionResultQueryPort(session)
-    request = _query(
+    request = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -481,7 +408,7 @@ def test_a7_rejects_stale_source_generation_and_keeps_historical_run_addressable
         == "result.query.stale"
     )
 
-    solve_task = session.prepare_solve(STEP_NAME, "作业-A7-2")
+    solve_task = session.prepare_solve(STATIC_STEP_NAME, "作业-A7-2")
     assert session.begin_run(solve_task.token).accepted
     result = static_linear.solve(
         solve_task.model,
@@ -498,10 +425,10 @@ def test_a7_rejects_stale_source_generation_and_keeps_historical_run_addressable
     assert historical.scalar.source.run_id == request.expected_source.run_id
 
 
-def test_a7_generation_advance_stales_old_query_without_materializing_it() -> None:
-    session = _solved_session()
+def test_generation_advance_stales_old_query_without_materializing_it() -> None:
+    session = make_solved_session()
     provider = session.current_result_provider()
-    request = _query(
+    request = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -528,11 +455,11 @@ def test_a7_generation_advance_stales_old_query_without_materializing_it() -> No
     assert response.diagnostics[0].code == "result.query.stale"
 
 
-def test_a7_rechecks_source_and_generation_after_native_aggregation(
+def test_rechecks_source_and_generation_after_native_aggregation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _solved_session()
-    request = _query(
+    session = make_solved_session()
+    request = build_result_query(
         session,
         variable=AgentResultVariable.DISPLACEMENT,
         component="Magnitude",
@@ -561,18 +488,18 @@ def test_a7_rechecks_source_and_generation_after_native_aggregation(
     assert calls == 2
 
 
-def test_a7_main_window_query_does_not_touch_viewport_state(
+def test_main_window_query_does_not_touch_viewport_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _application()
     window = FEMMainWindow()
     try:
-        session = _solved_session()
+        session = make_solved_session()
         window.session = session
         window.agent_result_query_bridge = type(
             window.agent_result_query_bridge
         )(SessionResultQueryPort(session))
-        request = _query(
+        request = build_result_query(
             session,
             variable=AgentResultVariable.DISPLACEMENT,
             component="Magnitude",

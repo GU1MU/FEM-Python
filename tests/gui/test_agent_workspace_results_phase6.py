@@ -27,7 +27,7 @@ from fem_gui.agent_authoring import (
 )
 from fem_gui.agent_workspace_catalog import FEMWorkspaceCatalogPort
 from fem_gui.workspace import FEMWorkspace
-from tests.gui.test_agent_result_query_phase_a7 import _solved_session
+from tests.helpers.agent_result_fixtures import make_solved_session as _solved_session
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )

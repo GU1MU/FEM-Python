@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from tests.helpers.agent_surface_fixtures import (
+    make_surface_load_session,
+)
+
 import pytest
 
 from fem.application import (
@@ -7,34 +11,24 @@ from fem.application import (
     ModelSession,
     NamedRegion,
     ScopedDefinitionBatch,
-    UnitContext,
 )
 from fem.application.native_scope_materialization import (
-    NATIVE_PART_OWNERSHIP_KEY,
     mesh_references_for_logical_entities,
 )
-from fem.core.model import AnalysisStep, FEMModel, SurfaceLoad
-from fem.geometry import (
-    BoxGeometry,
-    LogicalEntityRef,
-    namespace_part_logical_id,
-)
-from fem.mesh.settings import MeshSettings
-from fem.selection import faces as mesh_faces
+from fem.geometry import LogicalEntityRef, namespace_part_logical_id
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.editing_authoring import (
     apply_edit_operation,
     create_edit_patch,
 )
-from tests.gui.test_agent_authoring_recovery_phase_a8 import (
-    STEP_NAME,
-    _apply_analysis_definitions,
-    _dispatch,
-    _production_controller,
-    _solve_and_read_displacement,
+from tests.helpers.agent_authoring_workflows import (
+    STATIC_STEP_NAME,
+    apply_static_analysis_definitions,
+    dispatch_authoring_tool,
+    make_authoring_controller,
+    solve_and_read_displacement,
 )
-from tests.helpers.mesh_builders import make_selection_hex_mesh
 from tests.helpers.agent_session_fixtures import _a4_session, _a5_session
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
@@ -63,87 +57,23 @@ def _edit_patch(
     )[0]
 
 
-def _surface_session(unit_context: UnitContext | None = None) -> ModelSession:
-    session = ModelSession()
-    session.create_native_project_with_first_part(
-        "模型-三维块",
-        unit_context or UnitContext("mm", "N", "MPa"),
-        BoxGeometry("实体-三维块", 2.0, 3.0, 4.0),
-        part_name="部件-三维块",
-    )
-    mesh = make_selection_hex_mesh()
-    model = FEMModel(
-        mesh,
-        name="模型-三维块",
-        metadata={
-            NATIVE_PART_OWNERSHIP_KEY: {
-                "P1": {
-                    "node_ids": tuple(node.id for node in mesh.nodes),
-                    "element_ids": tuple(
-                        element.id for element in mesh.elements
-                    ),
-                }
-            }
-        },
-    )
-    task = session.prepare_agent_mesh_generation(
-        "P1",
-        MeshSettings(1.0, cell_shape="hexahedron"),
-        "c" * 64,
-        expected_session_revision=session.session_revision,
-    )
-    assert session.accept_agent_generated_model(task.token, model).accepted
-    face = mesh_faces.boundary(mesh)[0]
-    snapshot = session.snapshot()
-    session.apply_scoped_definition_batch(
-        ScopedDefinitionBatch(
-            snapshot.session_revision,
-            (
-                NamedRegion(
-                    "面-加载",
-                    (MeshEntityRef.face(*face, part_id="P1"),),
-                ),
-            ),
-            (),
-            (),
-            (),
-            (
-                AnalysisStep(
-                    "分析步-静力",
-                    surface_loads=(
-                        SurfaceLoad(
-                            "面-加载",
-                            (1.0, 0.0, 0.0),
-                            None,
-                            "traction",
-                            "载荷-表面",
-                        ),
-                    ),
-                    metadata={"nlgeom": False},
-                ),
-            ),
-        )
-    )
-    return session
-
-
 def test_strict_production_action_requires_unit_direction_and_confirmation() -> None:
     session = _a5_session()
-    controller, _bridge = _production_controller(session)
-    created = _dispatch(
+    controller, _bridge = make_authoring_controller(session)
+    created = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
         {
             "action": "create_static_step",
-            "parameters": {"name": STEP_NAME},
+            "parameters": {"name": STATIC_STEP_NAME},
         },
         "strict-step",
     )
     assert created.ok, created.to_json()
     before = session.snapshot()
 
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -151,7 +81,7 @@ def test_strict_production_action_requires_unit_direction_and_confirmation() -> 
             "action": "create_load",
             "parameters": {
                 "name": "载荷-不完整",
-                "step_name": STEP_NAME,
+                "step_name": STATIC_STEP_NAME,
                 "target_scope": "边-加载端",
                 "entity_type": "edge",
                 "load_type": "edge_traction",
@@ -189,20 +119,20 @@ def test_strict_production_action_supports_nodal_loads() -> None:
             tuple(snapshot.steps),
         )
     )
-    controller, _bridge = _production_controller(session)
-    step = _dispatch(
+    controller, _bridge = make_authoring_controller(session)
+    step = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
         {
             "action": "create_static_step",
-            "parameters": {"name": STEP_NAME},
+            "parameters": {"name": STATIC_STEP_NAME},
         },
         "nodal-step",
     )
     assert step.ok, step.to_json()
 
-    load = _dispatch(
+    load = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -210,7 +140,7 @@ def test_strict_production_action_supports_nodal_loads() -> None:
             "action": "create_load",
             "parameters": {
                 "name": "载荷-节点",
-                "step_name": STEP_NAME,
+                "step_name": STATIC_STEP_NAME,
                 "target_scope": "点-加载",
                 "entity_type": "node",
                 "load_type": "nodal",
@@ -235,13 +165,13 @@ def test_strict_production_action_supports_nodal_loads() -> None:
 
 def test_definition_iteration_applies_directly_and_retains_history() -> None:
     session = _a5_session()
-    controller, bridge = _production_controller(session)
-    _apply_analysis_definitions(controller, session)
-    _solve_and_read_displacement(controller, bridge, session)
+    controller, bridge = make_authoring_controller(session)
+    apply_static_analysis_definitions(controller, session)
+    solve_and_read_displacement(controller, bridge, session)
     before = session.snapshot()
     assert any(run.has_result for run in before.runs)
 
-    applied = _dispatch(
+    applied = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -277,7 +207,7 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
         "run_native_preflight",
     }.issubset({item.name for item in controller.definitions})
 
-    preflight = _dispatch(
+    preflight = dispatch_authoring_tool(
         controller,
         session,
         "run_native_preflight",
@@ -286,7 +216,7 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
     )
     assert preflight.ok, preflight.to_json()
     assert controller.stage is AuthoringWorkflowStage.SOLVE_READY
-    solve = _dispatch(
+    solve = dispatch_authoring_tool(
         controller,
         session,
         "prepare_solve_proposal",
@@ -309,20 +239,20 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
 
 def test_definition_edit_applies_directly_and_retains_history() -> None:
     session = _a5_session()
-    controller, bridge = _production_controller(session)
-    _apply_analysis_definitions(controller, session)
-    _solve_and_read_displacement(controller, bridge, session)
+    controller, bridge = make_authoring_controller(session)
+    apply_static_analysis_definitions(controller, session)
+    solve_and_read_displacement(controller, bridge, session)
     before = session.snapshot()
     before_vector = before.steps[0].edge_loads[0].vector
 
-    applied = _dispatch(
+    applied = dispatch_authoring_tool(
         controller,
         session,
         "edit_model_object",
         {
             "object_type": "load",
             "target_id": "载荷-拉伸",
-            "step_name": STEP_NAME,
+            "step_name": STATIC_STEP_NAME,
             "changes": {
                 "vector": [25.0, 0.0],
                 "entity_type": "edge",
@@ -366,8 +296,8 @@ def test_definition_edit_applies_directly_and_retains_history() -> None:
 
 def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
     session = _a5_session()
-    controller, _bridge = _production_controller(session)
-    _apply_analysis_definitions(controller, session)
+    controller, _bridge = make_authoring_controller(session)
+    apply_static_analysis_definitions(controller, session)
     revision = session.session_revision
 
     with pytest.raises(ValueError, match="component exceeds"):
@@ -381,7 +311,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
                 "distribution": "uniform",
                 "confirmed": True,
             },
-            step_name=STEP_NAME,
+            step_name=STATIC_STEP_NAME,
         )
     with pytest.raises(ValueError, match="vector dimension"):
         _edit_patch(
@@ -397,7 +327,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
                 "distribution": "uniform",
                 "confirmed": True,
             },
-            step_name=STEP_NAME,
+            step_name=STATIC_STEP_NAME,
         )
     with pytest.raises(ValueError, match="unit does not match"):
         _edit_patch(
@@ -413,7 +343,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
                 "distribution": "uniform",
                 "confirmed": True,
             },
-            step_name=STEP_NAME,
+            step_name=STATIC_STEP_NAME,
         )
 
     assert session.session_revision == revision
@@ -422,7 +352,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
 
 
 def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
-    session = _surface_session()
+    session = make_surface_load_session()
     revision = session.session_revision
 
     with pytest.raises(ValueError, match="positive inward"):
@@ -440,7 +370,7 @@ def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
                 "distribution": "uniform",
                 "confirmed": True,
             },
-            step_name=STEP_NAME,
+            step_name=STATIC_STEP_NAME,
         )
 
     assert session.session_revision == revision
@@ -451,8 +381,8 @@ def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
 
 def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
     session = _a4_session()
-    controller, _bridge = _production_controller(session)
-    topology = _dispatch(
+    controller, _bridge = make_authoring_controller(session)
+    topology = dispatch_authoring_tool(
         controller,
         session,
         "read_model_topology_context",

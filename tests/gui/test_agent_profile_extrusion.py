@@ -30,7 +30,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.geometry.test_profile_extrusion import (
+from tests.helpers.profile_sketches import (
     hole_profile_sketch,
     profile_face_id,
     two_profile_sketch,
@@ -77,7 +77,7 @@ def _dispatch(controller, *, source_face_ids, height=2.5):
     )
 
 
-def test_phase2_runtime_schema_exposes_explicit_selected_profile_extrusion() -> None:
+def test_runtime_schema_exposes_explicit_selected_profile_extrusion() -> None:
     session = _native_session(two_profile_sketch())
     _bridge, controller = _controller(session)
     definition = next(
@@ -104,7 +104,7 @@ def test_phase2_runtime_schema_exposes_explicit_selected_profile_extrusion() -> 
     )
 
 
-def test_phase2_legacy_transform_dispatch_remains_callable(monkeypatch) -> None:
+def test_legacy_transform_dispatch_remains_callable(monkeypatch) -> None:
     session = _native_session(two_profile_sketch())
     bridge, controller = _controller(session)
     source = profile_face_id(two_profile_sketch(), "L1")
@@ -121,7 +121,7 @@ def test_phase2_legacy_transform_dispatch_remains_callable(monkeypatch) -> None:
     )
 
 
-def test_phase3_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
+def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
     monkeypatch,
 ) -> None:
     sketch = hole_profile_sketch()
@@ -177,7 +177,7 @@ def test_phase3_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
         pytest.param(concentric_ring_sketch(), id="strict-ring"),
     ),
 )
-def test_phase3_dedicated_extrusion_canonicalizes_planar_recipe(
+def test_dedicated_extrusion_canonicalizes_planar_recipe(
     monkeypatch,
     recipe,
 ) -> None:
@@ -230,7 +230,7 @@ def test_phase3_dedicated_extrusion_canonicalizes_planar_recipe(
     assert result.source_face_ids == (source,)
 
 
-def test_phase3_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
+def test_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
     session = _native_session(RectangleGeometry("Revision rectangle", 4.0, 3.0))
     bridge, controller = _controller(session)
     monkeypatch.setattr(
@@ -264,7 +264,7 @@ def test_phase3_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
     )
 
 
-def test_phase3_explicit_profile_ids_without_revision_are_rejected(monkeypatch) -> None:
+def test_explicit_profile_ids_without_revision_are_rejected(monkeypatch) -> None:
     session = _native_session(RectangleGeometry("Missing revision", 4.0, 3.0))
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
@@ -293,7 +293,7 @@ def test_phase3_explicit_profile_ids_without_revision_are_rejected(monkeypatch) 
     assert session.snapshot() == before
 
 
-def test_phase3_explicit_profile_ids_with_stale_revision_are_rejected(monkeypatch) -> None:
+def test_explicit_profile_ids_with_stale_revision_are_rejected(monkeypatch) -> None:
     session = _native_session(RectangleGeometry("Stale revision", 4.0, 3.0))
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
@@ -325,7 +325,7 @@ def test_phase3_explicit_profile_ids_with_stale_revision_are_rejected(monkeypatc
     assert session.snapshot() == changed
 
 
-def test_phase3_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
+def test_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
     monkeypatch,
 ) -> None:
     session = _native_session(two_profile_sketch())
@@ -352,7 +352,7 @@ def test_phase3_dedicated_extrusion_requires_explicit_selection_for_multiple_pro
     assert session.snapshot() == before
 
 
-def test_phase2_agent_rejects_non_strict_planar_source(monkeypatch) -> None:
+def test_agent_rejects_non_strict_planar_source(monkeypatch) -> None:
     session = _native_session(RectangleGeometry("Legacy rectangle", 2.0, 1.0))
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
@@ -375,7 +375,7 @@ def test_phase2_agent_rejects_non_strict_planar_source(monkeypatch) -> None:
         SketchCircle("material", 0.0, 0.0, 1.5),
     ),
 )
-def test_phase2_agent_extrudes_rectangle_and_circle_profiles(
+def test_agent_extrudes_rectangle_and_circle_profiles(
     monkeypatch,
     contour,
 ) -> None:
@@ -402,7 +402,7 @@ def test_phase2_agent_extrudes_rectangle_and_circle_profiles(
     assert recipe.source_face_ids == (source,)
 
 
-def test_phase2_multi_profile_proposal_is_atomic_and_commits_independent_parts(
+def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
     monkeypatch,
 ) -> None:
     sketch = two_profile_sketch()
@@ -448,7 +448,7 @@ def test_phase2_multi_profile_proposal_is_atomic_and_commits_independent_parts(
     ]
 
 
-def test_phase2_hole_profile_retains_cap_outer_hole_and_body_lineage(
+def test_hole_profile_retains_cap_outer_hole_and_body_lineage(
     monkeypatch,
 ) -> None:
     sketch = hole_profile_sketch()
@@ -492,7 +492,7 @@ def test_phase2_hole_profile_retains_cap_outer_hole_and_body_lineage(
         (("face:domain",), 0.0),
     ],
 )
-def test_phase2_rejects_ambiguous_nonmaterial_and_zero_height_without_mutation(
+def test_rejects_ambiguous_nonmaterial_and_zero_height_without_mutation(
     monkeypatch,
     source_face_ids,
     height,
@@ -516,7 +516,7 @@ def test_phase2_rejects_ambiguous_nonmaterial_and_zero_height_without_mutation(
     assert session.snapshot() == before
 
 
-def test_phase2_preflight_failure_and_reject_keep_session_unchanged(monkeypatch) -> None:
+def test_preflight_failure_and_reject_keep_session_unchanged(monkeypatch) -> None:
     sketch = two_profile_sketch()
     source = profile_face_id(sketch, "L1")
     session = _native_session(sketch)
@@ -542,7 +542,7 @@ def test_phase2_preflight_failure_and_reject_keep_session_unchanged(monkeypatch)
     assert session.snapshot() == before
 
 
-def test_phase2_stale_accept_and_operation_tampering_are_atomic(monkeypatch) -> None:
+def test_stale_accept_and_operation_tampering_are_atomic(monkeypatch) -> None:
     sketch = two_profile_sketch()
     source = profile_face_id(sketch, "L1")
     session = _native_session(sketch)
@@ -568,7 +568,7 @@ def test_phase2_stale_accept_and_operation_tampering_are_atomic(monkeypatch) -> 
         geometry_recipe_from_payload(payload)
 
 
-def test_phase2_project_round_trip_preserves_selected_source_and_lineage(
+def test_project_round_trip_preserves_selected_source_and_lineage(
     monkeypatch,
 ) -> None:
     sketch = hole_profile_sketch()

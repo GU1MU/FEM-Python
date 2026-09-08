@@ -172,7 +172,7 @@ def _proposal(
     )
 
 
-def test_a6_agent_automatically_preflights_then_gui_click_solves_in_background(
+def test_agent_automatically_preflights_then_gui_click_solves_in_background(
     monkeypatch,
 ) -> None:
     _application()
@@ -234,7 +234,7 @@ def test_a6_agent_automatically_preflights_then_gui_click_solves_in_background(
     window.close()
 
 
-def test_a6_only_gui_control_can_start_once_and_terminal_mapping_is_exact() -> None:
+def test_only_gui_control_can_start_once_and_terminal_mapping_is_exact() -> None:
     session = ModelSession()
     _seed_session(session, validated=True)
     requests: list[AgentSolveTaskRequest] = []
@@ -266,7 +266,7 @@ def test_a6_only_gui_control_can_start_once_and_terminal_mapping_is_exact() -> N
     assert bridge.state(proposal.proposal_id) is ProposalState.CANCELLED
 
 
-def test_a6_cancelled_run_rejects_late_solver_result() -> None:
+def test_cancelled_run_rejects_late_solver_result() -> None:
     session = ModelSession()
     _seed_session(session, validated=True)
     solve_tasks = []
@@ -313,7 +313,7 @@ def test_a6_cancelled_run_rejects_late_solver_result() -> None:
     assert bridge.state(proposal.proposal_id) is ProposalState.CANCELLED
 
 
-def test_a6_revision_and_validation_stamp_changes_disable_old_proposals() -> None:
+def test_revision_and_validation_stamp_changes_disable_old_proposals() -> None:
     session = ModelSession()
     _seed_session(session, validated=True)
     requests: list[AgentSolveTaskRequest] = []
@@ -388,7 +388,7 @@ def test_a6_revision_and_validation_stamp_changes_disable_old_proposals() -> Non
     assert requests == []
 
 
-def test_a6_port_rejects_legacy_solve_proposal_shape() -> None:
+def test_port_rejects_legacy_solve_proposal_shape() -> None:
     session = ModelSession()
     _seed_session(session, validated=True)
     port = SessionGeometryAuthoringPort(
@@ -427,7 +427,7 @@ def test_a6_port_rejects_legacy_solve_proposal_shape() -> None:
         bridge.register_proposal(legacy)
 
 
-def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
+def test_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     monkeypatch,
     dispose_gui_widget,
 ) -> None:
@@ -480,7 +480,7 @@ def test_a6_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
         (BackgroundTaskState.DISCARDED, ProposalState.STALE),
     ],
 )
-def test_a6_existing_job_terminal_states_map_to_proposal(
+def test_existing_job_terminal_states_map_to_proposal(
     monkeypatch,
     background_state: BackgroundTaskState,
     proposal_state: ProposalState,

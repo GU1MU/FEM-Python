@@ -49,7 +49,7 @@ def _ring_controller() -> tuple[ModelSession, object]:
     return session, controller
 
 
-def test_phase0_concentric_ring_catalog_freezes_profile_and_hole_lineage() -> None:
+def test_concentric_ring_catalog_freezes_profile_and_hole_lineage() -> None:
     fixture = concentric_ring_fixture()
     catalog = fixture.feature_catalog
 
@@ -86,7 +86,7 @@ def test_phase0_concentric_ring_catalog_freezes_profile_and_hole_lineage() -> No
     ]
 
 
-def test_phase0_ring_extrusion_proves_one_body_two_caps_and_hole_side() -> None:
+def test_ring_extrusion_proves_one_body_two_caps_and_hole_side() -> None:
     fixture = concentric_ring_fixture()
     topology = describe_recipe_topology(fixture.extrusion)
     proof = geometry_contract_proof(fixture.extrusion)
@@ -113,7 +113,7 @@ def test_phase0_ring_extrusion_proves_one_body_two_caps_and_hole_side() -> None:
 
 
 @pytest.mark.gmsh
-def test_phase0_ring_extrusion_generates_88_nodes_and_192_tet4(
+def test_ring_extrusion_generates_88_nodes_and_192_tet4(
     real_gmsh,
 ) -> None:
     fixture = concentric_ring_fixture()
@@ -127,7 +127,7 @@ def test_phase0_ring_extrusion_generates_88_nodes_and_192_tet4(
     assert {element.type for element in generated.mesh.elements} == {"Tet4"}
 
 
-def test_phase0_mesh_ready_publishes_transform_seam() -> None:
+def test_mesh_ready_publishes_transform_seam() -> None:
     _session, controller = _ring_controller()
 
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
@@ -173,7 +173,7 @@ def test_phase0_mesh_ready_publishes_transform_seam() -> None:
     }
 
 
-def test_phase0_request_capture_keeps_only_redacted_context_and_schema_hashes() -> None:
+def test_request_capture_keeps_only_redacted_context_and_schema_hashes() -> None:
     tool = ToolDefinition(
         "prepare_geometry_edit",
         "Read-only baseline seam.",
@@ -212,7 +212,7 @@ def test_phase0_request_capture_keeps_only_redacted_context_and_schema_hashes() 
     assert len(request.schema_hashes["prepare_geometry_edit"]) == 64
 
 
-def test_phase0_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> None:
+def test_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> None:
     _session, controller = _ring_controller()
     provider = RequestCaptureProvider(
         [

@@ -137,7 +137,7 @@ def _self_intersecting_sketch() -> SketchGeometry:
     )
 
 
-def test_a2_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> None:
+def test_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> None:
     session = ModelSession()
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
@@ -172,7 +172,7 @@ def test_a2_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> N
     assert refreshes == [accepted.session_revision]
 
 
-def test_a2_reject_keeps_blank_session_tree_actor_proxy_and_revision_unchanged() -> (
+def test_reject_keeps_blank_session_tree_actor_proxy_and_revision_unchanged() -> (
     None
 ):
     session = ModelSession()
@@ -196,7 +196,7 @@ def test_a2_reject_keeps_blank_session_tree_actor_proxy_and_revision_unchanged()
     assert refreshes == []
 
 
-def test_a2_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None:
+def test_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-组合件",
@@ -226,7 +226,7 @@ def test_a2_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> N
     assert refreshes == [after.session_revision]
 
 
-def test_a2_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
+def test_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
     session = ModelSession()
     original = plate_with_hole_geometry(
         "实体-旧孔板",
@@ -285,7 +285,7 @@ def test_a2_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
     assert refreshes == [after.session_revision]
 
 
-def test_a2_stale_geometry_proposal_cannot_commit() -> None:
+def test_stale_geometry_proposal_cannot_commit() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-组合件",
@@ -320,7 +320,7 @@ def test_a2_stale_geometry_proposal_cannot_commit() -> None:
     assert refreshes == []
 
 
-def test_a2_invalid_hole_commit_failure_is_atomic() -> None:
+def test_invalid_hole_commit_failure_is_atomic() -> None:
     session = ModelSession()
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
@@ -379,7 +379,7 @@ def test_a2_invalid_hole_commit_failure_is_atomic() -> None:
     ids=("open-profile", "self-intersecting-profile"),
 )
 @pytest.mark.parametrize("replace_existing", (False, True))
-def test_a2_invalid_strict_profile_create_or_replace_is_atomic(
+def test_invalid_strict_profile_create_or_replace_is_atomic(
     invalid_recipe: SketchGeometry,
     replace_existing: bool,
 ) -> None:
@@ -430,7 +430,7 @@ def test_a2_invalid_strict_profile_create_or_replace_is_atomic(
     (_open_sketch(), _self_intersecting_sketch()),
     ids=("open-profile", "self-intersecting-profile"),
 )
-def test_a2_invalid_strict_profile_add_is_atomic(
+def test_invalid_strict_profile_add_is_atomic(
     invalid_recipe: SketchGeometry,
 ) -> None:
     session = ModelSession()
@@ -459,7 +459,7 @@ def test_a2_invalid_strict_profile_add_is_atomic(
     assert refreshes == []
 
 
-def test_a2_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
+def test_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-组合件",
@@ -511,7 +511,7 @@ def test_a2_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
     assert refreshes == []
 
 
-def test_a2_main_window_projects_one_accepted_geometry_refresh(
+def test_main_window_projects_one_accepted_geometry_refresh(
     monkeypatch,
 ) -> None:
     QApplication.instance() or QApplication([])

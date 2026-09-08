@@ -7,20 +7,20 @@ from fem.application import (
     UnitContext,
 )
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
-from tests.gui.test_agent_authoring_recovery_phase_a8 import (
-    _apply_analysis_definitions,
-    _dispatch,
-    _production_controller,
-    _solve_and_read_displacement,
+from tests.helpers.agent_authoring_workflows import (
+    apply_static_analysis_definitions,
+    dispatch_authoring_tool,
+    make_authoring_controller,
+    solve_and_read_displacement,
 )
-from tests.gui.test_agent_definition_actions_a4_a5 import _surface_session
-from tests.integration.test_agent_beam2_authoring_phase4 import (
-    STEP_NAME as BEAM_STEP_NAME,
-    _base_scopes_and_material,
-    _beam_definition_actions,
+from tests.helpers.agent_surface_fixtures import make_surface_load_session
+from tests.helpers.agent_beam_fixtures import (
+    BEAM_STEP_NAME as BEAM_STEP_NAME,
+    apply_line_scopes_and_material,
+    apply_beam_definitions,
 )
-from tests.integration.test_agent_truss2_authoring_phase3 import (
-    _meshed_session,
+from tests.helpers.agent_line_fixtures import (
+    make_meshed_line_session,
 )
 from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
 
@@ -29,7 +29,7 @@ PLATE_STEP_NAME = "分析步-静力"
 
 
 def _create_step(controller: object, session: object, name: str) -> None:
-    result = _dispatch(
+    result = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -63,9 +63,9 @@ def _add_all_element_region(session: object, name: str) -> None:
     )
 
 
-def test_phase8_schema_publishes_closed_line_body_and_gravity_branches() -> None:
+def test_schema_publishes_closed_line_body_and_gravity_branches() -> None:
     session = _plate_session()
-    controller, _bridge = _production_controller(session)
+    controller, _bridge = make_authoring_controller(session)
     tool = next(
         item for item in controller.definitions
         if item.name == "apply_model_definition"
@@ -92,12 +92,12 @@ def test_phase8_schema_publishes_closed_line_body_and_gravity_branches() -> None
     }
 
 
-def test_phase8_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
+def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
     session = _plate_session()
-    controller, _bridge = _production_controller(session)
+    controller, _bridge = make_authoring_controller(session)
     _create_step(controller, session, PLATE_STEP_NAME)
 
-    created = _dispatch(
+    created = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -122,7 +122,7 @@ def test_phase8_creates_body_force_and_fails_closed_on_wrong_dimension() -> None
     assert session.snapshot().steps[0].body_loads[0].vector == (1.0, -2.0)
 
     revision = session.session_revision
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -162,7 +162,7 @@ def test_phase8_creates_body_force_and_fails_closed_on_wrong_dimension() -> None
             "confirmed": True,
             **overrides,
         }
-        rejected_edit = _dispatch(
+        rejected_edit = dispatch_authoring_tool(
             controller,
             session,
             "edit_model_object",
@@ -179,13 +179,13 @@ def test_phase8_creates_body_force_and_fails_closed_on_wrong_dimension() -> None
         assert session.snapshot().steps[0].body_loads[0].vector == (1.0, -2.0)
 
 
-def test_phase8_creates_global_and_local_beam_line_loads() -> None:
-    session = _meshed_session("Beam2")
-    controller, _bridge = _production_controller(session)
-    _beam_definition_actions(controller, session)
+def test_creates_global_and_local_beam_line_loads() -> None:
+    session = make_meshed_line_session("Beam2")
+    controller, _bridge = make_authoring_controller(session)
+    apply_beam_definitions(controller, session)
 
     for coordinate_system in ("global", "local"):
-        result = _dispatch(
+        result = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -212,7 +212,7 @@ def test_phase8_creates_global_and_local_beam_line_loads() -> None:
         item.coordinate_system for item in session.snapshot().steps[0].line_loads
     ) == ("global", "local")
 
-    edited = _dispatch(
+    edited = dispatch_authoring_tool(
         controller,
         session,
         "edit_model_object",
@@ -234,7 +234,7 @@ def test_phase8_creates_global_and_local_beam_line_loads() -> None:
     assert session.snapshot().steps[0].line_loads[0].vector == (1.0, -8.0, 2.0)
 
     revision = session.session_revision
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         controller,
         session,
         "edit_model_object",
@@ -275,7 +275,7 @@ def test_phase8_creates_global_and_local_beam_line_loads() -> None:
             "confirmed": True,
             **overrides,
         }
-        invalid = _dispatch(
+        invalid = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -286,13 +286,13 @@ def test_phase8_creates_global_and_local_beam_line_loads() -> None:
         assert session.session_revision == revision
 
 
-def test_phase8_line_rejects_non_beam_element_region_atomically() -> None:
+def test_line_rejects_non_beam_element_region_atomically() -> None:
     session = _plate_session()
-    controller, _bridge = _production_controller(session)
+    controller, _bridge = make_authoring_controller(session)
     _create_step(controller, session, PLATE_STEP_NAME)
     revision = session.session_revision
 
-    rejected = _dispatch(
+    rejected = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -317,14 +317,14 @@ def test_phase8_line_rejects_non_beam_element_region_atomically() -> None:
     assert session.session_revision == revision
 
 
-def test_phase8_local_line_and_gravity_fail_closed_without_capability() -> None:
-    session = _meshed_session("Beam2")
-    controller, _bridge = _production_controller(session)
-    _base_scopes_and_material(controller, session)
+def test_local_line_and_gravity_fail_closed_without_capability() -> None:
+    session = make_meshed_line_session("Beam2")
+    controller, _bridge = make_authoring_controller(session)
+    apply_line_scopes_and_material(controller, session)
     _create_step(controller, session, BEAM_STEP_NAME)
     revision = session.session_revision
 
-    local = _dispatch(
+    local = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -348,7 +348,7 @@ def test_phase8_local_line_and_gravity_fail_closed_without_capability() -> None:
     assert not local.ok
     assert session.session_revision == revision
 
-    gravity = _dispatch(
+    gravity = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -374,14 +374,14 @@ def test_phase8_local_line_and_gravity_fail_closed_without_capability() -> None:
     assert controller.stage is AuthoringWorkflowStage.PREFLIGHT_READY
 
 
-def test_phase8_gravity_accepts_global_target_with_explicit_unit() -> None:
+def test_gravity_accepts_global_target_with_explicit_unit() -> None:
     session = _plate_session(
         UnitContext("mm", "N", "MPa", acceleration="mm/s^2")
     )
-    controller, _bridge = _production_controller(session)
+    controller, _bridge = make_authoring_controller(session)
     _create_step(controller, session, PLATE_STEP_NAME)
 
-    created = _dispatch(
+    created = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -407,7 +407,7 @@ def test_phase8_gravity_accepts_global_target_with_explicit_unit() -> None:
     assert stored.target is None
     assert stored.acceleration == (0.0, -9810.0)
 
-    scoped = _dispatch(
+    scoped = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -434,12 +434,12 @@ def test_phase8_gravity_accepts_global_target_with_explicit_unit() -> None:
     assert stored_scoped.acceleration == (9810.0, 0.0)
 
 
-def test_phase8_creates_three_dimensional_body_force() -> None:
-    session = _surface_session()
+def test_creates_three_dimensional_body_force() -> None:
+    session = make_surface_load_session()
     _add_all_element_region(session, "域-三维块")
-    controller, _bridge = _production_controller(session)
+    controller, _bridge = make_authoring_controller(session)
 
-    created = _dispatch(
+    created = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -464,17 +464,17 @@ def test_phase8_creates_three_dimensional_body_force() -> None:
     assert session.snapshot().steps[0].body_loads[0].vector == (1.0, -2.0, 3.0)
 
 
-def test_phase8_new_load_retains_accepted_result_history() -> None:
+def test_new_load_retains_accepted_result_history() -> None:
     session = _plate_session()
-    controller, bridge = _production_controller(session)
-    _apply_analysis_definitions(controller, session)
-    _solve_and_read_displacement(controller, bridge, session)
+    controller, bridge = make_authoring_controller(session)
+    apply_static_analysis_definitions(controller, session)
+    solve_and_read_displacement(controller, bridge, session)
     before = session.snapshot()
     run_ids = tuple(run.run_id for run in before.runs)
     assert run_ids
     assert all(session.result_for(run_id) is not None for run_id in run_ids)
 
-    created = _dispatch(
+    created = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",

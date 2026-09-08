@@ -28,11 +28,11 @@ _GUI_TEARDOWN_TIMEOUT_SECONDS = 2.0
 _quarantined_gui_widgets: list[object] = []
 _NATIVE_GUI_TEST_FILES = frozenset(
     {
-        "test_agent_composite_geometry_phase4.py",
-        "test_agent_exact_boolean_phase4.py",
-        "test_agent_profile_sweep_phase3.py",
-        "test_agent_profile_transform_baseline_phase0.py",
-        "test_agent_profile_transform_phase6.py",
+        "test_agent_composite_geometry.py",
+        "test_agent_exact_boolean.py",
+        "test_agent_profile_sweep.py",
+        "test_agent_profile_transform_contract.py",
+        "test_agent_profile_transform_workflow.py",
         "test_preprocessing_workflow.py",
         "test_scope_selection.py",
     }

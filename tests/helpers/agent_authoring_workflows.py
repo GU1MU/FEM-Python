@@ -1,14 +1,7 @@
 from __future__ import annotations
 
-from copy import deepcopy
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from fem.application import ModelSession, run_static_preflight
 from fem.application.results import build_solve_result_bundle
-from fem.io.project import load_project, save_project
-from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
@@ -21,13 +14,12 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.helpers.agent_session_fixtures import _a5_session
 
 
-STEP_NAME = "分析步-静力"
+STATIC_STEP_NAME = "分析步-静力"
 
 
-def _production_controller(
+def make_authoring_controller(
     session: ModelSession,
 ) -> tuple[object, AgentAuthoringBridge]:
     state: dict[str, object] = {}
@@ -99,7 +91,7 @@ def _production_controller(
     return controller, bridge
 
 
-def _dispatch(
+def dispatch_authoring_tool(
     controller,
     session: ModelSession,
     name: str,
@@ -117,14 +109,14 @@ def _dispatch(
     )
 
 
-def _apply_analysis_definitions(controller, session: ModelSession) -> None:
+def apply_static_analysis_definitions(controller, session: ModelSession) -> None:
     actions = (
-        ("create_static_step", {"name": STEP_NAME}),
+        ("create_static_step", {"name": STATIC_STEP_NAME}),
         (
             "create_boundary_condition",
             {
                 "name": "位移-固定端",
-                "step_name": STEP_NAME,
+                "step_name": STATIC_STEP_NAME,
                 "target_scope": "边-固定端",
                 "target_kind": "edge",
                 "first_component": 1,
@@ -139,7 +131,7 @@ def _apply_analysis_definitions(controller, session: ModelSession) -> None:
             "create_load",
             {
                 "name": "载荷-拉伸",
-                "step_name": STEP_NAME,
+                "step_name": STATIC_STEP_NAME,
                 "target_scope": "边-加载端",
                 "entity_type": "edge",
                 "load_type": "edge_traction",
@@ -156,7 +148,7 @@ def _apply_analysis_definitions(controller, session: ModelSession) -> None:
             "create_result_request",
             {
                 "name": "结果请求-位移反力",
-                "step_name": STEP_NAME,
+                "step_name": STATIC_STEP_NAME,
                 "target": "node",
                 "variables": ["U", "RF"],
                 "units": ["mm", "N"],
@@ -165,7 +157,7 @@ def _apply_analysis_definitions(controller, session: ModelSession) -> None:
         ),
     )
     for index, (action, parameters) in enumerate(actions):
-        outcome = _dispatch(
+        outcome = dispatch_authoring_tool(
             controller,
             session,
             "apply_model_definition",
@@ -175,12 +167,12 @@ def _apply_analysis_definitions(controller, session: ModelSession) -> None:
         assert outcome.ok, outcome.to_json()
 
 
-def _solve_and_read_displacement(
+def solve_and_read_displacement(
     controller,
     bridge: AgentAuthoringBridge,
     session: ModelSession,
 ) -> dict[str, object]:
-    preflight = _dispatch(
+    preflight = dispatch_authoring_tool(
         controller,
         session,
         "run_native_preflight",
@@ -191,7 +183,7 @@ def _solve_and_read_displacement(
     assert preflight.data["passed"] is True
     assert controller.stage is AuthoringWorkflowStage.SOLVE_READY
 
-    proposal = _dispatch(
+    proposal = dispatch_authoring_tool(
         controller,
         session,
         "prepare_solve_proposal",
@@ -204,7 +196,7 @@ def _solve_and_read_displacement(
     assert receipt.state is ProposalState.SUCCEEDED
     assert controller.stage is AuthoringWorkflowStage.RESULTS_READY
 
-    catalog_result = _dispatch(
+    catalog_result = dispatch_authoring_tool(
         controller,
         session,
         "read_accepted_result_catalog",
@@ -225,7 +217,7 @@ def _solve_and_read_displacement(
             catalog["materialization_generation"]
         ),
     }
-    result = _dispatch(
+    result = dispatch_authoring_tool(
         controller,
         session,
         "query_accepted_result",
@@ -239,69 +231,3 @@ def _solve_and_read_displacement(
     assert scalar["source"] == catalog["source"]
     assert scalar["value"] >= 0.0
     return scalar
-
-
-def test_a8_production_entry_solves_and_reads_one_accepted_result() -> None:
-    session = _a5_session()
-    controller, bridge = _production_controller(session)
-
-    assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
-    _apply_analysis_definitions(controller, session)
-    scalar = _solve_and_read_displacement(controller, bridge, session)
-
-    assert scalar["location"]["association"] == "node"
-
-
-def test_a8_save_reopen_remesh_resumes_preflight_solve_and_result(
-    tmp_path,
-) -> None:
-    session = _a5_session()
-    controller, _bridge = _production_controller(session)
-    _apply_analysis_definitions(controller, session)
-    remeshed_candidate = deepcopy(session.snapshot().artifact.model)
-
-    prepared = session.prepare_project_save()
-    target = save_project(tmp_path / "accepted.femproj", prepared)
-    assert session.accept_project_saved(prepared.token, target).accepted
-
-    reopened = ModelSession()
-    reopened.replace_from_snapshot(load_project(target).snapshot)
-    task = reopened.prepare_agent_mesh_generation(
-        "P1",
-        MeshSettings(0.8),
-        "b" * 64,
-        expected_session_revision=reopened.session_revision,
-    )
-    assert reopened.accept_agent_generated_model(
-        task.token,
-        remeshed_candidate,
-    ).accepted
-
-    resumed, bridge = _production_controller(reopened)
-
-    assert resumed.stage is AuthoringWorkflowStage.PREFLIGHT_READY
-    assert reopened.snapshot().steps[0].name == STEP_NAME
-    _solve_and_read_displacement(resumed, bridge, reopened)
-
-
-def test_a8_direct_definitions_reject_nonconforming_visible_names() -> None:
-    session = _a5_session()
-    controller, _bridge = _production_controller(session)
-    before = session.snapshot()
-
-    rejected = _dispatch(
-        controller,
-        session,
-        "apply_model_definition",
-        {
-            "action": "create_material",
-            "parameters": {
-                "name": "steel",
-                "properties": {"E": 70000.0, "nu": 0.33},
-            },
-        },
-        "bad-name",
-    )
-
-    assert not rejected.ok
-    assert session.snapshot() == before

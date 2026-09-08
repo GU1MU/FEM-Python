@@ -19,20 +19,20 @@ from fem_agent.result_authoring import (
     result_query_tool_schema,
 )
 from fem_gui.agent_authoring import SessionResultQueryPort
-from tests.gui.test_agent_authoring_recovery_phase_a8 import (
-    _dispatch,
-    _production_controller,
+from tests.helpers.agent_authoring_workflows import (
+    dispatch_authoring_tool,
+    make_authoring_controller,
 )
-from tests.integration.test_agent_beam2_authoring_phase4 import (
-    STEP_NAME as BEAM_STEP,
-    _beam_definition_actions,
+from tests.helpers.agent_beam_fixtures import (
+    BEAM_STEP_NAME as BEAM_STEP,
+    apply_beam_definitions,
 )
-from tests.integration.test_agent_truss2_authoring_phase3 import (
-    STEP_NAME as TRUSS_STEP,
-    _apply,
-    _apply_truss_definitions,
-    _meshed_session,
-    _solve,
+from tests.helpers.agent_line_fixtures import (
+    TRUSS_STEP_NAME as TRUSS_STEP,
+    apply_definition_action,
+    apply_truss_definitions,
+    make_meshed_line_session,
+    solve_authoring_session,
 )
 from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
 
@@ -71,7 +71,7 @@ def _query(
     )
 
 
-def test_phase9_schemas_publish_all_variables_and_rm_sum_contract() -> None:
+def test_schemas_publish_all_variables_and_rm_sum_contract() -> None:
     assert {item.value for item in AgentResultVariable} == ALL_VARIABLES
     for schema in (result_query_tool_schema(), result_comparison_tool_schema()):
         assert set(
@@ -95,16 +95,16 @@ def test_phase9_schemas_publish_all_variables_and_rm_sum_contract() -> None:
         )
 
 
-def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> None:
-    beam = _meshed_session("Beam2")
-    controller, _bridge = _production_controller(beam)
-    _beam_definition_actions(controller, beam)
+def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
+    beam = make_meshed_line_session("Beam2")
+    controller, _bridge = make_authoring_controller(beam)
+    apply_beam_definitions(controller, beam)
 
     for name, target, variables, units in (
         ("结果请求-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
         ("结果请求-截面力", "element", ["SF", "SM"], ["N", "N*mm"]),
     ):
-        outcome = _dispatch(
+        outcome = dispatch_authoring_tool(
             controller,
             beam,
             "apply_model_definition",
@@ -123,7 +123,7 @@ def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> 
         )
         assert outcome.ok, outcome.to_json()
 
-    edited = _dispatch(
+    edited = dispatch_authoring_tool(
         controller,
         beam,
         "edit_model_object",
@@ -141,7 +141,7 @@ def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> 
     )
     assert edited.ok, edited.to_json()
     revision = beam.session_revision
-    rejected_edit = _dispatch(
+    rejected_edit = dispatch_authoring_tool(
         controller,
         beam,
         "edit_model_object",
@@ -161,8 +161,8 @@ def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> 
     assert beam.session_revision == revision
 
     plate = _plate_session()
-    plate_controller, _bridge = _production_controller(plate)
-    step = _dispatch(
+    plate_controller, _bridge = make_authoring_controller(plate)
+    step = dispatch_authoring_tool(
         plate_controller,
         plate,
         "apply_model_definition",
@@ -172,7 +172,7 @@ def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> 
     assert step.ok
     revision = plate.session_revision
     for variable, unit in (("UR", "rad"), ("LE", "1"), ("SF", "N")):
-        rejected = _dispatch(
+        rejected = dispatch_authoring_tool(
             plate_controller,
             plate,
             "apply_model_definition",
@@ -193,15 +193,15 @@ def test_phase9_agent_result_request_uses_model_capability_and_exact_units() -> 
         assert plate.session_revision == revision
 
 
-def test_phase9_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
-    session = _meshed_session("Beam2")
-    controller, bridge = _production_controller(session)
-    _beam_definition_actions(controller, session)
+def test_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
+    session = make_meshed_line_session("Beam2")
+    controller, bridge = make_authoring_controller(session)
+    apply_beam_definitions(controller, session)
     for name, target, variables, units in (
         ("结果请求-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
         ("结果请求-截面力矩", "element", ["SF", "SM"], ["N", "N*mm"]),
     ):
-        _apply(
+        apply_definition_action(
             controller,
             session,
             "create_result_request",
@@ -215,7 +215,7 @@ def test_phase9_beam_catalog_and_queries_cover_rotational_and_section_fields() -
             },
             f"phase9-solve-{target}",
         )
-    _solve(controller, bridge, session)
+    solve_authoring_session(controller, bridge, session)
 
     port = SessionResultQueryPort(session)
     catalog = port.catalog().catalog
@@ -244,11 +244,11 @@ def test_phase9_beam_catalog_and_queries_cover_rotational_and_section_fields() -
         assert response.ok, response.to_json()
 
 
-def test_phase9_truss_le_catalog_and_centroid_query() -> None:
-    session = _meshed_session("Truss2")
-    controller, bridge = _production_controller(session)
-    _apply_truss_definitions(controller, session)
-    _apply(
+def test_truss_le_catalog_and_centroid_query() -> None:
+    session = make_meshed_line_session("Truss2")
+    controller, bridge = make_authoring_controller(session)
+    apply_truss_definitions(controller, session)
+    apply_definition_action(
         controller,
         session,
         "create_result_request",
@@ -262,7 +262,7 @@ def test_phase9_truss_le_catalog_and_centroid_query() -> None:
         },
         "phase9-le",
     )
-    _solve(controller, bridge, session)
+    solve_authoring_session(controller, bridge, session)
 
     port = SessionResultQueryPort(session)
     catalog = port.catalog().catalog
@@ -285,7 +285,7 @@ def test_phase9_truss_le_catalog_and_centroid_query() -> None:
     assert response.ok, response.to_json()
 
 
-def test_phase9_new_variable_comparison_uses_common_identity() -> None:
+def test_new_variable_comparison_uses_common_identity() -> None:
     first_source = AcceptedResultSource("r1", "s", "a", 1, "Step", "run-1")
     second_source = AcceptedResultSource("r2", "s", "a", 1, "Step", "run-2")
     query = AgentResultComparisonQuery(

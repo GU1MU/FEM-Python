@@ -24,9 +24,9 @@ from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import profile_transform_context
 from fem_agent.tools.registry import ToolExecutionContext
-from tests.gui.test_agent_planar_construction_ir import (
-    _arguments as planar_arguments,
-    _controller,
+from tests.helpers.agent_planar_construction import (
+    build_planar_arguments as planar_arguments,
+    make_planar_authoring_controller,
 )
 
 
@@ -120,8 +120,8 @@ def _dispatch(controller, arguments: dict[str, object], key: str):
     )
 
 
-def test_phase4_output_schema_and_context_publish_four_strict_kinds() -> None:
-    _bridge, controller = _controller(ModelSession())
+def test_output_schema_and_context_publish_four_strict_kinds() -> None:
+    _bridge, controller = make_planar_authoring_controller(ModelSession())
     definition = next(
         item
         for item in controller.definitions
@@ -162,9 +162,9 @@ def test_phase4_output_schema_and_context_publish_four_strict_kinds() -> None:
     ]
 
 
-def test_phase4_direct_h_plate_extrusion_is_one_atomic_3d_proposal() -> None:
+def test_direct_h_plate_extrusion_is_one_atomic_3d_proposal() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     arguments = deepcopy(planar_arguments())
     arguments["output"] = {
         "kind": "extrusion",
@@ -220,9 +220,9 @@ def test_phase4_direct_h_plate_extrusion_is_one_atomic_3d_proposal() -> None:
     assert reopened.parts[0].geometry_recipe == recipe
 
 
-def test_phase4_direct_ring_revolution_proves_one_body() -> None:
+def test_direct_ring_revolution_proves_one_body() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     result = _dispatch(
         controller,
         {
@@ -247,9 +247,9 @@ def test_phase4_direct_ring_revolution_proves_one_body() -> None:
     assert len(topology.entities_of("body", selectable_only=True)) == 1
 
 
-def test_phase4_direct_hole_path_sweep_preserves_channel_and_tet_chain() -> None:
+def test_direct_hole_path_sweep_preserves_channel_and_tet_chain() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     result = _dispatch(
         controller,
         {
@@ -282,9 +282,9 @@ def test_phase4_direct_hole_path_sweep_preserves_channel_and_tet_chain() -> None
     assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
 
 
-def test_phase4_ir_planar_part_uses_existing_profile_transform_tools() -> None:
+def test_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     planar = _dispatch(
         controller,
         {
@@ -298,7 +298,7 @@ def test_phase4_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     bridge.accept_from_gui_control(planar.data["proposal_id"])
     snapshot = session.snapshot()
     part = snapshot.parts[0]
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
 
     read = controller.dispatch(
         "read_profile_transform_context",
@@ -340,7 +340,7 @@ def test_phase4_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     assert type(transformed_snapshot.parts[0].geometry_recipe) is ExtrudedGeometry
 
 
-def test_phase4_multiple_materials_require_explicit_selection() -> None:
+def test_multiple_materials_require_explicit_selection() -> None:
     construction = _construction(
         {
             "id": "left",
@@ -362,7 +362,7 @@ def test_phase4_multiple_materials_require_explicit_selection() -> None:
         result="result",
     )
     session = ModelSession()
-    bridge, controller = _controller(session)
+    bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
     ambiguous = _dispatch(
         controller,

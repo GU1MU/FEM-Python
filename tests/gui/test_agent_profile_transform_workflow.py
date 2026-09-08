@@ -279,7 +279,7 @@ _PHASE6_PROVIDER_TOOLS = (
 )
 
 
-def test_phase6_provider_smoke_case_matrix_is_offline_and_policy_complete() -> None:
+def test_provider_smoke_case_matrix_is_offline_and_policy_complete() -> None:
     assert [item[0] for item in _PHASE6_PROVIDER_SMOKE_CASES] == [
         "拉伸成3d",
         "把这个截面加厚到 20 mm",
@@ -337,7 +337,7 @@ def _smoke_tool_result(call: ToolCall) -> AssistantMessage:
 
 @pytest.mark.cloud
 @pytest.mark.integration
-def test_phase6_opt_in_provider_smoke_matrix() -> None:
+def test_opt_in_provider_smoke_matrix() -> None:
     """Run six bounded policy prompts only with the existing explicit cloud gate."""
 
     from tests.helpers.agent_session_fixtures import _cloud_smoke_config
@@ -397,7 +397,7 @@ def test_phase6_opt_in_provider_smoke_matrix() -> None:
             assert "prepare_mesh_proposal" not in called, prompt
 
 
-def test_phase6_contract_matrix_is_bounded_and_provider_discoverable() -> None:
+def test_contract_matrix_is_bounded_and_provider_discoverable() -> None:
     session, _bridge, controller = _session_controller(_ring_recipe())
     dynamic = _ControllerDynamicTools(controller)
     definitions = {item.name: item for item in dynamic.definitions}
@@ -472,7 +472,7 @@ def test_phase6_contract_matrix_is_bounded_and_provider_discoverable() -> None:
         )
 
 
-def test_phase6_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
+def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
     tmp_path,
 ) -> None:
     session, bridge, controller = _session_controller(_ring_recipe())
@@ -552,7 +552,7 @@ def test_phase6_fake_provider_guard_prepare_accept_continuation_uses_new_snapsho
 
 @pytest.mark.gmsh
 @pytest.mark.integration
-def test_phase6_ring_dedicated_transform_tet4_tet10_save_reopen_and_hole_lineage():
+def test_ring_dedicated_transform_tet4_tet10_save_reopen_and_hole_lineage():
     session, bridge, controller = _session_controller(_ring_recipe(), name="Phase 6 ring")
     context = controller.dispatch(
         "read_profile_transform_context",
@@ -597,7 +597,7 @@ def test_phase6_ring_dedicated_transform_tet4_tet10_save_reopen_and_hole_lineage
 
 @pytest.mark.gmsh
 @pytest.mark.integration
-def test_phase6_blank_composite_ring_is_one_final_proposal_with_hole_selection(
+def test_blank_composite_ring_is_one_final_proposal_with_hole_selection(
     tmp_path,
 ):
     session, bridge, controller = _blank_session_controller()
@@ -704,7 +704,7 @@ def test_phase6_blank_composite_ring_is_one_final_proposal_with_hole_selection(
 
 @pytest.mark.gmsh
 @pytest.mark.integration
-def test_phase6_blank_center_hole_plate_has_canonical_hole_side_and_tet4():
+def test_blank_center_hole_plate_has_canonical_hole_side_and_tet4():
     session, bridge, controller = _blank_session_controller()
     before = session.snapshot()
     result = controller.dispatch(
@@ -790,7 +790,7 @@ def test_phase6_blank_center_hole_plate_has_canonical_hole_side_and_tet4():
     assert reopened_topology.entity("face:side/C1").selectable
 
 
-def test_phase6_explicit_multi_profile_selection_matches_proposal_part_count():
+def test_explicit_multi_profile_selection_matches_proposal_part_count():
     recipe = planar_sketch_geometry(
         "Two independent material profiles",
         contours=(
@@ -834,7 +834,7 @@ def test_phase6_explicit_multi_profile_selection_matches_proposal_part_count():
 @pytest.mark.gmsh
 @pytest.mark.integration
 @pytest.mark.parametrize("frame_strategy", ("fixed", "transport"))
-def test_phase6_path_dedicated_transform_preserves_order_frame_and_tet_mesh(
+def test_path_dedicated_transform_preserves_order_frame_and_tet_mesh(
     frame_strategy: str,
 ):
     session, bridge, controller = _session_controller(
@@ -875,7 +875,7 @@ def test_phase6_path_dedicated_transform_preserves_order_frame_and_tet_mesh(
     assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
 
 
-def test_phase6_negative_paths_are_atomic_and_stable() -> None:
+def test_negative_paths_are_atomic_and_stable() -> None:
     session, bridge, controller = _session_controller(_ring_recipe())
     before = session.snapshot()
     zero = controller.dispatch(

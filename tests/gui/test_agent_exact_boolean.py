@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from tests.helpers.agent_boolean_fixtures import (
+    make_boolean_part_session,
+    build_part_boolean_call,
+    build_body_boolean_call,
+    make_multi_body_session,
+)
+
 import json
 
 import pytest
 
-from fem.application import ModelSession, UnitContext
+from fem.application import ModelSession
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
@@ -16,7 +23,6 @@ from fem.geometry import (
     PathSweptGeometry,
     RectangleGeometry,
     RevolvedGeometry,
-    SolidBody,
     WireGeometry,
     WireMember,
     WirePoint,
@@ -52,45 +58,6 @@ def _controller(session: ModelSession):
     return bridge, controller
 
 
-def _part_session(target, tool) -> ModelSession:
-    session = ModelSession()
-    session.create_native_project_with_first_part(
-        "Agent Boolean",
-        UnitContext("mm", "N", "MPa"),
-        target,
-        part_name="Target Part",
-    )
-    session.add_native_part(tool, name="Tool Part")
-    return session
-
-
-def _part_call(operation: str, *, result_name: str = "Boolean Result"):
-    return {
-        "part_id": "P1",
-        "edit": {
-            "operation": "part_boolean",
-            "boolean_operation": operation,
-            "tool_part_id": "P2",
-            "result_name": result_name,
-            "tool_handling": "consume_tool_part",
-        },
-    }
-
-
-def _body_call(operation: str, *, result_name: str = "Body Result"):
-    return {
-        "part_id": "P1",
-        "edit": {
-            "operation": "body_boolean",
-            "boolean_operation": operation,
-            "target_body_id": "B1",
-            "tool_body_id": "B2",
-            "result_name": result_name,
-            "tool_handling": "consume_tool_body",
-        },
-    }
-
-
 def _path_solid() -> PathSweptGeometry:
     return PathSweptGeometry(
         RectangleGeometry("Path Profile", 2.0, 1.0),
@@ -107,38 +74,6 @@ def _path_solid() -> PathSweptGeometry:
     )
 
 
-def _multi_body_session() -> ModelSession:
-    geometry = MultiBodyGeometry(
-        "Canonical same-Part Bodies",
-        (
-            SolidBody("B1", "Target", BoxGeometry("Target", 2.0, 1.0, 1.0)),
-            SolidBody(
-                "B2",
-                "Tool",
-                MovedGeometry(BoxGeometry("Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0),
-            ),
-            SolidBody(
-                "B3",
-                "Unaffected",
-                MovedGeometry(
-                    BoxGeometry("Unaffected", 1.0, 1.0, 1.0),
-                    5.0,
-                    0.0,
-                    0.0,
-                ),
-            ),
-        ),
-    )
-    session = ModelSession()
-    session.create_native_project_with_first_part(
-        "Agent Body Boolean",
-        UnitContext("mm", "N", "MPa"),
-        geometry,
-        part_name="MultiBody Part",
-    )
-    return session
-
-
 def _json_depth(value: object) -> int:
     if isinstance(value, dict):
         return 1 + max((_json_depth(item) for item in value.values()), default=0)
@@ -148,7 +83,7 @@ def _json_depth(value: object) -> int:
 
 
 @pytest.mark.parametrize("root_kind", ("boolean", "multi_body"))
-def test_phase4_boolean_payload_rejects_more_than_512_mapping_nodes(
+def test_boolean_payload_rejects_more_than_512_mapping_nodes(
     root_kind: str,
 ) -> None:
     payload = {
@@ -165,8 +100,8 @@ def test_phase4_boolean_payload_rejects_more_than_512_mapping_nodes(
 
 
 @pytest.mark.gmsh
-def test_phase4_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
-    session = _part_session(
+def test_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
+    session = make_boolean_part_session(
         BoxGeometry("Target", 2.0, 1.0, 1.0),
         MovedGeometry(BoxGeometry("Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0),
     )
@@ -246,14 +181,14 @@ def test_phase4_schema_closes_intersect_fragment_and_context_diagnoses() -> None
         ),
     ),
 )
-def test_phase4_real_agent_part_boolean_matrix(target, tool, operation: str) -> None:
-    session = _part_session(target, tool)
+def test_real_agent_part_boolean_matrix(target, tool, operation: str) -> None:
+    session = make_boolean_part_session(target, tool)
     bridge, controller = _controller(session)
     before = session.snapshot()
 
     prepared = controller.dispatch(
         "prepare_geometry_edit",
-        _part_call(operation),
+        build_part_boolean_call(operation),
         ToolExecutionContext("phase4", 0, f"part-{operation}"),
     )
 
@@ -283,16 +218,16 @@ def test_phase4_real_agent_part_boolean_matrix(target, tool, operation: str) -> 
 
 
 @pytest.mark.gmsh
-def test_phase4_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
+def test_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
     target = BoxGeometry("Large Target", 2.0, 1.0, 1.0)
     tool = MovedGeometry(BoxGeometry("Small Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0)
     volumes = []
     for reverse in (False, True):
-        session = _part_session(*(tool, target) if reverse else (target, tool))
+        session = make_boolean_part_session(*(tool, target) if reverse else (target, tool))
         bridge, controller = _controller(session)
         prepared = controller.dispatch(
             "prepare_geometry_edit",
-            _part_call("cut", result_name=f"Cut {reverse}"),
+            build_part_boolean_call("cut", result_name=f"Cut {reverse}"),
             ToolExecutionContext(
                 "phase4",
                 int(reverse),
@@ -314,14 +249,14 @@ def test_phase4_cut_target_tool_order_is_persisted_and_not_exchangeable() -> Non
 
 
 @pytest.mark.gmsh
-def test_phase4_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
-    session = _multi_body_session()
+def test_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
+    session = make_multi_body_session()
     bridge, controller = _controller(session)
     before = session.snapshot()
 
     prepared = controller.dispatch(
         "prepare_geometry_edit",
-        _body_call("fuse"),
+        build_body_boolean_call("fuse"),
         ToolExecutionContext("phase4", 0, "body-fuse"),
     )
 
@@ -343,12 +278,12 @@ def test_phase4_body_boolean_preserves_same_part_target_and_unaffected_body() ->
 
 
 @pytest.mark.gmsh
-def test_phase4_body_boolean_save_reopen_undo_replay_and_remesh() -> None:
-    session = _multi_body_session()
+def test_body_boolean_save_reopen_undo_replay_and_remesh() -> None:
+    session = make_multi_body_session()
     bridge, controller = _controller(session)
     prepared = controller.dispatch(
         "prepare_geometry_edit",
-        _body_call("cut", result_name="Persisted Cut"),
+        build_body_boolean_call("cut", result_name="Persisted Cut"),
         ToolExecutionContext("phase4", 0, "body-cut-persist"),
     )
     assert prepared.ok, prepared.summary
@@ -377,8 +312,8 @@ def test_phase4_body_boolean_save_reopen_undo_replay_and_remesh() -> None:
     reopened.undo_body_boolean("P1", "B1")
     restored = reopened.snapshot().part("P1").geometry_recipe
     assert tuple(body.id for body in restored.bodies) == ("B1", "B2", "B3")
-    assert restored.body("B1").recipe == _multi_body_session().snapshot().part("P1").geometry_recipe.body("B1").recipe
-    assert restored.body("B2").recipe == _multi_body_session().snapshot().part("P1").geometry_recipe.body("B2").recipe
+    assert restored.body("B1").recipe == make_multi_body_session().snapshot().part("P1").geometry_recipe.body("B1").recipe
+    assert restored.body("B2").recipe == make_multi_body_session().snapshot().part("P1").geometry_recipe.body("B2").recipe
 
 
 @pytest.mark.gmsh
@@ -402,14 +337,14 @@ def test_phase4_body_boolean_save_reopen_undo_replay_and_remesh() -> None:
         ),
     ),
 )
-def test_phase4_rejected_boolean_preflight_is_atomic(tool, operation: str, diagnostic: str) -> None:
-    session = _part_session(BoxGeometry("Target", 2.0, 1.0, 1.0), tool)
+def test_rejected_boolean_preflight_is_atomic(tool, operation: str, diagnostic: str) -> None:
+    session = make_boolean_part_session(BoxGeometry("Target", 2.0, 1.0, 1.0), tool)
     _bridge, controller = _controller(session)
     before = session.snapshot()
 
     outcome = controller.dispatch(
         "prepare_geometry_edit",
-        _part_call(operation),
+        build_part_boolean_call(operation),
         ToolExecutionContext("phase4", 0, f"reject-{diagnostic}"),
     )
 
@@ -419,8 +354,8 @@ def test_phase4_rejected_boolean_preflight_is_atomic(tool, operation: str, diagn
 
 
 @pytest.mark.gmsh
-def test_phase4_reject_and_stale_commit_never_mutate_session() -> None:
-    session = _part_session(
+def test_reject_and_stale_commit_never_mutate_session() -> None:
+    session = make_boolean_part_session(
         BoxGeometry("Target", 2.0, 1.0, 1.0),
         MovedGeometry(BoxGeometry("Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0),
     )
@@ -428,7 +363,7 @@ def test_phase4_reject_and_stale_commit_never_mutate_session() -> None:
     before = session.snapshot()
     rejected = controller.dispatch(
         "prepare_geometry_edit",
-        _part_call("fuse", result_name="Rejected Result"),
+        build_part_boolean_call("fuse", result_name="Rejected Result"),
         ToolExecutionContext("phase4", 0, "reject"),
     )
     assert bridge.reject_from_gui_control(rejected.data["proposal_id"]).state is ProposalState.REJECTED
@@ -437,7 +372,7 @@ def test_phase4_reject_and_stale_commit_never_mutate_session() -> None:
     bridge, controller = _controller(session)
     stale = controller.dispatch(
         "prepare_geometry_edit",
-        _part_call("cut", result_name="Stale Result"),
+        build_part_boolean_call("cut", result_name="Stale Result"),
         ToolExecutionContext("phase4", 0, "stale"),
     )
     assert stale.ok, stale
