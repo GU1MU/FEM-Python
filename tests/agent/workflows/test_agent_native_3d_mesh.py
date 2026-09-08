@@ -34,9 +34,6 @@ from tests.helpers.agent_native_3d_workflows import (
 )
 
 
-pytestmark = pytest.mark.integration
-
-
 def _cut_solid() -> BooleanGeometry:
     return BooleanGeometry(
         "Boolean cut",
@@ -70,6 +67,7 @@ def test_mesh_intent_schema_is_strict_and_hex_is_capability_gated() -> None:
         )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_runtime_exposes_solid_mesh_requirements_for_derived_geometry() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
@@ -104,7 +102,6 @@ def test_runtime_exposes_solid_mesh_requirements_for_derived_geometry() -> None:
     assert properties["mesh_order"]["enum"] == [1, 2]
 
 
-@pytest.mark.gmsh
 @pytest.mark.parametrize(
     "recipe",
     (
@@ -131,7 +128,6 @@ def test_feature_results_generate_pure_tet4(real_gmsh, recipe) -> None:
     assert {element.type for element in model.mesh.elements} == {"Tet4"}
 
 
-@pytest.mark.gmsh
 @pytest.mark.parametrize(("order", "expected"), ((1, "Tet4"), (2, "Tet10")))
 def test_tet_intent_round_trip_generates_requested_order(
     real_gmsh,
@@ -151,7 +147,6 @@ def test_tet_intent_round_trip_generates_requested_order(
     assert {element.type for element in model.mesh.elements} == {expected}
 
 
-@pytest.mark.gmsh
 def test_gui_bridge_commits_tet_intent_and_model_atomically(real_gmsh) -> None:
     del real_gmsh
     recipe = ExtrudedGeometry(RectangleGeometry("Agent block", 1.0, 0.8), 0.6)
@@ -203,7 +198,6 @@ def test_gui_bridge_commits_tet_intent_and_model_atomically(real_gmsh) -> None:
     }
 
 
-@pytest.mark.gmsh
 def test_unsupported_hex_is_diagnostic_and_session_atomic(
     real_gmsh,
 ) -> None:

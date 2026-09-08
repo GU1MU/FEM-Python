@@ -22,9 +22,6 @@ from fem_gui.agent_authoring import (
 from tests.helpers.mesh_builders import make_dof_order_meshes
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _wire() -> WireGeometry:
     return WireGeometry(
         "Bar",

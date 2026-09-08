@@ -31,9 +31,6 @@ from tests.helpers.agent_session_fixtures import (
 from tests.helpers.agent_surface_fixtures import make_surface_load_session
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _edit_patch(
     session: ModelSession,
     object_type: str,
@@ -352,6 +349,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
     assert session.snapshot().steps[0].edge_loads[0].vector == (10.0, 0.0)
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
     session = make_surface_load_session()
     revision = session.session_revision

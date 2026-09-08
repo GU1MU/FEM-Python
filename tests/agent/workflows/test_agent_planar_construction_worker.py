@@ -10,11 +10,6 @@ from tests.helpers.agent_planar_construction import (
     build_rectangle_arguments,
 )
 
-import pytest
-
-
-pytestmark = pytest.mark.local_session
-
 
 def _spy_worker(monkeypatch) -> dict[str, object]:
     """Capture the worker payload and the thread that produced it."""

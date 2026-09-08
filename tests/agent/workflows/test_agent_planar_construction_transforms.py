@@ -15,9 +15,6 @@ from tests.helpers.agent_planar_construction import make_planar_authoring_contro
 import pytest
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _construction(*nodes: dict[str, object], result: str) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -62,6 +59,7 @@ def _dispatch(controller, arguments: dict[str, object], key: str):
     )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_direct_ring_revolution_proves_one_body() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
@@ -89,6 +87,7 @@ def test_direct_ring_revolution_proves_one_body() -> None:
     assert len(topology.entities_of("body", selectable_only=True)) == 1
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
@@ -147,6 +146,7 @@ def test_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     assert type(transformed_snapshot.parts[0].geometry_recipe) is ExtrudedGeometry
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_multiple_materials_require_explicit_selection() -> None:
     construction = _construction(
         {

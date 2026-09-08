@@ -24,9 +24,6 @@ from fem_gui.agent_authoring import (
 import pytest
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _extrusion(name: str) -> ExtrudedGeometry:
     sketch = RectangleGeometry(name, 2.0, 1.0)
     face_id = next(
@@ -71,6 +68,7 @@ def _proven_cut(base, tool, model_name: str):
         ).geometry
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
@@ -108,6 +106,7 @@ def test_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> None:
     assert not before.mesh_current
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_geometry_catalog_filters_part_and_rejects_unknown_part() -> None:
     blank = ModelSession()
     blank_controller = _controller(blank)
@@ -479,6 +478,7 @@ def test_replaces_planar_boolean_feature_and_replays_later_history(
     assert features[1]["bounding_box"] == [3.5, 3.5, 6.5, 6.5]
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_stale_geometry_read_resynchronizes_without_unknown_tool(
     tmp_path,
 ) -> None:
@@ -618,6 +618,7 @@ def test_planar_edit_verifies_general_feature_clearance(real_gmsh) -> None:
     assert proof["verified"] is True
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_geometry_catalog_omitted_count_uses_all_active_parts() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(

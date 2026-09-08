@@ -14,9 +14,6 @@ from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from tests.helpers.agent_native_3d_workflows import _dispatch, _record_mesh_requirements, _production_controller
 
 
-pytestmark = pytest.mark.integration
-
-
 def _apply_agent_definition(
     controller: object,
     session: ModelSession,
@@ -34,7 +31,6 @@ def _apply_agent_definition(
     assert outcome.ok, outcome.to_json()
 
 
-@pytest.mark.gmsh
 def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
     real_gmsh,
 ) -> None:
@@ -340,7 +336,6 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
     assert reopened_result.result.U == pytest.approx(result.U, abs=1.0e-12)
 
 
-@pytest.mark.gmsh
 def test_logical_face_region_survives_remesh_and_reopen(
     real_gmsh,
 ) -> None:

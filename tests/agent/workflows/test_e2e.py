@@ -18,10 +18,6 @@ from tests.helpers.abaqus_builders import (
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
-pytestmark = pytest.mark.integration
-
-
-@pytest.mark.integration
 def test_full_fake_provider_confirmation_worker_and_export_matches_direct_fem(
     tmp_path,
 ):
@@ -239,7 +235,6 @@ def test_confirmation_is_invalidated_by_a_new_specification_revision(tmp_path):
     )
 
 
-@pytest.mark.integration
 def test_hex20_agent_pipeline_matches_direct_fem_result(tmp_path):
     source = write_hex20_block_inp(tmp_path, "agent_hex20.inp")
     provider = FakeProvider(

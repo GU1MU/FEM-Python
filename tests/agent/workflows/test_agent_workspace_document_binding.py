@@ -23,9 +23,6 @@ from fem_gui.agent_authoring import (
 from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
-pytestmark = pytest.mark.integration
-
-
 _FIXTURE = (
     Path(__file__).parents[2]
     / "helpers" / "fixtures"

@@ -25,9 +25,6 @@ from fem_gui.agent_authoring import (
 )
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _controller(session: ModelSession):
     bridge = AgentAuthoringBridge(SessionGeometryAuthoringPort(session, lambda: None))
     bridge.bind_snapshot(session.snapshot())
@@ -122,6 +119,7 @@ def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -
         )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)

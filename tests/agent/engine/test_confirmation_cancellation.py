@@ -1,6 +1,5 @@
 import threading
 
-import pytest
 
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -13,9 +12,6 @@ from fem_agent.worker import InspectionWorkerError
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 from tests.helpers.agent_engine_fixtures import _attached_engine, _ready_engine
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
-
-
-pytestmark = pytest.mark.integration
 
 
 def test_natural_language_and_model_tool_call_cannot_bypass_confirm(tmp_path):

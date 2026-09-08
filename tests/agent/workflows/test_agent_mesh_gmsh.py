@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from fem.application.preprocessing import generate_fem_model
 from fem.geometry import DiskGeometry, LogicalEntityRef, RectangleGeometry, SketchCircle, SketchRectangle
@@ -8,9 +7,6 @@ from fem.geometry.errors import GeometryError
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent
 from fem_agent.geometry_authoring import planar_sketch_geometry
-
-
-pytestmark = pytest.mark.integration
 
 
 def _types(model) -> set[str]:

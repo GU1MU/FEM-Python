@@ -1,7 +1,6 @@
 import json
 import threading
 
-import pytest
 
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -15,10 +14,6 @@ from tests.helpers.agent_engine_fixtures import _attached_engine, _ready_engine
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
-pytestmark = pytest.mark.integration
-
-
-@pytest.mark.integration
 def test_solved_model_is_queried_then_explained_by_agent_without_new_run(
     tmp_path,
 ):
@@ -165,7 +160,6 @@ def test_solved_model_is_queried_then_explained_by_agent_without_new_run(
     assert len(list(runs.iterdir())) == 1
 
 
-@pytest.mark.integration
 def test_reopened_solved_session_can_query_saved_solution(tmp_path):
     engine = _ready_engine(tmp_path, FakeProvider())
     engine.confirm_revision()
@@ -208,7 +202,6 @@ def test_reopened_solved_session_can_query_saved_solution(tmp_path):
     assert reopened.get_snapshot().active_run_id == run_id
 
 
-@pytest.mark.integration
 def test_postsolve_result_configuration_cannot_discard_active_run(tmp_path):
     engine = _ready_engine(tmp_path, FakeProvider())
     engine.confirm_revision()
@@ -238,7 +231,6 @@ def test_postsolve_result_configuration_cannot_discard_active_run(tmp_path):
     assert after.phase == SessionPhase.SOLVED
 
 
-@pytest.mark.integration
 def test_failed_postsolve_query_does_not_change_successful_run(tmp_path):
     engine = _ready_engine(tmp_path, FakeProvider())
     engine.confirm_revision()

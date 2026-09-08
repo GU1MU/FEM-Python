@@ -11,6 +11,7 @@ import pytest
 
 _GMSH_FIXTURE_NAMES = frozenset({"live_gmsh", "real_gmsh"})
 _GUI_TEST_ROOT = Path(__file__).resolve().parent / "gui"
+_AGENT_TEST_ROOT = Path(__file__).resolve().parent / "agent"
 _INTEGRATION_TEST_ROOT = Path(__file__).resolve().parent / "integration"
 _PYTEST_TEMP_ROOT = (
     Path(__file__).resolve().parent
@@ -109,9 +110,9 @@ def pytest_collection_modifyitems(
         path = Path(str(item.path)).resolve()
         if (
             path.is_relative_to(_GUI_TEST_ROOT)
-            or item.get_closest_marker("local_session") is not None
+            or path.is_relative_to(_AGENT_TEST_ROOT)
         ):
-            # Local GUI and session/bridge dependencies run by default; fixtures own
+            # Local GUI and agent dependencies run by default; fixtures own
             # setup and cleanup, and unavailable optional runtimes still skip.
             if _requires_native_gmsh(item) and not gmsh_available:
                 item.add_marker(missing_gmsh)

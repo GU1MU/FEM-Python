@@ -21,9 +21,6 @@ from tests.helpers.agent_planar_construction import (
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
-pytestmark = pytest.mark.local_session
-
-
 def test_planar_construction_publishes_bounded_context() -> None:
     _bridge, controller = make_planar_authoring_controller(ModelSession())
     assert "prepare_planar_construction_proposal" in {
@@ -41,6 +38,7 @@ def test_planar_construction_publishes_bounded_context() -> None:
     assert capability["budgets"]["max_pattern_instances"] == 256
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_disjoint_cutter_is_rejected_without_a_proposal() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
@@ -59,6 +57,7 @@ def test_disjoint_cutter_is_rejected_without_a_proposal() -> None:
     assert session.snapshot() == before
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_closed_centerline_returns_repair_guidance_without_mutation() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
@@ -83,6 +82,7 @@ def test_closed_centerline_returns_repair_guidance_without_mutation() -> None:
     assert session.snapshot() == before
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     tmp_path,
 ) -> None:

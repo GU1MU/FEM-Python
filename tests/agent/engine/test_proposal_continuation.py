@@ -14,9 +14,6 @@ from tests.helpers.agent_provider_fixtures import (
 )
 
 
-pytestmark = pytest.mark.integration
-
-
 def test_unbacked_proposal_execution_claim_is_not_exposed(tmp_path):
     provider = FakeProvider(
         [

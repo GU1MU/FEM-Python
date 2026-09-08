@@ -1,4 +1,3 @@
-import pytest
 
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import ToolCall, ToolDefinition
@@ -10,9 +9,6 @@ from tests.helpers.agent_engine_registry_fixtures import (
     _GeometryEditWithCatalogToolRegistry,
 )
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
-
-
-pytestmark = pytest.mark.integration
 
 
 class _StaleGeometryEditToolRegistry:

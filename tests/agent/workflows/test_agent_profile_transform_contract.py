@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 
 from fem.application import ModelSession, UnitContext
 from fem.geometry import describe_recipe_topology
@@ -18,9 +17,6 @@ from fem_gui.agent_authoring import (
 
 from tests.helpers.agent_provider_fixtures import text_response
 from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_fixture
-
-
-pytestmark = pytest.mark.local_session
 
 
 def _ring_controller() -> tuple[ModelSession, object]:

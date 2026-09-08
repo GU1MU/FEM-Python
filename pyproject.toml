@@ -54,7 +54,6 @@ filterwarnings = [
     "ignore:Setting the shape on a NumPy array has been deprecated in NumPy 2\\.5\\.:DeprecationWarning:vtkmodules\\.util\\.numpy_support$",
 ]
 markers = [
-    "local_session: locally runnable session/bridge coverage with fixture-owned runtime gates",
     "integration: tests that cross package or external-runtime boundaries",
     "gmsh: tests that require the optional native Gmsh runtime",
     "slow: tests gated by the slow-opt-in contract",

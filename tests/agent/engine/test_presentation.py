@@ -24,9 +24,6 @@ from tests.helpers.agent_provider_fixtures import (
 )
 
 
-pytestmark = pytest.mark.integration
-
-
 class _PatchToolRegistry:
     def __init__(self):
         self.definitions = (

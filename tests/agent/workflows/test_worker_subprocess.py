@@ -26,7 +26,6 @@ from tests.helpers.agent_worker_fixtures import (
 )
 
 
-@pytest.mark.integration
 def test_isolated_inspector_round_trips_unicode_unit_context(tmp_path):
     units = UnitContext(
         length="mm",
@@ -50,7 +49,6 @@ def test_isolated_inspector_round_trips_unicode_unit_context(tmp_path):
     assert not response.summary.has_blocking_diagnostics
 
 
-@pytest.mark.integration
 def test_isolated_worker_solves_queries_exports_and_writes_manifest(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -109,7 +107,6 @@ def test_isolated_worker_solves_queries_exports_and_writes_manifest(tmp_path):
     assert len(list((run.path.parent).iterdir())) == 1
 
 
-@pytest.mark.integration
 def test_worker_solves_without_queries_and_supports_later_postprocessing(
     tmp_path,
     monkeypatch,
@@ -208,7 +205,6 @@ def test_worker_solves_without_queries_and_supports_later_postprocessing(
         )
 
 
-@pytest.mark.integration
 def test_isolated_postsolve_query_rejects_a_tampered_solution(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(
         tmp_path,
@@ -251,7 +247,6 @@ def test_isolated_postsolve_query_rejects_a_tampered_solution(tmp_path):
     assert response.status == RunStatus.SUCCEEDED
 
 
-@pytest.mark.integration
 def test_worker_recovers_a_missing_response_from_a_verified_manifest(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -305,7 +300,6 @@ def test_worker_recovers_a_missing_response_from_a_verified_manifest(tmp_path):
     assert len(list(run.path.parent.iterdir())) == 1
 
 
-@pytest.mark.integration
 def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -343,7 +337,6 @@ def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(tmp_path):
     assert len(list(run.path.parent.iterdir())) == 1
 
 
-@pytest.mark.integration
 def test_worker_fails_closed_when_a_manifest_artifact_hash_is_wrong(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -387,7 +380,6 @@ def test_worker_fails_closed_when_a_manifest_artifact_hash_is_wrong(tmp_path):
     assert len(list(run.path.parent.iterdir())) == 1
 
 
-@pytest.mark.integration
 def test_worker_timeout_returns_a_failed_response_and_manifest(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -411,7 +403,6 @@ def test_worker_timeout_returns_a_failed_response_and_manifest(tmp_path):
     assert (run.path / "manifest.json").is_file()
 
 
-@pytest.mark.integration
 def test_worker_cancellation_returns_a_cancelled_response_and_manifest(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(
@@ -450,8 +441,6 @@ def test_worker_cancellation_returns_a_cancelled_response_and_manifest(tmp_path)
     assert len(list(run.path.parent.iterdir())) == 2
 
 
-@pytest.mark.integration
-@pytest.mark.platform
 def test_worker_crash_is_normalized_without_terminating_the_parent(tmp_path):
     workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
     ConfirmationStore(workspace, revisions).confirm(

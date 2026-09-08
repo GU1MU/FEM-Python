@@ -1,4 +1,3 @@
-import pytest
 
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import AgentToolRegistry, ToolExecutionContext
@@ -61,7 +60,6 @@ def test_postsolve_query_tool_requires_bounded_queries(tmp_path):
     )
 
 
-@pytest.mark.integration
 def test_result_configuration_allows_exports_without_precomputed_queries(
     tmp_path,
 ):
@@ -84,7 +82,6 @@ def test_result_configuration_allows_exports_without_precomputed_queries(
     assert [item.value for item in updated.spec.export_formats] == ["csv"]
 
 
-@pytest.mark.integration
 def test_malformed_tool_arguments_fail_before_revision_mutation(tmp_path):
     engine, _ = _attached_engine(tmp_path, FakeProvider())
     registry = engine.registry
@@ -113,7 +110,6 @@ def test_malformed_tool_arguments_fail_before_revision_mutation(tmp_path):
     assert engine.revisions.require_current(engine.session_id) == before
 
 
-@pytest.mark.integration
 def test_cloud_tool_cannot_authorize_a_solve(tmp_path):
     engine, _ = _attached_engine(tmp_path, FakeProvider())
     current = engine.revisions.require_current(engine.session_id)
@@ -145,7 +141,6 @@ def test_unknown_tool_is_rejected_without_calling_fem(tmp_path):
     assert result.diagnostics[0].code == "UNKNOWN_TOOL"
 
 
-@pytest.mark.integration
 def test_inspection_worker_failure_is_classified_as_infrastructure(
     monkeypatch,
     tmp_path,

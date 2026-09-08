@@ -38,9 +38,6 @@ from tests.helpers.agent_line_fixtures import (
 from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
-pytestmark = pytest.mark.local_session
-
-
 ALL_VARIABLES = {"U", "UR", "RF", "RM", "SF", "SM", "LE", "S"}
 
 
@@ -99,6 +96,7 @@ def test_schemas_publish_all_variables_and_rm_sum_contract() -> None:
         )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
     beam = make_meshed_line_session("Beam2")
     controller, _bridge = make_authoring_controller(beam)
@@ -164,6 +162,8 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
     assert not rejected_edit.ok
     assert beam.session_revision == revision
 
+
+def test_plate_result_requests_reject_unsupported_variables() -> None:
     plate = make_defined_plate_session()
     plate_controller, _bridge = make_authoring_controller(plate)
     step = dispatch_authoring_tool(
@@ -197,6 +197,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
         assert plate.session_revision == revision
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
     session = make_meshed_line_session("Beam2")
     controller, bridge = make_authoring_controller(session)
@@ -248,6 +249,7 @@ def test_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
         assert response.ok, response.to_json()
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_truss_le_catalog_and_centroid_query() -> None:
     session = make_meshed_line_session("Truss2")
     controller, bridge = make_authoring_controller(session)

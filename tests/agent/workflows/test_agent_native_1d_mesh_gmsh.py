@@ -21,9 +21,6 @@ from fem_gui.agent_authoring import (
 )
 
 
-pytestmark = pytest.mark.integration
-
-
 def _wire() -> WireGeometry:
     return WireGeometry(
         "Frame",

@@ -37,9 +37,6 @@ from tests.helpers.phase8_result_characterization import (
 from tests.helpers.result_archives import make_result_archive
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _target(document) -> WorkspaceDocumentIdentity:
     return WorkspaceDocumentIdentity(
         str(document.document_id),

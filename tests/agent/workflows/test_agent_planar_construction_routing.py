@@ -17,9 +17,6 @@ from tests.helpers.agent_planar_construction import (
 )
 
 
-pytestmark = pytest.mark.local_session
-
-
 def test_planar_provider_schema_fits_context_budget() -> None:
     _bridge, controller = _controller(ModelSession())
     definition = next(

@@ -30,9 +30,6 @@ from tests.helpers.agent_authoring_workflows import (
 )
 
 
-pytestmark = pytest.mark.integration
-
-
 def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     real_gmsh,
     tmp_path: Path,

@@ -18,9 +18,6 @@ from fem.mesh.settings import MeshSettings
 from fem.solvers import static_linear
 
 
-pytestmark = pytest.mark.integration
-
-
 def _analysis_model(load_type: str, *, order: int = 1):
     recipe = ExtrudedGeometry(RectangleGeometry("Oracle block", 1.0, 1.0), 1.0)
     model = generate_fem_model(
@@ -68,7 +65,6 @@ def _analysis_model(load_type: str, *, order: int = 1):
     return model
 
 
-@pytest.mark.gmsh
 def test_tet10_runs_preflight_and_real_solver(real_gmsh) -> None:
     del real_gmsh
     model = _analysis_model("traction", order=2)
@@ -82,7 +78,6 @@ def test_tet10_runs_preflight_and_real_solver(real_gmsh) -> None:
     assert float(result.reactions[0::3].sum()) == pytest.approx(-10.0, abs=1.0e-9)
 
 
-@pytest.mark.gmsh
 def test_preflight_diagnoses_uncovered_solid_and_rigid_body_dofs(
     real_gmsh,
 ) -> None:
@@ -113,7 +108,6 @@ def test_preflight_diagnoses_uncovered_solid_and_rigid_body_dofs(
     }
 
 
-@pytest.mark.gmsh
 @pytest.mark.parametrize(
     ("load_type", "expected_displacement", "expected_reaction"),
     (

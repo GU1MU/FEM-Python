@@ -1,4 +1,3 @@
-import pytest
 
 from fem.io import inp as abaqus
 from fem_agent.artifacts import (
@@ -23,7 +22,6 @@ def test_tool_catalog_has_no_path_or_code_execution_fields(tmp_path):
     assert "command" not in serialized
 
 
-@pytest.mark.integration
 def test_engine_import_is_process_isolated_and_ignores_workspace_modules(
     monkeypatch,
     tmp_path,

@@ -11,9 +11,6 @@ from tests.helpers.agent_engine_fixtures import _attached_engine
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
-pytestmark = pytest.mark.integration
-
-
 def test_request_context_is_ephemeral_across_provider_tool_loop(tmp_path):
     provider = FakeProvider(
         [

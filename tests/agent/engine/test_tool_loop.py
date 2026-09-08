@@ -1,4 +1,3 @@
-import pytest
 
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.diagnostics import DiagnosticCode
@@ -21,9 +20,6 @@ from tests.helpers.agent_engine_registry_fixtures import (
     _RetryingGeometryEditWithCatalogToolRegistry,
 )
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
-
-
-pytestmark = pytest.mark.integration
 
 
 def test_tool_round_keeps_explicit_user_decision_visible(tmp_path):

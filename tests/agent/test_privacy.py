@@ -1,6 +1,5 @@
 import json
 
-import pytest
 
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -12,7 +11,6 @@ from tests.helpers.agent_provider_fixtures import text_response
 from tests.helpers.file_builders import write_inp
 
 
-@pytest.mark.integration
 def test_inp_comment_coordinates_connectivity_and_path_never_reach_provider(
     tmp_path,
 ):

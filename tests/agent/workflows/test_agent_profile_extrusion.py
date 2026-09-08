@@ -28,9 +28,6 @@ from tests.helpers.profile_sketches import (
 )
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _controller(session: ModelSession):
     bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
@@ -69,6 +66,7 @@ def _dispatch(controller, *, source_face_ids, height=2.5):
     )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
     monkeypatch,
 ) -> None:
@@ -113,6 +111,7 @@ def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
     assert topology.entity("face:side/L5").semantic_role == "sweep.boundary.hole"
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
     session = _native_session(RectangleGeometry("Revision rectangle", 4.0, 3.0))
     bridge, controller = _controller(session)
@@ -242,6 +241,7 @@ def test_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
         SketchCircle("material", 0.0, 0.0, 1.5),
     ),
 )
+@pytest.mark.usefixtures("real_gmsh")
 def test_agent_extrudes_rectangle_and_circle_profiles(
     monkeypatch,
     contour,
@@ -269,6 +269,7 @@ def test_agent_extrudes_rectangle_and_circle_profiles(
     assert recipe.source_face_ids == (source,)
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
     monkeypatch,
 ) -> None:
@@ -310,6 +311,7 @@ def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
     ]
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_hole_profile_retains_cap_outer_hole_and_body_lineage(
     monkeypatch,
 ) -> None:
@@ -430,6 +432,7 @@ def test_stale_accept_and_operation_tampering_are_atomic(monkeypatch) -> None:
         geometry_recipe_from_payload(payload)
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_project_round_trip_preserves_selected_source_and_lineage(
     monkeypatch,
 ) -> None:

@@ -26,9 +26,6 @@ from tests.helpers.agent_session_fixtures import make_defined_plate_session
 from tests.helpers.agent_surface_fixtures import make_surface_load_session
 
 
-pytestmark = pytest.mark.local_session
-
-
 PLATE_STEP_NAME = "分析步-静力"
 
 
@@ -154,6 +151,7 @@ def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
         assert session.snapshot().steps[0].body_loads[0].vector == (1.0, -2.0)
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_creates_global_and_local_beam_line_loads() -> None:
     session = make_meshed_line_session("Beam2")
     controller, _bridge = make_authoring_controller(session)
@@ -292,6 +290,7 @@ def test_line_rejects_non_beam_element_region_atomically() -> None:
     assert session.session_revision == revision
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_local_line_and_gravity_fail_closed_without_capability() -> None:
     session = make_meshed_line_session("Beam2")
     controller, _bridge = make_authoring_controller(session)
@@ -409,6 +408,7 @@ def test_gravity_accepts_global_target_with_explicit_unit() -> None:
     assert stored_scoped.acceleration == (9810.0, 0.0)
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_creates_three_dimensional_body_force() -> None:
     session = make_surface_load_session()
     _add_all_element_region(session, "域-三维块")

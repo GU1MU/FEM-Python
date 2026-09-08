@@ -25,9 +25,6 @@ from fem_gui.agent_authoring import (
 from tests.helpers.profile_sketches import two_profile_sketch
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _controller(session: ModelSession, refresh=None):
     if refresh is None:
         def refresh():
@@ -213,6 +210,7 @@ def test_part_not_found_is_typed_and_keeps_snapshot() -> None:
     assert session.snapshot() == before
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_non_planar_source_is_rejected_without_mutation() -> None:
     non_planar = _session(CylinderGeometry("Solid", 1.0, 2.0))
     non_planar_refresh = []

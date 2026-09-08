@@ -1,4 +1,3 @@
-import pytest
 
 from fem_agent.authoring_runtime import AuthoringWorkflowController
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -8,9 +7,6 @@ from fem_agent.schemas import ToolResult
 
 from tests.helpers.agent_engine_registry_fixtures import _AdditionalModelToolRegistry
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
-
-
-pytestmark = pytest.mark.integration
 
 
 class _StageProposalToolRegistry:

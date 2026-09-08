@@ -17,9 +17,6 @@ from tests.helpers.agent_planar_construction import make_planar_authoring_contro
 from tests.helpers.agent_provider_fixtures import text_response, tool_response
 
 
-pytestmark = pytest.mark.local_session
-
-
 def _refusal() -> ProviderResponse:
     return text_response("拉伸不受支持；必须先生成网格。")
 

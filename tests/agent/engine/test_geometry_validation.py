@@ -1,4 +1,3 @@
-import pytest
 
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import ToolCall
@@ -9,9 +8,6 @@ from tests.helpers.agent_engine_registry_fixtures import (
     _GeometryEditToolRegistry,
 )
 from tests.helpers.agent_provider_fixtures import tool_response
-
-
-pytestmark = pytest.mark.integration
 
 
 def test_explicit_2d_request_cannot_fall_back_to_a_derived_3d_output(tmp_path):
