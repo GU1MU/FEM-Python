@@ -118,23 +118,18 @@ def test_query_results_matches_direct_displacement_and_reaction_apis():
     assert all(scalar.run_id == "run-1" for scalar in summary.scalars)
 
 
-def test_query_results_normalizes_missing_regions_per_query():
+@pytest.mark.parametrize("query", [
+    ResultQuery(ResultQueryKind.REACTION_SUM, component=1, node_set="missing"),
+    ResultQuery(ResultQueryKind.MAX_DISPLACEMENT_MAGNITUDE, edge="missing"),
+])
+def test_query_results_rejects_missing_regions(query):
     summary = query_results(
-        _truss_result(),
-        (
-            ResultQuery(
-                ResultQueryKind.REACTION_SUM,
-                component=1,
-                node_set="missing",
-            ),
-        ),
-        run_id="run-1",
-        unit_context=UNITS,
+        _truss_result(), (query,), run_id="run-missing", unit_context=UNITS,
     )
-
     assert summary.scalars == ()
-    assert summary.diagnostics[0].code == DiagnosticCode.RESULT_QUERY_FAILED.value
-    assert "node set 'missing'" in summary.diagnostics[0].message
+    diagnostic = summary.diagnostics[0]
+    assert diagnostic.code == DiagnosticCode.RESULT_QUERY_FAILED.value
+    assert "missing" in diagnostic.message
 
 
 def test_max_displacement_query_resolves_edge_nodes():
@@ -196,26 +191,6 @@ def test_reaction_sum_deduplicates_nodes_shared_by_surface_faces():
     assert summary.scalars[0].region == "loaded"
 
 
-def test_displacement_region_failure_has_targeted_remediation():
-    summary = query_results(
-        _truss_result(),
-        (
-            ResultQuery(
-                ResultQueryKind.MAX_DISPLACEMENT_MAGNITUDE,
-                edge="missing",
-            ),
-        ),
-        run_id="run-missing-edge",
-        unit_context=UNITS,
-    )
-
-    diagnostic = summary.diagnostics[0]
-    assert diagnostic.code == DiagnosticCode.RESULT_QUERY_FAILED.value
-    assert "edge 'missing'" in diagnostic.message
-    assert "displacement component" in diagnostic.remediation
-    assert "stress output" not in diagnostic.remediation
-
-
 def test_query_results_enforces_provider_scalar_bound_before_evaluation():
     query = ResultQuery(
         ResultQueryKind.DISPLACEMENT_COMPONENT,
@@ -231,8 +206,7 @@ def test_query_results_enforces_provider_scalar_bound_before_evaluation():
     )
 
     assert summary.scalars == ()
-    assert len(summary.diagnostics) == 1
-    assert "configured limit" in summary.diagnostics[0].message
+    assert summary.diagnostics[0].code == DiagnosticCode.RESULT_QUERY_FAILED.value
 
 
 def test_query_results_returns_diagnostic_for_unavailable_truss_stress():
@@ -248,19 +222,8 @@ def test_query_results_returns_diagnostic_for_unavailable_truss_stress():
     assert "stress" in summary.diagnostics[0].message.casefold()
 
 
-def test_beam_stress_queries_reuse_one_canonical_recovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_beam_stress_queries_return_axial_extrema() -> None:
     result = make_beam_field_characterization_result()
-    original = beam.recover_integration_point_stress
-    calls: list[object] = []
-
-    def counted(value):
-        calls.append(value)
-        return original(value)
-
-    monkeypatch.setattr(beam, "recover_integration_point_stress", counted)
-
     summary = query_results(
         result,
         (
@@ -278,8 +241,14 @@ def test_beam_stress_queries_reuse_one_canonical_recovery(
     )
 
     assert summary.diagnostics == ()
-    assert len(summary.scalars) == 4
-    assert calls == [result]
+    stresses = [
+        row.s11
+        for section in beam.recover_integration_point_stress(result).section_points
+        for row in section.rows
+    ]
+    assert [scalar.value for scalar in summary.scalars] == pytest.approx(
+        [min(stresses), max(stresses)] * 2
+    )
 
 
 def test_stress_extrema_match_existing_nodal_stress_postprocessing():

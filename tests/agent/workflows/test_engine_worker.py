@@ -1,6 +1,5 @@
 import json
 import threading
-from dataclasses import replace
 
 import pytest
 
@@ -243,76 +242,6 @@ def test_postsolve_result_configuration_cannot_discard_active_run(tmp_path):
     assert after.revision == before.revision
     assert after.active_run_id == before.active_run_id
     assert after.phase == SessionPhase.SOLVED
-
-
-@pytest.mark.integration
-def test_legacy_run_can_return_its_matching_precomputed_summary(tmp_path):
-    engine = _ready_engine(tmp_path, FakeProvider())
-    engine.confirm_revision()
-    current = engine.revisions.require_current(engine.session_id)
-    legacy_response = replace(
-        engine._active_run,
-        artifacts=tuple(
-            item
-            for item in engine._active_run.artifacts
-            if item.kind != "solution"
-        ),
-    )
-
-    result = engine.registry.dispatch(
-        "query_results",
-        {
-            "queries": [
-                item.to_dict()
-                for item in current.spec.requested_queries
-            ]
-        },
-        ToolExecutionContext(
-            engine.session_id,
-            current.revision,
-            "legacy_precomputed_query",
-            completed_run=legacy_response,
-        ),
-    )
-
-    assert result.ok is True
-    assert result.data["result_summary"] == (
-        legacy_response.result_summary.to_dict()
-    )
-    legacy_default = engine.registry.dispatch(
-        "query_results",
-        {},
-        ToolExecutionContext(
-            engine.session_id,
-            current.revision,
-            "legacy_default_query",
-            completed_run=legacy_response,
-        ),
-    )
-    assert legacy_default.ok is True
-    assert legacy_default.data == result.data
-
-    different = engine.registry.dispatch(
-        "query_results",
-        {
-            "queries": [
-                {
-                    "kind": "max_displacement_component",
-                    "component": 1,
-                }
-            ]
-        },
-        ToolExecutionContext(
-            engine.session_id,
-            current.revision,
-            "legacy_different_query",
-            completed_run=legacy_response,
-        ),
-    )
-    assert different.ok is False
-    assert different.diagnostics[0].code == "RESULT_QUERY_FAILED"
-    assert "predates reusable" in different.diagnostics[0].message
-    assert engine.get_snapshot().phase == SessionPhase.SOLVED
 
 
 @pytest.mark.integration

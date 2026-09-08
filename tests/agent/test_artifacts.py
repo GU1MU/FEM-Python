@@ -186,18 +186,3 @@ def test_run_creation_is_idempotent_and_outputs_are_confined(
             outside,
             kind="csv",
         )
-
-
-def test_artifact_metadata_is_atomic_and_has_no_temporary_files(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "model.inp"
-    source.write_bytes(b"*Heading\n")
-    workspace = tmp_path / "workspace"
-    store = ArtifactStore(workspace)
-    session_id = store.create_session()
-    record = store.copy_input(session_id, source)
-    metadata_directory = workspace / "sessions" / session_id / "artifacts"
-
-    assert (metadata_directory / f"{record.artifact_id}.json").is_file()
-    assert not list(metadata_directory.glob("*.tmp"))

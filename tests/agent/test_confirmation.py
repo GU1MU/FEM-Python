@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,8 +15,6 @@ from fem_agent.confirmation import (
 from fem_agent.schemas import (
     ExportFormat,
     ImportAnalysisSpec,
-    ResultQuery,
-    ResultQueryKind,
     UnitContext,
 )
 from fem_agent.state import RevisionStore, StaleRevisionError
@@ -44,12 +41,8 @@ def _spec(
         if ready
         else None,
         analysis_step="Step-1" if ready else None,
-        requested_queries=(
-            ResultQuery(kind=ResultQueryKind.MAX_DISPLACEMENT_MAGNITUDE),
-        )
-        if ready
-        else (),
-        export_formats=(ExportFormat.CSV,),
+        requested_queries=(),
+        export_formats=(),
     )
 
 
@@ -86,29 +79,6 @@ def test_confirmation_is_persisted_and_idempotent(tmp_path: Path) -> None:
         revision=current.revision,
         revision_hash=current.revision_hash,
     )
-
-
-def test_confirmation_does_not_require_precomputed_result_queries(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    revisions = RevisionStore(workspace)
-    spec = replace(
-        _spec("ses_confirm_without_queries"),
-        requested_queries=(),
-    )
-    current = revisions.initialize(
-        spec,
-        idempotency_key="initial_import",
-    )
-
-    confirmation = ConfirmationStore(workspace, revisions).confirm(
-        current.session_id,
-        revision=current.revision,
-        revision_hash=current.revision_hash,
-    )
-
-    assert confirmation.revision == current.revision
 
 
 def test_new_revision_naturally_invalidates_old_confirmation(

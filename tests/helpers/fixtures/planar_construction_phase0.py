@@ -1,54 +1,6 @@
 from __future__ import annotations
 
 
-MALFORMED_H_SLOT_PAYLOAD = {
-    "part_function": "2D 平板（带 H 形槽与四角孔）",
-    "geometry": {
-        "kind": "planar_profiles",
-        "profiles": [
-            {
-                "kind": "rectangle",
-                "x": 0,
-                "y": 0,
-                "width": 300,
-                "height": 100,
-                "role": "material",
-                "operation": "material",
-            },
-            {
-                "kind": "rectangle",
-                "x": 110,
-                "y": 20,
-                "width": 80,
-                "height": 60,
-                "role": "hole",
-                "operation": "cut",
-            },
-            {
-                "kind": "rectangle",
-                "x": 140,
-                "y": 40,
-                "width": 20,
-                "height": 20,
-                "role": "material",
-                "operation": "material",
-            },
-            *(
-                {
-                    "kind": "circle",
-                    "center_x": x,
-                    "center_y": y,
-                    "radius": 1,
-                    "role": "hole",
-                    "operation": "cut",
-                }
-                for x, y in ((5, 5), (295, 5), (5, 95), (295, 95))
-            ),
-        ],
-    },
-}
-
-
 EXPECTED_H_CONSTRUCTION = {
     "schema_version": 1,
     "name": "带H形槽和四角孔的平板",
@@ -120,19 +72,6 @@ EXPECTED_H_CONSTRUCTION = {
         },
     ],
     "result_node_id": "result",
-}
-
-
-LEGACY_PROFILE_SCHEMA_HASHES = {
-    "planar_profiles": (
-        "53e31346e57a45b391742d03070a142b04008bef72357490187f0faa0343ae46"
-    ),
-    "extruded_profiles": (
-        "184d46cc2e0367f303693dc209bd1c965ef3841c867ad2af010a9cd3224d5237"
-    ),
-    "path_swept_profile": (
-        "b735fe947d44ea27bb17075c66f19485300356611d278e362e03e01f69bc270f"
-    ),
 }
 
 

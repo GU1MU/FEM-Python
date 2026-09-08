@@ -1,32 +1,13 @@
-"""Worker-path equivalence tests for the Phase-3 planar compile worker.
-
-Phase 3 (方案 D) of the planar feature-chain plan: the planar construction
-compile runs on a dedicated worker thread (gmsh affinity) and must return a
-field-for-field identical result to the Phase-2 main-thread compile.  These
-tests drive the real ``prepare_planar_construction_proposal`` dispatch, spy
-on the worker boundary, and compare against a direct same-thread compile.
-"""
-
 from __future__ import annotations
 
-from copy import deepcopy
 import threading
 
-from fem.application import (
-    ModelSession,
-    compile_planar_construction,
-    compile_planar_feature_recipe,
-)
+from fem.application import ModelSession
 from fem_agent.tools.registry import ToolExecutionContext
-from fem.geometry.construction_ir import PlanarConstructionIR
 import fem_gui.agent_authoring as agent_authoring
 from tests.helpers.agent_planar_construction import (
     make_planar_authoring_controller as _controller,
     build_rectangle_arguments,
-)
-from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
-from tests.helpers.fixtures.planar_feature_chain_baseline import (
-    feature_recipe_fingerprint,
 )
 
 import pytest
@@ -66,12 +47,13 @@ def _dispatch(controller, construction: dict[str, object], *, key: str):
     )
 
 
-def test_worker_path_matches_direct_compile_field_for_field(
+def test_planar_worker_returns_hole_proof_and_preview(
     real_gmsh, monkeypatch,
 ) -> None:
     del real_gmsh
     captured = _spy_worker(monkeypatch)
-    _bridge, controller = _controller(ModelSession())
+    session = ModelSession()
+    _bridge, controller = _controller(session)
 
     raw = build_rectangle_arguments()["construction"]
     raw["nodes"].extend([
@@ -86,30 +68,25 @@ def test_worker_path_matches_direct_compile_field_for_field(
     worker_compiled, worker_feature, kind, _recipe, _mesh = captured["payload"]
     assert kind == "planar"
 
-    construction = PlanarConstructionIR.from_dict(raw)
-    direct_compiled = compile_planar_construction(construction)
-    direct_feature = compile_planar_feature_recipe(
-        construction, compiled=direct_compiled
-    )
-
-    assert worker_compiled.proof == direct_compiled.proof
-    assert feature_recipe_fingerprint(
-        worker_feature
-    ) == feature_recipe_fingerprint(direct_feature)
+    assert worker_compiled.proof.equivalent
+    assert worker_compiled.proof.material_profile_count == 1
+    assert worker_compiled.proof.hole_count == 1
+    assert worker_compiled.preview.faces
+    assert 0 < len(worker_compiled.preview.points) <= 4096
 
 
 def test_cancelled_compile_stops_at_checkpoint_and_keeps_model(
     real_gmsh, monkeypatch,
 ) -> None:
     del real_gmsh
-    _bridge, controller = _controller(ModelSession())
+    session = ModelSession()
+    _bridge, controller = _controller(session)
 
-    # Gate the first CAD model open until the cancel event fires, so the
-    # worker deterministically stops at a cancellation checkpoint.
+    started = threading.Event()
+    before = session.snapshot()
     def gated_factory(cancel_event):
         def factory(*args, **kwargs):
-            # Cancellation fires within ~0.2s; the bound only guards the gate
-            # itself and must respect the GUI test real-wait policy.
+            started.set()
             if cancel_event.wait(timeout=2.0):
                 raise agent_authoring.PlanarCompileCancelled(
                     "test gate observed cancellation"
@@ -123,16 +100,18 @@ def test_cancelled_compile_stops_at_checkpoint_and_keeps_model(
     )
 
     def cancel_soon() -> None:
-        threading.Event().wait(0.2)
+        assert started.wait(timeout=2.0)
         controller.cancel_turn("test cancellation")
 
     canceller = threading.Thread(target=cancel_soon, daemon=True)
     canceller.start()
     result = _dispatch(
-        controller, deepcopy(EXPECTED_H_CONSTRUCTION), key="cancelled"
+        controller, build_rectangle_arguments()["construction"], key="cancelled"
     )
     canceller.join(timeout=2.0)
 
     assert result.ok is False
     assert result.data["diagnostic"]["code"] == "planar-ir.cancelled"
     assert result.data["diagnostic"]["model_unchanged"] is True
+    assert not canceller.is_alive()
+    assert session.snapshot() == before

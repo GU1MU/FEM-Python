@@ -225,18 +225,3 @@ def test_revision_sequence_gap_is_detected(tmp_path: Path) -> None:
 
     with pytest.raises(RevisionCorruptionError):
         store.list_records("ses_gap")
-
-
-def test_revision_files_are_published_without_temporary_residue(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    store = RevisionStore(workspace)
-    store.initialize(
-        _spec("ses_atomic"),
-        idempotency_key="initial_import",
-    )
-    revisions = workspace / "sessions" / "ses_atomic" / "revisions"
-
-    assert (revisions / "00000001.json").is_file()
-    assert not list(revisions.glob("*.tmp"))

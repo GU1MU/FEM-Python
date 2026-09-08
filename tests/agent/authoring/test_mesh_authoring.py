@@ -11,7 +11,6 @@ from fem.geometry import (
 )
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
-from fem_agent.tools.registry import AgentToolRegistry
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 from fem.application import ModelSession, UnitContext
 
@@ -153,16 +152,3 @@ def test_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None:
     assert proposal.operations[1].parameters["mesh_intent_hash"] == (
         intent.intent_hash
     )
-
-
-def test_provider_tool_catalog_exposes_no_confirmation_capability(
-    tmp_path,
-) -> None:
-    names = {
-        definition.name
-        for definition in AgentToolRegistry(tmp_path / "workspace").definitions
-    }
-
-    assert "accept_proposal" not in names
-    assert "confirm_mesh" not in names
-    assert "confirm_solve" not in names

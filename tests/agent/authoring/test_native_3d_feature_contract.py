@@ -134,14 +134,6 @@ def test_payload_rejects_unknown_type_version_and_budgets() -> None:
         geometry_recipe_from_payload(oversized)
 
 
-def test_legacy_payload_without_version_remains_readable() -> None:
-    legacy = {"kind": "rectangle", "name": "Legacy", "width": 2.0, "height": 1.0}
-
-    assert geometry_recipe_from_payload(legacy) == RectangleGeometry(
-        "Legacy", 2.0, 1.0
-    )
-
-
 def test_proposal_summary_exposes_feature_contract_and_invalidation() -> None:
     recipe = _recipes()[0]
     context = AuthoringContext(

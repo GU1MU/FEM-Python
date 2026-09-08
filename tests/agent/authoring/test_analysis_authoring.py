@@ -305,40 +305,6 @@ def test_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
         )
 
 
-def test_replays_legacy_definition_operation_without_steps() -> None:
-    session = _session()
-    session.replace_model_definitions(
-        session.snapshot().materials,
-        session.snapshot().sections,
-        session.snapshot().assignments,
-        (_analysis().to_step(),),
-    )
-    snapshot = session.snapshot()
-    legacy = deepcopy(
-        _change(_session()).operations[1].parameters["definitions"]
-    )
-    del legacy["steps"]
-    batch = scoped_definition_batch_from_operations(
-        (
-            ModelOperation(
-                OperationKind.UPSERT_NAMED_REGIONS,
-                {
-                    "regions": deepcopy(
-                        _change(_session()).operations[0].parameters["regions"]
-                    )
-                },
-            ),
-            ModelOperation(
-                OperationKind.UPSERT_MODEL_DEFINITIONS,
-                {"definitions": legacy},
-            ),
-        ),
-        snapshot,
-        base_session_revision=snapshot.session_revision,
-    )
-    assert batch.steps == snapshot.steps
-
-
 def test_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> None:
     session = _session()
     first = _change(session)
@@ -398,11 +364,9 @@ def test_invalid_scope_exception_is_atomic() -> None:
         snapshot,
         base_session_revision=snapshot.session_revision,
     )
-    with pytest.raises(Exception, match="不存在|unknown|region|scope"):
+    with pytest.raises(ValueError):
         session.apply_scoped_definition_batch(batch)
-    after = session.snapshot()
-    assert after.session_revision == snapshot.session_revision
-    assert after.steps == ()
+    assert session.snapshot() == snapshot
 
 
 def test_valid_result_forces_gui_confirmation() -> None:

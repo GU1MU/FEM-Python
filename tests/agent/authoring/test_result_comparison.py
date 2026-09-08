@@ -228,7 +228,7 @@ def test_zero_baseline_has_null_relative_change_and_finite_delta() -> None:
     assert comparison.direction == "increased"
 
 
-def test_bridge_preserves_query_only_ports_and_rejects_wrong_provenance() -> None:
+def test_bridge_rejects_wrong_result_provenance() -> None:
     baseline_source = AcceptedResultSource("r0", "s", "a", 1, "Step", "run-0")
     candidate_source = AcceptedResultSource("r1", "s", "a", 1, "Step", "run-1")
     request = _comparison_query(
@@ -236,21 +236,6 @@ def test_bridge_preserves_query_only_ports_and_rejects_wrong_provenance() -> Non
         AcceptedResultReference(candidate_source, 0),
         component="U1",
     )
-
-    class QueryOnlyPort:
-        def catalog(self, run_id=None):
-            return FakeAgentResultQueryPort().catalog(run_id)
-
-        def query(self, result_query):
-            return AgentResultQueryResponse.failure(
-                "result.query.unavailable",
-                "Unavailable.",
-                retryable=False,
-                clarification_required=True,
-            )
-
-    unsupported = AgentResultQueryBridge(QueryOnlyPort()).compare(request)
-    assert unsupported.diagnostics[0].code == "result.comparison.unsupported"
 
     def scalar(source: AcceptedResultSource) -> AgentResultScalar:
         return AgentResultScalar(

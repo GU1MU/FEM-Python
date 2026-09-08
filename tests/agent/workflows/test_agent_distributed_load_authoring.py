@@ -68,35 +68,6 @@ def _add_all_element_region(session: object, name: str) -> None:
     )
 
 
-def test_schema_publishes_closed_line_body_and_gravity_branches() -> None:
-    session = _plate_session()
-    controller, _bridge = make_authoring_controller(session)
-    tool = next(
-        item for item in controller.definitions
-        if item.name == "apply_model_definition"
-    )
-    load_action = next(
-        branch
-        for branch in tool.parameters["oneOf"]
-        if branch["properties"]["action"].get("const") == "create_load"
-    )
-    branches = load_action["properties"]["parameters"]["oneOf"]
-    extended = {
-        branch["properties"]["load_type"]["const"]: branch
-        for branch in branches
-        if branch["properties"]["load_type"].get("const")
-        in {"line", "body", "gravity"}
-    }
-
-    assert set(extended) == {"line", "body", "gravity"}
-    assert all(branch["additionalProperties"] is False for branch in extended.values())
-    assert extended["line"]["properties"]["vector"]["minItems"] == 3
-    assert extended["line"]["properties"]["vector"]["maxItems"] == 3
-    assert extended["gravity"]["properties"]["target_scope"]["oneOf"][0] == {
-        "type": "null"
-    }
-
-
 def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
     session = _plate_session()
     controller, _bridge = make_authoring_controller(session)

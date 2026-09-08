@@ -1,15 +1,11 @@
-"""Phase 5 bounded Profile-transform diagnostics and atomic recovery tests."""
+"""Bounded profile-transform diagnostics and atomic recovery."""
 
 from __future__ import annotations
 
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import (
-    CylinderGeometry,
-    SketchCircle,
-    SketchGeometry,
-)
+from fem.geometry import CylinderGeometry, SketchCircle
 from fem_agent.diagnostics import (
     PROFILE_TRANSFORM_DIAGNOSTIC_CODES,
     ProfileTransformDiagnostic,
@@ -217,7 +213,7 @@ def test_part_not_found_is_typed_and_keeps_snapshot() -> None:
     assert session.snapshot() == before
 
 
-def test_non_planar_blocks_while_legacy_exact_topology_is_transformable() -> None:
+def test_non_planar_source_is_rejected_without_mutation() -> None:
     non_planar = _session(CylinderGeometry("Solid", 1.0, 2.0))
     non_planar_refresh = []
     _bridge, non_planar_controller = _controller(
@@ -254,44 +250,6 @@ def test_non_planar_blocks_while_legacy_exact_topology_is_transformable() -> Non
     }
     assert non_planar.snapshot() == non_planar_before
     assert non_planar_refresh == []
-
-    # The Profile-transform contract is now defined over exact topology rather
-    # than sketch strictness: a legacy non-strict sketch whose topology proof
-    # is exact exposes its feature-history Profile and stays transformable.
-    legacy = _session(
-        SketchGeometry("Legacy", (SketchCircle("material", 0, 0, 1),))
-    )
-    legacy_refresh = []
-    _bridge, legacy_controller = _controller(
-        legacy,
-        lambda: legacy_refresh.append("refresh"),
-    )
-    legacy_before = legacy.snapshot()
-    result = legacy_controller.dispatch(
-        "read_profile_transform_context",
-        {"part_id": "P1"},
-        _context(legacy_controller, "legacy"),
-    )
-    extrusion = result.data["operations"]["extrusion"]
-    assert extrusion["blocking_code"] is None
-    assert extrusion["available"] is True
-    assert result.data["topology_exact"] is True
-    assert [profile["face_id"] for profile in result.data["profiles"]] == [
-        "face:domain",
-    ]
-    prepared = legacy_controller.dispatch(
-        "prepare_profile_extrusion",
-        {
-            "part_id": "P1",
-            "profile_selection": "unique_material_profile",
-            "height": 2.0,
-        },
-        _context(legacy_controller, "legacy-prepare"),
-    )
-    assert prepared.ok, prepared.summary
-    assert prepared.data["proposal_id"]
-    assert legacy.snapshot() == legacy_before
-    assert legacy_refresh == []
 
 
 def test_missing_profile_height_and_ambiguous_selection_have_next_inputs() -> None:

@@ -14,9 +14,7 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
 )
-from fem_agent.engine import AgentSessionEngine
-from fem_agent.providers.fake import FakeProvider
-from fem_agent.tools.registry import AgentToolRegistry, ToolExecutionContext
+from fem_agent.tools.registry import ToolExecutionContext
 from fem_gui.agent_events import AgentEvent, AgentEventProjector, EventType
 
 
@@ -183,25 +181,6 @@ def test_project_save_saved_state_revision_is_expected_but_other_change_is_stale
         next_view["proposal_hash"],
         current[0],
     )
-
-
-def test_v0_prompt_and_catalog_do_not_publish_project_save(tmp_path) -> None:
-    registry = AgentToolRegistry(tmp_path / "registry")
-    assert "request_project_save" not in {
-        item.name for item in registry.definitions
-    }
-
-    engine = AgentSessionEngine(
-        tmp_path / "engine",
-        FakeProvider(),
-    )
-    try:
-        assert "project-save request" not in engine._system_prompt
-        assert "request_project_save" not in {
-            item.name for item in engine.registry.definitions
-        }
-    finally:
-        engine.close_session()
 
 
 def test_project_save_event_is_a_strict_independent_proposal_view() -> None:

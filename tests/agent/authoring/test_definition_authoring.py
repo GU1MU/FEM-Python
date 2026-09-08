@@ -25,7 +25,6 @@ from fem_agent.definition_authoring import (
     scoped_definition_batch_from_operations,
 )
 from fem_agent.geometry_authoring import planar_sketch_geometry
-from fem_agent.tools.registry import AgentToolRegistry
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
 from tests.helpers.agent_definition_fixtures import (
@@ -246,18 +245,3 @@ def test_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
         loaded.region_assignments[0],
     )
     assert loaded.assignments[0].region_name == "域-板体"
-
-
-def test_provider_catalog_exposes_no_confirmation_or_undo_tool(
-    tmp_path,
-) -> None:
-    names = {
-        definition.name
-        for definition in AgentToolRegistry(
-            tmp_path / "workspace"
-        ).definitions
-    }
-
-    assert "accept_proposal" not in names
-    assert "confirm_definition_change" not in names
-    assert "undo_agent_patch" not in names

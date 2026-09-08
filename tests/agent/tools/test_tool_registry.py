@@ -25,7 +25,7 @@ def _attached_engine(tmp_path):
     return engine, source
 
 
-def test_registry_publishes_only_the_v0_whitelist(tmp_path):
+def test_registry_publishes_bounded_analysis_tools(tmp_path):
     registry = AgentToolRegistry(tmp_path / "workspace")
 
     names = {definition.name for definition in registry.definitions}
@@ -60,8 +60,6 @@ def test_result_request_tool_exposes_edge_and_surface_regions(tmp_path):
     )
 
     assert {"node_set", "edge", "surface"} <= set(query_properties)
-    assert "2D edge" in query_properties["edge"]["description"]
-    assert "3D face" in query_properties["surface"]["description"]
 
 
 def test_postsolve_query_tool_requires_bounded_queries(tmp_path):

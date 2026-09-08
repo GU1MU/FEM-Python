@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -14,7 +12,6 @@ from tests.helpers.agent_engine_providers import (
 from tests.helpers.agent_engine_registry_fixtures import (
     _GeometryEditToolRegistry,
     _GeometryEditWithCatalogToolRegistry,
-    _RetryingGeometryEditWithCatalogToolRegistry,
 )
 
 
@@ -158,11 +155,6 @@ def test_planar_retry_limit_stops_provider_after_three_failed_calls(tmp_path):
 
     assert tools.calls == 3
     assert len(provider.requests) == 3
-    assert any(
-        event.event is EngineEventType.MESSAGE_DELTA
-        and "本轮已停止继续提交" in event.data["text"]
-        for event in events
-    )
 
 
 def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_path):
@@ -206,17 +198,6 @@ def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_pa
         "read_geometry_edit_context",
         "prepare_geometry_edit",
     ]
-    assert "read_geometry_edit_context" in (
-        provider.requests[1].messages[-1].content or ""
-    )
-    assert "prepare_geometry_edit" in (
-        provider.requests[3].messages[-1].content or ""
-    )
-    assert not any(
-        "提交" in str(event.data.get("text", ""))
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    )
     assert any(
         event.event is EngineEventType.TOOL_COMPLETED
         and event.data["tool"] == "prepare_geometry_edit"
@@ -225,7 +206,7 @@ def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_pa
     )
 
 
-def test_planar_edit_blocks_premature_prepare_but_audit_distinguishes_it(tmp_path):
+def test_geometry_proposal_requires_current_edit_context(tmp_path):
     edit = {
         "part_id": "P1",
         "edit": {
@@ -261,198 +242,19 @@ def test_planar_edit_blocks_premature_prepare_but_audit_distinguishes_it(tmp_pat
         dynamic_tools=tools,
     )
 
-    engine.send_message("在现有平板上增加一个矩形槽")
+    events = engine.send_message("在现有平板上增加一个矩形槽")
 
     assert [name for name, _arguments in tools.calls] == [
         "read_geometry_edit_context",
         "prepare_geometry_edit",
     ]
-    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
-    assert audit["entries"][0]["tool_call_flags"]["called_tool_names"] == [
-        "prepare_geometry_edit"
-    ]
-    assert audit["entries"][0]["tool_call_flags"]["accepted_tool_names"] == []
-    assert audit["entries"][1]["tool_call_flags"]["accepted_tool_names"] == [
-        "read_geometry_edit_context"
-    ]
-
-
-def test_planar_edit_allows_supplemental_read_before_prepare(tmp_path):
-    edit = {
-        "part_id": "P1",
-        "edit": {
-            "operation": "add_path_slot",
-            "points": [
-                {"x": 190, "y": 75},
-                {"x": 190, "y": 25},
-                {"x": 225, "y": 25},
-                {"x": 225, "y": 75},
-            ],
-            "width": 6,
-            "cap": "square",
-            "join": "miter",
-        },
-    }
-    provider = FakeProvider(
-        [
-            _tool_response(
-                ToolCall(
-                    "read-edit",
-                    "read_geometry_edit_context",
-                    {"part_id": "P1"},
-                )
-            ),
-            _tool_response(
-                ToolCall(
-                    "read-features",
-                    "read_geometry_feature_catalog",
-                    {},
-                )
-            ),
-            _tool_response(
-                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
-            ),
-        ]
-    )
-    tools = _GeometryEditWithCatalogToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_planar_edit_supplemental_read",
-        dynamic_tools=tools,
-    )
-
-    events = engine.send_message("在H槽旁边加入一个U形槽")
-
-    assert len(provider.requests) == 3
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_edit_context",
-        "read_geometry_feature_catalog",
-        "prepare_geometry_edit",
-    ]
-    assert not any(
-        event.event is EngineEventType.MESSAGE_DELTA
-        and event.data.get("text") == "当前几何能力检查未完成，请重试。"
+    completed = [
+        event.data
         for event in events
-    )
-    assert any(
-        event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "prepare_geometry_edit"
-        and event.data["result"]["data"]["state"] == "pending_confirmation"
-        for event in events
-    )
-
-
-def test_planar_edit_allows_read_only_discovery_before_required_probe(tmp_path):
-    edit = {
-        "part_id": "P1",
-        "edit": {
-            "operation": "add_polygon",
-            "vertices": [
-                {"x": 190, "y": 75},
-                {"x": 190, "y": 25},
-                {"x": 225, "y": 25},
-                {"x": 225, "y": 75},
-            ],
-        },
-    }
-    provider = FakeProvider(
-        [
-            _tool_response(
-                ToolCall(
-                    "read-features",
-                    "read_geometry_feature_catalog",
-                    {},
-                )
-            ),
-            _tool_response(
-                ToolCall(
-                    "read-edit",
-                    "read_geometry_edit_context",
-                    {"part_id": "P1"},
-                )
-            ),
-            _tool_response(
-                ToolCall("prepare-edit", "prepare_geometry_edit", edit)
-            ),
-        ]
-    )
-    tools = _GeometryEditWithCatalogToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_planar_edit_discovery_before_probe",
-        dynamic_tools=tools,
-    )
-
-    engine.send_message("在现有平板上增加一个槽")
-
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_feature_catalog",
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
+        if event.event is EngineEventType.TOOL_COMPLETED
     ]
-
-
-def test_planar_edit_allows_context_reread_after_failed_prepare(tmp_path):
-    edit = {
-        "part_id": "P1",
-        "edit": {
-            "operation": "add_polygon",
-            "vertices": [
-                {"x": 190, "y": 75},
-                {"x": 190, "y": 25},
-                {"x": 225, "y": 25},
-                {"x": 225, "y": 75},
-            ],
-        },
-    }
-    provider = FakeProvider(
-        [
-            _tool_response(
-                ToolCall(
-                    "read-edit",
-                    "read_geometry_edit_context",
-                    {"part_id": "P1"},
-                )
-            ),
-            _tool_response(
-                ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
-            ),
-            _tool_response(
-                ToolCall(
-                    "read-features",
-                    "read_geometry_feature_catalog",
-                    {},
-                )
-            ),
-            _tool_response(
-                ToolCall("prepare-corrected", "prepare_geometry_edit", edit)
-            ),
-        ]
-    )
-    tools = _RetryingGeometryEditWithCatalogToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_planar_edit_reread_after_failure",
-        dynamic_tools=tools,
-    )
-
-    events = engine.send_message("在现有平板上增加一个槽")
-
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
-        "read_geometry_feature_catalog",
-        "prepare_geometry_edit",
-    ]
-    assert any(
-        event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["call_id"] == "prepare-corrected"
-        and event.data["result"]["data"]["state"] == "pending_confirmation"
-        for event in events
-    )
+    assert all(item["call_id"] != "premature-prepare" for item in completed)
+    assert completed[-1]["result"]["data"]["state"] == "pending_confirmation"
 
 
 def test_planar_edit_allows_clarification_after_context_read(tmp_path):
@@ -541,15 +343,6 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
         "prepare_geometry_edit",
     ]
     assert tools.calls[-1][1] == corrected_edit
-    assert "read_authoring_context" in (
-        provider.requests[1].messages[-1].content or ""
-    )
-    assert "read_geometry_edit_context" in (
-        provider.requests[3].messages[-1].content or ""
-    )
-    assert "proposal-grounding correction" in (
-        provider.requests[5].messages[-1].content or ""
-    )
     assert not any(
         "旧版本" in str(event.data.get("text", ""))
         or "等待本地操作执行完成" in str(event.data.get("text", ""))

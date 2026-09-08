@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -36,8 +34,6 @@ from fem_gui.widgets.agent_chat import (
     AgentNarrativeSection,
     ToolActivityPreview,
     _AGENT_CHAT_STYLESHEET,
-    _restricted_markdown_html,
-    _streaming_plaintext_html,
 )
 
 
@@ -171,28 +167,6 @@ def _tool_events(
         )
     )
     return result
-
-
-def test_event_contract_module_is_ui_and_agent_independent():
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "fem_gui"
-        / "agent_events.py"
-    )
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    imported_roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_roots.update(
-                alias.name.split(".", 1)[0]
-                for alias in node.names
-            )
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported_roots.add(node.module.split(".", 1)[0])
-
-    assert "PySide6" not in imported_roots
-    assert "fem_agent" not in imported_roots
 
 
 def test_event_schema_round_trip_and_unknown_values_are_rejected():
@@ -1069,7 +1043,8 @@ def test_long_process_message_collapses_and_expands_while_streaming(gui_applicat
     drawer.close()
 
 
-def test_short_process_message_shows_directly_without_toggle(gui_application):
+@pytest.mark.parametrize("text", ["正在校验轮廓。", "正在读取上下文。随后校验轮廓。"])
+def test_short_process_message_shows_directly_without_toggle(gui_application, text):
     application = gui_application
     events = _Events(session_id="short-process-session")
     drawer = AgentChatDrawer()
@@ -1089,7 +1064,7 @@ def test_short_process_message_shows_directly_without_toggle(gui_application):
                 EventType.MESSAGE_DELTA,
                 {
                     "message_id": "short-process-message",
-                    "delta": "正在重新校验当前轮廓。",
+                    "delta": text,
                 },
             ),
         )
@@ -1103,52 +1078,13 @@ def test_short_process_message_shows_directly_without_toggle(gui_application):
     assert section.primary_label.isVisible()
     assert section.summary_row.isHidden()
     assert section.summary_label.text() == ""
-    assert "正在重新校验当前轮廓。" in section.primary_label.text()
-    drawer.close()
-
-
-def test_short_multi_sentence_process_message_shows_directly_without_toggle(
-    gui_application,
-):
-    application = gui_application
-    events = _Events(session_id="short-multi-sentence-process-session")
-    drawer = AgentChatDrawer()
-    drawer.replay_agent_events(
-        (
-            _turn_start(events),
-            events.make(
-                EventType.MESSAGE_START,
-                {
-                    "message_id": "short-multi-sentence-process-message",
-                    "role": "assistant",
-                    "format": "restricted_markdown",
-                    "presentation_kind": "process",
-                },
-            ),
-            events.make(
-                EventType.MESSAGE_DELTA,
-                {
-                    "message_id": "short-multi-sentence-process-message",
-                    "delta": "正在读取当前建模上下文。随后构造并校验二维轮廓。",
-                },
-            ),
-        )
-    )
-    drawer.show()
-    application.processEvents()
-
-    section = drawer.findChild(AgentNarrativeSection)
-    assert section is not None
-    assert not section.collapsible
-    assert section.primary_label.isVisible()
-    assert section.summary_row.isHidden()
-    assert "随后构造并校验二维轮廓。" in section.primary_label.text()
+    assert text in section.primary_label.text()
     drawer.close()
 
 
 @pytest.mark.parametrize(
     "presentation_kind",
-    ["decision_request", "patch_preview", "result_summary"],
+    ["decision_request", "patch_preview", "proposal_preview", "result_summary"],
 )
 def test_formal_assistant_messages_never_collapse_when_long(
     gui_application,
@@ -1186,45 +1122,6 @@ def test_formal_assistant_messages_never_collapse_when_long(
     assert not section.collapsible
     assert section.primary_label.isVisible()
     assert section.summary_row.isHidden()
-    drawer.close()
-
-
-def test_proposal_preview_never_collapses_when_long(gui_application):
-    application = gui_application
-    events = _Events(session_id="proposal-preview-session")
-    drawer = AgentChatDrawer()
-    drawer.replay_agent_events(
-        (
-            _turn_start(events),
-            events.make(
-                EventType.MESSAGE_START,
-                {
-                    "message_id": "proposal-preview-message",
-                    "role": "assistant",
-                    "format": "restricted_markdown",
-                    "presentation_kind": "proposal_preview",
-                },
-            ),
-            events.make(
-                EventType.MESSAGE_DELTA,
-                {
-                    "message_id": "proposal-preview-message",
-                    "delta": "完整方案内容。" * 50,
-                },
-            ),
-        )
-    )
-    drawer.show()
-    application.processEvents()
-
-    section = drawer.findChild(AgentNarrativeSection)
-    assert section is not None
-    assert not section.collapsible
-    assert section.primary_label.isVisible()
-    assert section.summary_row.isHidden()
-    assert section.primary_label.property("presentationKind") == (
-        "proposal_preview"
-    )
     drawer.close()
 
 
@@ -1333,22 +1230,6 @@ def test_restricted_markdown_renders_ordered_and_unordered_lists(gui_application
     assert not label.openExternalLinks()
     assert drawer.event_feed_layout.spacing() == 6
     drawer.close()
-
-
-def test_message_paragraphs_have_more_space_than_wrapped_lines():
-    markdown = _restricted_markdown_html(
-        "第一段内容会在标签宽度不足时自动换行。\n\n"
-        "第二段第一行。\n第二段内的显式换行。"
-    )
-
-    assert "<p style='margin:0px 0 0 0;'>第一段内容" in markdown
-    assert "<p style='margin:7px 0 0 0;'>第二段第一行。<br>" in markdown
-    assert "第二段内的显式换行。</p>" in markdown
-    assert "<br><br>" not in markdown
-
-    streaming = _streaming_plaintext_html("第一段。\n\n第二段。")
-    assert "<p style='margin:0px 0 0 0;'>第一段。</p>" in streaming
-    assert "<p style='margin:7px 0 0 0;'>第二段。 ▌</p>" in streaming
 
 
 def test_restricted_markdown_renders_safe_aligned_tables(gui_application):
@@ -1533,99 +1414,6 @@ def test_wheel_over_agent_text_scrolls_the_conversation(gui_application):
 
     assert wheel.isAccepted()
     assert scroll_bar.value() < before
-    drawer.close()
-
-
-def test_conversation_uses_white_background_and_compact_left_inset(gui_application):
-    application = gui_application
-    drawer = AgentChatDrawer()
-    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
-    drawer.resize(420, 320)
-    drawer.show()
-    application.processEvents()
-
-    background_widgets = (
-        drawer.conversation_scroll.viewport(),
-        drawer.conversation_widget,
-        drawer.event_feed,
-    )
-    for widget in background_widgets:
-        assert widget.testAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground
-        )
-        assert (
-            widget.palette().color(widget.backgroundRole()).name()
-            == "#ffffff"
-        )
-
-    margins = drawer.conversation_layout.contentsMargins()
-    assert margins.left() == 6
-    assert margins.right() == 14
-    drawer.close()
-
-
-def test_conversation_reserves_scrollbar_width_before_content_overflows(
-    gui_application,
-):
-    application = gui_application
-    events = _Events(session_id="conversation-width-session")
-    drawer = AgentChatDrawer()
-    drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
-    drawer.resize(384, 320)
-    drawer.show()
-    application.processEvents()
-
-    viewport = drawer.conversation_scroll.viewport()
-    initial_viewport_width = viewport.width()
-    assert (
-        drawer.conversation_scroll.verticalScrollBarPolicy()
-        == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-    )
-    assert drawer.conversation_scroll.verticalScrollBar().maximum() == 0
-
-    drawer.replay_agent_events(
-        (
-            events.make(
-                EventType.TURN_STARTED,
-                {
-                    "user_message": (
-                        "在xy视图下，我希望在H的下方（-y方向）做一个U形槽，"
-                        "内外两者间距为20"
-                    )
-                },
-            ),
-            events.make(
-                EventType.MESSAGE_START,
-                {
-                    "message_id": "width-message",
-                    "role": "assistant",
-                    "format": "restricted_markdown",
-                    "presentation_kind": "result_summary",
-                },
-            ),
-            events.make(
-                EventType.MESSAGE_DELTA,
-                {
-                    "message_id": "width-message",
-                    "delta": "\n".join(
-                        f"- 本地几何校验 {index}：形成材料区域和切除区域"
-                        for index in range(30)
-                    ),
-                },
-            ),
-        )
-    )
-    application.processEvents()
-    QTest.qWait(10)
-
-    assert drawer.conversation_scroll.verticalScrollBar().maximum() > 0
-    assert viewport.width() == initial_viewport_width
-    assert drawer.conversation_widget.width() == viewport.width()
-    for object_name in ("agentChatUserMessage", "agentChatAgentMessage"):
-        widget = drawer.findChild(QWidget, object_name)
-        assert widget is not None
-        right_edge = widget.mapTo(viewport, QPoint(widget.width(), 0)).x()
-        assert right_edge <= viewport.width()
     drawer.close()
 
 

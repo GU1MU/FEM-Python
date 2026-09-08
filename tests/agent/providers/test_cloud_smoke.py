@@ -1,6 +1,4 @@
 import os
-from collections.abc import Mapping
-from pathlib import Path
 
 import pytest
 
@@ -8,7 +6,6 @@ from fem_agent.config import (
     ConfigError,
     LocalAgentConfig,
     TEST_CONFIG_NAME,
-    resolve_local_config,
 )
 from fem_agent.providers.base import (
     AssistantMessage,

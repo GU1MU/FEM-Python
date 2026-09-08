@@ -19,9 +19,7 @@ class _AdditionalModelToolRegistry:
         )
         self.calls = []
 
-    @property
-    def provider_snapshot(self):
-        return None
+    provider_snapshot = None
 
     def refresh_turn_snapshot(self, published_tool_names=()):
         del published_tool_names
@@ -95,9 +93,7 @@ class _GeometryEditToolRegistry:
         )
         self.calls = []
 
-    @property
-    def provider_snapshot(self):
-        return None
+    provider_snapshot = None
 
     def refresh_turn_snapshot(self, published_tool_names=()):
         del published_tool_names

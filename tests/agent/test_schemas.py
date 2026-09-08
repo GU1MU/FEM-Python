@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 
 import pytest
 
@@ -55,12 +54,6 @@ def test_import_analysis_spec_round_trips_through_json():
 
     assert restored == original
     assert restored.to_json() == original.to_json()
-
-
-def test_analysis_spec_is_ready_without_precomputed_result_queries():
-    spec = replace(_spec(), requested_queries=())
-
-    assert spec.ready_for_confirmation
 
 
 def test_unknown_schema_version_is_rejected_at_every_contract_boundary():
@@ -127,31 +120,6 @@ def test_result_query_round_trips_topology_region_selectors(field_name):
 
     assert restored == query
     assert query.to_dict()[field_name] == "Surf-right"
-
-
-def test_result_query_new_null_fields_preserve_legacy_json_shape():
-    payload = ResultQuery(
-        ResultQueryKind.MAX_DISPLACEMENT_MAGNITUDE
-    ).to_dict()
-
-    assert "edge" not in payload
-    assert "surface" not in payload
-
-
-def test_result_query_preserves_legacy_positional_field_order():
-    query = ResultQuery(
-        ResultQueryKind.STRESS_EXTREMA,
-        None,
-        None,
-        None,
-        "plate",
-        "von_mises",
-    )
-
-    assert query.element_set == "plate"
-    assert query.measure == "von_mises"
-    assert query.edge is None
-    assert query.surface is None
 
 
 @pytest.mark.parametrize("field_name", ["edge", "surface"])

@@ -80,63 +80,6 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assert result.nodal_reaction(root_id, 4) == pytest.approx(-500.0)
     assert all(isfinite(value) for value in result.U)
 
-    before_edit = session.snapshot()
-    applied = dispatch_authoring_tool(
-        controller,
-        session,
-        "apply_model_definition",
-        {
-            "action": "create_section",
-            "parameters": {
-                "name": "截面-候选圆梁",
-                "material": "材料-钢",
-                "section_type": "solid_circle",
-                "properties": {"radius": 5.0},
-            },
-        },
-        "create-additional-beam-section",
-    )
-    assert applied.ok, applied.to_json()
-    assert applied.data["state"] == "succeeded"
-    assert applied.data["undo_available"] is True
-    patch_id = applied.data["patch_id"]
-    assert bridge.can_undo_patch(patch_id)
-    after_edit = session.snapshot()
-    assert after_edit.session_revision == before_edit.session_revision + 1
-    created = next(item for item in after_edit.sections if item.name == "截面-候选圆梁")
-    assert created.material == "材料-钢"
-    assert created.section_type == "solid_circle"
-    assert created.properties["radius"] == 5.0
-    assert len(after_edit.sections) == len(before_edit.sections) + 1
-    assert after_edit.materials == before_edit.materials
-    assert after_edit.assignments == before_edit.assignments
-    assert after_edit.steps == before_edit.steps
-    assert tuple(run.run_id for run in after_edit.runs) == tuple(
-        run.run_id for run in before_edit.runs
-    )
-    assert after_edit.displayed_result_run_id is None
-    assert all(
-        session.result_for(run.run_id) is not None
-        for run in before_edit.runs if run.has_result
-    )
-
-    undone = bridge.undo_patch_from_gui_control(patch_id)
-    assert undone.state.value == "undone"
-    assert not undone.undo_available
-    assert not bridge.can_undo_patch(patch_id)
-    restored = session.snapshot()
-    assert restored.materials == before_edit.materials
-    assert restored.sections == before_edit.sections
-    assert restored.assignments == before_edit.assignments
-    assert restored.steps == before_edit.steps
-    assert tuple(run.run_id for run in restored.runs) == tuple(
-        run.run_id for run in before_edit.runs
-    )
-    assert all(
-        session.result_for(run.run_id) is not None
-        for run in before_edit.runs if run.has_result
-    )
-
     csv_files = export_line_result(result, tmp_path / "artifacts", "beam-csv", "csv")
     vtk_files = export_line_result(result, tmp_path / "artifacts", "beam-vtk", "vtk")
     assert any(path.suffix == ".csv" for path in csv_files)

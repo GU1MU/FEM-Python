@@ -37,35 +37,12 @@ def _sketch() -> SketchGeometry:
     )
 
 
-def test_agent_catalog_recognizes_constraint_summary_and_old_edit_preserves_it() -> None:
+def test_point_edit_preserves_constraints_and_payload() -> None:
     sketch = _sketch()
-    catalog = planar_geometry_catalog(sketch)
     edited = update_planar_point(sketch, point_id="P2", x=2.0).recipe
-
-    assert catalog["constraint_summary"]["count"] == 1
-    assert catalog["constraint_summary"]["capability"] == {
-        "read": True,
-        "create": True,
-        "edit": True,
-    }
+    assert edited.point("P2").u == 2.0
     assert edited.constraints == sketch.constraints
-
-
-def test_agent_full_recipe_payload_round_trips_constraints() -> None:
-    payload = geometry_recipe_to_payload(_sketch())
-
-    assert payload["constraints"] == [
-        {
-            "kind": "fixed",
-            "id": "G1",
-            "source": "manual",
-            "enabled": True,
-            "point_id": "P1",
-            "u": 0.0,
-            "v": 0.0,
-        }
-    ]
-    assert geometry_recipe_from_payload(payload) == _sketch()
+    assert geometry_recipe_from_payload(geometry_recipe_to_payload(edited)) == edited
 
 
 def test_agent_summary_names_advanced_constraints_and_angle_dimension() -> None:

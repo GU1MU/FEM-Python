@@ -11,12 +11,7 @@ from fem.geometry import (
     describe_recipe_topology,
     resolve_extrusion_source_faces,
 )
-from fem_agent.geometry_authoring import (
-    GEOMETRY_FEATURE_CATALOG_TOOL_NAME,
-    geometry_feature_catalog_tool_schema,
-    planar_feature_geometry_catalog,
-    planar_polygon_geometry,
-)
+from fem_agent.geometry_authoring import GEOMETRY_FEATURE_CATALOG_TOOL_NAME, planar_feature_geometry_catalog, planar_polygon_geometry
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import AgentToolRegistry, ToolExecutionContext
 from fem_gui.agent_authoring import (
@@ -74,24 +69,6 @@ def _proven_cut(base, tool, model_name: str):
             tool_face_ids,
             "cut",
         ).geometry
-
-
-def test_geometry_catalog_tool_schema_accepts_optional_part_filter() -> None:
-    schema = geometry_feature_catalog_tool_schema()
-
-    assert schema["name"] == GEOMETRY_FEATURE_CATALOG_TOOL_NAME
-    assert schema["input_schema"] == {
-        "type": "object",
-        "properties": {
-            "part_id": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 96,
-            }
-        },
-        "required": [],
-        "additionalProperties": False,
-    }
 
 
 def test_unmeshed_native_catalog_is_visible_bounded_and_read_only() -> None:

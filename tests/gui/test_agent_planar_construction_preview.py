@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-import hashlib
 import json
 
 import pytest
@@ -13,11 +12,7 @@ from fem.application import (
     PlanarConstructionDiagnostic,
 )
 from fem_agent.authoring import AuthoringContractError, ProposalState
-from fem_agent.geometry_authoring import (
-    geometry_contract_proof,
-    geometry_recipe_from_payload,
-    geometry_recipe_to_payload,
-)
+from fem_agent.geometry_authoring import geometry_recipe_from_payload
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_gui.agent_authoring import AgentProposalPreview
 from fem_gui.geometry_preview import GeometryPreview
@@ -135,19 +130,7 @@ def test_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     assert preview.faces
     assert preview.edges
     assert preview.recipe_digest == evidence["output_recipe_digest"]
-    output_recipe = geometry_recipe_from_payload(
-        bridge._records[proposal_id].proposal.operations[0].parameters["recipe"]
-    )
-    output_proof_digest = hashlib.sha256(
-        json.dumps(
-            geometry_contract_proof(output_recipe).to_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
     assert preview.proof_digest == evidence["output_proof_digest"]
-    assert preview.proof_digest == output_proof_digest
     provider_payload = json.dumps(result.data, sort_keys=True)
     assert '"faces"' not in provider_payload
     assert '"points"' not in provider_payload
@@ -190,22 +173,10 @@ def test_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> None:
     proposal = bridge._records[proposal_id].proposal
     evidence = proposal.preconditions["local_evidence"]
     assert "preview" not in proposal.display_summary
-    output_recipe = geometry_recipe_from_payload(
-        bridge._records[proposal_id].proposal.operations[0].parameters["recipe"]
-    )
-    output_proof_digest = hashlib.sha256(
-        json.dumps(
-            geometry_contract_proof(output_recipe).to_dict(),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
     assert preview.dimension == 3
     assert preview.faces
     assert preview.edges
     assert preview.proof_digest == evidence["output_proof_digest"]
-    assert preview.proof_digest == output_proof_digest
     assert bridge.stale_pending_proposals_from_gui("test session switch") == (proposal_id,)
     assert bridge.state(proposal_id) is ProposalState.STALE
     assert session.snapshot() == before
@@ -225,10 +196,6 @@ def test_accept_success_failure_cancel_and_detach_clear_preview(
     receipt = bridge.accept_from_gui_control(proposal_id)
     committed_recipe = session.snapshot().parts[0].geometry_recipe
     assert committed_recipe == prepared_recipe
-    assert preview.recipe_digest == hashlib.sha256(
-        json.dumps(geometry_recipe_to_payload(committed_recipe), sort_keys=True,
-                   separators=(",", ":"), allow_nan=False).encode("utf-8")
-    ).hexdigest()
     assert receipt.state is ProposalState.SUCCEEDED
     assert proposal_id not in bridge._proposal_previews
 

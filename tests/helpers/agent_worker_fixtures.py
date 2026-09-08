@@ -1,5 +1,6 @@
 import fem_agent.worker as worker_module
 from fem_agent.artifacts import ArtifactStore, atomic_write_json, read_json_file
+from fem_agent.confirmation import ConfirmationStore
 from fem_agent.diagnostics import make_diagnostic
 from fem_agent.schemas import (
     ExportFormat,
@@ -28,6 +29,7 @@ def _units():
 def _prepared_revision(
     tmp_path,
     *,
+    confirmed=False,
     unit_context=None,
     resource_limits=None,
     requested_queries=None,
@@ -75,6 +77,12 @@ def _prepared_revision(
         ),
         idempotency_key="initialize_worker",
     )
+    if confirmed:
+        ConfirmationStore(workspace, revisions).confirm(
+            record.session_id,
+            revision=record.revision,
+            revision_hash=record.revision_hash,
+        )
     return workspace, artifacts, revisions, record
 
 

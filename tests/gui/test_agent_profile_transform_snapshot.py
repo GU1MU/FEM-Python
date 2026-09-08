@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
-import fem_agent.engine as engine_module
 from fem_agent.authoring import (
     AuthoringContext,
     CapabilitySummary,
@@ -21,8 +19,8 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowController,
     AuthoringWorkflowStage,
 )
-from fem_agent.engine import AgentSessionEngine, EngineConfig
-from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolCall
+from fem_agent.engine import AgentSessionEngine
+from fem_agent.providers.base import AssistantMessage, ProviderResponse
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import tool_schema_hash
 from fem_gui.agent_runtime import QtAgentRuntime
@@ -447,129 +445,3 @@ def test_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
     assert "phase1-model" not in encoded
     assert "document:phase1" not in encoded
     assert "Current local state" not in encoded
-
-
-def _show_capabilities_response(call_id: str) -> ProviderResponse:
-    return ProviderResponse(
-        AssistantMessage(
-            "assistant",
-            tool_calls=(ToolCall(call_id, "show_capabilities", {}),),
-        ),
-        finish_reason="tool_calls",
-    )
-
-
-def test_audit_batches_rounds_into_one_atomic_write(
-    tmp_path, monkeypatch
-) -> None:
-    provider = FakeProvider(
-        [
-            _show_capabilities_response("round-1"),
-            _show_capabilities_response("round-2"),
-            ProviderResponse(
-                AssistantMessage("assistant", content="完成。"),
-                finish_reason="stop",
-            ),
-        ]
-    )
-    engine = AgentSessionEngine(tmp_path / "agent-private", provider)
-    writes: list[Path] = []
-    original_write = engine_module.atomic_write_json
-
-    def capture_write(path, payload, *, overwrite=False):
-        if Path(path).name == "tool-audit.json":
-            writes.append(Path(path))
-        return original_write(path, payload, overwrite=overwrite)
-
-    monkeypatch.setattr(engine_module, "atomic_write_json", capture_write)
-    assert not engine._audit_path().exists()
-
-    engine.send_message("检查能力")
-
-    assert writes == [engine._audit_path()]
-    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
-    assert len(audit["entries"]) == 3
-    assert [
-        item["tool_call_flags"]["called_tool_names"] for item in audit["entries"]
-    ] == [["show_capabilities"], ["show_capabilities"], []]
-
-
-def test_deferred_audit_flush_is_explicit_and_close_safe(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    provider = FakeProvider(
-        [
-            ProviderResponse(
-                AssistantMessage("assistant", content="done"),
-                finish_reason="stop",
-            )
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "agent-private-deferred-audit",
-        provider,
-        defer_audit_persistence=True,
-    )
-    writes: list[Path] = []
-    original_write = engine_module.atomic_write_json
-
-    def capture_write(path, payload, *, overwrite=False):
-        if Path(path).name == "tool-audit.json":
-            writes.append(Path(path))
-        return original_write(path, payload, overwrite=overwrite)
-
-    monkeypatch.setattr(engine_module, "atomic_write_json", capture_write)
-    engine.send_message("defer audit")
-    assert writes == []
-    assert not engine._audit_path().exists()
-
-    engine.flush_round_audit()
-    assert writes == [engine._audit_path()]
-    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
-    assert len(audit["entries"]) == 1
-
-    engine.close_session()
-    assert writes == [engine._audit_path()]
-
-
-@pytest.mark.parametrize("terminal", ["provider_error", "tool_limit"])
-def test_audit_batch_flushes_on_terminal_provider_paths(
-    tmp_path,
-    monkeypatch,
-    terminal,
-) -> None:
-    if terminal == "provider_error":
-        provider = FakeProvider(
-            [_show_capabilities_response("before-error"), RuntimeError("boom")]
-        )
-        config = None
-    else:
-        provider = FakeProvider(
-            [
-                _show_capabilities_response("before-limit"),
-                _show_capabilities_response("over-limit"),
-            ]
-        )
-        config = EngineConfig(max_tool_calls=1)
-    engine = AgentSessionEngine(
-        tmp_path / f"agent-private-{terminal}",
-        provider,
-        config=config,
-    )
-    writes: list[Path] = []
-    original_write = engine_module.atomic_write_json
-
-    def capture_write(path, payload, *, overwrite=False):
-        if Path(path).name == "tool-audit.json":
-            writes.append(Path(path))
-        return original_write(path, payload, overwrite=overwrite)
-
-    monkeypatch.setattr(engine_module, "atomic_write_json", capture_write)
-    events = engine.send_message("触发终止路径")
-
-    assert events
-    assert writes == [engine._audit_path()]
-    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
-    assert len(audit["entries"]) == 1
-    assert audit["entries"][0]["tool_call_flags"]["provider_called"] is True

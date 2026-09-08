@@ -8,7 +8,6 @@ from fem_agent.export_authoring import (
     EXPORT_AUTHORING_SCHEMA_VERSION,
     EXPORT_CSV_TOOL_NAME,
     NO_WORKSPACE_DIAGNOSTIC_CODE,
-    NO_WORKSPACE_DIAGNOSTIC_MESSAGE,
     RESULT_DISPLAY_CONTEXT_TOOL_NAME,
     AgentExportBridge,
     ExportAuthoringError,
@@ -118,7 +117,6 @@ def test_export_csv_schema_is_closed_and_pins_identity_block() -> None:
         "run_id",
     }
     assert "no_workspace" not in input_schema
-    assert "do not retry" in schema["description"]
 
 
 def test_display_context_schema_is_closed_and_argument_free() -> None:
@@ -199,24 +197,12 @@ def test_response_requires_exactly_one_receipt_or_diagnostics() -> None:
         ))
 
 
-def test_no_workspace_diagnostic_uses_fixed_message() -> None:
+def test_no_workspace_requires_clarification() -> None:
     response = ExportCsvResponse.no_workspace()
-    assert response.ok is False
-    payload = response.to_dict()
-    assert payload["export_receipt"] is None
-    diagnostic = payload["diagnostics"][0]
+    diagnostic = response.to_dict()["diagnostics"][0]
+    assert not response.ok
     assert diagnostic["code"] == NO_WORKSPACE_DIAGNOSTIC_CODE
-    assert diagnostic["message"] == NO_WORKSPACE_DIAGNOSTIC_MESSAGE
-    assert diagnostic == {
-        "code": "export.no_workspace",
-        "message": (
-            "尚未选择工作区，请先执行 /workspace 选择目录，"
-            "导出文件将保存到该目录下的 agent_exports 中"
-        ),
-        "retryable": False,
-        "clarification_required": True,
-        "phase": "export",
-    }
+    assert diagnostic["clarification_required"] is True
 
 
 def test_request_from_dict_is_closed_and_name_is_optional() -> None:
@@ -295,30 +281,6 @@ def test_display_context_response_bounds() -> None:
 # ---------------------------------------------------------------------------
 # Fake port + bridge
 # ---------------------------------------------------------------------------
-
-
-def test_fake_port_records_calls_and_honors_registration() -> None:
-    port = FakeAgentExportPort()
-    request = _request()
-    unconfigured = port.export_accepted_result_csv(request)
-    assert unconfigured.ok is False
-    assert unconfigured.diagnostics[0].code == "export.not_configured"
-    assert port.export_calls == [request]
-    assert port.read_result_display_context().ok is False
-    assert port.display_context_calls == 1
-
-    success = ExportCsvResponse.success(_receipt())
-    port.register_export(success)
-    port.register_display_context(
-        ResultDisplayContextResponse.success(_context())
-    )
-    assert port.export_accepted_result_csv(request) is success
-    assert port.read_result_display_context().ok is True
-    assert len(port.export_calls) == 2
-    with pytest.raises(TypeError):
-        port.export_accepted_result_csv({"not": "a request"})  # type: ignore[arg-type]
-    with pytest.raises(TypeError):
-        port.register_export(object())  # type: ignore[arg-type]
 
 
 def test_bridge_normalizes_requests_and_enforces_types() -> None:

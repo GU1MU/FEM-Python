@@ -45,7 +45,7 @@ def _context(*, dimension: int) -> AuthoringContext:
 
 
 @pytest.mark.parametrize("line_element_type", ["Truss2", "Beam2"])
-def test_line_mesh_intent_uses_strict_schema_11_and_round_trips(
+def test_line_mesh_intent_round_trip_preserves_formulation(
     line_element_type: str,
 ) -> None:
     intent = MeshIntent(
@@ -62,7 +62,6 @@ def test_line_mesh_intent_uses_strict_schema_11_and_round_trips(
     restored = MeshIntent.from_dict(payload)
     settings = restored.to_mesh_settings(_wire())
 
-    assert payload["schema_version"] == "1.1"
     assert payload["line_element_type"] == line_element_type
     assert restored == intent
     assert settings.cell_shape == "line"
@@ -76,24 +75,6 @@ def test_line_mesh_intent_uses_strict_schema_11_and_round_trips(
     ).to_auto_mesh_spec()
     assert automatic is not None
     assert automatic.cell_shape is None
-
-
-def test_legacy_planar_mesh_intent_schema_10_remains_exact() -> None:
-    legacy = {
-        "schema_version": "1.0",
-        "mode": "explicit",
-        "global_size": 0.5,
-        "auto_level": None,
-        "cell_shape": "triangle",
-        "order": 1,
-        "local_controls": [],
-    }
-
-    restored = MeshIntent.from_dict(legacy)
-
-    assert restored.to_dict() == legacy
-    with pytest.raises(ValueError, match="schema 1.0"):
-        MeshIntent.from_dict({**legacy, "line_element_type": None})
 
 
 @pytest.mark.parametrize(

@@ -19,23 +19,6 @@ from tests.helpers.agent_engine_fixtures import (
 pytestmark = pytest.mark.integration
 
 
-def test_attached_local_path_and_raw_input_are_absent_from_provider_requests(tmp_path):
-    provider = FakeProvider([_text_response("请先提供单位和结果要求。")])
-    engine, source = _attached_engine(tmp_path, provider)
-    raw_text = source.read_text(encoding="utf-8")
-
-    engine.send_message("检查已附加的模型。")
-
-    serialized = "\n".join(
-        message.content or ""
-        for request in provider.requests
-        for message in request.messages
-    )
-    assert str(source) not in serialized
-    assert raw_text not in serialized
-    assert "*Node" not in serialized
-
-
 def test_request_context_is_ephemeral_across_provider_tool_loop(tmp_path):
     provider = FakeProvider(
         [

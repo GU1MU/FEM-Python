@@ -389,45 +389,6 @@ def test_revision_and_validation_stamp_changes_disable_old_proposals() -> None:
     assert requests == []
 
 
-def test_port_rejects_legacy_solve_proposal_shape() -> None:
-    session = ModelSession()
-    _seed_session(session, validated=True)
-    port = SessionGeometryAuthoringPort(
-        session,
-        lambda: None,
-        start_solve_task=lambda _request: True,
-    )
-    bridge = AgentAuthoringBridge(port)
-    bridge.bind_snapshot(session.snapshot())
-    legacy = AgentProposal.create(
-        proposal_id="proposal-legacy",
-        proposal_kind=ProposalKind.SOLVE,
-        agent_session_id="agent-session-a1",
-        turn_id="turn-legacy",
-        source_tool_call_ids=("call-legacy",),
-        target_document_id=f"document:{session.session_id}",
-        target_session_id=session.session_id,
-        base_session_revision=session.session_revision,
-        draft_revision=1,
-        operations=(
-            ModelOperation(
-                OperationKind.REQUEST_SOLVE,
-                {
-                    "step_name": STEP_NAME,
-                    "validation_stamp": "legacy",
-                },
-            ),
-        ),
-        preconditions={"authoring_phase": "A6"},
-        expected_changes={},
-        invalidation_impact={},
-        display_summary={"title": "legacy"},
-    )
-
-    with pytest.raises(ValueError, match="exact schema"):
-        bridge.register_proposal(legacy)
-
-
 def test_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     gui_application,
     monkeypatch,

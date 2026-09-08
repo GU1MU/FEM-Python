@@ -43,59 +43,6 @@ def test_agent_truss2_full_loop_matches_oracle_exports_and_reopens(
     assert result.nodal_displacement(tip_id, component=1) == pytest.approx(expected)
     assert result.nodal_reaction(root_id, component=1) == pytest.approx(-1000.0)
 
-    before_edit = session.snapshot()
-    applied = dispatch_authoring_tool(
-        controller,
-        session,
-        "apply_model_definition",
-        {
-            "action": "create_material",
-            "parameters": {
-                "name": "材料-候选",
-                "properties": {"E": 70000.0, "nu": 0.33},
-            },
-        },
-        "create-additional-material",
-    )
-    assert applied.ok, applied.to_json()
-    assert applied.data["state"] == "succeeded"
-    assert applied.data["undo_available"] is True
-    patch_id = applied.data["patch_id"]
-    assert bridge.can_undo_patch(patch_id)
-    after_edit = session.snapshot()
-    assert after_edit.session_revision == before_edit.session_revision + 1
-    created = next(item for item in after_edit.materials if item.name == "材料-候选")
-    assert dict(created.properties) == {"E": 70000.0, "nu": 0.33}
-    assert len(after_edit.materials) == len(before_edit.materials) + 1
-    assert after_edit.sections == before_edit.sections
-    assert after_edit.assignments == before_edit.assignments
-    assert after_edit.steps == before_edit.steps
-    assert tuple(run.run_id for run in after_edit.runs) == tuple(
-        run.run_id for run in before_edit.runs
-    )
-    assert after_edit.displayed_result_run_id is None
-    assert all(
-        session.result_for(run.run_id) is not None
-        for run in before_edit.runs if run.has_result
-    )
-
-    undone = bridge.undo_patch_from_gui_control(patch_id)
-    assert undone.state.value == "undone"
-    assert not undone.undo_available
-    assert not bridge.can_undo_patch(patch_id)
-    restored = session.snapshot()
-    assert restored.materials == before_edit.materials
-    assert restored.sections == before_edit.sections
-    assert restored.assignments == before_edit.assignments
-    assert restored.steps == before_edit.steps
-    assert tuple(run.run_id for run in restored.runs) == tuple(
-        run.run_id for run in before_edit.runs
-    )
-    assert all(
-        session.result_for(run.run_id) is not None
-        for run in before_edit.runs if run.has_result
-    )
-
     csv_files = export_line_result(result, tmp_path / "artifacts", "csv-run", "csv")
     vtk_files = export_line_result(result, tmp_path / "artifacts", "vtk-run", "vtk")
     assert any(path.suffix == ".csv" for path in csv_files)

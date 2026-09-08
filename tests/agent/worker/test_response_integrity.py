@@ -5,7 +5,6 @@ import pytest
 
 import fem_agent.worker as worker_module
 from fem_agent.artifacts import atomic_write_json, read_json_file
-from fem_agent.confirmation import ConfirmationStore
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.worker import (
     IsolatedFEMWorker,
@@ -22,12 +21,7 @@ from tests.helpers.agent_worker_fixtures import (
 def test_worker_skips_a_damaged_older_response_for_a_valid_later_attempt(
     tmp_path,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     damaged = artifacts.create_run(
         record.session_id,
         idempotency_key="damaged_response",
@@ -61,12 +55,7 @@ def test_worker_skips_a_damaged_older_response_for_a_valid_later_attempt(
 def test_worker_does_not_mask_the_latest_damaged_response_with_a_retry(
     tmp_path,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     damaged = artifacts.create_run(
         record.session_id,
         idempotency_key="latest_damaged_response",
@@ -91,12 +80,7 @@ def test_worker_does_not_mask_the_latest_damaged_response_with_a_retry(
 def test_verified_response_loader_rejects_response_tampering(
     tmp_path,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     run = artifacts.create_run(
         record.session_id,
         idempotency_key="tampered_verified_response",
@@ -160,12 +144,7 @@ def test_verified_response_loader_rejects_committed_artifact_tampering(
 def test_verified_response_loader_rejects_a_response_copied_between_runs(
     tmp_path,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     source = artifacts.create_run(
         record.session_id,
         idempotency_key="source_verified_response",
@@ -204,12 +183,7 @@ def test_verified_response_loader_rejects_a_response_copied_between_runs(
 
 
 def test_orphaned_request_cannot_be_rebound_to_another_revision(tmp_path):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     run = artifacts.create_run(
         record.session_id,
         idempotency_key="bound_request",

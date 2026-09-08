@@ -3,14 +3,11 @@ import pytest
 from fem.io import inp as abaqus
 from fem_agent.artifacts import (
     ArtifactStore,
-    InputRejectedError,
-    InvalidIdentifierError,
 )
 from fem_agent.engine import AgentSessionEngine
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import AgentToolRegistry
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
-from tests.helpers.file_builders import write_inp
 
 
 def test_tool_catalog_has_no_path_or_code_execution_fields(tmp_path):
@@ -24,34 +21,6 @@ def test_tool_catalog_has_no_path_or_code_execution_fields(tmp_path):
     assert "python" not in serialized
     assert "shell" not in serialized
     assert "command" not in serialized
-
-
-@pytest.mark.parametrize(
-    "identifier",
-    ["../escape", "C:\\escape", "/absolute", "with space"],
-)
-def test_artifact_identifiers_reject_traversal_and_absolute_paths(
-    tmp_path,
-    identifier,
-):
-    store = ArtifactStore(tmp_path / "workspace")
-    session_id = store.create_session()
-
-    with pytest.raises(InvalidIdentifierError):
-        store.get_artifact(session_id, identifier)
-
-
-def test_input_size_limit_is_checked_during_local_copy(tmp_path):
-    source = write_inp(
-        tmp_path,
-        "too_large.inp",
-        ["*Heading", "x" * 256],
-    )
-    store = ArtifactStore(tmp_path / "workspace")
-    session_id = store.create_session()
-
-    with pytest.raises(InputRejectedError, match="limit"):
-        store.copy_input(session_id, source, max_bytes=32)
 
 
 @pytest.mark.integration

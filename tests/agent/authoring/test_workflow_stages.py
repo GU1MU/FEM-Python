@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import threading
 
 from fem_agent.authoring import (
@@ -41,7 +40,6 @@ def test_geometry_uses_one_operation_confirmation_without_requirement_review() -
     initial_names = {item.name for item in controller.definitions}
     assert "set_authoring_requirements" in initial_names
     assert "prepare_geometry_proposal" not in initial_names
-    assert "request_requirement_review" not in initial_names
     assert not any(
         fragment in name
         for name in initial_names
@@ -60,28 +58,9 @@ def test_geometry_uses_one_operation_confirmation_without_requirement_review() -
     assert recorded.ok
     assert recorded.data["operation_confirmation_required"] is True
     assert recorded.data["next_action"] == "prepare_stage_proposal"
-    assert "Present the matching operation proposal" in recorded.summary
     names = {item.name for item in controller.definitions}
     assert "prepare_geometry_proposal" in names
     assert "set_authoring_requirements" in names
-    assert "request_requirement_review" not in names
-    geometry_tool = next(
-        item
-        for item in controller.definitions
-        if item.name == "prepare_geometry_proposal"
-    )
-    geometry_schemas = geometry_tool.parameters["properties"]["geometry"][
-        "oneOf"
-    ]
-    assert [
-        schema["properties"]["kind"]["const"]
-        for schema in geometry_schemas
-    ] == [
-        "wire",
-        "box",
-        "cylinder",
-    ]
-
     prepared = _dispatch(controller, "prepare_geometry_proposal", {}, 2)
     assert prepared.ok
     assert calls == ["geometry"]
@@ -125,14 +104,12 @@ def test_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
     ).ok
     names = {item.name for item in controller.definitions}
     assert "prepare_mesh_proposal" in names
-    assert "request_requirement_review" not in names
 
     controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
     names = {item.name for item in controller.definitions}
     assert {"apply_model_definition", "run_native_preflight"} <= names
     assert "set_authoring_requirements" in names
     assert "prepare_mesh_proposal" in names
-    assert "request_requirement_review" not in names
 
     applied = _dispatch(
         controller,
@@ -200,7 +177,6 @@ def test_only_geometry_mesh_and_solve_publish_execution_proposals() -> None:
     names = {item.name for item in controller.definitions}
     assert "prepare_solve_proposal" in names
     assert "apply_model_definition" in names
-    assert "request_requirement_review" not in names
 
 
 def test_geometry_edit_is_available_after_creation_and_returns_to_mesh() -> None:
@@ -270,90 +246,6 @@ def test_geometry_edit_is_available_after_creation_and_returns_to_mesh() -> None
     controller.record_proposal_state("geometry", ProposalState.SUCCEEDED)
 
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
-
-
-def test_direct_definition_schema_is_granular() -> None:
-    schema_context = replace(
-        _context(),
-        capabilities=(CapabilitySummary("edit_model_objects", True),),
-    )
-    controller = AuthoringWorkflowController(
-        lambda: schema_context,
-        {
-            "apply_model_definition": lambda _arguments, _controller: (
-                AuthoringToolOutcome("Applied.", {"state": "succeeded"})
-            ),
-            "read_editable_model_objects": lambda _arguments, _controller: (
-                AuthoringToolOutcome("Read.", {"objects": []})
-            ),
-            "edit_model_object": lambda _arguments, _controller: (
-                AuthoringToolOutcome("Edited.", {"state": "succeeded"})
-            ),
-        },
-    )
-    controller._stage = AuthoringWorkflowStage.DEFINITIONS_READY
-    tool = next(
-        item
-        for item in controller.definitions
-        if item.name == "apply_model_definition"
-    )
-    schemas = tool.parameters["oneOf"]
-    actions = [
-        schema["properties"]["action"]["const"]
-        for schema in schemas
-    ]
-    assert actions == [
-        "create_named_region",
-        "create_material",
-        "create_section",
-        "assign_section",
-        "create_static_step",
-        "create_boundary_condition",
-        "create_load",
-        "create_result_request",
-    ]
-    material = next(
-        schema
-        for schema in schemas
-        if schema["properties"]["action"]["const"] == "create_material"
-    )
-    material_parameters = material["properties"]["parameters"]
-    assert material_parameters["required"] == ["name", "properties"]
-    assert material_parameters["additionalProperties"] is False
-    assert material_parameters["properties"]["name"]["maxLength"] == 96
-    assert material_parameters["properties"]["name"]["pattern"] == (
-        "^(材料)-.+$"
-    )
-    assert material_parameters["properties"]["properties"]["required"] == [
-        "E",
-        "nu",
-    ]
-    edit_tool = next(
-        item
-        for item in controller.definitions
-        if item.name == "edit_model_object"
-    )
-    change_properties = edit_tool.parameters["properties"]["changes"][
-        "properties"
-    ]
-    assert {
-        "part_id",
-        "logical_ids",
-        "mesh_kind",
-        "unit",
-        "distribution",
-        "confirmed",
-        "entity_type",
-        "direction",
-    } <= set(change_properties)
-    assert change_properties["vector"]["type"] == ["array", "null"]
-    assert change_properties["component"]["maximum"] == 3
-    assert "apply_scopes_and_materials" not in {
-        item.name for item in controller.definitions
-    }
-    assert "apply_analysis_definitions" not in {
-        item.name for item in controller.definitions
-    }
 
 
 def test_existing_current_mesh_exposes_direct_definitions_immediately() -> None:

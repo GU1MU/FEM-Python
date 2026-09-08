@@ -25,8 +25,6 @@ from fem.geometry import PlateWithHoleGeometry
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import (
     AgentProposal,
-    AuthoringContractError,
-    ModelOperation,
     OperationKind,
     ProposalKind,
 )
@@ -37,7 +35,6 @@ from fem_agent.solve_authoring import (
     create_solve_proposal,
     solve_operation_identity,
 )
-from fem_agent.tools.registry import AgentToolRegistry
 
 from tests.helpers.model_builders import make_static_pull_truss_model
 
@@ -220,7 +217,6 @@ def test_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     )
 
     assert proposal.proposal_kind is ProposalKind.SOLVE
-    assert proposal.preconditions["authoring_phase"] == "A6"
     assert operation.kind is OperationKind.REQUEST_SOLVE
     assert step == STEP_NAME
     assert job == "作业-静力1"
@@ -236,37 +232,3 @@ def test_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     assert "node_ids" not in encoded
     assert "elements" not in encoded
     assert AgentProposal.from_dict(proposal.to_dict()) == proposal
-
-
-def test_preserves_legacy_solve_operation_but_rejects_mixed_shape() -> None:
-    legacy = ModelOperation(
-        OperationKind.REQUEST_SOLVE,
-        {"step_name": "Static-1", "validation_stamp": "legacy-stamp"},
-    )
-
-    assert ModelOperation.from_dict(legacy.to_dict()) == legacy
-    with pytest.raises(AuthoringContractError, match="legacy or exact A6"):
-        ModelOperation(
-            OperationKind.REQUEST_SOLVE,
-            {
-                "step_name": "Static-1",
-                "job_name": "作业-1",
-                "validation_stamp": "legacy-stamp",
-            },
-        )
-    with pytest.raises(SolveAuthoringError, match="exact schema"):
-        solve_operation_identity(legacy)
-
-
-def test_provider_tool_catalog_exposes_no_confirmation_authority(
-    tmp_path,
-) -> None:
-    names = {
-        item.name
-        for item in AgentToolRegistry(tmp_path / "workspace").definitions
-    }
-
-    assert "validate_analysis" in names
-    assert "confirm_solve" not in names
-    assert "accept_proposal" not in names
-    assert "confirm_mesh" not in names

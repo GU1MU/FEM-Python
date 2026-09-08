@@ -1,3 +1,5 @@
+import pytest
+
 from fem.core.model import NodeSet
 
 from fem_agent.diagnostics import DiagnosticCode
@@ -29,26 +31,14 @@ def test_validate_analysis_normalizes_kernel_validation_failure():
     assert diagnostic.remediation
 
 
-def test_validate_analysis_classifies_unsupported_step_semantics():
+@pytest.mark.parametrize("procedure,nlgeom", [("dynamic", "NO"), ("static", "YES")])
+def test_validate_analysis_rejects_unsupported_procedure(procedure, nlgeom):
     model = make_static_pull_truss_model()
-    model.steps[0].procedure = "dynamic"
-
+    model.steps[0].procedure = procedure
+    model.steps[0].metadata["NLGEOM"] = nlgeom
     diagnostics = validate_analysis(model, "pull")
-
-    assert len(diagnostics) == 1
     assert diagnostics[0].code == DiagnosticCode.UNSUPPORTED_PROCEDURE.value
     assert diagnostics[0].step == "pull"
-    assert "requires static" in diagnostics[0].message
-
-
-def test_validate_analysis_rejects_geometric_nonlinearity():
-    model = make_static_pull_truss_model()
-    model.steps[0].metadata["NLGEOM"] = "YES"
-
-    diagnostics = validate_analysis(model, "pull")
-
-    assert diagnostics[0].code == DiagnosticCode.UNSUPPORTED_PROCEDURE.value
-    assert "geometric nonlinearity" in diagnostics[0].message
 
 
 def test_validate_analysis_reports_unknown_step_as_invalid_model():

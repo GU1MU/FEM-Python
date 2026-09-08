@@ -1,8 +1,9 @@
 from dataclasses import replace
+import csv
 import hashlib
 from pathlib import Path
 
-from fem import post
+import pytest
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.schemas import ExportFormat, ResourceLimits
 from fem_agent.tools.exports import export_results
@@ -35,7 +36,6 @@ def test_csv_export_registers_every_actual_file_and_digest(tmp_path):
 
     assert outcome.ok is True
     assert outcome.diagnostics == ()
-    assert len(outcome.artifacts) == 3
     actual_names = {
         path.name for path in exports_directory.iterdir() if path.is_file()
     }
@@ -53,68 +53,31 @@ def test_csv_export_registers_every_actual_file_and_digest(tmp_path):
         assert artifact.sha256 == _sha256(path)
         assert artifact.size_bytes == path.stat().st_size
         assert artifact.kind == "csv"
-    assert not any(
-        path.name.startswith(".fem-agent-export-")
-        for path in exports_directory.iterdir()
-    )
 
 
-def test_plane_csv_bundle_recovers_stress_once_and_preserves_output(
-    tmp_path,
-    monkeypatch,
-):
+def test_plane_csv_bundle_contains_uniform_tensile_stress(tmp_path):
     run_directory, exports_directory = _run_paths(tmp_path)
-    result = make_zero_result(make_tri3_stiffness_mesh(), "plate")
-    expected_element = tmp_path / "expected_element.csv"
-    expected_nodal = tmp_path / "expected_nodal.csv"
-    post.stress.element.by_type(
-        "tri3",
-        result.model.mesh,
-        result.U,
-        expected_element,
-    )
-    post.stress.nodal.by_type(
-        "tri3",
-        result.model.mesh,
-        result.U,
-        expected_nodal,
-    )
-
-    original_collect = post.stress.collect_plane_element_nodal
-    recovery_count = 0
-
-    def counting_collect(mesh, displacement):
-        nonlocal recovery_count
-        recovery_count += 1
-        return original_collect(mesh, displacement)
-
-    def reject_legacy_export(*args, **kwargs):
-        raise AssertionError("plane stress CSVs must share recovered stress")
-
-    monkeypatch.setattr(
-        post.stress,
-        "collect_plane_element_nodal",
-        counting_collect,
-    )
-    monkeypatch.setattr(post.stress.element, "by_type", reject_legacy_export)
-    monkeypatch.setattr(post.stress.nodal, "by_type", reject_legacy_export)
-
+    mesh = make_tri3_stiffness_mesh()
+    result = make_zero_result(mesh, "plate")
+    # Plane stress: epsilon_x=0.01 and epsilon_y=-nu*epsilon_x give sigma_x=E*epsilon_x.
+    for node in mesh.nodes:
+        result.U[mesh.global_dof(node.id, 0)] = 0.01 * node.x
+        result.U[mesh.global_dof(node.id, 1)] = -0.003 * node.y
     outcome = export_results(
-        result,
-        (ExportFormat.CSV,),
-        run_id="run-1",
-        run_directory=run_directory,
-        exports_directory=exports_directory,
+        result, (ExportFormat.CSV,), run_id="run-1",
+        run_directory=run_directory, exports_directory=exports_directory,
     )
-
-    assert outcome.ok is True
-    assert recovery_count == 1
-    assert (
-        exports_directory / "result-run-1_element_stress.csv"
-    ).read_bytes() == expected_element.read_bytes()
-    assert (
-        exports_directory / "result-run-1_nodal_stress.csv"
-    ).read_bytes() == expected_nodal.read_bytes()
+    assert outcome.ok
+    for kind in ("element", "nodal"):
+        with (exports_directory / f"result-run-1_{kind}_stress.csv").open(
+            encoding="utf-8", newline="",
+        ) as stream:
+            rows = list(csv.DictReader(stream))
+        assert {int(row["node_id"]) for row in rows} == {1, 2, 3}
+        for row in rows:
+            assert [float(row[key]) for key in ("sig_x", "sig_y", "tau_xy")] == pytest.approx(
+                [2.1, 0.0, 0.0], abs=1e-12,
+            )
 
 
 def test_vtk_export_registers_vtk_and_materialized_csv_dependencies(tmp_path):

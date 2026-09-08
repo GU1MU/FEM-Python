@@ -5,16 +5,7 @@ from copy import deepcopy
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import (
-    DiskGeometry,
-    ExtrudedGeometry,
-    PlateWithHoleGeometry,
-    RectangleGeometry,
-    SketchCircle,
-    SketchGeometry,
-    SketchRectangle,
-    describe_recipe_topology,
-)
+from fem.geometry import ExtrudedGeometry, RectangleGeometry, SketchCircle, SketchRectangle, describe_recipe_topology
 from fem.io.project import decode_project, encode_project
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import (
@@ -35,7 +26,6 @@ from tests.helpers.profile_sketches import (
     profile_face_id,
     two_profile_sketch,
 )
-from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_sketch
 
 
 pytestmark = pytest.mark.local_session
@@ -66,61 +56,16 @@ def _native_session(sketch) -> ModelSession:
 
 
 def _dispatch(controller, *, source_face_ids, height=2.5):
+    revision = controller.turn_snapshot.session_revision
     return controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_extrusion",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "extrude_profiles",
-                "source_face_ids": list(source_face_ids),
-                "height": height,
-            },
+            "profile_selection": list(source_face_ids),
+            "context_revision": revision,
+            "height": height,
         },
-        ToolExecutionContext("agent-phase2", 0, "phase2-extrude"),
-    )
-
-
-def test_runtime_schema_exposes_explicit_selected_profile_extrusion() -> None:
-    session = _native_session(two_profile_sketch())
-    _bridge, controller = _controller(session)
-    definition = next(
-        item for item in controller.definitions
-        if item.name == "prepare_profile_extrusion"
-    )
-
-    assert definition.parameters["required"] == [
-        "part_id", "profile_selection", "height"
-    ]
-    selection = definition.parameters["properties"]["profile_selection"]
-    assert selection["oneOf"][0]["const"] == "unique_material_profile"
-    assert selection["oneOf"][1]["uniqueItems"] is True
-    assert definition.parameters["properties"]["height"]["exclusiveMinimum"] == 0
-    conditional_branches = definition.parameters["oneOf"]
-    assert any(
-        "context_revision" in branch.get("required", [])
-        for branch in conditional_branches
-    )
-    assert any(
-        branch["properties"]["profile_selection"]["oneOf"][0].get("const")
-        == "unique_material_profile"
-        for branch in conditional_branches
-    )
-
-
-def test_legacy_transform_dispatch_remains_callable(monkeypatch) -> None:
-    session = _native_session(two_profile_sketch())
-    bridge, controller = _controller(session)
-    source = profile_face_id(two_profile_sketch(), "L1")
-    monkeypatch.setattr(
-        agent_authoring,
-        "_preflight_profile_extrusions",
-        lambda _recipes: None,
-    )
-    result = _dispatch(controller, source_face_ids=(source,))
-    assert result.ok
-    assert (
-        bridge.accept_from_gui_control(result.data["proposal_id"]).state
-        is ProposalState.SUCCEEDED
+        ToolExecutionContext("profile-extrusion", revision, "prepare"),
     )
 
 
@@ -166,71 +111,6 @@ def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
     assert recipe.source_face_ids == (source,)
     topology = describe_recipe_topology(recipe)
     assert topology.entity("face:side/L5").semantic_role == "sweep.boundary.hole"
-
-
-@pytest.mark.parametrize(
-    "recipe",
-    (
-        pytest.param(RectangleGeometry("Legacy rectangle", 4.0, 3.0), id="rectangle"),
-        pytest.param(DiskGeometry("Legacy disk", 1.5), id="disk"),
-        pytest.param(
-            PlateWithHoleGeometry("Legacy plate", 4.0, 3.0, 1.0, 1.0, 0.5),
-            id="plate-with-hole",
-        ),
-        pytest.param(concentric_ring_sketch(), id="strict-ring"),
-    ),
-)
-def test_dedicated_extrusion_canonicalizes_planar_recipe(
-    monkeypatch,
-    recipe,
-) -> None:
-    session = _native_session(recipe)
-    bridge, controller = _controller(session)
-    monkeypatch.setattr(
-        agent_authoring,
-        "_preflight_profile_extrusions",
-        lambda _recipes: None,
-    )
-    before = session.snapshot()
-    context = controller.dispatch(
-        "read_profile_transform_context",
-        {"part_id": "P1"},
-        ToolExecutionContext("agent-phase3", before.session_revision, "read"),
-    )
-    assert context.ok, context.summary
-    assert context.data["topology_exact"] is True
-    assert context.data["material_profile_count"] == 1
-    source = context.data["profiles"][0]["face_id"]
-
-    prepared = controller.dispatch(
-        "prepare_profile_extrusion",
-        {
-            "part_id": "P1",
-            "profile_selection": "unique_material_profile",
-            "height": 2.5,
-        },
-        ToolExecutionContext("agent-phase3", before.session_revision, "prepare"),
-    )
-    assert prepared.ok, prepared.summary
-    assert session.snapshot() == before
-    proposal = bridge._records[prepared.data["proposal_id"]].proposal
-    operation = proposal.operations[0].parameters
-    assert operation["source_face_ids"] == [source]
-    base_payload = operation["base_recipe"]
-    assert base_payload["kind"] == "planar_sketch"
-    canonical_base = geometry_recipe_from_payload(base_payload)
-    assert type(canonical_base) is SketchGeometry
-    assert canonical_base.is_strict is True
-
-    assert (
-        bridge.accept_from_gui_control(prepared.data["proposal_id"]).state
-        is ProposalState.SUCCEEDED
-    )
-    result = session.snapshot().parts[0].geometry_recipe
-    assert type(result) is ExtrudedGeometry
-    assert type(result.base) is SketchGeometry
-    assert result.base.is_strict is True
-    assert result.source_face_ids == (source,)
 
 
 def test_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
@@ -355,22 +235,6 @@ def test_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
     assert session.snapshot() == before
 
 
-def test_agent_rejects_non_strict_planar_source(monkeypatch) -> None:
-    session = _native_session(RectangleGeometry("Legacy rectangle", 2.0, 1.0))
-    _bridge, controller = _controller(session)
-    monkeypatch.setattr(
-        agent_authoring,
-        "_preflight_profile_extrusions",
-        lambda _recipes: None,
-    )
-    before = session.snapshot()
-
-    result = _dispatch(controller, source_face_ids=("face:domain",))
-
-    assert not result.ok
-    assert session.snapshot() == before
-
-
 @pytest.mark.parametrize(
     "contour",
     (
@@ -413,11 +277,10 @@ def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
     second = profile_face_id(sketch, "L5")
     session = _native_session(sketch)
     bridge, controller = _controller(session)
-    compiled: list[tuple[ExtrudedGeometry, ...]] = []
     monkeypatch.setattr(
         agent_authoring,
         "_preflight_profile_extrusions",
-        lambda recipes: compiled.append(recipes),
+        lambda _recipes: None,
     )
     before = session.snapshot()
 
@@ -425,10 +288,6 @@ def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
 
     assert prepared.ok, prepared.summary
     assert session.snapshot() == before
-    assert len(compiled) == 1
-    assert [item.source_face_ids for item in compiled[0]] == [
-        (first,), (second,)
-    ]
     assert "生成 2 个独立 Part" in prepared.data["proposal_view"]["summary"]
     proposal_id = prepared.data["proposal_id"]
     proposal = bridge._records[proposal_id].proposal

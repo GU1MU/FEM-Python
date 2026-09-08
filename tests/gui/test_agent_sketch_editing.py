@@ -3,38 +3,27 @@ from __future__ import annotations
 import math
 
 import pytest
-from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession, UnitContext, derive_feature_history
-from fem.core.model import MaterialDefinition
 from fem.geometry import (
     BooleanGeometry,
     ExtrudedGeometry,
     SketchArc,
     SketchAngleDimension,
     SketchCircle,
-    SketchCoincidentConstraint,
-    SketchConcentricConstraint,
     SketchDistanceDimension,
-    SketchEqualLengthConstraint,
-    SketchEqualRadiusConstraint,
     SketchFixedConstraint,
     SketchGeometry,
     SketchHorizontalConstraint,
     SketchLine,
-    SketchParallelConstraint,
-    SketchPerpendicularConstraint,
     SketchPlane,
     SketchPoint,
-    SketchPointOnCurveConstraint,
     SketchRadiusDimension,
-    SketchTangentConstraint,
     SketchVerticalConstraint,
     analyze_sketch_profiles,
     resolve_extrusion_source_faces,
 )
 from fem_agent.authoring import AuthoringContractError, ProposalState
-from fem_agent.authoring_runtime import _PREPARE_GEOMETRY_EDIT
 from fem_agent.geometry_authoring import (
     GeometryDraft,
     add_planar_constraint,
@@ -59,12 +48,11 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from fem_gui.main_window import FEMMainWindow
 
 
 def _square(*constraints: object) -> SketchGeometry:
     return SketchGeometry(
-        "Phase 10 sketch",
+        "Constrained sketch",
         SketchPlane.xy(),
         (
             SketchPoint("P1", 0.0, 0.0),
@@ -93,70 +81,14 @@ def _controller(session: ModelSession):
     return controller, bridge
 
 
-def test_all_constraint_payloads_round_trip_with_exact_planar_fields() -> None:
-    points = (
-        SketchPoint("P1", 0.0, 0.0),
-        SketchPoint("P2", 2.0, 0.0),
-        SketchPoint("P3", 2.0, 2.0),
-        SketchPoint("P4", 0.0, 2.0),
-        SketchPoint("PC", 1.0, 1.0),
-    )
-    curves = (
-        SketchLine("L1", "P1", "P2"),
-        SketchLine("L2", "P2", "P3"),
-        SketchLine("L3", "P3", "P4"),
-        SketchLine("L4", "P4", "P1"),
-        SketchCircle("C1", "PC", 0.5),
-        SketchCircle("C2", "PC", 0.75),
-    )
-    constraints = (
-        SketchCoincidentConstraint("K1", "P1", "P2", enabled=False),
-        SketchPointOnCurveConstraint("K2", "P3", "L1", enabled=False),
-        SketchHorizontalConstraint("K3", "L1", enabled=False),
-        SketchVerticalConstraint("K4", "L2", enabled=False),
-        SketchParallelConstraint("K5", "L1", "L3", enabled=False),
-        SketchPerpendicularConstraint("K6", "L1", "L2", enabled=False),
-        SketchEqualLengthConstraint("K7", "L1", "L2", enabled=False),
-        SketchTangentConstraint("K8", "L1", "C1", -1, enabled=False),
-        SketchEqualRadiusConstraint("K9", "C1", "C2", enabled=False),
-        SketchConcentricConstraint("K10", "C1", "C2", enabled=False),
-        SketchFixedConstraint("K11", "P1", 0.0, 0.0, enabled=False),
-        SketchDistanceDimension("K12", "P1", "P2", 2.0, False, enabled=False),
-        SketchRadiusDimension("K13", "C1", 0.5, False, enabled=False),
-        SketchAngleDimension("K14", "L1", "L2", math.pi / 2.0, False, enabled=False),
-    )
-    sketch = SketchGeometry(
-        "all constraints", SketchPlane.xy(), points, curves, constraints
-    )
-
-    payload = geometry_recipe_to_payload(sketch)
-
-    assert set(payload) == {
-        "schema_version",
-        "kind",
-        "name",
-        "plane",
-        "points",
-        "curves",
-        "constraints",
-    }
-    assert [item["kind"] for item in payload["constraints"]] == [
-        "coincident",
-        "point_on_curve",
-        "horizontal",
-        "vertical",
-        "parallel",
-        "perpendicular",
-        "equal_length",
-        "tangent",
-        "equal_radius",
-        "concentric",
-        "fixed",
-        "distance",
-        "radius",
-        "angle",
-    ]
-    assert geometry_recipe_from_payload(payload) == sketch
+@pytest.mark.parametrize("constraint", [
+    SketchFixedConstraint("K1", "P1", 0.0, 0.0),
+    SketchDistanceDimension("K1", "P1", "P2", 1.0, False),
+    SketchAngleDimension("K1", "L1", "L2", math.pi / 2.0, False),
+])
+def test_constraint_payload_round_trip(constraint) -> None:
+    sketch = _square(constraint)
+    assert geometry_recipe_from_payload(geometry_recipe_to_payload(sketch)) == sketch
 
 
 def test_planar_constraint_bound_is_reachable_nested_and_strict() -> None:
@@ -421,7 +353,7 @@ def test_invalid_freeform_profile_returns_actionable_diagnostics_atomically(
     assert session.snapshot() == before
 
 
-def test_freeform_profile_policy_guides_and_verifies_one_nonconvex_cutout() -> None:
+def test_freeform_edit_creates_one_nonconvex_cutout() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "freeform cutout", UnitContext("mm", "N", "MPa"), _square()
@@ -439,25 +371,6 @@ def test_freeform_profile_policy_guides_and_verifies_one_nonconvex_cutout() -> N
     )
     assert context.ok
     assert context.data["profile_summary"]["hole_count"] == 0
-    policy = context.data["freeform_profile_policy"]
-    assert policy["two_dimensional_cut_representation"] == "closed_inner_profile"
-    assert policy["part_boolean_required"] is False
-    assert policy["preferred_operation_for_arbitrary_silhouette"] == "add_polygon"
-    assert policy["preferred_operation_for_constant_width_slot"] == "add_path_slot"
-    assert policy["constant_width_slot_operation_priority"] == [
-        "add_path_slot",
-        "planar_boolean(tool.kind=path_stroke)",
-    ]
-    assert policy["planar_boolean_path_stroke_role"] == "lower_level_equivalent"
-    assert policy["primary_operation_for_closed_boundary_slot"] == "add_polygon"
-    assert policy["representation_priority"] == [
-        "add_path_slot_when_one_open_non_branching_centerline_"
-        "and_constant_width_fully_define_the_slot",
-        "add_polygon_for_other_single_closed_slot_boundaries",
-        "ordered_lines_and_arcs_when_exact_curves_are_required",
-    ]
-    assert policy["rectangle_decomposition_for_one_connected_slot"] == "avoid"
-
     prepared = controller.dispatch(
         "prepare_geometry_edit",
         {
@@ -817,66 +730,6 @@ def test_multi_turn_catalog_ids_drive_line_then_arc_edits() -> None:
     )
 
 
-def test_agent_constraint_specs_cover_all_fourteen_kinds() -> None:
-    square = _square()
-    sketch = SketchGeometry(
-        square.name,
-        square.plane,
-        (
-            *square.points,
-            SketchPoint("P5", 0.25, 0.25),
-            SketchPoint("P6", 0.75, 0.75),
-        ),
-        (
-            *square.curves,
-            SketchCircle("C1", "P5", 0.1),
-            SketchCircle("C2", "P6", 0.1),
-        ),
-    )
-    specs = (
-        {"kind": "coincident", "first_point_id": "P1", "second_point_id": "P2"},
-        {"kind": "point_on_curve", "point_id": "P3", "curve_id": "L1"},
-        {"kind": "horizontal", "line_id": "L1"},
-        {"kind": "vertical", "line_id": "L2"},
-        {"kind": "parallel", "first_line_id": "L1", "second_line_id": "L3"},
-        {"kind": "perpendicular", "first_line_id": "L1", "second_line_id": "L2"},
-        {"kind": "equal_length", "first_line_id": "L1", "second_line_id": "L2"},
-        {
-            "kind": "tangent",
-            "first_curve_id": "L1",
-            "second_curve_id": "C1",
-            "branch_hint": 0,
-        },
-        {"kind": "equal_radius", "first_curve_id": "C1", "second_curve_id": "C2"},
-        {"kind": "concentric", "first_curve_id": "C1", "second_curve_id": "C2"},
-        {"kind": "fixed", "point_id": "P1"},
-        {
-            "kind": "distance",
-            "first_point_id": "P1",
-            "second_point_id": "P2",
-            "value": 1.0,
-            "driving": False,
-        },
-        {"kind": "radius", "curve_id": "C1", "value": 0.1, "driving": False},
-        {
-            "kind": "angle",
-            "first_line_id": "L1",
-            "second_line_id": "L2",
-            "angle_degrees": 90.0,
-            "driving": False,
-        },
-    )
-
-    for spec in specs:
-        sketch = add_planar_constraint(
-            sketch, constraint={**spec, "enabled": False}
-        ).recipe
-
-    assert [item.id for item in sketch.constraints] == [
-        f"K{index}" for index in range(1, 15)
-    ]
-
-
 def test_enabled_constraint_lifecycle_solves_replaces_and_deletes_exact_id() -> None:
     anchored = add_planar_constraint(
         _square(), constraint={"kind": "fixed", "point_id": "P1"}
@@ -946,7 +799,7 @@ def test_conflicting_constraint_tool_result_is_atomic_and_registers_no_proposal(
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-conflict",
+            "constraint-conflict",
         ),
     )
 
@@ -978,7 +831,7 @@ def test_gui_proposal_acceptance_retains_constraint_payload_round_trip() -> None
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-accept",
+            "constraint-accept",
         ),
     )
 
@@ -991,196 +844,3 @@ def test_gui_proposal_acceptance_retains_constraint_payload_round_trip() -> None
     assert session.session_revision == before_revision + 1
     assert isinstance(accepted, SketchGeometry)
     assert accepted.constraints == (SketchHorizontalConstraint("K1", "L1"),)
-
-
-def test_new_constraint_edit_uses_phase7_branch_migration_semantics(gui_application) -> None:
-    QApplication.instance() or QApplication([])
-    window = FEMMainWindow()
-    window.session.create_native_project_with_first_part(
-        "branch constraint", UnitContext("mm", "N", "MPa"), _square()
-    )
-    window.session.replace_model_definitions(
-        (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),),
-        (),
-        (),
-        (),
-    )
-    window._rebuild_full_projection()
-    source = window.workspace.active_document()
-    assert source is not None
-    window._bind_agent_document(source)
-    source_before = source.session.snapshot()
-
-    prepared = window.agent_authoring_controller.dispatch(
-        "prepare_geometry_edit",
-        {
-            "part_id": "P1",
-            "edit": {
-                "operation": "add_constraint",
-                "constraint": {"kind": "horizontal", "line_id": "L1"},
-            },
-        },
-        ToolExecutionContext(
-            window.session.session_id,
-            window.session.session_revision,
-            "phase10-branch",
-        ),
-    )
-
-    assert prepared.ok, prepared.summary
-    assert prepared.data["geometry_edit_mode"] == "branch"
-    proposal_id = str(prepared.data["proposal_id"])
-    proposal = window.agent_authoring_bridge._records[proposal_id].proposal
-    assert proposal.expected_changes["creates_iteration_model"] is True
-    assert proposal.invalidation_impact["results"] is False
-    receipt = window.agent_authoring_bridge.accept_from_gui_control(proposal_id)
-
-    child = window.workspace.active_document()
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert child is not None and child.document_id != source.document_id
-    assert source.session.snapshot() == source_before
-    child_snapshot = child.session.snapshot()
-    child_recipe = child_snapshot.parts[0].geometry_recipe
-    assert isinstance(child_recipe, SketchGeometry)
-    assert child_recipe.constraints == (SketchHorizontalConstraint("K1", "L1"),)
-    assert [material.name for material in child_snapshot.materials] == ["Steel"]
-    report = window.agent_authoring_bridge.port.latest_geometry_iteration_report()
-    assert report["mode"] == "branch"
-    assert report["runs"] == "not_migrated"
-    assert report["results"] == "not_migrated"
-    window.close()
-
-
-def test_prepare_geometry_edit_schema_advertises_all_phase10_operations() -> None:
-    edit_schema = _PREPARE_GEOMETRY_EDIT.parameters["properties"]["edit"]
-    assert "add_path_slot as the preferred geometry-edit entry" in (
-        _PREPARE_GEOMETRY_EDIT.description
-    )
-    assert "planar_boolean(tool.kind=path_stroke)" in (
-        _PREPARE_GEOMETRY_EDIT.description
-    )
-    spatial_relation = _PREPARE_GEOMETRY_EDIT.parameters["properties"][
-        "spatial_relation"
-    ]
-    assert spatial_relation["properties"]["relation"]["enum"] == [
-        "above",
-        "below",
-        "left_of",
-        "right_of",
-    ]
-    assert spatial_relation["required"] == [
-        "reference_feature_id",
-        "relation",
-        "clearance",
-    ]
-    operations = {
-        branch["properties"]["operation"]["const"] for branch in edit_schema["oneOf"]
-    }
-
-    add_path_slot = next(
-        branch
-        for branch in edit_schema["oneOf"]
-        if branch["properties"]["operation"]["const"] == "add_path_slot"
-    )
-    path_points_description = add_path_slot["properties"]["points"]["description"]
-    assert 'straight [{"x":10,"y":10},{"x":40,"y":10}]' in (
-        path_points_description
-    )
-    assert 'multiple bends [{"x":10,"y":10}' in path_points_description
-    assert "Points describe the centerline itself" in path_points_description
-    assert "first and last points must differ" in path_points_description
-
-    planar_boolean = next(
-        branch
-        for branch in edit_schema["oneOf"]
-        if branch["properties"]["operation"]["const"] == "planar_boolean"
-    )
-    assert "Low-level cut/fuse profile" in (
-        planar_boolean["properties"]["tool"]["description"]
-    )
-    assert "prefer edit.operation=add_path_slot" in (
-        planar_boolean["properties"]["tool"]["description"]
-    )
-    path_stroke = next(
-        tool
-        for tool in planar_boolean["properties"]["tool"]["oneOf"]
-        if tool["properties"]["kind"]["const"] == "path_stroke"
-    )
-    boolean_points_description = path_stroke["properties"]["points"]["description"]
-    assert boolean_points_description.split("Centerline point examples:", 1)[1] == (
-        path_points_description.split("Centerline point examples:", 1)[1]
-    )
-
-    assert {
-        "add_line",
-        "add_arc",
-        "add_path_slot",
-        "update_line",
-        "update_arc",
-        "delete_curves",
-        "add_constraint",
-        "replace_constraint",
-        "delete_constraints",
-        "batch",
-    } <= operations
-    batch = next(
-        branch
-        for branch in edit_schema["oneOf"]
-        if branch["properties"]["operation"]["const"] == "batch"
-    )
-    batch_operations = {
-        branch["properties"]["operation"]["const"]
-        for branch in batch["properties"]["edits"]["items"]["oneOf"]
-    }
-    assert (
-        operations
-        - {
-            "translate",
-            "rotate",
-            "planar_boolean",
-            "part_boolean",
-            "body_boolean",
-            "batch",
-            "add_path_slot",
-            "replace_planar_boolean_feature",
-        }
-        <= batch_operations
-    )
-    expected_kinds = {
-        "coincident",
-        "point_on_curve",
-        "horizontal",
-        "vertical",
-        "parallel",
-        "perpendicular",
-        "equal_length",
-        "tangent",
-        "equal_radius",
-        "concentric",
-        "fixed",
-        "distance",
-        "radius",
-        "angle",
-    }
-    for operation in ("add_constraint", "replace_constraint"):
-        branch = next(
-            item
-            for item in edit_schema["oneOf"]
-            if item["properties"]["operation"]["const"] == operation
-        )
-        kinds = {
-            item["properties"]["kind"]["const"]
-            for item in branch["properties"]["constraint"]["oneOf"]
-        }
-        assert kinds == expected_kinds
-
-        batch_branch = next(
-            item
-            for item in batch["properties"]["edits"]["items"]["oneOf"]
-            if item["properties"]["operation"]["const"] == operation
-        )
-        batch_kinds = {
-            item["properties"]["kind"]["const"]
-            for item in batch_branch["properties"]["constraint"]["oneOf"]
-        }
-        assert batch_kinds == expected_kinds

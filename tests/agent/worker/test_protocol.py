@@ -37,51 +37,20 @@ class _InspectionProcess:
         return self.returncode
 
 
-def test_isolated_inspector_honors_cancellation_without_unbounded_capture(
-    monkeypatch,
-    tmp_path,
-):
-    workspace, _artifacts, _revisions, record = _prepared_revision(tmp_path)
-    process = _InspectionProcess()
-    monkeypatch.setattr(
-        worker_module.subprocess,
-        "Popen",
-        lambda *args, **kwargs: process,
-    )
-    cancelled = threading.Event()
-    cancelled.set()
-
-    with pytest.raises(InspectionWorkerError, match="cancelled"):
-        IsolatedFEMInspector(workspace).inspect(
-            record.spec,
-            record.revision_hash,
-            cancel_event=cancelled,
-        )
-
-    assert process.terminated
-
-
-def test_isolated_inspector_rejects_excessive_control_output(
-    monkeypatch,
-    tmp_path,
-):
-    workspace, _artifacts, _revisions, record = _prepared_revision(tmp_path)
+@pytest.mark.parametrize("cancelled", [True, False], ids=["cancel", "output-limit"])
+def test_isolated_inspector_terminates_on_cancellation_or_output_limit(monkeypatch, tmp_path, cancelled):
+    workspace, _, _, record = _prepared_revision(tmp_path)
     process = _InspectionProcess(
-        stdout=b"x"
-        * (worker_module._FIXED_INSPECTION_OUTPUT_LIMIT_BYTES + 1),
+        stdout=b"" if cancelled else b"x" * (worker_module._FIXED_INSPECTION_OUTPUT_LIMIT_BYTES + 1),
     )
-    monkeypatch.setattr(
-        worker_module.subprocess,
-        "Popen",
-        lambda *args, **kwargs: process,
-    )
-
-    with pytest.raises(InspectionWorkerError, match="control-output limit"):
+    monkeypatch.setattr(worker_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    cancellation = threading.Event()
+    if cancelled:
+        cancellation.set()
+    with pytest.raises(InspectionWorkerError):
         IsolatedFEMInspector(workspace).inspect(
-            record.spec,
-            record.revision_hash,
+            record.spec, record.revision_hash, cancel_event=cancellation,
         )
-
     assert process.terminated
 
 

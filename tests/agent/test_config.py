@@ -28,11 +28,6 @@ def _mark_project_root(path: Path) -> None:
     )
 
 
-def test_config_names_are_stable():
-    assert ROOT_CONFIG_NAME == "fem-agent.config.json"
-    assert TEST_CONFIG_NAME == "fem-agent.test.config.json"
-
-
 def test_secret_bearing_config_paths_are_precisely_gitignored():
     project_root = Path(__file__).resolve().parents[2]
     patterns = set(

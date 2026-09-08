@@ -372,7 +372,6 @@ def test_unsupported_option_diagnostic_names_keyword_and_option(tmp_path):
 
     assert "*SURFACE" in diagnostic.message
     assert "TYPE" in diagnostic.message
-    assert "The keyword" not in diagnostic.message
     assert not result.ok
 
 

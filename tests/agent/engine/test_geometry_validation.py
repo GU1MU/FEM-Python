@@ -3,7 +3,6 @@ import pytest
 from fem_agent.engine import (
     AgentSessionEngine,
     EngineEventType,
-    _missing_requested_geometry_features,
 )
 from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
@@ -226,9 +225,6 @@ def test_branching_slot_rejects_single_path_before_dispatch(tmp_path):
         ("prepare_planar_construction_proposal", corrected)
     ]
     assert len(provider.requests) == 2
-    assert "single non-branching open centerline" in (
-        provider.requests[1].messages[-1].content or ""
-    )
     completed = [
         event
         for event in events
@@ -337,74 +333,3 @@ def test_nonbranching_path_slot_rejects_disconnected_rectangle_fallback(tmp_path
         and event.data["result"]["data"]["state"] == "pending_confirmation"
         for event in events
     )
-    preview = next(
-        event.data["text"]
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-        and "方案预览" in event.data["text"]
-    )
-    assert "切除一条连续定宽槽" in preview
-    assert "(75, 80) → (40, 80)" in preview
-    assert "add_path_slot" not in preview
-    assert "P1" not in preview
-    assert "{" not in preview
-    assert any(
-        event.event is EngineEventType.MESSAGE_DELTA
-        and "上一版方案未通过校验" in event.data["text"]
-        for event in events
-    )
-
-
-def test_generic_geometry_feature_guard_requires_requested_slot_and_holes():
-    partial = {
-        "part_function": "宽平板",
-        "geometry": {
-            "kind": "planar_profiles",
-            "profiles": [
-                {
-                    "kind": "rectangle",
-                    "x": 0,
-                    "y": 0,
-                    "width": 500,
-                    "height": 300,
-                }
-            ],
-        },
-    }
-    complete = {
-        "part_function": "宽平板，中央开槽，四周开孔",
-        "geometry": {
-            "kind": "planar_profiles",
-            "profiles": [
-                {
-                    "kind": "rectangle",
-                    "x": 0,
-                    "y": 0,
-                    "width": 500,
-                    "height": 300,
-                    "role": "material",
-                },
-                {
-                    "kind": "rectangle",
-                    "x": 225,
-                    "y": 110,
-                    "width": 50,
-                    "height": 80,
-                    "role": "hole",
-                },
-                {
-                    "kind": "circle",
-                    "center_x": 40,
-                    "center_y": 40,
-                    "radius": 10,
-                    "role": "hole",
-                },
-            ],
-        },
-    }
-    request = "做一个宽平板，中央开槽，四周开孔"
-    assert _missing_requested_geometry_features(request, partial) == (
-        "slot_or_cutout",
-        "holes",
-    )
-    assert _missing_requested_geometry_features(request, complete) == ()

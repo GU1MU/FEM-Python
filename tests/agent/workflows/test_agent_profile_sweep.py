@@ -122,39 +122,6 @@ def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -
         )
 
 
-def test_runtime_schema_is_strict_for_revolve_and_ordered_path() -> None:
-    session, _source = _strict_session()
-    _bridge, controller = _controller(session)
-    revolution = next(
-        item
-        for item in controller.definitions
-        if item.name == "prepare_profile_revolution"
-    )
-    assert revolution.parameters["required"] == [
-        "part_id", "profile_selection", "axis", "angle_degrees"
-    ]
-    path_tool = next(
-        item
-        for item in controller.definitions
-        if item.name == "prepare_profile_path_sweep"
-    )
-    assert path_tool.parameters["required"] == [
-        "part_id", "profile_selection", "path", "frame_strategy"
-    ]
-    assert path_tool.parameters["properties"]["frame_strategy"]["enum"] == [
-        "fixed", "transport"
-    ]
-    assert path_tool.parameters["additionalProperties"] is False
-    generic = next(
-        item for item in controller.definitions if item.name == "prepare_geometry_edit"
-    )
-    assert all(
-        variant["properties"]["operation"].get("const")
-        not in {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
-        for variant in generic.parameters["properties"]["edit"]["oneOf"]
-    )
-
-
 def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
@@ -192,25 +159,23 @@ def test_agent_path_proposal_is_atomic_revision_bound() -> None:
     bridge, controller = _controller(session)
     before = session.snapshot()
     prepared = controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_path_sweep",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "path_sweep_profile",
-                "source_face_id": source,
-                "path": {
-                    "points": [
-                        {"name": "A", "x": 0.0, "y": 0.0, "z": 0.0},
-                        {"name": "B", "x": 0.0, "y": 0.0, "z": 2.0},
-                        {"name": "C", "x": 1.0, "y": 0.0, "z": 3.0},
-                    ],
-                    "members": [
-                        {"name": "AB", "start": "A", "end": "B"},
-                        {"name": "BC", "start": "B", "end": "C"},
-                    ],
-                },
-                "frame_strategy": "transport",
+            "profile_selection": [source],
+            "context_revision": session.session_revision,
+            "path": {
+                "points": [
+                    {"name": "A", "x": 0.0, "y": 0.0, "z": 0.0},
+                    {"name": "B", "x": 0.0, "y": 0.0, "z": 2.0},
+                    {"name": "C", "x": 1.0, "y": 0.0, "z": 3.0},
+                ],
+                "members": [
+                    {"name": "AB", "start": "A", "end": "B"},
+                    {"name": "BC", "start": "B", "end": "C"},
+                ],
             },
+            "frame_strategy": "transport",
         },
         ToolExecutionContext("phase3", 0, "path-sweep"),
     )
@@ -233,15 +198,13 @@ def test_stale_path_proposal_does_not_mutate() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     prepared = controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_revolution",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "revolve_profile",
-                "source_face_id": source,
-                "axis": "x",
-                "angle_degrees": 180.0,
-            },
+            "profile_selection": [source],
+            "context_revision": session.session_revision,
+            "axis": "x",
+            "angle_degrees": 180.0,
         },
         ToolExecutionContext("phase3", 0, "revolve"),
     )
@@ -260,23 +223,21 @@ def test_preflight_failure_and_gui_reject_are_atomic() -> None:
     bridge, controller = _controller(session)
     before = session.snapshot()
     failed = controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_path_sweep",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "path_sweep_profile",
-                "source_face_id": source,
-                "path": {
-                    "points": [
-                        {"name": "A", "x": 1.0, "y": 0.0, "z": 0.0},
-                        {"name": "B", "x": 1.0, "y": 0.0, "z": 2.0},
-                    ],
-                    "members": [
-                        {"name": "AB", "start": "A", "end": "B"},
-                    ],
-                },
-                "frame_strategy": "fixed",
+            "profile_selection": [source],
+            "context_revision": session.session_revision,
+            "path": {
+                "points": [
+                    {"name": "A", "x": 1.0, "y": 0.0, "z": 0.0},
+                    {"name": "B", "x": 1.0, "y": 0.0, "z": 2.0},
+                ],
+                "members": [
+                    {"name": "AB", "start": "A", "end": "B"},
+                ],
             },
+            "frame_strategy": "fixed",
         },
         ToolExecutionContext("phase3", 0, "invalid-start"),
     )
@@ -285,15 +246,13 @@ def test_preflight_failure_and_gui_reject_are_atomic() -> None:
     assert session.snapshot() == before
 
     prepared = controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_revolution",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "revolve_profile",
-                "source_face_id": source,
-                "axis": "x",
-                "angle_degrees": 180.0,
-            },
+            "profile_selection": [source],
+            "context_revision": session.session_revision,
+            "axis": "x",
+            "angle_degrees": 180.0,
         },
         ToolExecutionContext("phase3", 0, "reject-revolve"),
     )

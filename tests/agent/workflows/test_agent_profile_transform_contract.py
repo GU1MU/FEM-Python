@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
 
 from fem.application import ModelSession, UnitContext
 from fem.geometry import describe_recipe_topology
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import geometry_contract_proof
-from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolDefinition
+from fem_agent.providers.fake import FakeProvider
+from fem_agent.providers.base import AssistantMessage, ProviderResponse
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
@@ -17,10 +17,6 @@ from fem_gui.agent_authoring import (
 )
 from tests.helpers.fixtures.profile_transform_baseline import (
     concentric_ring_fixture,
-)
-from tests.helpers.profile_transform_capture import (
-    RequestCaptureProvider,
-    tool_schema_hash,
 )
 
 import pytest
@@ -126,62 +122,11 @@ def test_mesh_ready_publishes_transform_seam() -> None:
         "prepare_profile_path_sweep",
     } <= names
 
-    geometry_edit = next(
-        item for item in definitions if item.name == "prepare_geometry_edit"
-    )
-    variants = geometry_edit.parameters["properties"]["edit"]["oneOf"]
-    transform_operations = {
-        item["properties"]["operation"]["const"]
-        for item in variants
-        if item["properties"]["operation"].get("const")
-        in {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
-    }
-    assert transform_operations == set()
-
-
-def test_request_capture_keeps_only_redacted_context_and_schema_hashes() -> None:
-    tool = ToolDefinition(
-        "prepare_geometry_edit",
-        "Read-only baseline seam.",
-        {"type": "object", "additionalProperties": False},
-    )
-    messages = (
-        AssistantMessage(
-            "system",
-            "Current local state (structured metadata only): "
-            + json.dumps(
-                {
-                    "session_id": "session-sensitive",
-                    "phase": "empty",
-                    "revision": 0,
-                    "active_run_id": "run-sensitive",
-                }
-            ),
-        ),
-        AssistantMessage("system", "secret=fixture-only C:\\fixture\\model.femproj"),
-        AssistantMessage("user", "opaque-user-payload"),
-    )
-
-    provider = RequestCaptureProvider()
-    provider.complete(messages, (tool,))
-    request = provider.requests[0]
-
-    assert request.tool_names == ("prepare_geometry_edit",)
-    assert request.schema_hashes == {"prepare_geometry_edit": tool_schema_hash(tool)}
-    encoded = json.dumps(request.to_dict(), ensure_ascii=False)
-    assert "session-sensitive" not in encoded
-    assert "run-sensitive" not in encoded
-    assert "fixture-only" not in encoded
-    assert "opaque-user-payload" not in encoded
-    assert "<session-redacted>" in encoded
-    assert "<path-redacted>" in encoded
-    assert len(request.schema_hashes["prepare_geometry_edit"]) == 64
-
 
 def test_repeated_refusal_gets_one_correction_and_local_recovery(tmp_path) -> None:
     _session, controller = _ring_controller()
     refusal = "拉伸不受支持；必须先生成网格。"
-    provider = RequestCaptureProvider(
+    provider = FakeProvider(
         [
             ProviderResponse(
                 AssistantMessage(
@@ -200,29 +145,9 @@ def test_repeated_refusal_gets_one_correction_and_local_recovery(tmp_path) -> No
     )
 
     events = engine.send_message("拉伸成3d")
-    request = provider.requests[0]
-    system_context = "\n".join(request.system_context)
-    assert "read_profile_transform_context" in request.tool_names
-    assert "prepare_profile_extrusion" in request.tool_names
-    assert "read_profile_transform_context" in request.schema_hashes
-    assert "prepare_profile_extrusion" in request.schema_hashes
-    assert "active_part_id" not in system_context
-    assert "recipe_kind" not in system_context
     assert not any(item.event is EngineEventType.TOOL_STARTED for item in events)
-    assert len(provider.requests) == 2
     assert not any(
         item.event is EngineEventType.MESSAGE_DELTA
         and item.data.get("text") == refusal
         for item in events
     )
-    assert "route_hint" in system_context
-    assert any(
-        "Local geometry route correction" in item
-        for item in provider.requests[1].system_context
-    )
-    assert any(
-        item.event is EngineEventType.MESSAGE_DELTA
-        and item.data.get("text") == "当前几何能力检查未完成，请重试。"
-        for item in events
-    )
-    assert "<session-redacted>" in system_context

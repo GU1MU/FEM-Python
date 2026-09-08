@@ -5,7 +5,7 @@ import pytest
 
 import fem_agent.worker as worker_module
 from fem_agent.artifacts import atomic_write_json
-from fem_agent.confirmation import ConfirmationRequiredError, ConfirmationStore
+from fem_agent.confirmation import ConfirmationRequiredError
 from fem_agent.diagnostics import DiagnosticCode, make_diagnostic
 from fem_agent.schemas import RunStatus
 from fem_agent.worker import (
@@ -96,12 +96,7 @@ def test_worker_reuses_a_deterministic_failure(
     tmp_path,
     diagnostic_code,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     run = artifacts.create_run(
         record.session_id,
         idempotency_key="deterministic_failure",
@@ -132,12 +127,7 @@ def test_worker_retry_budget_exhaustion_is_a_nontransient_terminal_response(
     tmp_path,
     monkeypatch,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     monkeypatch.setattr(worker_module, "_MAX_WORKER_ATTEMPTS", 2)
     for attempt, code in enumerate(
         (DiagnosticCode.WORKER_TIMEOUT, DiagnosticCode.WORKER_CRASH)
@@ -217,12 +207,7 @@ def test_cross_instance_claim_prevents_a_duplicate_worker_launch(
     tmp_path,
     monkeypatch,
 ):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
+    workspace, artifacts, revisions, record = _prepared_revision(tmp_path, confirmed=True)
     first = IsolatedFEMWorker(workspace)
     second = IsolatedFEMWorker(workspace)
     entered_launch = threading.Event()

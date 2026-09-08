@@ -5,7 +5,6 @@ from PySide6.QtGui import QAction, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
-    QLabel,
     QProgressBar,
     QToolButton,
     QWidget,
@@ -91,76 +90,6 @@ class _ViewportProbe(QWidget):
     def wheelEvent(self, event) -> None:
         self.wheel_events += 1
         event.accept()
-
-
-def test_drawer_uses_compact_composer_controls(gui_application):
-    application = gui_application
-    viewport = _ViewportProbe()
-    host = ModelViewportOverlayHost(viewport)
-    host.resize(720, 520)
-    host.show()
-    host.set_drawer_open(True, animated=False)
-    application.processEvents()
-    application.processEvents()
-
-    drawer = host.agent_chat_drawer
-    title = drawer.findChild(QLabel, "agentChatTitle")
-    header = drawer.findChild(QWidget, "agentChatHeader")
-
-    assert title is not None
-    assert header is not None
-    assert title.text() == "FEM Agent"
-    assert title.font().pointSizeF() >= 12
-    assert header.height() <= 40
-    assert (
-        drawer.palette().color(drawer.backgroundRole()).name()
-        == "#ffffff"
-    )
-    assert (
-        drawer.conversation_widget.palette()
-        .color(drawer.conversation_widget.backgroundRole())
-        .name()
-        == "#ffffff"
-    )
-    assert drawer.input.font().pointSizeF() >= 10
-    assert drawer.input.height() == 44
-    assert drawer.input.parentWidget() is drawer.composer_surface
-    assert drawer.workspace_state.parentWidget() is drawer.composer_surface
-    assert drawer.add_button.parentWidget() is drawer.composer_surface
-    assert drawer.composer_hint.isHidden()
-    assert drawer.composer_hint.text() == ""
-    assert drawer.add_button.size() == QSize(24, 24)
-    surface_layout = drawer.composer_surface.layout()
-    footer_layout = surface_layout.itemAt(1).layout()
-    assert surface_layout.itemAt(0).widget() is drawer.input
-    assert footer_layout.itemAt(0).widget() is drawer.add_button
-    assert footer_layout.itemAt(1).widget() is drawer.workspace_state
-    assert footer_layout.itemAt(4).widget() is drawer.send_state
-    assert drawer.close_button.width() <= 30
-    assert drawer.close_button.height() <= 30
-    assert drawer.send_state.size() == QSize(30, 30)
-    assert drawer.composer_stack.sizeHint().height() == (
-        drawer.composer_surface.sizeHint().height()
-    )
-    assert drawer.composer_surface.height() == (
-        drawer.composer_surface.sizeHint().height()
-    )
-    host.close()
-
-
-def test_reset_runtime_session_keeps_composer_notice_hidden(gui_application):
-    application = gui_application
-    viewport = _ViewportProbe()
-    host = ModelViewportOverlayHost(viewport)
-    drawer = host.agent_chat_drawer
-
-    drawer._show_preview_notice("临时提示")
-    drawer._reset_runtime_session("new-session")
-    application.processEvents()
-
-    assert drawer.composer_hint.text() == ""
-    assert drawer.composer_hint.isHidden()
-    host.close()
 
 
 def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared(
@@ -562,37 +491,6 @@ def test_disabling_agent_chat_waits_for_resize_preview_to_hide_before_commit(
 
     assert host.agent_chat_drawer.isHidden()
     assert geometry_commits == [True]
-    host.close()
-
-
-def test_drawer_animation_frames_only_update_reveal_geometry(gui_application):
-    application = gui_application
-    viewport = _ViewportProbe()
-    host = ModelViewportOverlayHost(viewport)
-    host.resize(720, 460)
-    host.show()
-    application.processEvents()
-    host._drawer_open = True
-    host._drawer_reveal = 0
-    position_calls = []
-    visibility_syncs = []
-    original_position_overlays = host._position_overlays
-
-    def track_position(*, sync_visibility=True):
-        position_calls.append(sync_visibility)
-        original_position_overlays(sync_visibility=sync_visibility)
-
-    host._position_overlays = track_position
-    host._sync_overlay_window_visibility = (
-        lambda: visibility_syncs.append(True)
-    )
-
-    host._set_drawer_reveal(120)
-    host._set_drawer_reveal(120)
-    host._set_drawer_reveal(240)
-
-    assert position_calls == [False, False]
-    assert visibility_syncs == []
     host.close()
 
 

@@ -35,6 +35,10 @@ def _client(spy):
     return SimpleNamespace(chat=SimpleNamespace(completions=spy))
 
 
+def _provider(spy):
+    return DeepSeekProvider(ProviderConfig(max_retries=0), client=_client(spy))
+
+
 def _response(
     *,
     content="done",
@@ -274,10 +278,7 @@ def test_deepseek_stream_assembles_tool_call_fragments():
             )
         ]
     )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     result = provider.complete_stream(
         [AssistantMessage("user", "检查模型")],
@@ -338,10 +339,7 @@ def test_deepseek_normalizes_tool_calls_without_requiring_text():
     spy = _CompletionsSpy(
         [_response(content=None, tool_calls=[_tool_call()], finish_reason="tool_calls")]
     )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     result = provider.complete([AssistantMessage("user", "status")], [_tool_definition()])
 
@@ -352,10 +350,7 @@ def test_deepseek_normalizes_tool_calls_without_requiring_text():
 
 def test_deepseek_omits_tool_fields_when_no_tools_are_available():
     spy = _CompletionsSpy([_response()])
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     provider.complete([AssistantMessage("user", "hello")], [])
 
@@ -363,28 +358,17 @@ def test_deepseek_omits_tool_fields_when_no_tools_are_available():
     assert "tool_choice" not in spy.calls[0]
 
 
-def test_deepseek_rejects_malformed_tool_arguments():
-    spy = _CompletionsSpy(
-        [_response(content=None, tool_calls=[_tool_call("{broken")], finish_reason="tool_calls")]
-    )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
-
-    with pytest.raises(ProviderMalformedResponseError, match="invalid JSON"):
-        provider.complete([AssistantMessage("user", "status")], [_tool_definition()])
-
-
 @pytest.mark.parametrize(
     "arguments",
     (
+        "{broken",
         '{"value":NaN}',
         '{"value":"' + ("x" * (64 * 1024)) + '"}',
+        '{"value":"\\ud800"}',
     ),
-    ids=("nonfinite", "oversized"),
+    ids=("malformed", "nonfinite", "oversized", "invalid-unicode"),
 )
-def test_deepseek_rejects_nonfinite_or_oversized_tool_arguments(arguments):
+def test_deepseek_rejects_invalid_tool_arguments(arguments):
     spy = _CompletionsSpy(
         [
             _response(
@@ -394,32 +378,7 @@ def test_deepseek_rejects_nonfinite_or_oversized_tool_arguments(arguments):
             )
         ]
     )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
-
-    with pytest.raises(ProviderMalformedResponseError):
-        provider.complete(
-            [AssistantMessage("user", "status")],
-            [_tool_definition()],
-        )
-
-
-def test_deepseek_rejects_decoded_surrogate_tool_arguments():
-    spy = _CompletionsSpy(
-        [
-            _response(
-                content=None,
-                tool_calls=[_tool_call('{"value":"\\ud800"}')],
-                finish_reason="tool_calls",
-            )
-        ]
-    )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     with pytest.raises(ProviderMalformedResponseError):
         provider.complete(
@@ -440,10 +399,7 @@ def test_deepseek_classifies_invalid_tool_identifiers_as_malformed():
             )
         ]
     )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     with pytest.raises(ProviderMalformedResponseError, match="malformed"):
         provider.complete(
@@ -456,10 +412,7 @@ def test_deepseek_maps_insufficient_resource_finish_reason():
     spy = _CompletionsSpy(
         [_response(finish_reason="insufficient_system_resource")]
     )
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     with pytest.raises(ProviderUnavailableError, match="system resources"):
         provider.complete([AssistantMessage("user", "status")], [])
@@ -468,10 +421,7 @@ def test_deepseek_maps_insufficient_resource_finish_reason():
 @pytest.mark.parametrize("finish_reason", ("length", "content_filter"))
 def test_deepseek_rejects_partial_or_filtered_responses(finish_reason):
     spy = _CompletionsSpy([_response(finish_reason=finish_reason)])
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     with pytest.raises(ProviderMalformedResponseError, match="unsupported reason"):
         provider.complete([AssistantMessage("user", "status")], [])
@@ -749,10 +699,7 @@ def test_deepseek_does_not_forward_unknown_sdk_exception_text(monkeypatch):
         ),
     )
     spy = _CompletionsSpy([RuntimeError("credential=do-not-display")])
-    provider = DeepSeekProvider(
-        ProviderConfig(max_retries=0),
-        client=_client(spy),
-    )
+    provider = _provider(spy)
 
     with pytest.raises(ProviderUnavailableError) as caught:
         provider.complete([AssistantMessage("user", "status")], [])

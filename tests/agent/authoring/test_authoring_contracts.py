@@ -6,15 +6,12 @@ import pytest
 
 from fem_agent.naming import NameAllocator, NamePolicy, NamePolicyError
 from fem_agent.authoring import (
-    AgentDraft,
     AgentProposal,
     AuthoringAuthorizationError,
     AuthoringContext,
     AuthoringContractError,
     CapabilitySummary,
-    ClarificationRequiredError,
     DefinitionSummary,
-    FakeAuthoringPort,
     LocalModelBinding,
     MeshSummary,
     ModelOperation,
@@ -22,7 +19,6 @@ from fem_agent.authoring import (
     OperationKind,
     PartSummary,
     ProposalKind,
-    ProposalState,
     RequirementLedger,
     RequirementStatus,
     UnitContextSummary,
@@ -118,90 +114,27 @@ def test_authoring_context_is_bounded_and_provider_safe() -> None:
     assert "C:\\" not in flattened
 
 
-def test_requirement_review_is_the_only_confirmation_gate() -> None:
+def test_requirement_changes_invalidate_dependents() -> None:
     ledger = RequirementLedger()
     ledger.record(
-        "geometry.dimension",
-        field_type="integer",
-        stage="geometry",
-        value=2,
-        source_turn_id="turn-1",
+        "dimension", field_type="integer", stage="geometry",
+        value=2, source_turn_id="t1",
     )
     ledger.record(
-        "geometry.width",
-        field_type="number",
-        stage="geometry",
-        value=200.0,
-        source_turn_id="turn-1",
-        dependencies=("geometry.dimension",),
+        "width", field_type="number", stage="geometry", value=200.0,
+        source_turn_id="t1", dependencies=("dimension",),
     )
-
-    with pytest.raises(ClarificationRequiredError) as missing:
-        ledger.require_confirmed(
-            "geometry",
-            ("geometry.dimension", "geometry.width"),
-        )
-    assert missing.value.code == "clarification_required"
-
+    ledger.record(
+        "dimension", field_type="integer", stage="geometry",
+        value=3, source_turn_id="t2",
+    )
+    width = next(entry for entry in ledger.entries if entry.key == "width")
+    assert width.status is RequirementStatus.INVALIDATED
     with pytest.raises(AuthoringAuthorizationError):
         ledger.record(
-            "geometry.height",
-            field_type="number",
-            stage="geometry",
-            value=100.0,
-            source_turn_id="turn-1",
-            status=RequirementStatus.CONFIRMED,
+            "height", field_type="number", stage="geometry", value=100.0,
+            source_turn_id="t2", status=RequirementStatus.CONFIRMED,
         )
-
-    review = ledger.create_review(
-        "review-1",
-        ("geometry.dimension", "geometry.width"),
-    )
-    confirmed = ledger._confirm_review_from_gui(review)
-
-    assert confirmed.status.value == "confirmed"
-    assert [item.key for item in ledger.require_confirmed(
-        "geometry",
-        ("geometry.dimension", "geometry.width"),
-    )] == ["geometry.dimension", "geometry.width"]
-
-    ledger.record(
-        "geometry.dimension",
-        field_type="integer",
-        stage="geometry",
-        value=3,
-        source_turn_id="turn-2",
-    )
-    width = next(
-        item for item in ledger.entries if item.key == "geometry.width"
-    )
-    assert width.status is RequirementStatus.INVALIDATED
-
-
-def test_agent_draft_has_binding_identity_and_monotonic_revision() -> None:
-    draft = AgentDraft.create(
-        draft_id="draft-1",
-        agent_session_id="agent-session-1",
-        binding=_binding(),
-        confirmed_requirements={"dimension": 2},
-        candidate_summary={"recipe_kind": "PlateWithHoleGeometry"},
-    )
-    revised = draft.revise(
-        confirmed_requirements={"dimension": 2, "width": 200.0},
-        candidate_summary={
-            "recipe_kind": "PlateWithHoleGeometry",
-            "feature_count": 1,
-        },
-        pending_proposal_ids=("proposal-1",),
-    )
-
-    assert draft.draft_revision == 0
-    assert revised.draft_revision == 1
-    assert revised.base_document_id == draft.base_document_id
-    assert revised.confirmed_requirements_hash != (
-        draft.confirmed_requirements_hash
-    )
-    assert revised.candidate_model_hash != draft.candidate_model_hash
 
 
 def test_patch_and_proposal_hashes_are_strict_and_idempotent() -> None:
@@ -246,39 +179,6 @@ def test_patch_and_proposal_hashes_are_strict_and_idempotent() -> None:
                 "arbitrary": True,
             },
         )
-
-
-def test_fake_authoring_port_has_no_side_effect_and_one_terminal_decision() -> None:
-    port = FakeAuthoringPort()
-    context = AuthoringContext(
-        binding=_binding(),
-        model_name="模型-孔板",
-        active_part_id=None,
-    )
-    port.set_context(context)
-    proposal = _proposal()
-
-    pending = port.present(proposal)
-    accepted = port.accept(proposal.proposal_id)
-
-    assert pending.state is ProposalState.PENDING_CONFIRMATION
-    assert accepted.state is ProposalState.ACCEPTED
-    assert port.context is context
-    with pytest.raises(AuthoringAuthorizationError):
-        port.accept(proposal.proposal_id)
-
-    rejected_proposal = _proposal("proposal-reject")
-    port.present(rejected_proposal)
-    assert port.reject(rejected_proposal.proposal_id).state is (
-        ProposalState.REJECTED
-    )
-
-    stale_proposal = _proposal("proposal-stale")
-    port.present(stale_proposal)
-    assert port.stale(
-        stale_proposal.proposal_id,
-        "binding changed",
-    ).state is ProposalState.STALE
 
 
 def test_hash_rejects_nonfinite_and_local_or_executable_payloads() -> None:

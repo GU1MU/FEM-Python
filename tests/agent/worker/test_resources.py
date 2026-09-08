@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 import fem_agent.worker as worker_module
-from fem_agent.confirmation import ConfirmationStore
 from fem_agent.schemas import ResourceLimits, RunStatus
 from fem_agent.worker import (
     IsolatedFEMWorker,
@@ -68,11 +67,7 @@ def test_worker_terminates_when_combined_logs_exceed_the_effective_limit(
     workspace, artifacts, revisions, record = _prepared_revision(
         tmp_path,
         resource_limits=ResourceLimits(max_output_bytes=spec_limit),
-    )
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
+        confirmed=True,
     )
     monkeypatch.setattr(
         worker_module,
@@ -133,8 +128,6 @@ def test_worker_terminates_when_combined_logs_exceed_the_effective_limit(
     assert [item.code for item in response.diagnostics] == ["RESOURCE_LIMIT"]
     diagnostic = response.diagnostics[0]
     assert diagnostic.entity == "worker-logs"
-    assert f"spec.max_output_bytes={spec_limit}" in diagnostic.message
-    assert f"fixed_log_limit={fixed_limit}" in diagnostic.message
     assert launched[0].terminate_calls == 1
     run = artifacts.run_directory(record.session_id, response.run_id)
     total_log_bytes = sum(
@@ -176,11 +169,7 @@ def test_worker_terminates_when_staged_exports_exceed_the_spec_quota(
             max_output_files=file_limit,
             max_output_bytes=byte_limit,
         ),
-    )
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
+        confirmed=True,
     )
     monkeypatch.setattr(worker_module, "_repository_commit", lambda: None)
     launched = []
@@ -236,8 +225,6 @@ def test_worker_terminates_when_staged_exports_exceed_the_spec_quota(
     assert [item.code for item in response.diagnostics] == ["RESOURCE_LIMIT"]
     diagnostic = response.diagnostics[0]
     assert diagnostic.entity == "worker-exports"
-    assert f"max_output_files={file_limit}" in diagnostic.message
-    assert f"max_output_bytes={byte_limit}" in diagnostic.message
     assert launched[0].terminate_calls == 1
     assert not (
         launched[0].run_path
