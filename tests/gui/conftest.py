@@ -3,7 +3,6 @@ from __future__ import annotations
 import gc
 import os
 from collections.abc import Iterator
-from pathlib import Path
 from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,49 +21,9 @@ from PySide6.QtWidgets import (
 from tests.helpers.file_builders import write_inp
 
 
-_GUI_TEST_ROOT = Path(__file__).resolve().parent
 _gui_cleanup_count = 0
 _GUI_TEARDOWN_TIMEOUT_SECONDS = 2.0
 _quarantined_gui_widgets: list[object] = []
-_NATIVE_GUI_TEST_FILES = frozenset(
-    {
-        "test_agent_composite_geometry.py",
-        "test_agent_exact_boolean.py",
-        "test_agent_profile_sweep.py",
-        "test_agent_profile_transform_workflow.py",
-        "test_preprocessing_workflow.py",
-        "test_scope_selection.py",
-    }
-)
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    """Keep native geometry/rendering integration out of routine GUI tests."""
-
-    if any(
-        os.environ.get(name) == "1"
-        for name in ("FEM_RUN_GUI_NATIVE", "FEM_RUN_NATIVE_TESTS")
-    ):
-        return
-    selected: list[pytest.Item] = []
-    deselected: list[pytest.Item] = []
-    for item in items:
-        path = Path(str(item.path)).resolve()
-        native_gui_test = (
-            path.parent == _GUI_TEST_ROOT
-            and (
-                path.name in _NATIVE_GUI_TEST_FILES
-                or item.get_closest_marker("gmsh") is not None
-                or item.get_closest_marker("gui_native") is not None
-            )
-        )
-        (deselected if native_gui_test else selected).append(item)
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
 
 
 @pytest.fixture(scope="session", autouse=True)

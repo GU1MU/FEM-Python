@@ -79,7 +79,7 @@ def _set_native_mesh_inputs(
     )
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     _application()
     window = FEMMainWindow()
@@ -126,7 +126,7 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_scope_creation_starts_from_the_meshed_model() -> None:
     _application()
     window = FEMMainWindow()
@@ -210,7 +210,7 @@ def test_scope_creation_starts_from_the_meshed_model() -> None:
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_generic_sketch_replaces_special_plate_with_hole_entry() -> None:
     recipe = SketchGeometry(
         "generic-plate-with-hole",
@@ -260,7 +260,7 @@ def test_rectangle_cut_preview_shows_an_open_frame() -> None:
     assert all(len(face) == 4 for face in preview.faces)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize(
     ("cell_shape", "expected_type"),
     (("tetrahedron", "Tet4"), ("hexahedron", "Hex8")),
@@ -289,7 +289,7 @@ def test_rectangle_sketch_extrusion_uses_existing_solid_mesh_workflow(
     assert not model.surfaces
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
     _application()
     window = FEMMainWindow()
@@ -316,7 +316,7 @@ def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_plate_with_hole_applies_local_refinement_without_implicit_scopes() -> None:
     _application()
     window = FEMMainWindow()
@@ -356,7 +356,7 @@ def test_plate_with_hole_applies_local_refinement_without_implicit_scopes() -> N
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize(
     ("recipe", "expected_type"),
     (
@@ -389,7 +389,7 @@ def test_added_basic_geometries_generate_canonical_models(
     assert not model.surfaces
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_box_supports_structured_hexahedral_mesh() -> None:
     recipe = BoxGeometry("gui-structured-box", 1.0, 0.8, 0.6)
 
@@ -897,7 +897,7 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypat
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_geometry_feature_chain_is_shared_by_preview_and_gmsh() -> None:
     recipe = ExtrudedGeometry(
         RotatedGeometry(
@@ -922,7 +922,7 @@ def test_geometry_feature_chain_is_shared_by_preview_and_gmsh() -> None:
     assert not model.surfaces
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_extruded_face_scope_is_created_from_mesh_faces() -> None:
     recipe = ExtrudedGeometry(
         SketchGeometry(
@@ -976,7 +976,7 @@ def test_extruded_face_scope_is_created_from_mesh_faces() -> None:
     assert not model.surfaces
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_extruded_hole_mesh_face_scopes_keep_inner_and_outer_sides_distinct() -> None:
     recipe = ExtrudedGeometry(
         SketchGeometry(
@@ -1049,7 +1049,7 @@ def test_extruded_hole_mesh_face_scopes_keep_inner_and_outer_sides_distinct() ->
     assert hole_nodes.isdisjoint(outer_nodes)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_selected_geometry_edge_can_drive_local_mesh_refinement() -> None:
     recipe = DiskGeometry("locally-refined-disk", 1.0)
     model = generate_fem_model(
@@ -1071,7 +1071,7 @@ def test_selected_geometry_edge_can_drive_local_mesh_refinement() -> None:
     assert not model.edges
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_generic_hole_inner_edge_local_control_increases_mesh_density() -> None:
     recipe = SketchGeometry(
         "locally-refined-generic-hole",
@@ -1133,7 +1133,7 @@ def test_geometry_edge_distance_uses_display_pixels() -> None:
     assert fraction == pytest.approx(0.5)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize("operation", ("fuse", "cut", "fragment"))
 def test_boolean_features_are_meshed_by_the_same_native_workflow(operation) -> None:
     object_geometry = RectangleGeometry(f"boolean-object-{operation}", 2.0, 1.0)

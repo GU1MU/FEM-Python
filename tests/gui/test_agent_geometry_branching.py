@@ -252,7 +252,7 @@ def test_derived_profile_branch_display_matches_top_level_impact(kind: str) -> N
     assert proposal.display_summary["invalidated_objects"] == []
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize("kind", ("part", "body"))
 def test_boolean_operations_branch_without_mutating_source(kind: str) -> None:
     session = (

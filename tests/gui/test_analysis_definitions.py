@@ -161,7 +161,7 @@ def _regions(kind: str, *names: str) -> list[RegionRef]:
     return [RegionRef(kind, name) for name in names]
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_native_linear_static_definition_reuses_the_existing_solver():
     recipe = RectangleGeometry("plate", 2.0, 1.0)
     settings = MeshSettings(0.5)

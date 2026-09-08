@@ -273,7 +273,6 @@ def _smoke_tool_result(call: ToolCall) -> AssistantMessage:
 
 
 @pytest.mark.cloud
-@pytest.mark.integration
 def test_opt_in_provider_smoke_matrix() -> None:
     """Run six bounded policy prompts only with the existing explicit cloud gate."""
 
@@ -409,6 +408,7 @@ def test_contract_matrix_is_bounded_and_provider_discoverable() -> None:
         )
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
     tmp_path,
 ) -> None:
@@ -505,6 +505,7 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
         assert terminal["status"] == "succeeded"
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_explicit_multi_profile_selection_matches_proposal_part_count():
     recipe = planar_sketch_geometry(
         "Two independent material profiles",

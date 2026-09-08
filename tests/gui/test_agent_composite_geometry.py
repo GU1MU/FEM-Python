@@ -134,6 +134,7 @@ def test_duplicate_polygon_vertex_returns_profile_input_diagnostic() -> None:
     assert diagnostic["required_fields"] == ["profiles"]
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_blank_ring_is_one_atomic_final_3d_proposal() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -168,6 +169,7 @@ def test_blank_ring_is_one_atomic_final_3d_proposal() -> None:
     assert accepted.parts[0].mesh_settings is None
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_blank_composite_reject_keeps_session_empty() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -193,6 +195,7 @@ def test_blank_composite_reject_keeps_session_empty() -> None:
     assert session.snapshot() == before
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_center_hole_plate_accepts_without_analysis_side_effects() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -246,6 +249,7 @@ def test_center_hole_plate_accepts_without_analysis_side_effects() -> None:
     assert snapshot.artifact is None
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_contour_order_does_not_choose_material_or_hole() -> None:
     normal = _ring_geometry()["profiles"]
     assert isinstance(normal, list)
@@ -300,6 +304,7 @@ def test_multiple_disjoint_material_profiles_fail_closed() -> None:
     assert session.snapshot() == before
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_explicit_provisional_summary_contains_all_dimensions() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -334,6 +339,7 @@ def test_explicit_provisional_summary_contains_all_dimensions() -> None:
     assert session.snapshot().source_kind is None
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_stale_accept_keeps_blank_session() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)
@@ -369,6 +375,7 @@ def test_failed_composite_preflight_is_not_registered(monkeypatch) -> None:
     assert session.snapshot().source_kind is None
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_geometry_accept_enters_mesh_stage_and_exposes_mesh_tools() -> None:
     session = ModelSession()
     bridge, controller = _controller(session)

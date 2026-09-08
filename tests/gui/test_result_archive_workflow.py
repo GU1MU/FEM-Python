@@ -513,7 +513,7 @@ def test_result_archive_view_keeps_only_result_topology_and_regions() -> None:
     assert len(node_fields["坐标"].split(",")) == 2
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_real_fempy_project_vertical_remains_openable(
     tmp_path: Path,
     monkeypatch,

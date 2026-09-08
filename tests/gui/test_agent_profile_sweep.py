@@ -183,7 +183,7 @@ def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
     assert isinstance(session.snapshot().parts[0].geometry_recipe, PathSweptGeometry)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_agent_path_proposal_is_atomic_revision_bound() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
@@ -225,6 +225,7 @@ def test_agent_path_proposal_is_atomic_revision_bound() -> None:
     assert type(recipe) is PathSweptGeometry
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_stale_path_proposal_does_not_mutate() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
@@ -250,6 +251,7 @@ def test_stale_path_proposal_does_not_mutate() -> None:
     assert session.snapshot() == stale_state
 
 
+@pytest.mark.usefixtures("real_gmsh")
 def test_preflight_failure_and_gui_reject_are_atomic() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)

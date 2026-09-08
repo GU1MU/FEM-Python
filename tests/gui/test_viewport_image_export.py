@@ -391,7 +391,6 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
     assert harness.successes == []
 
 
-@pytest.mark.gui_native
 def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
@@ -429,7 +428,6 @@ def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> N
     viewport.close()
 
 
-@pytest.mark.gui_native
 def test_scaled_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
@@ -508,7 +506,6 @@ def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
     viewport.close()
 
 
-@pytest.mark.gui_native
 def test_scaled_screenshot_preserves_overlay_layout(tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
@@ -556,7 +553,6 @@ def test_scaled_screenshot_preserves_overlay_layout(tmp_path: Path) -> None:
     viewport.close()
 
 
-@pytest.mark.gui_native
 def test_transparent_screenshot_handles_gradient_background(tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()

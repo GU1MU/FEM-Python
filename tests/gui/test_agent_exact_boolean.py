@@ -130,7 +130,7 @@ def test_boolean_payload_rejects_unknown_recipe_fields(root_kind: str) -> None:
         geometry_recipe_from_payload(payload)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
     session = make_boolean_part_session(
         BoxGeometry("Target", 2.0, 1.0, 1.0),
@@ -171,7 +171,7 @@ def test_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
     }
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize(
     ("target", "tool", "operation"),
     (
@@ -228,7 +228,7 @@ def test_real_agent_part_boolean_matrix(target, tool, operation: str) -> None:
     assert any(record.kind in {"fuse", "cut"} for record in result.feature_history)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
     target = BoxGeometry("Large Target", 2.0, 1.0, 1.0)
     tool = MovedGeometry(BoxGeometry("Small Tool", 1.0, 1.0, 1.0), 1.5, 0.0, 0.0)
@@ -259,7 +259,7 @@ def test_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
     assert volumes[0] != pytest.approx(volumes[1])
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
     session = make_multi_body_session()
     bridge, controller = _controller(session)
@@ -288,7 +288,7 @@ def test_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
     assert "B2" in geometry.retired_body_ids
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 @pytest.mark.parametrize(
     ("tool", "operation", "diagnostic"),
     (
@@ -325,7 +325,7 @@ def test_rejected_boolean_preflight_is_atomic(tool, operation: str, diagnostic: 
     assert session.snapshot() == before
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_reject_and_stale_commit_never_mutate_session() -> None:
     session = make_boolean_part_session(
         BoxGeometry("Target", 2.0, 1.0, 1.0),

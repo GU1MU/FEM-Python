@@ -53,7 +53,7 @@ def _set_native_mesh_inputs(
     )
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_native_rectangle_uses_exact_whole_geometry_edges() -> None:
     recipe = RectangleGeometry("NativeScopeSelection", 2.0, 1.0)
     model = generate_fem_model(recipe, MeshSettings(0.2))
@@ -89,7 +89,7 @@ def test_native_rectangle_uses_exact_whole_geometry_edges() -> None:
     )
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_imported_planar_mesh_infers_continuous_geometry_edges() -> None:
     model = generate_fem_model(
         RectangleGeometry("ImportedPlanarScope", 2.0, 1.0),
@@ -118,7 +118,7 @@ def test_imported_planar_mesh_infers_continuous_geometry_edges() -> None:
     )
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_imported_solid_mesh_infers_surfaces_and_feature_edges() -> None:
     model = generate_fem_model(
         BoxGeometry("ImportedSolidScope", 1.0, 1.0, 1.0),
@@ -148,7 +148,7 @@ def test_imported_solid_mesh_infers_surfaces_and_feature_edges() -> None:
     assert all(reference.kind == "element" for reference in volume)
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_native_wire_edges_expand_to_line_elements() -> None:
     recipe = WireGeometry(
         "WireScope",
@@ -186,7 +186,7 @@ def test_native_wire_edges_expand_to_line_elements() -> None:
     } == {"edge"}
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_geometry_edge_box_selection_expands_and_ctrl_toggles(
     monkeypatch,
 ) -> None:
@@ -347,7 +347,7 @@ def test_completed_scope_creation_restores_new_load_form_and_scope(
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
     monkeypatch,
 ) -> None:
@@ -397,7 +397,7 @@ def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_imported_mesh_can_create_an_inferred_whole_edge_scope(
     tmp_path,
 ) -> None:
@@ -441,7 +441,7 @@ def test_imported_mesh_can_create_an_inferred_whole_edge_scope(
     window.close()
 
 
-@pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
     monkeypatch,
 ) -> None:
