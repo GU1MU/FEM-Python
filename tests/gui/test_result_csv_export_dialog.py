@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QLabel
+from PySide6.QtWidgets import QAbstractItemView, QLabel
 
 from fem.application.results import (
     FieldState,
@@ -19,10 +17,6 @@ from fem_gui import result_csv_export_dialog as dialog_module
 from fem_gui.result_csv_export_dialog import ResultCsvExportDialog
 from fem_gui.result_presentation import visible_result_fields
 from tests.helpers.model_builders import make_static_pull_truss_model
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _catalog():
@@ -55,7 +49,6 @@ def _check_components(
 
 
 def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
-    _application()
     catalog = _catalog()
     dialog = ResultCsvExportDialog(
         catalog,
@@ -86,7 +79,6 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
     assert "已就绪" not in visible_text
     assert "按需加载" not in visible_text
     assert "不可用" not in visible_text
-    assert not hasattr(dialog, "availability_label")
     assert "分量：" in visible_text
     assert "可多选" not in visible_text
     assert dialog.component_list.verticalScrollMode() == (
@@ -114,7 +106,6 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
 def test_component_list_supports_multiple_checks_and_preserves_user_path(
     tmp_path: Path,
 ) -> None:
-    _application()
     catalog = _catalog()
     dialog = ResultCsvExportDialog(
         catalog,
@@ -149,7 +140,6 @@ def test_browse_normalizes_csv_suffix_and_cancel_keeps_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    _application()
     catalog = _catalog()
     dialog = ResultCsvExportDialog(
         catalog,

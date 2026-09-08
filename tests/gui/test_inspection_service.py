@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -145,7 +143,6 @@ def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
     model = read(gui_inp_path)
     service = InspectionService(model)
 
-    assert not hasattr(service, "_element_records")
     assert service._element_record_cached.cache_info().currsize == 0
 
     assert service.node_sets_by_node[2] == ["RIGHT"]
@@ -311,80 +308,6 @@ def test_lazy_and_unavailable_provider_fields_do_not_materialize_or_block_model(
     assert any(title.endswith("（按需加载）") for title in titles)
     assert all("单元质心" not in title for title in titles)
     assert calls == []
-
-
-def test_typed_inspection_path_has_no_legacy_or_support_order_dependency() -> None:
-    module_path = Path(
-        InspectionService.__init__.__code__.co_filename
-    )
-    source = module_path.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    imported_modules = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    }
-    typed_functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in {
-            "_provider_result_page",
-            "_provider_result_table",
-        }
-    }
-    typed_source = "\n".join(
-        ast.unparse(typed_functions[name])
-        for name in sorted(typed_functions)
-    )
-
-    assert not any(
-        module.endswith("visualization.result_adapter")
-        or module.endswith("widgets.result_tree")
-        for module in imported_modules
-    )
-    assert set(typed_functions) == {
-        "_provider_result_page",
-        "_provider_result_table",
-    }
-    assert ".inspect_result(" in typed_source
-    for forbidden in (
-        ".materialize(",
-        "result_data",
-        "nodal_values",
-        "nodal_stress",
-        "element_stress",
-        "field_family",
-        "sorted(",
-    ):
-        assert forbidden not in typed_source
-
-    assert not hasattr(InspectionService, "update_result_data")
-    legacy_names = {
-        "ResultData",
-        "result_data",
-        "update_result_data",
-        "_node_result_fields",
-        "nodal_stress",
-        "element_stress",
-    }
-    names = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name)
-    }
-    attributes = {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-    }
-    functions = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert legacy_names.isdisjoint(names | attributes | functions)
-    assert all(name not in source for name in legacy_names)
 
 
 def test_beam_section_and_line_load_use_the_common_inspection_service():

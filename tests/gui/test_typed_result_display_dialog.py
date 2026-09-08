@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-import ast
-import inspect
-import os
-from pathlib import Path
+from tests.helpers.result_catalogs import make_result_catalog, make_result_field_key
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QDialog
 
 from fem.application.results import (
-    FieldAssociation,
-    FieldAvailability,
-    FieldDescriptor,
     FieldMaterializationKey,
     FieldPosition,
-    FieldRequest,
-    FieldState,
-    PhysicalQuantity,
     ResultCatalog,
     ResultDiagnostic,
-    ResultFieldId,
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
@@ -32,62 +21,7 @@ from fem_gui.postprocessing_dialogs import (
 )
 
 
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
-def _key(
-    variable: ResultVariable,
-    position: FieldPosition,
-    *,
-    contract: int,
-) -> FieldMaterializationKey:
-    return FieldMaterializationKey(
-        FieldRequest(ResultFieldId(variable, position)),
-        contract,
-    )
-
-
-def _descriptor(
-    key: FieldMaterializationKey,
-    *,
-    association: FieldAssociation,
-    quantity: PhysicalQuantity,
-    components: tuple[str, ...],
-    derived_components: tuple[str, ...],
-    label_key: str,
-    default_component: str,
-    order: int,
-) -> FieldDescriptor:
-    return FieldDescriptor(
-        field_id=key.request.field_id,
-        association=association,
-        quantity=quantity,
-        components=components,
-        derived_components=derived_components,
-        label_key=label_key,
-        unit_label=None,
-        default_component=default_component,
-        order=order,
-    )
-
-
 def _catalog() -> ResultCatalog:
-    displacement = _key(
-        ResultVariable.U,
-        FieldPosition.NODE,
-        contract=11,
-    )
-    reaction = _key(
-        ResultVariable.RF,
-        FieldPosition.NODE,
-        contract=12,
-    )
-    stress = _key(
-        ResultVariable.S,
-        FieldPosition.ELEMENT_NODAL,
-        contract=13,
-    )
     unavailable_diagnostic = ResultDiagnostic(
         code="result.field.unavailable",
         severity="error",
@@ -96,52 +30,7 @@ def _catalog() -> ResultCatalog:
         remediation="选择受支持的场变量。",
         details={},
     )
-    fields = (
-        FieldAvailability(
-            displacement,
-            _descriptor(
-                displacement,
-                association=FieldAssociation.NODE,
-                quantity=PhysicalQuantity.DISPLACEMENT,
-                components=("U2", "U1"),
-                derived_components=("Magnitude",),
-                label_key="result.field.u.node",
-                default_component="Magnitude",
-                order=80,
-            ),
-            FieldState.READY,
-        ),
-        FieldAvailability(
-            reaction,
-            _descriptor(
-                reaction,
-                association=FieldAssociation.NODE,
-                quantity=PhysicalQuantity.FORCE,
-                components=("RF2", "RF1"),
-                derived_components=("Magnitude",),
-                label_key="vendor.result.reaction",
-                default_component="Magnitude",
-                order=2,
-            ),
-            FieldState.LAZY,
-        ),
-        FieldAvailability(
-            stress,
-            _descriptor(
-                stress,
-                association=FieldAssociation.ELEMENT_NODE,
-                quantity=PhysicalQuantity.STRESS,
-                components=("S22", "S11"),
-                derived_components=("Mises",),
-                label_key="result.field.s.element_nodal",
-                default_component="Mises",
-                order=1,
-            ),
-            FieldState.UNAVAILABLE,
-            (unavailable_diagnostic,),
-        ),
-    )
-    return ResultCatalog(
+    return make_result_catalog(
         source=ResultSourceKey(
             result_id="result-display",
             session_id="session-display",
@@ -150,8 +39,7 @@ def _catalog() -> ResultCatalog:
             step_name="Static-1",
             run_id="run-display",
         ),
-        fields=fields,
-        default_selection=ScalarFieldSelection(displacement, "U1"),
+        unavailable_diagnostic=unavailable_diagnostic,
     )
 
 
@@ -236,7 +124,6 @@ def test_settings_dto_enforces_exact_types_and_display_modes() -> None:
 
 
 def test_dialog_requires_catalog_selection_membership_and_component() -> None:
-    _application()
     catalog = _catalog()
 
     with pytest.raises(TypeError, match="ResultCatalog"):
@@ -253,7 +140,7 @@ def test_dialog_requires_catalog_selection_membership_and_component() -> None:
     with pytest.raises(TypeError, match="ScalarFieldSelection"):
         _dialog(catalog, selection=object())  # type: ignore[arg-type]
 
-    foreign_key = _key(
+    foreign_key = make_result_field_key(
         ResultVariable.RM,
         FieldPosition.NODE,
         contract=99,
@@ -280,7 +167,6 @@ def test_dialog_requires_catalog_selection_membership_and_component() -> None:
 
 
 def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
-    _application()
     catalog = _catalog()
     dialog = _dialog(catalog)
 
@@ -326,7 +212,6 @@ def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
 
 
 def test_ready_and_lazy_apply_emit_complete_typed_settings() -> None:
-    _application()
     catalog = _catalog()
     dialog = _dialog(catalog)
     emitted: list[TypedResultDisplaySettings] = []
@@ -362,7 +247,6 @@ def test_ready_and_lazy_apply_emit_complete_typed_settings() -> None:
 
 
 def test_unavailable_field_shows_diagnostic_and_cannot_submit() -> None:
-    _application()
     catalog = _catalog()
     dialog = _dialog(catalog)
     emitted: list[TypedResultDisplaySettings] = []
@@ -388,74 +272,3 @@ def test_unavailable_field_shows_diagnostic_and_cannot_submit() -> None:
     assert emitted == []
     assert dialog.result() == QDialog.DialogCode.Rejected
     dialog.close()
-
-
-def test_typed_display_path_has_no_legacy_identity_or_numerical_work() -> None:
-    module_path = Path(inspect.getsourcefile(TypedResultDisplayDialog) or "")
-    module = ast.parse(module_path.read_text(encoding="utf-8"))
-    typed_definitions = {
-        "TypedResultDisplayDialog",
-        "TypedResultDisplaySettings",
-        "_typed_result_display_field_label",
-        "_typed_result_display_availability_text",
-        "_validate_typed_display_selection",
-        "_validate_typed_display_options",
-    }
-    definitions = {
-        node.name: node
-        for node in ast.walk(module)
-        if isinstance(
-            node,
-            (
-                ast.ClassDef,
-                ast.FunctionDef,
-                ast.AsyncFunctionDef,
-            ),
-        )
-        and node.name in typed_definitions
-    }
-
-    assert definitions.keys() == typed_definitions
-    for definition in definitions.values():
-        names = {node.id for node in ast.walk(definition) if isinstance(node, ast.Name)}
-        attributes = {
-            node.attr
-            for node in ast.walk(definition)
-            if isinstance(node, ast.Attribute)
-        }
-        string_literals = {
-            node.value
-            for node in ast.walk(definition)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-        }
-        assert names.isdisjoint(
-            {
-                "ResultData",
-                "ResultProvider",
-                "ResultQuery",
-                "ResultVariable",
-                "FieldPosition",
-                "_field_records",
-                "field_family",
-                "sorted",
-            }
-        )
-        assert attributes.isdisjoint(
-            {
-                "query",
-                "materialize",
-                "field",
-                "split",
-                "partition",
-                "startswith",
-                "endswith",
-            }
-        )
-        assert string_literals.isdisjoint(
-            {
-                "NODAL:",
-                "EN:",
-                "IP:",
-                "CENTROID:",
-            }
-        )

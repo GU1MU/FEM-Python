@@ -17,7 +17,7 @@ from tests.helpers.phase8_result_characterization import (
 )
 from tests.helpers.preflight_builders import passing_preflight_report
 from tests.helpers.result_builders import make_solve_result_bundle
-from tests.io.test_result_archive_v1 import _snapshot
+from tests.helpers.result_archives import make_result_archive
 
 
 def _solved_beam_session() -> tuple[ModelSession, str]:
@@ -81,7 +81,7 @@ def test_new_beam_solve_and_archive_publish_b31_formulation_provenance(
 
 
 def test_legacy_archive_remains_unlabelled_by_current_b31_formulation() -> None:
-    archive = _snapshot(make_beam_field_characterization_result, "legacy-beam")
+    archive = make_result_archive(make_beam_field_characterization_result, "legacy-beam")
     assert "beam_formulation" not in archive.origin.provenance
 
     session = ModelSession()

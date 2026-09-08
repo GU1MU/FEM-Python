@@ -21,7 +21,7 @@ from tests.helpers.phase8_result_characterization import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
 )
-from tests.io.test_result_archive_v1 import _snapshot
+from tests.helpers.result_archives import make_result_archive
 from tests.io.test_result_archive_v1 import (
     _manifest_and_entries,
     _replace_manifest,
@@ -31,7 +31,7 @@ from tests.io.test_result_archive_v1 import (
 
 @pytest.fixture
 def archive_snapshot():
-    return _snapshot(make_continuum_nodal_semantics_result, "phase5-streaming")
+    return make_result_archive(make_continuum_nodal_semantics_result, "phase5-streaming")
 
 
 def test_path_loader_streams_zip_and_matches_bytes_semantics(
@@ -260,7 +260,7 @@ def test_path_reader_preserves_strict_topology_element_type_validation(
 def test_path_reader_preserves_section_point_contract(
     tmp_path: Path,
 ) -> None:
-    snapshot = _snapshot(make_beam_field_characterization_result, "section-point-contract")
+    snapshot = make_result_archive(make_beam_field_characterization_result, "section-point-contract")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     field = next(
         item

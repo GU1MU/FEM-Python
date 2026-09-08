@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from tests.helpers.result_archives import make_result_archive
+
 from dataclasses import replace
-from datetime import datetime, timezone
 from io import BytesIO
 import hashlib
 import json
@@ -22,19 +23,12 @@ from fem.application.results import (
     PhysicalQuantity,
     ResultFieldId,
     FieldState,
-    ResultArchiveModelProjection,
-    ResultArchiveOrigin,
-    ResultArchiveRun,
     ResultArchiveSnapshot,
-    ResultSourceKey,
     ResultVariable,
     ResultTopologyProjection,
-    build_result_provider,
-    execute_output_requests,
 )
 import fem.application.results.archive as archive_contract
 from fem.application.units import UnitContext
-from fem.core.model import OutputRequest
 from fem.io import (
     ResultArchiveDecodeError,
     UnsupportedResultArchiveSchemaError,
@@ -49,57 +43,6 @@ from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
 )
-
-
-def _snapshot(builder, name: str) -> ResultArchiveSnapshot:
-    source = ResultSourceKey(
-        result_id=f"result-{name}",
-        session_id="session",
-        artifact_id="artifact",
-        model_revision=3,
-        step_name="Step-1",
-        run_id=f"run-{name}",
-    )
-    provider = build_result_provider(source, builder())
-    lazy_keys = tuple(
-        item.key
-        for item in provider.catalog().fields
-        if item.state.value == "lazy"
-    )
-    if lazy_keys:
-        provider = provider.advance(provider.materialize(lazy_keys))
-    provider = provider.publish_fields(
-        tuple(field_data.key for field_data in provider.snapshot.fields)
-    )
-    report = execute_output_requests(
-        provider,
-        (OutputRequest("field", "node", ("U",)),),
-    ).report
-    now = datetime(2026, 8, 9, tzinfo=timezone.utc)
-    units = UnitContext("m", "N", "Pa")
-    return ResultArchiveSnapshot(
-        archive_id=f"archive-{name}",
-        created_at=now,
-        producer_version="test",
-        origin=ResultArchiveOrigin(
-            model_name=f"model-{name}",
-            source_basename=f"model-{name}.fempy",
-            model_fingerprint="a" * 64,
-            provenance={"run_id": source.run_id},
-        ),
-        run=ResultArchiveRun("job", source.step_name, now, output_report=report),
-        profile=provider.profile,
-        catalog=provider.catalog(),
-        materialization=provider.snapshot,
-        model_projection=ResultArchiveModelProjection(
-            provider.snapshot.topology,
-            unit_context=units,
-            named_region_node_ids={"all_nodes": provider.snapshot.topology.node_ids},
-            named_region_element_ids={"all_elements": provider.snapshot.topology.element_ids},
-            summaries={"model_family": provider.profile.family.value},
-        ),
-        unit_context=units,
-    )
 
 
 def _entries(data: bytes) -> list[tuple[str, bytes]]:
@@ -137,7 +80,7 @@ def _replace_manifest(manifest: dict[str, object], entries: list[tuple[str, byte
     ),
 )
 def test_schema_v1_roundtrip_preserves_result_contract(name, builder):
-    expected = _snapshot(builder, name)
+    expected = make_result_archive(builder, name)
     encoded = encode_result_archive(expected)
     actual = decode_result_archive(encoded)
     assert actual.archive_id == expected.archive_id
@@ -165,7 +108,7 @@ def test_schema_v1_roundtrip_preserves_result_contract(name, builder):
 
 
 def test_beam_integration_point_archive_roundtrip_preserves_point_identity() -> None:
-    expected = _snapshot(make_beam_field_characterization_result, "beam-points")
+    expected = make_result_archive(make_beam_field_characterization_result, "beam-points")
 
     encoded = encode_result_archive(expected)
     manifest, _entries_value = _manifest_and_entries(encoded)
@@ -223,7 +166,7 @@ def test_legacy_beam_archive_remains_readable_without_fabricated_points(
     derived_components: tuple[str, ...],
     legacy_values: tuple[tuple[float, ...], ...],
 ) -> None:
-    current = _snapshot(make_beam_field_characterization_result, "legacy-beam")
+    current = make_result_archive(make_beam_field_characterization_result, "legacy-beam")
     current_point = next(
         field
         for field in current.fields
@@ -349,7 +292,7 @@ def test_legacy_beam_archive_remains_readable_without_fabricated_points(
 
 
 def test_schema_v1_entry_order_is_deterministic(tmp_path: Path):
-    snapshot = _snapshot(make_truss_field_characterization_result, "order")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "order")
     first = encode_result_archive(snapshot)
     second = encode_result_archive(snapshot)
     assert first == second
@@ -374,7 +317,7 @@ def test_schema_v1_entry_order_is_deterministic(tmp_path: Path):
 
 
 def test_schema_v1_rejects_duplicate_unknown_and_checksum_entries(tmp_path: Path):
-    snapshot = _snapshot(make_truss_field_characterization_result, "security")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "security")
     encoded = encode_result_archive(snapshot)
     # Rebuild a mutated archive while preserving deterministic entry bytes.
     source = tmp_path / "source.femres"
@@ -404,7 +347,7 @@ def test_schema_v1_rejects_duplicate_missing_and_dangerous_entries(
     tmp_path: Path,
     dangerous_name: str,
 ):
-    snapshot = _snapshot(make_truss_field_characterization_result, "entry-security")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "entry-security")
     original = encode_result_archive(snapshot)
     entries = _entries(original)
     source = tmp_path / "dangerous.femres"
@@ -428,7 +371,7 @@ def test_schema_v1_rejects_dtype_shape_and_byte_size_mismatch(
     tmp_path: Path,
     metadata_key: str,
 ):
-    snapshot = _snapshot(make_truss_field_characterization_result, f"metadata-{metadata_key}")
+    snapshot = make_result_archive(make_truss_field_characterization_result, f"metadata-{metadata_key}")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     array_name = "topology/node_ids.npy"
     metadata = manifest["arrays"][array_name]
@@ -465,7 +408,7 @@ def test_schema_v1_rejects_malformed_named_region_projection(
     tmp_path: Path,
     mutation,
 ):
-    snapshot = _snapshot(make_continuum_nodal_semantics_result, "projection-security")
+    snapshot = make_result_archive(make_continuum_nodal_semantics_result, "projection-security")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     mutation(manifest)
     target = tmp_path / "projection-security.femres"
@@ -476,7 +419,7 @@ def test_schema_v1_rejects_malformed_named_region_projection(
 
 @pytest.mark.parametrize("mutation", ("duplicate", "unused", "region-order"))
 def test_schema_v1_rejects_dictionary_tampering(tmp_path: Path, mutation: str):
-    snapshot = _snapshot(make_continuum_nodal_semantics_result, "dictionary-security")
+    snapshot = make_result_archive(make_continuum_nodal_semantics_result, "dictionary-security")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     if mutation == "duplicate":
         manifest["topology"]["element_types"].append(
@@ -493,7 +436,7 @@ def test_schema_v1_rejects_dictionary_tampering(tmp_path: Path, mutation: str):
 
 
 def test_schema_v1_rejects_unused_region_dictionary_entry(tmp_path: Path):
-    snapshot = _snapshot(make_continuum_nodal_semantics_result, "unused-region")
+    snapshot = make_result_archive(make_continuum_nodal_semantics_result, "unused-region")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     manifest["topology"]["region_keys"].append(
         '{"material":["material_id",99],"section":["section",null,{"plane_type":"stress","thickness":1.0}]}'
@@ -505,7 +448,7 @@ def test_schema_v1_rejects_unused_region_dictionary_entry(tmp_path: Path):
 
 
 def test_schema_v1_rejects_truncated_corrupt_and_nonfinite_payloads(tmp_path: Path):
-    snapshot = _snapshot(make_truss_field_characterization_result, "corrupt")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "corrupt")
     encoded = encode_result_archive(snapshot)
     truncated = tmp_path / "truncated.femres"
     truncated.write_bytes(encoded[:-12])
@@ -539,7 +482,7 @@ def test_schema_v1_rejects_truncated_corrupt_and_nonfinite_payloads(tmp_path: Pa
 
 
 def test_schema_v1_rejects_object_dtype_payload(tmp_path: Path):
-    snapshot = _snapshot(make_truss_field_characterization_result, "object")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "object")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     array_name = "topology/node_ids.npy"
     raw = BytesIO()
@@ -562,7 +505,7 @@ def test_schema_v1_readback_byte_mismatch_preserves_old_target_and_cleans_temp(
 ):
     import fem.io.result_archive_v1 as codec
 
-    snapshot = _snapshot(make_truss_field_characterization_result, "semantic")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "semantic")
     target = tmp_path / "semantic.femres"
     target.write_bytes(b"old-target")
     monkeypatch.setattr(codec, "_sha256_path", lambda *_args: "0" * 64)
@@ -578,7 +521,7 @@ def test_schema_v1_save_verifies_bytes_without_decoding_or_reencoding(
 ) -> None:
     import fem.io.result_archive_v1 as codec
 
-    snapshot = _snapshot(make_truss_field_characterization_result, "single-encode")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "single-encode")
     target = tmp_path / "single-encode.femres"
     original = codec.encode_result_archive_v1
     calls = 0
@@ -602,7 +545,7 @@ def test_schema_v1_save_verifies_bytes_without_decoding_or_reencoding(
 
 
 def test_schema_v1_rejects_unsupported_schema_and_preserves_target_on_failure(tmp_path: Path):
-    snapshot = _snapshot(make_truss_field_characterization_result, "atomic")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "atomic")
     target = tmp_path / "result.femres"
     target.write_bytes(b"old-target")
     with pytest.raises(RuntimeError, match="cancel"):
@@ -632,7 +575,7 @@ def test_version_neutral_router_rejects_future_schema_before_array_reads(
 ) -> None:
     import fem.io.result_archive_v1 as codec
 
-    snapshot = _snapshot(make_truss_field_characterization_result, "future-router")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "future-router")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     manifest["schema"] = 2
     manifest["future_contract"] = {"frames": 1}
@@ -658,7 +601,7 @@ def test_version_neutral_router_rejects_future_schema_before_array_reads(
 
 
 def test_schema_v1_wraps_manifest_numeric_overflow_as_typed_decode_error() -> None:
-    snapshot = _snapshot(make_truss_field_characterization_result, "overflow")
+    snapshot = make_result_archive(make_truss_field_characterization_result, "overflow")
     manifest, entries = _manifest_and_entries(encode_result_archive(snapshot))
     manifest["run"]["timings"] = {"hostile": 10**400}
     encoded = _rewrite(_replace_manifest(manifest, entries))
@@ -681,7 +624,7 @@ def test_snapshot_factory_detaches_an_accepted_result_record():
 
 
 def test_snapshot_rejects_projection_identity_unit_and_catalog_mismatches():
-    snapshot = _snapshot(make_continuum_nodal_semantics_result, "dto-validation")
+    snapshot = make_result_archive(make_continuum_nodal_semantics_result, "dto-validation")
     topology = snapshot.topology
     coordinates = np.array(topology.node_coordinates, copy=True)
     coordinates[0, 0] += 1.0
@@ -723,7 +666,7 @@ def test_snapshot_rejects_projection_identity_unit_and_catalog_mismatches():
 
 
 def test_model_fingerprint_changes_with_profile_regions_and_units():
-    snapshot = _snapshot(make_continuum_nodal_semantics_result, "fingerprint")
+    snapshot = make_result_archive(make_continuum_nodal_semantics_result, "fingerprint")
     baseline = archive_contract._result_model_fingerprint(
         snapshot.topology,
         snapshot.profile,

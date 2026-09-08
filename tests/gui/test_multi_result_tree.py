@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
@@ -24,21 +22,17 @@ from fem_gui.widgets.result_tree import (
     ROLE_SELECTION,
     ResultTree,
 )
-from tests.gui.test_result_document_workflow_phase5 import _snapshot
+from tests.helpers.result_archives import make_result_archive
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.gui.test_result_tree import _catalog
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
+from tests.helpers.result_catalogs import make_result_catalog
 
 
 def _wait_open(window: FEMMainWindow, receipt) -> None:
     assert receipt.completion is not None
     terminal = receipt.completion.result(2.0)
-    app = _application()
+    app = QApplication.instance()
     controller = window.workspace.open_controller
     deadline = time.monotonic() + 2.0
     while controller is not None and controller.busy and time.monotonic() < deadline:
@@ -53,7 +47,7 @@ def _archive_path(tmp_path: Path, name: str) -> Path:
     path = tmp_path / f"{name}.femres"
     save_result_archive(
         path,
-        _snapshot(make_continuum_nodal_semantics_result, name),
+        make_result_archive(make_continuum_nodal_semantics_result, name),
     )
     return path
 
@@ -89,9 +83,8 @@ def _first_leaf(item, selection=None):
 
 
 def test_result_tree_appends_model_and_archive_roots_incrementally(monkeypatch) -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     projection = _projection(catalog, "A")
     tree.upsert_model_runs(11, projection, display_name="A", catalog=catalog)
     tree.upsert_archive(22, projection, display_name="external.femres", catalog=catalog)
@@ -119,9 +112,8 @@ def test_result_tree_appends_model_and_archive_roots_incrementally(monkeypatch) 
 
 
 def test_result_field_items_carry_document_run_source_and_typed_selection() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree.upsert_model_runs(7, _projection(catalog), catalog=catalog)
     leaf = _first_leaf(
         tree.roots[(7, catalog.source.run_id)],
@@ -146,9 +138,8 @@ def test_result_field_items_carry_document_run_source_and_typed_selection() -> N
 
 
 def test_result_root_removal_is_indexed_and_preserves_other_documents() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     projection = _projection(catalog)
     tree.upsert_model_runs(1, projection, catalog=catalog)
     tree.upsert_archive(2, projection, catalog=catalog)
@@ -159,9 +150,8 @@ def test_result_root_removal_is_indexed_and_preserves_other_documents() -> None:
 
 
 def test_result_run_item_emits_routed_activation() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree.upsert_model_runs(19, _projection(catalog), catalog=catalog)
     run_item = tree.roots[(19, catalog.source.run_id)]
     assert run_item.data(0, ROLE_RESULT_KIND) == "run"
@@ -174,9 +164,8 @@ def test_result_run_item_emits_routed_activation() -> None:
 
 
 def test_one_model_projects_each_successful_job_as_a_top_level_root() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     first = _projection(catalog, "Model-1").runs[0]
     second = SimpleNamespace(**(vars(first) | {"run_id": "run-2", "name": "Job-2"}))
     projection = SimpleNamespace(
@@ -196,7 +185,6 @@ def test_one_model_projects_each_successful_job_as_a_top_level_root() -> None:
 
 
 def test_model_without_successful_jobs_has_no_result_root() -> None:
-    _application()
     tree = ResultTree()
     projection = SimpleNamespace(model_name="Model-1", runs=())
 
@@ -206,9 +194,8 @@ def test_model_without_successful_jobs_has_no_result_root() -> None:
 
 
 def test_same_selection_is_scoped_to_document_and_source() -> None:
-    _application()
     tree = ResultTree()
-    first = _catalog()
+    first = make_result_catalog()
     second = replace(
         first,
         source=replace(
@@ -240,7 +227,6 @@ def test_main_window_appends_three_results_and_duplicate_is_index_hit(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    _application()
     paths = tuple(_archive_path(tmp_path, f"append-{index}") for index in range(3))
     load_calls: list[Path] = []
     geometry_calls: list[object] = []
@@ -308,7 +294,6 @@ def test_main_window_appends_three_results_and_duplicate_is_index_hit(
 
 
 def test_main_window_failed_archive_open_is_atomic(tmp_path: Path, monkeypatch) -> None:
-    _application()
     window = FEMMainWindow()
     try:
         before_context = window.workspace.active_document_id
@@ -325,7 +310,7 @@ def test_main_window_failed_archive_open_is_atomic(tmp_path: Path, monkeypatch) 
         assert receipt.completion is not None
         terminal = receipt.completion.result(2.0)
         assert terminal.state is BackgroundTaskState.FAILED
-        _application().processEvents()
+        QApplication.instance().processEvents()
         assert window.workspace.active_document_id == before_context
         assert set(window.result_tree.roots) == before_roots
         assert not window.workspace.results
@@ -338,7 +323,6 @@ def test_result_presentation_state_isolated_across_warm_a_b_a_switch(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    _application()
     window = FEMMainWindow()
     try:
         path_a = _archive_path(tmp_path, "warm-a")
@@ -413,7 +397,6 @@ def test_result_presentation_state_isolated_across_warm_a_b_a_switch(
 def test_closing_external_result_releases_cache_and_preserves_other_root(
     tmp_path: Path,
 ) -> None:
-    _application()
     window = FEMMainWindow()
     try:
         _open_archive(window, _archive_path(tmp_path, "close-a"))
@@ -439,7 +422,6 @@ def test_closing_external_result_releases_cache_and_preserves_other_root(
 
 
 def test_main_window_run_route_is_owned_by_document(monkeypatch) -> None:
-    _application()
     window = FEMMainWindow()
     try:
         context = window.workspace.add_model(display_name="Model-B")

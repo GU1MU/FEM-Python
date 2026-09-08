@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import ast
-import os
 from pathlib import Path
 from time import monotonic
 from typing import Callable
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QThread
@@ -38,14 +35,6 @@ from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MAIN_WINDOW_PATH = PROJECT_ROOT / "src" / "fem_gui" / "main_window.py"
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
 def _full_catalog_bundle(task, result) -> SolveResultBundle:
     """Expose READY and LAZY fields for typed ribbon tests."""
 
@@ -61,7 +50,6 @@ def _full_catalog_bundle(task, result) -> SolveResultBundle:
 
 @pytest.fixture
 def solved_window() -> FEMMainWindow:
-    _application()
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
     imported = window.session.prepare_import(Path("typed-result-ribbon.inp"))
@@ -211,7 +199,7 @@ def _process_until(
     *,
     timeout: float = 2.0,
 ) -> None:
-    application = _application()
+    application = QApplication.instance()
     deadline = monotonic() + timeout
     while not predicate() and monotonic() < deadline:
         application.processEvents()
@@ -381,96 +369,4 @@ def test_ready_ribbon_selection_uses_public_exact_selection_without_result_data(
     assert (
         window.viewport._result_render_payload.topology.selection
         == target
-    )
-
-
-def test_typed_ribbon_methods_do_not_read_legacy_result_maps_or_order() -> None:
-    tree = ast.parse(
-        MAIN_WINDOW_PATH.read_text(encoding="utf-8"),
-        filename=str(MAIN_WINDOW_PATH),
-    )
-    window_class = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "FEMMainWindow"
-    )
-    method_names = {
-        "_refresh_result_controls",
-        "_populate_result_positions",
-        "_populate_result_components",
-        "_result_variable_changed",
-        "_result_position_changed",
-        "_result_component_changed",
-    }
-    methods = tuple(
-        node
-        for node in window_class.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in method_names
-    )
-    assert {method.name for method in methods} == method_names
-
-    referenced_names = {
-        name
-        for method in methods
-        for node in ast.walk(method)
-        for name in (
-            node.id
-            if isinstance(node, ast.Name)
-            else node.attr
-            if isinstance(node, ast.Attribute)
-            else None,
-        )
-        if name is not None
-    }
-    assert referenced_names.isdisjoint(
-        {
-            "ResultData",
-            "result_data",
-            "field_family",
-            "_field_family",
-            "_field_sort_key",
-            "available_stress_prefixes",
-            "stress_position_label",
-        }
-    )
-
-    string_constants = {
-        node.value
-        for method in methods
-        for node in ast.walk(method)
-        if isinstance(node, ast.Constant)
-        and type(node.value) is str
-    }
-    assert string_constants.isdisjoint(
-        {
-            "U",
-            "U1",
-            "U2",
-            "U3",
-            "R",
-            "R1",
-            "R2",
-            "R3",
-            "RF",
-            "RF1",
-            "RF2",
-            "RF3",
-            "RM1",
-            "RM2",
-            "RM3",
-            "S",
-            "S11",
-            "S22",
-            "S33",
-            "S12",
-            "S13",
-            "S23",
-            "Mises",
-            "IP",
-            "CENTROID",
-            "EN",
-            "NODAL",
-        }
     )

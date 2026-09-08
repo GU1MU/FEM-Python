@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import ast
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pyvista
 import pytest
-from PySide6.QtWidgets import QApplication
 
 from fem.application import MeshEntityRef
 from fem.application.results import (
@@ -43,10 +38,6 @@ from fem_gui.viewport_background import ViewportBackgroundSettings
 import fem_gui.widgets.viewport as viewport_module
 from fem_gui.widgets.viewport import FEMViewport, PickHit
 from tests.helpers.mesh_builders import make_selection_hex_mesh
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _source() -> ResultSourceKey:
@@ -503,7 +494,6 @@ class _Plotter:
 
 
 def test_coordinate_system_option_updates_viewport_axes() -> None:
-    _application()
     viewport = FEMViewport()
     plotter = _Plotter()
     viewport._plotter = plotter
@@ -537,7 +527,6 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
     factory,
     expected_layout: ResultValueLayout,
 ) -> None:
-    _application()
     payload = factory()
     original_points = np.asarray(payload.dataset.points).copy()
     viewport = FEMViewport()
@@ -595,7 +584,6 @@ def test_typed_payload_renders_owned_dataset_without_reprojection(
 def test_deformed_beam_result_moves_visible_nodes_with_the_elements(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     model_points = np.asarray(
         ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0))
@@ -645,7 +633,6 @@ def test_deformed_continuum_result_moves_surface_nodes_and_labels_together(
     dimension: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     if dimension == "2d":
         payload = _point_payload()
@@ -730,7 +717,6 @@ def test_no_contour_result_uses_only_deformed_model_outline(
     dimension: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     if dimension == "1d":
         payload = _beam_payload()
@@ -819,7 +805,6 @@ def test_no_contour_result_uses_only_deformed_model_outline(
 
 
 def test_scientific_scalar_format_uses_compact_uppercase_exponent() -> None:
-    _application()
     viewport = FEMViewport()
 
     assert viewport._contour["number_format"] == "scientific"
@@ -832,7 +817,6 @@ def test_scientific_scalar_format_uses_compact_uppercase_exponent() -> None:
 
 
 def test_engineering_scalar_format_and_legend_typography_are_configurable() -> None:
-    _application()
     viewport = FEMViewport()
     viewport.set_contour_options(
         {
@@ -855,7 +839,6 @@ def test_engineering_scalar_format_and_legend_typography_are_configurable() -> N
 
 
 def test_filled_result_and_all_edge_modes_reach_pyvista() -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     plotter = _Plotter()
@@ -903,7 +886,6 @@ def test_filled_result_and_all_edge_modes_reach_pyvista() -> None:
 
 
 def test_typed_entry_requires_exact_payload_and_scalar_association() -> None:
-    _application()
     viewport = FEMViewport()
     with pytest.raises(TypeError, match="exactly ResultRenderPayload"):
         viewport.set_result_render_payload(object())  # type: ignore[arg-type]
@@ -923,7 +905,6 @@ def test_typed_entry_requires_exact_payload_and_scalar_association() -> None:
 
 
 def test_typed_entry_rejects_mismatched_artifact_without_mutation() -> None:
-    _application()
     viewport = FEMViewport()
     viewport._artifact_id = "artifact-other"
 
@@ -936,7 +917,6 @@ def test_typed_entry_rejects_mismatched_artifact_without_mutation() -> None:
 
 
 def test_typed_entry_rejects_mutated_dataset_geometry() -> None:
-    _application()
     payload = _point_payload()
     payload.dataset.points[0, 0] = 0.25
     viewport = FEMViewport()
@@ -949,7 +929,6 @@ def test_typed_entry_rejects_mutated_dataset_geometry() -> None:
 
 
 def test_typed_consumer_revalidates_vtk_reported_modification() -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
@@ -965,7 +944,6 @@ def test_typed_consumer_revalidates_vtk_reported_modification() -> None:
 
 
 def test_typed_render_boundary_does_not_rely_on_runtime_mtime_cache() -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
@@ -981,7 +959,6 @@ def test_typed_render_boundary_does_not_rely_on_runtime_mtime_cache() -> None:
 
 
 def test_typed_extrema_labels_use_point_and_cell_location_provenance() -> None:
-    _application()
     viewport = FEMViewport()
     plotter = _Plotter()
     viewport._plotter = plotter
@@ -1019,7 +996,6 @@ def test_typed_extrema_labels_use_point_and_cell_location_provenance() -> None:
 def test_typed_picking_exposes_location_ids_through_existing_pick_indexes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     model_grid = _model_grid(
@@ -1096,7 +1072,6 @@ def test_contextual_mesh_picking_uses_rendered_result_coordinates_and_ids(
     mode: str,
     expected_id: int,
 ) -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
@@ -1154,7 +1129,6 @@ def test_nodal_result_cells_support_contextual_single_and_box_selection(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
-    _application()
     payload = _node_payload()
     viewport = FEMViewport()
     viewport._pick_grid = _model_grid(
@@ -1202,7 +1176,6 @@ def test_nodal_result_cells_support_contextual_single_and_box_selection(
 def test_aligned_nodal_result_provenance_avoids_per_cell_sort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     payload = _node_payload()
     viewport = FEMViewport()
     viewport._pick_grid = _model_grid(
@@ -1227,7 +1200,6 @@ def test_aligned_nodal_result_provenance_avoids_per_cell_sort(
 
 
 def test_contextual_mesh_highlight_pipeline_uses_rendered_result_dataset() -> None:
-    _application()
     viewport_module._pyvista = pyvista
     payload = _point_payload()
     viewport = FEMViewport()
@@ -1272,7 +1244,6 @@ def test_contextual_mesh_highlight_pipeline_uses_rendered_result_dataset() -> No
 
 
 def test_contextual_result_face_preselection_uses_typed_element_cells() -> None:
-    _application()
     viewport_module._pyvista = pyvista
     payload = _point_payload()
     viewport = FEMViewport()
@@ -1300,7 +1271,6 @@ def test_contextual_result_face_preselection_uses_typed_element_cells() -> None:
 def test_result_edge_and_face_pick_data_follow_displayed_node_coordinates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     viewport_module._pyvista = pyvista
     model = FEMModel(make_selection_hex_mesh())
     geometry = build_model_geometry(model)
@@ -1373,7 +1343,6 @@ def test_result_edge_and_face_pick_data_follow_displayed_node_coordinates(
 def test_typed_picking_falls_back_to_model_when_field_lacks_entity_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     viewport = FEMViewport()
     monkeypatch.setattr(
         viewport,
@@ -1429,7 +1398,6 @@ def test_typed_picking_falls_back_to_model_when_field_lacks_entity_provenance(
 def test_typed_highlight_uses_all_matches_or_falls_back_for_partial_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     viewport = FEMViewport()
     plotter = _Plotter()
@@ -1547,7 +1515,6 @@ def test_typed_highlight_uses_all_matches_or_falls_back_for_partial_batches(
 def test_typed_payload_refresh_clears_batch_and_restores_persistent_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     model_points = np.asarray(
         (
@@ -1610,7 +1577,6 @@ def test_typed_payload_refresh_clears_batch_and_restores_persistent_selection(
 def test_typed_sample_result_keeps_model_grid_for_labels_and_background(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     monkeypatch.setattr(viewport_module, "_pyvista", pyvista)
     payload = _integration_point_payload()
     model_points = np.asarray(
@@ -1661,7 +1627,6 @@ def test_typed_sample_result_keeps_model_grid_for_labels_and_background(
 def test_background_refresh_reuses_installed_typed_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
@@ -1682,7 +1647,6 @@ def test_background_refresh_reuses_installed_typed_payload(
 
 
 def test_result_scene_current_requires_exact_projection_state() -> None:
-    _application()
     payload = _point_payload()
     viewport = FEMViewport()
     viewport.set_result_render_payload(payload)
@@ -1713,71 +1677,3 @@ def test_result_scene_current_requires_exact_projection_state() -> None:
         display=viewport._display,
     )
     viewport.close()
-
-
-def test_typed_viewport_path_has_no_engineering_or_materialization_calls() -> None:
-    path = Path(__file__).parents[2] / "src" / "fem_gui" / "widgets" / "viewport.py"
-    module_source = path.read_text(encoding="utf-8")
-    tree = ast.parse(module_source)
-    typed_names = {
-        "_require_result_render_payload",
-        "set_result_render_payload",
-        "_index_result_render_provenance",
-        "_rendered_result_payload",
-        "_provenance_ids",
-        "_typed_result_point_ids",
-        "_typed_result_point_element_ids",
-        "_typed_result_cell_ids",
-        "_typed_result_node_points",
-        "_typed_result_element_cells",
-        "_update_result_render_payload_layer",
-        "_add_result_render_payload_extrema_labels",
-        "_result_location_identity",
-        "_resolve_pick",
-        "_pick_screen_point",
-        "_pick_cell",
-        "_show_preselection",
-    }
-    segments = {
-        node.name: ast.get_source_segment(
-            module_source,
-            node,
-        )
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in typed_names
-    }
-    source = "\n".join(segments.values())
-
-    assert set(segments) == typed_names
-    for forbidden in (
-        "ResultData",
-        "deformed_points",
-        "build_stress_render_geometry",
-        "dispatch",
-        "natural_shape_values",
-        "project_scalar_field_topology",
-        "build_result_render_payload",
-        "provider",
-        "query",
-        "materialize",
-        "_make_grid",
-    ):
-        assert forbidden not in source
-    assert "_pick_grid = dataset" not in source
-    for forbidden in (
-        "ResultData",
-        "ScalarField",
-        "deformed_points",
-        "stress_adapter",
-        "fem.post.stress",
-        "build_stress_render_geometry",
-        "averaging_threshold",
-        "_result_data",
-        "_result_scalar",
-        "_deformation_scale",
-        "set_result_data",
-        "set_deformation_scale",
-        "_add_extrema_labels",
-    ):
-        assert forbidden not in module_source

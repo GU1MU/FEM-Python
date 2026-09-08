@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tests.helpers.result_archives import make_result_archive
+
 from dataclasses import replace
 from io import BytesIO
 import json
@@ -28,7 +30,6 @@ from tests.helpers.phase8_result_characterization import (
 from tests.io.test_result_archive_v1 import (
     _manifest_and_entries,
     _rewrite,
-    _snapshot,
 )
 
 
@@ -46,7 +47,7 @@ def _expanded_location(location, copy_index: int):
 
 @pytest.fixture(scope="module")
 def result_archive():
-    return _snapshot(make_continuum_nodal_semantics_result, "phase6-small")
+    return make_result_archive(make_continuum_nodal_semantics_result, "phase6-small")
 
 
 @pytest.fixture(scope="module")

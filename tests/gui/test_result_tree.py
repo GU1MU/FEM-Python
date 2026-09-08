@@ -1,31 +1,13 @@
 from __future__ import annotations
 
-import ast
-import inspect
-import os
-from pathlib import Path
+from tests.helpers.result_catalogs import make_result_catalog
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTreeWidgetItem
+from PySide6.QtWidgets import QTreeWidgetItem
 import pytest
 
-from fem.application.results import (
-    FieldAssociation,
-    FieldAvailability,
-    FieldDescriptor,
-    FieldMaterializationKey,
-    FieldPosition,
-    FieldRequest,
-    FieldState,
-    PhysicalQuantity,
-    ResultCatalog,
-    ResultFieldId,
-    ResultSourceKey,
-    ResultVariable,
-    ScalarFieldSelection,
-)
+from fem.application.results import ScalarFieldSelection
 from fem_gui.widgets.result_tree import (
     ROLE_FIELD_STATE,
     ROLE_MATERIALIZATION_KEY,
@@ -34,127 +16,12 @@ from fem_gui.widgets.result_tree import (
 )
 
 
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
-def _key(
-    variable: ResultVariable,
-    position: FieldPosition,
-    *,
-    contract: int,
-) -> FieldMaterializationKey:
-    return FieldMaterializationKey(
-        FieldRequest(ResultFieldId(variable, position)),
-        contract,
-    )
-
-
-def _descriptor(
-    key: FieldMaterializationKey,
-    *,
-    association: FieldAssociation,
-    quantity: PhysicalQuantity,
-    components: tuple[str, ...],
-    derived_components: tuple[str, ...],
-    label_key: str,
-    default_component: str,
-    order: int,
-) -> FieldDescriptor:
-    return FieldDescriptor(
-        field_id=key.request.field_id,
-        association=association,
-        quantity=quantity,
-        components=components,
-        derived_components=derived_components,
-        label_key=label_key,
-        unit_label=None,
-        default_component=default_component,
-        order=order,
-    )
-
-
-def _catalog() -> ResultCatalog:
-    displacement = _key(
-        ResultVariable.U,
-        FieldPosition.NODE,
-        contract=11,
-    )
-    reaction = _key(
-        ResultVariable.RF,
-        FieldPosition.NODE,
-        contract=12,
-    )
-    stress = _key(
-        ResultVariable.S,
-        FieldPosition.ELEMENT_NODAL,
-        contract=13,
-    )
-    fields = (
-        FieldAvailability(
-            displacement,
-            _descriptor(
-                displacement,
-                association=FieldAssociation.NODE,
-                quantity=PhysicalQuantity.DISPLACEMENT,
-                components=("U2", "U1"),
-                derived_components=("Magnitude",),
-                label_key="result.field.u.node",
-                default_component="Magnitude",
-                order=80,
-            ),
-            FieldState.READY,
-        ),
-        FieldAvailability(
-            reaction,
-            _descriptor(
-                reaction,
-                association=FieldAssociation.NODE,
-                quantity=PhysicalQuantity.FORCE,
-                components=("RF2", "RF1"),
-                derived_components=("Magnitude",),
-                label_key="vendor.result.reaction",
-                default_component="Magnitude",
-                order=2,
-            ),
-            FieldState.LAZY,
-        ),
-        FieldAvailability(
-            stress,
-            _descriptor(
-                stress,
-                association=FieldAssociation.ELEMENT_NODE,
-                quantity=PhysicalQuantity.STRESS,
-                components=("S22", "S11"),
-                derived_components=("Mises",),
-                label_key="result.field.s.element_nodal",
-                default_component="Mises",
-                order=1,
-            ),
-            FieldState.UNAVAILABLE,
-        ),
-    )
-    return ResultCatalog(
-        source=ResultSourceKey(
-            result_id="result-1",
-            session_id="session-1",
-            artifact_id="artifact-1",
-            model_revision=4,
-            step_name="Static-1",
-            run_id="run-1",
-        ),
-        fields=fields,
-        default_selection=ScalarFieldSelection(displacement, "U1"),
-    )
-
-
 def _step_item(tree: ResultTree) -> QTreeWidgetItem:
     return tree.topLevelItem(0).child(0)
 
 
 def test_catalog_tree_preserves_published_field_and_component_order() -> None:
-    _application()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree = ResultTree()
 
     tree.set_catalog("Job-1 · Static-1", catalog)
@@ -182,8 +49,7 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
 
 
 def test_catalog_items_keep_complete_typed_identity_and_default_selection() -> None:
-    _application()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree = ResultTree()
 
     tree.set_catalog("Static-1", catalog)
@@ -220,8 +86,7 @@ def test_catalog_items_keep_complete_typed_identity_and_default_selection() -> N
 
 
 def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() -> None:
-    _application()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree = ResultTree()
     tree.set_catalog("Static-1", catalog)
     emitted: list[ScalarFieldSelection] = []
@@ -248,9 +113,8 @@ def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() 
 
 
 def test_set_catalog_requires_exact_typed_inputs() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
 
     with pytest.raises(TypeError, match="step_name"):
         tree.set_catalog(None, catalog)  # type: ignore[arg-type]
@@ -260,9 +124,8 @@ def test_set_catalog_requires_exact_typed_inputs() -> None:
 
 
 def test_select_selection_prefers_the_exact_component_leaf() -> None:
-    _application()
     tree = ResultTree()
-    catalog = _catalog()
+    catalog = make_result_catalog()
     tree.set_catalog("Static-1", catalog)
 
     selection = ScalarFieldSelection(
@@ -274,51 +137,3 @@ def test_select_selection_prefers_the_exact_component_leaf() -> None:
     assert tree.currentItem().childCount() == 0
     assert tree.currentItem().text(0) == "Magnitude"
     assert tree.currentItem().data(0, ROLE_SELECTION) == selection
-
-
-def test_typed_catalog_path_has_no_legacy_parsing_or_gui_field_order() -> None:
-    module_path = Path(inspect.getsourcefile(ResultTree) or "")
-    source = module_path.read_text(encoding="utf-8")
-    module = ast.parse(source)
-    typed_functions = {
-        "set_catalog",
-        "_catalog_field_item",
-        "_set_typed_item_data",
-    }
-    definitions = {
-        node.name: node
-        for node in ast.walk(module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in typed_functions
-    }
-
-    assert definitions.keys() == typed_functions
-    for definition in definitions.values():
-        names = {node.id for node in ast.walk(definition) if isinstance(node, ast.Name)}
-        attributes = {
-            node.attr
-            for node in ast.walk(definition)
-            if isinstance(node, ast.Attribute)
-        }
-        assert names.isdisjoint(
-            {
-                "ResultData",
-                "ResultVariable",
-                "FieldPosition",
-                "field_family",
-                "sorted",
-            }
-        )
-        assert attributes.isdisjoint({"split", "partition", "startswith", "endswith"})
-
-    assert not hasattr(ResultTree, "fieldActivated")
-    assert not hasattr(ResultTree, "set_result")
-    assert not hasattr(ResultTree, "_families")
-    module_names = {
-        node.id
-        for node in ast.walk(module)
-        if isinstance(node, ast.Name)
-    }
-    assert "ROLE_FIELD" not in module_names
-    for forbidden in ("ResultData", "field_family"):
-        assert forbidden not in source

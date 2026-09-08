@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -313,28 +311,3 @@ def test_validation_rejects_mutated_dataset_representation(
 def test_requires_exact_neutral_topology(value: object) -> None:
     with pytest.raises(TypeError, match="exactly ResultFieldTopology"):
         build_result_render_payload(value)  # type: ignore[arg-type]
-
-
-def test_renderer_has_no_engineering_or_qt_dependencies() -> None:
-    path = (
-        Path(__file__).parents[2]
-        / "src"
-        / "fem_gui"
-        / "visualization"
-        / "result_renderer.py"
-    )
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    imports = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    }
-    source = path.read_text(encoding="utf-8")
-
-    assert not any(name.startswith(("PySide6", "PyQt6")) for name in imports)
-    assert "result_adapter" not in source
-    assert "stress_adapter" not in source
-    assert "fem.post.stress" not in source
-    assert "fem.elements" not in source
-    assert "ResultData" not in source

@@ -29,7 +29,7 @@ from fem.io import (
     write_result_vtk,
 )
 from fem.application.results import project_scalar_field_topology
-from tests.io.test_result_archive_v1 import _snapshot
+from tests.helpers.result_archives import make_result_archive
 from tests.helpers.phase8_result_characterization import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
@@ -49,7 +49,7 @@ def test_result_archive_install_is_result_only_and_consumable(
     builder,
     tmp_path: Path,
 ) -> None:
-    archive = _snapshot(builder, "install")
+    archive = make_result_archive(builder, "install")
     path = tmp_path / "saved.femres"
     save_result_archive(path, archive)
     loaded = load_result_archive(path)
@@ -110,7 +110,7 @@ def test_result_archive_save_after_install_preserves_origin_and_generation(
     builder,
     tmp_path: Path,
 ) -> None:
-    archive = _snapshot(builder, "resave")
+    archive = make_result_archive(builder, "resave")
     source_path = tmp_path / "source.femres"
     target_path = tmp_path / "resaved.femres"
     save_result_archive(source_path, archive)
@@ -135,7 +135,7 @@ def test_result_archive_save_after_install_preserves_origin_and_generation(
 
 
 def test_result_archive_install_rebinds_all_source_keys_without_array_copy() -> None:
-    archive = _snapshot(make_continuum_nodal_semantics_result, "rebind")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "rebind")
     before_topology = archive.topology
     session = ModelSession()
     session.replace_from_result_archive(archive, Path("result.femres"))
@@ -164,7 +164,7 @@ def test_result_archive_install_rebinds_all_source_keys_without_array_copy() -> 
 
 
 def test_result_archive_install_without_path_remains_unsaved_in_memory() -> None:
-    archive = _snapshot(make_continuum_nodal_semantics_result, "in-memory")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "in-memory")
     session = ModelSession()
 
     delta = session.replace_from_result_archive(archive)
@@ -180,7 +180,7 @@ def test_result_archive_install_without_path_remains_unsaved_in_memory() -> None
 
 
 def test_result_archive_install_failure_is_atomic() -> None:
-    archive = _snapshot(make_truss_field_characterization_result, "atomic")
+    archive = make_result_archive(make_truss_field_characterization_result, "atomic")
     session = ModelSession()
     session.new_native_project("Before")
     before = session.snapshot()
@@ -198,8 +198,8 @@ def test_result_archive_install_failure_is_atomic() -> None:
 def test_result_archive_replaces_nonempty_session_and_rejects_stale_revision(
     tmp_path: Path,
 ) -> None:
-    first = _snapshot(make_continuum_nodal_semantics_result, "first")
-    second = _snapshot(make_truss_field_characterization_result, "second")
+    first = make_result_archive(make_continuum_nodal_semantics_result, "first")
+    second = make_result_archive(make_truss_field_characterization_result, "second")
     session = ModelSession()
     session.replace_from_result_archive(first, tmp_path / "first.femres")
     before = session.snapshot()
@@ -229,8 +229,8 @@ def test_result_archive_candidate_failure_preserves_current_session(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    first = _snapshot(make_beam_field_characterization_result, "stable")
-    second = _snapshot(make_continuum_nodal_semantics_result, "candidate")
+    first = make_result_archive(make_beam_field_characterization_result, "stable")
+    second = make_result_archive(make_continuum_nodal_semantics_result, "candidate")
     session = ModelSession()
     session.replace_from_result_archive(first, tmp_path / "stable.femres")
     before = session.snapshot()
@@ -249,7 +249,7 @@ def test_result_archive_candidate_failure_preserves_current_session(
 
 
 def test_archive_provider_does_not_derive_missing_fields() -> None:
-    archive = _snapshot(make_continuum_nodal_semantics_result, "missing")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "missing")
     executed = {
         key
         for request in archive.run.output_report.requests
@@ -292,7 +292,7 @@ def test_archive_provider_does_not_derive_missing_fields() -> None:
 
 
 def test_result_only_authoring_projection_is_unavailable() -> None:
-    archive = _snapshot(make_beam_field_characterization_result, "caps")
+    archive = make_result_archive(make_beam_field_characterization_result, "caps")
     session = ModelSession()
     session.replace_from_result_archive(archive, Path("caps.femres"))
     projection = describe_session_authoring(session.snapshot())
@@ -333,7 +333,7 @@ def test_result_archive_three_model_query_inspection_export_and_contour_parity(
     builder,
     tmp_path: Path,
 ) -> None:
-    archive = _snapshot(builder, "parity")
+    archive = make_result_archive(builder, "parity")
     before = build_archived_result_provider(archive)
     source_path = tmp_path / "parity.femres"
     save_result_archive(source_path, archive)

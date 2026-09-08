@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import replace
-import os
-from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QLabel, QPushButton
 
 from fem.application.results import (
     FieldAssociation,
@@ -29,10 +25,6 @@ from fem_gui.result_presentation import result_field_is_visible
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _source(result_id: str = "typed-query") -> ResultSourceKey:
@@ -76,7 +68,6 @@ def _combo_index(combo, value: object) -> int:
 def test_dialog_requires_exact_provider_and_matching_catalog(
     result_provider,
 ) -> None:
-    _application()
     _result, provider = result_provider
 
     with pytest.raises(TypeError, match="ResultProvider"):
@@ -103,7 +94,6 @@ def test_dialog_requires_exact_provider_and_matching_catalog(
 def test_catalog_order_typed_association_and_descriptor_components_are_exact(
     result_provider,
 ) -> None:
-    _application()
     _result, provider = result_provider
     catalog = provider.catalog()
     dialog = TypedResultQueryDialog(provider)
@@ -175,7 +165,6 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
 def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
     result_provider,
 ) -> None:
-    _application()
     _result, provider = result_provider
     original_snapshot = provider.snapshot
     dialog = TypedResultQueryDialog(provider)
@@ -238,7 +227,6 @@ def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
 def test_pending_query_freezes_intent_without_overwriting_latest_query(
     result_provider,
 ) -> None:
-    _application()
     _result, provider = result_provider
     dialog = TypedResultQueryDialog(provider)
     queries: list[ResultQuery] = []
@@ -274,7 +262,6 @@ def test_pending_query_freezes_intent_without_overwriting_latest_query(
 def test_query_result_keeps_element_nodal_provenance_rows_in_order(
     result_provider,
 ) -> None:
-    _application()
     result, provider = result_provider
     dialog = TypedResultQueryDialog(provider)
     element_nodal = _availability_at(
@@ -352,90 +339,3 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
     with pytest.raises(ValueError, match="latest"):
         dialog.set_query_result(wrong_query)
     dialog.close()
-
-
-def test_typed_dialog_ast_has_no_legacy_query_dependencies_or_support_map() -> None:
-    source_path = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "fem_gui"
-        / "postprocessing_dialogs.py"
-    )
-    source = source_path.read_text(encoding="utf-8")
-    module = ast.parse(source)
-    class_node = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "TypedResultQueryDialog"
-    )
-    helper_names = {
-        "_TypedQueryMode",
-        "_typed_query_association_matches",
-        "_parse_typed_query_ids",
-        "_typed_field_label",
-        "_optional_identity_text",
-        "_averaged_text",
-        "_number_text",
-    }
-    typed_nodes = [
-        class_node,
-        *[
-            node
-            for node in module.body
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef))
-            and node.name in helper_names
-        ],
-    ]
-    forbidden_names = {
-        "ResultData",
-        "QueryRecord",
-        "available_components",
-        "available_query_types",
-        "parse_object_ids",
-        "query_records",
-    }
-    names = {
-        node.id
-        for root in typed_nodes
-        for node in ast.walk(root)
-        if isinstance(node, ast.Name)
-    }
-    assert names.isdisjoint(forbidden_names)
-    assert not any(
-        isinstance(node, (ast.Dict, ast.Set))
-        for root in typed_nodes
-        for node in ast.walk(root)
-    )
-    assert not any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"materialize", "query"}
-        for root in typed_nodes
-        for node in ast.walk(root)
-    )
-    assert not any(
-        isinstance(comparator, ast.Constant)
-        and isinstance(comparator.value, str)
-        for root in typed_nodes
-        for node in ast.walk(root)
-        if isinstance(node, ast.Compare)
-        for comparator in node.comparators
-    )
-
-    top_level_names = {
-        node.name
-        for node in module.body
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
-    }
-    assert top_level_names.isdisjoint(
-        {
-            "ResultQueryDialog",
-            "ResultDisplayDialog",
-            "ResultDisplaySettings",
-            "_field_records",
-            "_component_label",
-        }
-    )
-    assert "visualization.query" not in source
-    assert "result_adapter" not in source

@@ -18,7 +18,10 @@ from fem_agent.result_authoring import (
     FakeAgentResultQueryPort,
     ResultAuthoringError,
 )
-from fem_agent.workspace_catalog import WorkspaceCatalogBridge, WorkspaceDocumentIdentity
+from fem_agent.workspace_catalog import (
+    WorkspaceCatalogBridge,
+    WorkspaceDocumentIdentity,
+)
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     SessionGeometryAuthoringPort,
@@ -27,11 +30,11 @@ from fem_gui.agent_authoring import (
 )
 from fem_gui.agent_workspace_catalog import FEMWorkspaceCatalogPort
 from fem_gui.workspace import FEMWorkspace
-from tests.helpers.agent_result_fixtures import make_solved_session as _solved_session
+from tests.helpers.agent_result_fixtures import make_solved_session
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.io.test_result_archive_v1 import _snapshot
+from tests.helpers.result_archives import make_result_archive
 
 
 def _target(document) -> WorkspaceDocumentIdentity:
@@ -76,8 +79,8 @@ def _comparison_request(baseline_catalog, candidate_catalog):
 
 
 def _two_document_result_context():
-    baseline_session = _solved_session()
-    candidate_session = _solved_session()
+    baseline_session = make_solved_session()
+    candidate_session = make_solved_session()
     workspace = FEMWorkspace()
     baseline_document = workspace.add_model(
         baseline_session,
@@ -106,8 +109,8 @@ def _two_document_result_context():
 
 
 def test_workspace_catalog_routes_result_reads_and_cross_document_compare() -> None:
-    baseline_session = _solved_session()
-    candidate_session = _solved_session()
+    baseline_session = make_solved_session()
+    candidate_session = make_solved_session()
     workspace = FEMWorkspace()
     baseline_document = workspace.add_model(
         baseline_session,
@@ -229,7 +232,7 @@ def test_exact_target_is_strict_and_omission_reads_bound_session() -> None:
 
 
 def test_duplicate_workspace_source_session_fails_query_closed() -> None:
-    session = _solved_session()
+    session = make_solved_session()
     workspace = FEMWorkspace()
     first = workspace.add_model(session, session.projection_snapshot())
     port = SessionResultQueryPort(session, workspace)
@@ -315,11 +318,11 @@ def test_cross_session_comparison_fails_stale_on_toctou(
 
 
 def test_cross_session_comparison_requires_exact_unit_string(tmp_path) -> None:
-    baseline_archive = _snapshot(
+    baseline_archive = make_result_archive(
         make_continuum_nodal_semantics_result,
         "phase6-unit-baseline",
     )
-    candidate_archive = _snapshot(
+    candidate_archive = make_result_archive(
         make_continuum_nodal_semantics_result,
         "phase6-unit-candidate",
     )
@@ -365,7 +368,7 @@ def test_active_result_only_document_keeps_global_result_reads_available(
     tmp_path,
 ) -> None:
     result_session = ModelSession()
-    archive = _snapshot(make_continuum_nodal_semantics_result, "phase6-result")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "phase6-result")
     assert result_session.replace_from_result_archive(
         archive,
         path=tmp_path / "phase6-result.femres",
@@ -418,7 +421,7 @@ def test_active_result_only_document_keeps_global_result_reads_available(
 
 
 def test_result_only_catalog_regions_and_queries_do_not_materialize(tmp_path) -> None:
-    archive = _snapshot(make_continuum_nodal_semantics_result, "phase6-regions")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "phase6-regions")
     topology = archive.model_projection.topology
     archive = replace(
         archive,
