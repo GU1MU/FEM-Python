@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-import os
-
 import pytest
-
-pytest.importorskip("PySide6")
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtWidgets import QApplication
 
 from fem.geometry import (
     LogicalEntityRef,
@@ -40,10 +33,6 @@ def _line_controller() -> SketchDraftController:
             (SketchLine("L1", "P1", "P2"), SketchLine("L2", "P3", "P4")),
         )
     )
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def test_controller_split_selection_and_constraints_are_one_undo_redo_step() -> None:
@@ -131,7 +120,6 @@ def test_trim_cascades_constraint_on_orphaned_endpoint_and_undo_restores_it() ->
 
 
 def test_panel_creates_displays_and_deletes_advanced_relation_and_angle() -> None:
-    _application()
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
 

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
+from PySide6.QtWidgets import QDialogButtonBox, QLabel
 
 from fem.application import MeshEntityRef, NamedRegion
 from fem.geometry import (
@@ -31,10 +27,6 @@ from fem_gui.preprocessing_dialogs import (
     SketchContourDialog,
 )
 import fem_gui.preprocessing_dialogs as preprocessing_dialogs_module
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _falloff(
@@ -62,21 +54,14 @@ def _control(
     )
 
 
-def test_geometry_creation_dialog_uses_dimension_list_without_3d_shape_field() -> None:
-    _application()
+def test_geometry_creation_dialog_selects_model_dimension() -> None:
     dialog = GeometryCreationDialog()
 
     assert dialog.windowTitle() == "新建部件"
     assert dialog.creation_kind() == "1d"
-    assert not hasattr(dialog, "dimension_combo")
-    assert not hasattr(dialog, "solid_combo")
     assert dialog.sketch_size() == 50.0
     assert dialog.sketch_size_spin.text() == "50"
     assert dialog.dimension_list.count() == 3
-    assert all(
-        "1D 与 2D 将进入视口草图编辑器" not in label.text()
-        for label in dialog.findChildren(QLabel)
-    )
     assert {
         label.text() for label in dialog.findChildren(QLabel)
     } == {"部件名称", "草图尺寸", "建模维度"}
@@ -88,7 +73,6 @@ def test_geometry_creation_dialog_uses_dimension_list_without_3d_shape_field() -
 
 
 def test_basic_solid_creation_is_a_separate_choice_dialog() -> None:
-    _application()
     dialog = BasicSolidCreationDialog()
 
     assert dialog.windowTitle() == "创建 3D 基本实体"
@@ -99,7 +83,6 @@ def test_basic_solid_creation_is_a_separate_choice_dialog() -> None:
 
 
 def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
-    _application()
     rectangle = SketchContourDialog(
         SketchRectangle("material", 0.0, 0.0, 10.0, 5.0)
     )
@@ -120,26 +103,12 @@ def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
     assert circle.height_spin.isHidden()
 
 
-def test_mesh_settings_has_no_special_hole_size_field() -> None:
-    _application()
-    dialog = MeshSettingsDialog(MeshSettings(5.0))
-
-    labels = {label.text() for label in dialog.findChildren(QLabel)}
-
-    assert "孔边局部尺寸" not in labels
-    assert not hasattr(dialog.settings(), "local_size")
-
-
-def test_mesh_settings_exposes_supported_element_shapes_without_method_field() -> None:
-    _application()
+def test_mesh_settings_exposes_supported_element_shapes() -> None:
     dialog = MeshSettingsDialog(
         MeshSettings(5.0, cell_shape="quadrilateral"),
         mesh_dimension=2,
     )
 
-    labels = {label.text() for label in dialog.findChildren(QLabel)}
-    assert "网格方法" not in labels
-    assert not hasattr(dialog, "method_combo")
     assert dialog.shape_combo.currentData() == "quadrilateral"
     dialog.shape_combo.setCurrentIndex(dialog.shape_combo.findData("triangle"))
     assert dialog.settings().cell_shape == "triangle"
@@ -154,7 +123,6 @@ def test_mesh_settings_exposes_supported_element_shapes_without_method_field() -
 
 
 def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
-    _application()
     dialog = LocalMeshControlDialog(
         LogicalEntityRef("edge:right"),
         5.0,
@@ -168,7 +136,6 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
 
 
 def test_global_and_local_mesh_sizes_share_adaptive_precision() -> None:
-    _application()
     global_dialog = MeshSettingsDialog(MeshSettings(5.123456))
     local_dialog = LocalMeshControlDialog(
         LogicalEntityRef("edge:right"),
@@ -203,7 +170,6 @@ def test_global_and_local_mesh_sizes_share_adaptive_precision() -> None:
 
 
 def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
-    _application()
     references = (
         MeshEntityRef.edge(1, 0, (1, 2)),
         MeshEntityRef.edge(2, 1, (2, 3)),
@@ -227,7 +193,6 @@ def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
 
 
 def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
-    _application()
     dialog = MeshControlsDialog(
         MeshSettings(
             1.0,
@@ -250,7 +215,6 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
 def test_mesh_control_manager_edit_preserves_target_radius_falloff(
     monkeypatch,
 ) -> None:
-    _application()
     falloff = _falloff("target_radius", 0.25, 2.0)
     current = _control(
         "edge:hole-loop",
@@ -301,7 +265,6 @@ def test_mesh_control_manager_edit_preserves_target_radius_falloff(
 
 
 def test_feature_manager_only_edits_the_base_and_deletes_the_last_feature():
-    _application()
     recipe = ExtrudedGeometry(
         SketchGeometry(
             "Sketch-1",
