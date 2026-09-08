@@ -31,7 +31,6 @@ _NATIVE_GUI_TEST_FILES = frozenset(
         "test_agent_composite_geometry.py",
         "test_agent_exact_boolean.py",
         "test_agent_profile_sweep.py",
-        "test_agent_profile_transform_contract.py",
         "test_agent_profile_transform_workflow.py",
         "test_preprocessing_workflow.py",
         "test_scope_selection.py",

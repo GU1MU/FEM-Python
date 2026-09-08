@@ -501,6 +501,7 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
     )
 
     before = session.snapshot()
+    before_snapshot_generation = dynamic.provider_snapshot.snapshot_generation
     events = engine.send_message("拉伸成3d，尺寸任意")
     assert len(provider.requests) == 3
     assert [
@@ -527,8 +528,9 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
     assert session.snapshot().parts[0].dimension == 3
     dynamic.refresh_turn_snapshot(tuple(item.name for item in controller.definitions))
     assert dynamic.provider_snapshot.active_part_dimension == 3
-    assert dynamic.provider_snapshot.snapshot_generation > before.session_revision
+    assert dynamic.provider_snapshot.snapshot_generation > before_snapshot_generation
 
+    request_count = len(provider.requests)
     continuation_events = engine.continue_after_proposal(
         proposal_id,
         checkpoint["proposal_hash"],
@@ -543,11 +545,27 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
         for event in continuation_events
     )
     assert len([item for item in engine._history if item.role == "user"]) == 1
-    continuation_request = provider.requests[-2]
-    state = _current_state_message(continuation_request)
-    assert state["authoring_turn_snapshot"]["active_part_dimension"] == 3
-    assert state["authoring_turn_snapshot"]["workflow_stage"] == "mesh_ready"
-    assert "proposal_terminal" in (continuation_request.messages[-1].content or "")
+    continuation_requests = provider.requests[request_count:]
+    assert continuation_requests
+    terminal_prefix = "Local GUI proposal terminal (trusted control result): "
+    for request in continuation_requests:
+        state = _current_state_message(request)
+        assert state["authoring_turn_snapshot"]["active_part_dimension"] == 3
+        assert state["authoring_turn_snapshot"]["workflow_stage"] == "mesh_ready"
+        terminals = [
+            message.content[len(terminal_prefix):]
+            for message in request.messages
+            if message.role == "system"
+            and (message.content or "").startswith(terminal_prefix)
+        ]
+        assert len(terminals) == 1
+        terminal, _ = json.JSONDecoder().raw_decode(terminals[0])
+        assert terminal["kind"] == "proposal_terminal"
+        assert terminal["proposal_id"] == proposal_id
+        assert terminal["proposal_hash"] == checkpoint["proposal_hash"]
+        assert terminal["source_turn_id"] == checkpoint["source_turn_id"]
+        assert terminal["model_revision"] == checkpoint["model_revision"]
+        assert terminal["status"] == "succeeded"
 
 
 @pytest.mark.gmsh

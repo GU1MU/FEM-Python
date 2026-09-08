@@ -82,20 +82,75 @@ def _json_depth(value: object) -> int:
     return 0
 
 
-@pytest.mark.parametrize("root_kind", ("boolean", "multi_body"))
-def test_boolean_payload_rejects_more_than_512_mapping_nodes(
-    root_kind: str,
-) -> None:
-    payload = {
-        "schema_version": 1,
-        "kind": root_kind,
-        "padding": [{"node": index} for index in range(512)],
+def _boolean_tree_payload(leaf_count: int) -> dict[str, object]:
+    if leaf_count == 1:
+        return {"kind": "box", "name": "B", "width": 1, "depth": 1, "height": 1}
+    left_count = leaf_count // 2
+    return {
+        "kind": "boolean",
+        "name": "B",
+        "operation": "fuse",
+        "object": _boolean_tree_payload(left_count),
+        "tool": _boolean_tree_payload(leaf_count - left_count),
+        "body_context": None,
+        "planar_context": None,
+        "part_context": None,
     }
-    assert 1 + len(payload["padding"]) > 512
-    assert len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) < 65536
-    assert _json_depth(payload) <= 16
 
+
+def _feature_payload(root_kind: str, *, oversized: bool) -> dict[str, object]:
+    if root_kind == "boolean":
+        payload = _boolean_tree_payload(2049 if oversized else 2)
+    else:
+        payload = {
+            "kind": "multi_body",
+            "name": "B",
+            "bodies": [
+                {
+                    "id": f"B{index + 1}",
+                    "name": f"B{index + 1}",
+                    "recipe": _boolean_tree_payload(16 if oversized else 4),
+                }
+                for index in range(128 if oversized else 2)
+            ],
+            "retired_body_ids": [],
+            "retired_boolean_feature_ids": [],
+        }
+    return {"schema_version": 1, **payload}
+
+
+def _mapping_count(value: object) -> int:
+    if isinstance(value, dict):
+        return 1 + sum(_mapping_count(child) for child in value.values())
+    if isinstance(value, list):
+        return sum(_mapping_count(child) for child in value)
+    return 0
+
+
+@pytest.mark.parametrize("root_kind", ("boolean", "multi_body"))
+def test_boolean_payload_rejects_excessive_recipe_nodes(root_kind: str) -> None:
+    representative = _feature_payload(root_kind, oversized=False)
+    recipe = geometry_recipe_from_payload(representative)
+    expected_type = BooleanGeometry if root_kind == "boolean" else MultiBodyGeometry
+    assert isinstance(recipe, expected_type)
+
+    payload = _feature_payload(root_kind, oversized=True)
+    # Cross the supported 4096-node budget using schema-valid recipe fields;
+    # keep the other public payload bounds out of the rejection path.
+    if root_kind == "multi_body":
+        assert len(payload["bodies"]) <= 128
+    assert _mapping_count(payload) == 4097
+    assert len(json.dumps(payload, separators=(",", ":")).encode("utf-8")) < 524_288
+    assert _json_depth(payload) <= 16
     with pytest.raises(ValueError, match="node budget"):
+        geometry_recipe_from_payload(payload)
+
+
+@pytest.mark.parametrize("root_kind", ("boolean", "multi_body"))
+def test_boolean_payload_rejects_unknown_recipe_fields(root_kind: str) -> None:
+    payload = _feature_payload(root_kind, oversized=False)
+    payload["unexpected"] = True
+    with pytest.raises(ValueError, match="fields do not match"):
         geometry_recipe_from_payload(payload)
 
 

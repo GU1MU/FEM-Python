@@ -323,4 +323,3 @@ def test_validation_only_projection_reuses_detached_model_snapshot(
     assert window.document.model is detached_model
     assert window.document.validation_current("Static-1")
     window.close()
-

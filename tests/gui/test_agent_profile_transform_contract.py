@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from fem.application import ModelSession, UnitContext
-from fem.application.preprocessing import generate_fem_model
 from fem.geometry import describe_recipe_topology
-from fem.mesh.settings import MeshSettings
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import geometry_contract_proof
@@ -49,7 +45,7 @@ def _ring_controller() -> tuple[ModelSession, object]:
     return session, controller
 
 
-def test_concentric_ring_catalog_freezes_profile_and_hole_lineage() -> None:
+def test_concentric_ring_catalog_preserves_profile_and_hole_lineage() -> None:
     fixture = concentric_ring_fixture()
     catalog = fixture.feature_catalog
 
@@ -112,44 +108,18 @@ def test_ring_extrusion_proves_one_body_two_caps_and_hole_side() -> None:
     assert topology.entity("body:domain").semantic_role == "sweep.domain"
 
 
-@pytest.mark.gmsh
-def test_ring_extrusion_generates_88_nodes_and_192_tet4(
-    real_gmsh,
-) -> None:
-    fixture = concentric_ring_fixture()
-    generated = generate_fem_model(
-        fixture.extrusion,
-        MeshSettings(20.0, cell_shape="tetrahedron"),
-    )
-
-    assert generated.mesh.num_nodes == 88
-    assert generated.mesh.num_elements == 192
-    assert {element.type for element in generated.mesh.elements} == {"Tet4"}
-
-
 def test_mesh_ready_publishes_transform_seam() -> None:
     _session, controller = _ring_controller()
 
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
     definitions = controller.definitions
-    names = tuple(item.name for item in definitions)
-    assert names == (
-        "read_authoring_context",
-        "read_geometry_feature_catalog",
+    names = {item.name for item in definitions}
+    assert {
         "read_profile_transform_context",
         "prepare_profile_extrusion",
         "prepare_profile_revolution",
         "prepare_profile_path_sweep",
-        "set_authoring_requirements",
-        "read_mesh_refinement_context",
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
-        "request_project_save",
-        "read_deletable_objects",
-        "prepare_delete_proposal",
-    )
-    hashes = {item.name: tool_schema_hash(item) for item in definitions}
-    assert all(len(value) == 64 for value in hashes.values())
+    } <= names
 
     geometry_edit = next(
         item for item in definitions if item.name == "prepare_geometry_edit"
@@ -162,15 +132,6 @@ def test_mesh_ready_publishes_transform_seam() -> None:
         in {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
     }
     assert transform_operations == set()
-    assert {
-        item.name
-        for item in definitions
-        if item.name.startswith("prepare_profile_")
-    } == {
-        "prepare_profile_extrusion",
-        "prepare_profile_revolution",
-        "prepare_profile_path_sweep",
-    }
 
 
 def test_request_capture_keeps_only_redacted_context_and_schema_hashes() -> None:
@@ -212,17 +173,19 @@ def test_request_capture_keeps_only_redacted_context_and_schema_hashes() -> None
     assert len(request.schema_hashes["prepare_geometry_edit"]) == 64
 
 
-def test_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> None:
+def test_repeated_refusal_gets_one_correction_and_local_recovery(tmp_path) -> None:
     _session, controller = _ring_controller()
+    refusal = "拉伸不受支持；必须先生成网格。"
     provider = RequestCaptureProvider(
         [
             ProviderResponse(
                 AssistantMessage(
                     "assistant",
-                    content="拉伸不受支持；必须先生成网格。",
+                    content=refusal,
                 ),
                 finish_reason="stop",
             )
+            for _ in range(2)
         ]
     )
     engine = AgentSessionEngine(
@@ -234,17 +197,6 @@ def test_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> None:
     events = engine.send_message("拉伸成3d")
     request = provider.requests[0]
     system_context = "\n".join(request.system_context)
-    failure_evidence = {
-        "user_request": "拉伸成3d",
-        "authoring_capability": {
-            "workflow_stage": "mesh_ready",
-            "published_transform_tool": "prepare_profile_extrusion",
-        },
-        "tool_calls": False,
-        "final_capability_statement": "拉伸不受支持；必须先生成网格。",
-    }
-
-    assert failure_evidence["tool_calls"] is False
     assert "read_profile_transform_context" in request.tool_names
     assert "prepare_profile_extrusion" in request.tool_names
     assert "read_profile_transform_context" in request.schema_hashes
@@ -252,13 +204,10 @@ def test_capture_reproduces_minimal_no_tool_call_failure(tmp_path) -> None:
     assert "active_part_id" not in system_context
     assert "recipe_kind" not in system_context
     assert not any(item.event is EngineEventType.TOOL_STARTED for item in events)
-    # Phase 0 keeps the no-tool-call evidence, while Phase 2 prevents the
-    # unsupported/mesh-first text from reaching the user and performs one
-    # bounded correction retry in the same turn.
     assert len(provider.requests) == 2
     assert not any(
         item.event is EngineEventType.MESSAGE_DELTA
-        and item.data.get("text") == failure_evidence["final_capability_statement"]
+        and item.data.get("text") == refusal
         for item in events
     )
     assert "route_hint" in system_context

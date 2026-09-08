@@ -77,8 +77,8 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assert result.nodal_reaction(root_id, 4) == pytest.approx(-500.0)
     assert all(isfinite(value) for value in result.U)
 
-    before_proposal = session.snapshot()
-    proposed = dispatch_authoring_tool(
+    before_edit = session.snapshot()
+    applied = dispatch_authoring_tool(
         controller,
         session,
         "apply_model_definition",
@@ -91,33 +91,48 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
                 "properties": {"radius": 5.0},
             },
         },
-        "result-invalidating-beam-section",
+        "create-additional-beam-section",
     )
-    assert proposed.ok, proposed.to_json()
-    assert "proposal_id" in proposed.data
-    pending = session.snapshot()
-    assert pending.session_revision == before_proposal.session_revision
-    assert pending.materials == before_proposal.materials
-    assert pending.sections == before_proposal.sections
-    assert pending.assignments == before_proposal.assignments
-    assert pending.steps == before_proposal.steps
-    assert tuple(run.run_id for run in pending.runs) == tuple(
-        run.run_id for run in before_proposal.runs
+    assert applied.ok, applied.to_json()
+    assert applied.data["state"] == "succeeded"
+    assert applied.data["undo_available"] is True
+    patch_id = applied.data["patch_id"]
+    assert bridge.can_undo_patch(patch_id)
+    after_edit = session.snapshot()
+    assert after_edit.session_revision == before_edit.session_revision + 1
+    created = next(item for item in after_edit.sections if item.name == "截面-候选圆梁")
+    assert created.material == "材料-钢"
+    assert created.section_type == "solid_circle"
+    assert created.properties["radius"] == 5.0
+    assert len(after_edit.sections) == len(before_edit.sections) + 1
+    assert after_edit.materials == before_edit.materials
+    assert after_edit.assignments == before_edit.assignments
+    assert after_edit.steps == before_edit.steps
+    assert tuple(run.run_id for run in after_edit.runs) == tuple(
+        run.run_id for run in before_edit.runs
     )
-    rejected = bridge.reject_from_gui_control(proposed.data["proposal_id"])
-    controller.record_proposal_state(
-        "destructive_edit",
-        rejected.state,
-        rejected.message,
+    assert after_edit.displayed_result_run_id is None
+    assert all(
+        session.result_for(run.run_id) is not None
+        for run in before_edit.runs if run.has_result
     )
-    assert rejected.state is ProposalState.REJECTED
-    after_rejection = session.snapshot()
-    assert after_rejection.session_revision == before_proposal.session_revision
-    assert after_rejection.materials == before_proposal.materials
-    assert after_rejection.sections == before_proposal.sections
-    assert after_rejection.assignments == before_proposal.assignments
-    assert after_rejection.steps == before_proposal.steps
-    assert any(run.has_result for run in after_rejection.runs)
+
+    undone = bridge.undo_patch_from_gui_control(patch_id)
+    assert undone.state.value == "undone"
+    assert not undone.undo_available
+    assert not bridge.can_undo_patch(patch_id)
+    restored = session.snapshot()
+    assert restored.materials == before_edit.materials
+    assert restored.sections == before_edit.sections
+    assert restored.assignments == before_edit.assignments
+    assert restored.steps == before_edit.steps
+    assert tuple(run.run_id for run in restored.runs) == tuple(
+        run.run_id for run in before_edit.runs
+    )
+    assert all(
+        session.result_for(run.run_id) is not None
+        for run in before_edit.runs if run.has_result
+    )
 
     csv_files = export_line_result(result, tmp_path / "artifacts", "beam-csv", "csv")
     vtk_files = export_line_result(result, tmp_path / "artifacts", "beam-vtk", "vtk")
@@ -140,9 +155,16 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
         2,
         4,
     }
-    task = reopened.prepare_mesh_generation()
+    part = reopened.snapshot().parts[0]
+    assert part.mesh_settings is not None
+    task = reopened.prepare_agent_mesh_generation(
+        part.id,
+        part.mesh_settings,
+        "b" * 64,
+        expected_session_revision=reopened.session_revision,
+    )
     regenerated = generate_fem_model(task)
-    assert reopened.accept_generated_model(task.token, regenerated).accepted
+    assert reopened.accept_agent_generated_model(task.token, regenerated).accepted
     reopened_controller, reopened_bridge = make_authoring_controller(reopened)
     reopened_result = solve_authoring_session(reopened_controller, reopened_bridge, reopened)
     reopened_tip = reopened_result.model.node_sets["点-自由端"].node_ids[0]
