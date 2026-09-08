@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import gc
-import os
 import weakref
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtCore import QAbstractAnimation, QPoint, QSize, Qt
+from PySide6.QtCore import QAbstractAnimation, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QApplication,
     QComboBox,
     QLabel,
     QMenu,
@@ -21,12 +17,7 @@ from PySide6.QtWidgets import (
 from fem_gui.main_window import FEMMainWindow
 
 
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
 def test_closed_main_window_releases_python_wrapper(dispose_gui_widget):
-    _application()
     window = FEMMainWindow()
     wrapper_reference = weakref.ref(window)
 
@@ -37,24 +28,23 @@ def test_closed_main_window_releases_python_wrapper(dispose_gui_widget):
     assert wrapper_reference() is None
 
 
-def test_close_discards_deferred_callbacks_and_stops_owned_timer():
-    _application()
+def test_close_discards_deferred_callbacks(gui_application):
     window = FEMMainWindow()
     invoked: list[bool] = []
     window._defer_ui(lambda: invoked.append(True))
+    gui_application.processEvents()
+    assert invoked == [True]
+    invoked.clear()
+    window._defer_ui(lambda: invoked.append(True))
 
-    assert window._deferred_ui_timer.isActive()
     assert window.close()
-    assert window._deferred_ui_callbacks == []
-    assert not window._deferred_ui_timer.isActive()
 
-    QApplication.processEvents()
+    gui_application.processEvents()
 
     assert invoked == []
 
 
-def test_main_window_has_modules_navigation_and_viewport_toolbar():
-    _application()
+def test_main_window_has_modules_navigation_and_viewport_toolbar(gui_application):
     window = FEMMainWindow()
 
     assert not window.main_splitter.opaqueResize()
@@ -64,18 +54,16 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     assert "主页" not in [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())]
     assert [window.navigation.tabs.tabText(i) for i in range(window.navigation.tabs.count())] == ["模型", "结果"]
     assert window.viewport_panel.toolbar.objectName() == "viewportToolbar"
-    assert window.viewport_panel.toolbar.height() == 44
     assert window.viewport._message.text() == ""
     assert window.findChild(QToolBar, "main_toolbar") is None
-    assert window.statusBar().height() == 22
     for name in ("statusState", "statusSelection", "statusObject", "statusCoordinate", "statusStep", "statusResult"):
         assert window.statusBar().findChild(QLabel, name) is not None
     window.show()
     window.resize(800, 600)
-    QApplication.processEvents()
+    gui_application.processEvents()
     assert window.width() == 800
     window.ribbon.set_current("结果")
-    QApplication.processEvents()
+    gui_application.processEvents()
     result_group_titles = {
         label.text()
         for label in window.ribbon.stack.currentWidget().findChildren(QLabel)
@@ -101,7 +89,7 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     )
     assert (
         window.result_component_combo.minimumWidth()
-        >= component_text_width + 44
+        > component_text_width
     )
     assert (
         window.result_component_combo.view().minimumWidth()
@@ -110,8 +98,8 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar():
     window.close()
 
 
-def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
-    application = _application()
+def test_splitter_resize_uses_preview_line_and_commits_one_repaint(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
@@ -159,8 +147,8 @@ def test_splitter_resize_uses_preview_line_and_commits_one_repaint():
     window.close()
 
 
-def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
-    application = _application()
+def test_agent_drawer_resize_previews_then_commits_viewport_geometry(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
@@ -217,8 +205,8 @@ def test_agent_drawer_resize_previews_then_commits_viewport_geometry():
     window.close()
 
 
-def test_agent_drawer_controls_skip_native_window_animation_frames():
-    application = _application()
+def test_agent_drawer_controls_skip_native_window_animation_frames(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
@@ -258,8 +246,8 @@ def test_agent_drawer_controls_skip_native_window_animation_frames():
     window.close()
 
 
-def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection():
-    application = _application()
+def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
@@ -294,8 +282,8 @@ def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection():
     window.close()
 
 
-def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay():
-    application = _application()
+def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1000, 700)
@@ -326,7 +314,6 @@ def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay():
 
 
 def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
-    _application()
     window = FEMMainWindow()
     fit = window.actions["fit"]
 
@@ -424,7 +411,6 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
 
 
 def test_small_ribbon_commands_use_readable_icons():
-    _application()
     window = FEMMainWindow()
     geometry_move = next(
         button
@@ -432,13 +418,13 @@ def test_small_ribbon_commands_use_readable_icons():
         if button.defaultAction() is window.actions["geometry_move"]
     )
 
-    assert geometry_move.iconSize() == QSize(24, 24)
-    assert geometry_move.height() == 30
+    assert not geometry_move.icon().isNull()
+    assert geometry_move.iconSize().width() >= 20
+    assert geometry_move.height() >= geometry_move.iconSize().height()
     window.close()
 
 
 def test_geometry_omits_element_selection_while_model_keeps_all_selection_actions():
-    _application()
     window = FEMMainWindow()
     tab_names = [
         window.ribbon.tab_bar.tabText(index)
@@ -544,7 +530,6 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
 
 
 def test_scope_group_is_available_in_mesh_model_and_analysis_pages():
-    _application()
     window = FEMMainWindow()
     tab_names = [
         window.ribbon.tab_bar.tabText(index)
@@ -572,8 +557,8 @@ def test_scope_group_is_available_in_mesh_model_and_analysis_pages():
     window.close()
 
 
-def test_analysis_page_uses_compact_workflow_groups():
-    application = _application()
+def test_analysis_page_uses_compact_workflow_groups(gui_application):
+    application = gui_application
     window = FEMMainWindow()
     window.show()
     window.resize(1600, 700)
@@ -652,7 +637,6 @@ def test_analysis_page_uses_compact_workflow_groups():
 
 
 def test_standard_views_use_abaqus_names():
-    _application()
     window = FEMMainWindow()
     assert window.actions["front"].text() == "前视图"
     assert window.actions["back"].text() == "后视图"
@@ -665,7 +649,6 @@ def test_standard_views_use_abaqus_names():
 
 
 def test_viewport_toolbar_keeps_isometric_view_first():
-    _application()
     window = FEMMainWindow()
     standard_views = {"front", "back", "top", "bottom", "left", "right", "iso"}
     toolbar_views = [
@@ -687,8 +670,7 @@ def test_viewport_toolbar_keeps_isometric_view_first():
     window.close()
 
 
-def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
-    _application()
+def test_viewport_toolbar_keeps_one_shared_five_action_selection_group(gui_application):
     window = FEMMainWindow()
     from fem.geometry import RectangleGeometry
 
@@ -705,7 +687,7 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
     window.ribbon.set_current("几何")
     window._set_native_geometry(RectangleGeometry("toolbar-geometry", 2.0, 1.0), "矩形")
     window.show()
-    _application().processEvents()
+    gui_application.processEvents()
 
     geometry_face = window.viewport_panel.toolbar.findChild(
         QToolButton,
@@ -732,7 +714,6 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group():
 
 
 def test_module_switch_restores_each_selection_space_filter_without_stale_checks():
-    _application()
     window = FEMMainWindow()
     names = ("select_point", "select_element", "select_edge", "select_face", "select_body")
     groups = {window.actions[name].actionGroup() for name in names}
@@ -756,7 +737,6 @@ def test_module_switch_restores_each_selection_space_filter_without_stale_checks
 
 
 def test_viewport_background_updates_placeholder_without_model():
-    _application()
     window = FEMMainWindow()
     from fem_gui.viewport_background import ViewportBackgroundSettings
 

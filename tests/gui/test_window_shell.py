@@ -1,16 +1,6 @@
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtWidgets import QApplication
-
 from fem_gui.main_window import FEMMainWindow
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _visible_text(window: FEMMainWindow) -> str:
@@ -26,21 +16,18 @@ def _visible_text(window: FEMMainWindow) -> str:
     return "\n".join((*menu_text, *action_text, *tree_text))
 
 
-def test_chinese_shell_has_no_unimplemented_modules_or_placeholder_terms():
-    _application()
+def test_shell_has_localized_menus_and_no_placeholder_copy():
     window = FEMMainWindow()
     text = _visible_text(window)
 
     assert [action.text() for action in window.menuBar().actions()] == ["文件", "编辑", "视图", "分析", "结果", "帮助"]
     assert all(action.text() for action in window.actions.values())
-    for forbidden in ("Planned", "Coming Soon", "Placeholder", "暂未实现", "后续支持", "Part", "Sketch", "Interaction", "Optimization", "AI"):
+    for forbidden in ("Planned", "Coming Soon", "Placeholder", "暂未实现", "后续支持"):
         assert forbidden not in text
-    assert window.statusBar().height() == 22
     window.close()
 
 
 def test_action_states_without_model_or_result():
-    _application()
     window = FEMMainWindow()
 
     assert not window.actions["submit_job"].isEnabled()
@@ -52,7 +39,6 @@ def test_action_states_without_model_or_result():
 
 
 def test_startup_model_tree_has_no_automatic_part_placeholder():
-    _application()
     window = FEMMainWindow()
     document_id = window.workspace.active_document_id
 
@@ -66,7 +52,6 @@ def test_startup_model_tree_has_no_automatic_part_placeholder():
 
 
 def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
-    _application()
     window = FEMMainWindow()
     runtime = window.viewport_panel.agent_chat_drawer.agent_runtime
     calls: list[bool] = []

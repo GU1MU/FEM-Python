@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QDialog
 
 from fem.io.inp import read
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.visualization.model_adapter import build_model_geometry
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _loaded_window(gui_inp_path) -> FEMMainWindow:
@@ -27,10 +19,11 @@ def _loaded_window(gui_inp_path) -> FEMMainWindow:
 
 
 def test_information_dialog_fits_viewport_when_closed(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = _loaded_window(gui_inp_path)
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -45,10 +38,11 @@ def test_information_dialog_fits_viewport_when_closed(
 
 
 def test_mesh_browser_fits_viewport_when_closed(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = _loaded_window(gui_inp_path)
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -63,9 +57,10 @@ def test_mesh_browser_fits_viewport_when_closed(
 
 
 def test_contour_dialog_fits_viewport_after_exec(
+    gui_application,
     monkeypatch,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -92,9 +87,10 @@ def test_contour_dialog_fits_viewport_after_exec(
 
 
 def test_wire_editor_exit_fits_after_splitter_restores(
+    gui_application,
     monkeypatch,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     window._wire_editor_controller = object()
@@ -110,10 +106,11 @@ def test_wire_editor_exit_fits_after_splitter_restores(
 
 @pytest.mark.parametrize("result", [0, 1])
 def test_modal_dialog_does_not_fit_viewport_by_default(
+    gui_application,
     monkeypatch,
     result,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -130,9 +127,10 @@ def test_modal_dialog_does_not_fit_viewport_by_default(
 
 
 def test_view_affecting_dialog_fit_runs_after_exec_and_coalesces(
+    gui_application,
     monkeypatch,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -150,9 +148,10 @@ def test_view_affecting_dialog_fit_runs_after_exec_and_coalesces(
 
 
 def test_pending_scope_selection_suppresses_scheduled_dialog_fit(
+    gui_application,
     monkeypatch,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))
@@ -167,9 +166,10 @@ def test_pending_scope_selection_suppresses_scheduled_dialog_fit(
 
 
 def test_generic_information_dialog_fits_after_return(
+    gui_application,
     monkeypatch,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = FEMMainWindow()
     fit_calls = []
     shown = []
@@ -189,10 +189,11 @@ def test_generic_information_dialog_fits_after_return(
 
 
 def test_job_manager_fits_when_closed(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ) -> None:
-    app = _application()
+    app = gui_application
     window = _loaded_window(gui_inp_path)
     fit_calls = []
     monkeypatch.setattr(window.viewport, "fit", lambda: fit_calls.append(True))

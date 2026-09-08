@@ -1,25 +1,38 @@
-import os
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from PySide6.QtCore import QPoint, QRect
-from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QApplication, QComboBox, QStyle, QStyleOption
+import pytest
+from PySide6.QtGui import QColor, QImage, QPainter, QPalette
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QStyle,
+    QStyleOption, QStyleOptionSpinBox,
+)
 
 from fem_gui.theme import FEMStyle, build_stylesheet
 
 
-def test_checkbox_theme_delegates_indicator_drawing_to_the_application_style():
-    stylesheet = build_stylesheet()
+@pytest.fixture
+def themed_application(gui_application):
+    previous_stylesheet = gui_application.styleSheet()
+    gui_application.setStyleSheet(build_stylesheet())
+    try:
+        yield gui_application
+    finally:
+        gui_application.setStyleSheet(previous_stylesheet)
 
-    assert "QCheckBox, QRadioButton" in stylesheet
-    assert "QCheckBox::indicator" not in stylesheet
-    assert "standardbutton-apply" not in stylesheet
-    assert "QComboBox::drop-down" in stylesheet
+
+def test_themed_checkbox_visually_distinguishes_checked_state(themed_application):
+    checkbox = QCheckBox()
+    checkbox.resize(30, 30)
+    checkbox.show()
+    themed_application.processEvents()
+    unchecked = checkbox.grab().toImage()
+
+    checkbox.setChecked(True)
+    themed_application.processEvents()
+
+    assert checkbox.grab().toImage() != unchecked
 
 
 def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
-    QApplication.instance() or QApplication([])
     style = FEMStyle()
     option = QStyleOption()
     option.rect = QRect(0, 0, 16, 16)
@@ -78,7 +91,6 @@ def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
 
 
 def test_fem_style_draws_a_visible_checked_radio_indicator():
-    QApplication.instance() or QApplication([])
     style = FEMStyle()
     option = QStyleOption()
     option.rect = QRect(0, 0, 16, 16)
@@ -102,18 +114,12 @@ def test_fem_style_draws_a_visible_checked_radio_indicator():
     assert center.blue() > center.green()
 
 
-def test_combo_theme_draws_a_visible_down_arrow():
-    stylesheet = build_stylesheet()
-    assert "QComboBox::down-arrow" in stylesheet
-
-    application = QApplication.instance() or QApplication([])
-    previous_stylesheet = application.styleSheet()
-    application.setStyleSheet(stylesheet)
+def test_combo_theme_draws_a_visible_down_arrow(themed_application):
     combo = QComboBox()
     combo.addItem("Step-1")
     combo.resize(145, 30)
     combo.show()
-    application.processEvents()
+    themed_application.processEvents()
 
     image = QImage(combo.size(), QImage.Format.Format_ARGB32)
     image.fill(QColor("transparent"))
@@ -129,24 +135,33 @@ def test_combo_theme_draws_a_visible_down_arrow():
                 arrow_pixels += 1
 
     combo.close()
-    application.setStyleSheet(previous_stylesheet)
 
     assert arrow_pixels > 0
 
 
-def test_spin_box_theme_hides_increment_and_decrement_buttons():
-    stylesheet = build_stylesheet()
+@pytest.mark.parametrize("spin_box_type", [QSpinBox, QDoubleSpinBox])
+def test_spin_box_theme_hides_increment_and_decrement_buttons(
+    themed_application, spin_box_type,
+):
+    spin_box = spin_box_type()
+    spin_box.ensurePolished()
+    option = QStyleOptionSpinBox()
+    spin_box.initStyleOption(option)
+    for button in (QStyle.SubControl.SC_SpinBoxUp, QStyle.SubControl.SC_SpinBoxDown):
+        rectangle = spin_box.style().subControlRect(
+            QStyle.ComplexControl.CC_SpinBox, option, button, spin_box,
+        )
+        assert rectangle.isEmpty()
 
-    assert "QSpinBox::up-button" in stylesheet
-    assert "QSpinBox::down-button" in stylesheet
-    assert "QDoubleSpinBox::up-button" in stylesheet
-    assert "QDoubleSpinBox::down-button" in stylesheet
 
+@pytest.mark.parametrize("object_name", ["", "resultScaleValue"])
+def test_disabled_spin_box_uses_muted_text(themed_application, object_name):
+    spin_box = QDoubleSpinBox()
+    spin_box.setObjectName(object_name)
+    spin_box.ensurePolished()
+    palette = spin_box.palette()
 
-def test_disabled_result_scale_uses_a_muted_input_style():
-    stylesheet = build_stylesheet()
+    enabled_text = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Text)
+    disabled_text = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
 
-    assert "QDoubleSpinBox:disabled" in stylesheet
-    assert "background: #e9ecef; color: #a0a6ac;" in stylesheet
-    assert "QDoubleSpinBox#resultScaleValue:disabled" in stylesheet
-    assert "background: #f4f5f6; color: #a0a6ac;" in stylesheet
+    assert disabled_text.lightness() > enabled_text.lightness()
