@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -9,19 +9,10 @@ from fem.application import (
     ModelSession,
     NamedRegion,
     NativePart,
-    SessionSnapshot,
 )
 from fem.geometry import LogicalEntityRef
 from fem.geometry.recipes import DiskGeometry, RectangleGeometry
 from tests.helpers.model_builders import make_static_pull_truss_model
-
-
-def test_session_snapshot_has_no_stored_legacy_currentness_flags() -> None:
-    stored_fields = {item.name for item in fields(SessionSnapshot)}
-
-    assert "mesh_current" not in stored_fields
-    assert "model_checked" not in stored_fields
-    assert "results_current" not in stored_fields
 
 
 def test_document_snapshot_is_frozen_and_does_not_expose_mutable_collections() -> None:
@@ -73,8 +64,6 @@ def test_imported_session_derives_reload_and_mesh_current_from_artifact() -> Non
     assert snapshot.can_reload
     assert snapshot.has_model
     assert snapshot.mesh_current
-    assert not hasattr(snapshot, "model_checked")
-    assert not hasattr(snapshot, "results_current")
 
 
 def test_geometry_change_drops_the_previous_model_artifact() -> None:

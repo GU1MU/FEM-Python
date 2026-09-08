@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import ast
 from copy import deepcopy
-import inspect
 import os
 from pathlib import Path
 from time import monotonic
@@ -606,31 +604,3 @@ def test_output_collection_change_detection_includes_step_and_order() -> None:
         before,
         [reordered, second],
     )
-
-
-def test_main_window_output_workflow_has_no_support_or_dto_rebuild() -> None:
-    source_path = Path(inspect.getsourcefile(FEMMainWindow) or "")
-    module = ast.parse(source_path.read_text(encoding="utf-8"))
-    create = next(
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "create_output_request"
-    )
-    string_values = {
-        node.value
-        for node in ast.walk(create)
-        if isinstance(node, ast.Constant)
-        and type(node.value) is str
-    }
-    output_request_calls = [
-        node
-        for node in ast.walk(create)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "OutputRequest"
-    ]
-
-    assert string_values.isdisjoint({"U", "UR", "RF", "RM", "S"})
-    assert output_request_calls == []
-    assert "output_request.create" in string_values

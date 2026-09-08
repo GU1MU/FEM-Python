@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from math import ceil
 from time import perf_counter
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QWidget
 
 from fem.application import ModelSession
 from fem.application.definitions import MeshEntityRef
@@ -23,10 +20,6 @@ from tests.helpers.model_builders import (
 )
 
 import fem_gui.main_window as main_window_module
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def _context_with_model(
@@ -56,7 +49,6 @@ def _context_with_model(
 
 
 def test_activation_cache_reuses_geometry_and_inspection_identity(dispose_gui_widget):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -93,7 +85,6 @@ def test_activation_native_preview_projection_passes_render_and_reset_false(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         preview = object()
@@ -124,7 +115,6 @@ def test_nonactive_delta_updates_context_without_viewport_calls(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -161,7 +151,6 @@ def test_nonactive_result_identity_change_invalidates_result_cache(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -216,7 +205,6 @@ def test_warm_cache_control_path_p95_under_16ms_for_20k_entries():
 def test_artifact_change_invalidates_only_target_cache(
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -254,7 +242,6 @@ def test_activation_restores_camera_step_display_and_batches_to_one_render(
 ):
     """A-B-A restores the source presentation after one batched repaint."""
 
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -373,7 +360,6 @@ def test_activation_clears_selection_highlight_and_inspection_transients(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -417,7 +403,6 @@ def test_warm_activation_uses_cached_adapters_without_fit_or_construction(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -506,7 +491,6 @@ def test_warm_activation_uses_cached_adapters_without_fit_or_construction(
 def test_activation_is_blocked_while_editor_is_active_without_mutating_state(
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         before = window.workspace.active_document()
@@ -533,7 +517,6 @@ def test_activation_failure_restores_previous_aliases_scene_and_camera(
     monkeypatch,
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         first = window.workspace.active_document()
@@ -604,7 +587,6 @@ def test_cold_activation_without_camera_fits_once_then_renders_once(
 ):
     """A first display with no saved camera performs one fit and one repaint."""
 
-    _application()
     window = FEMMainWindow()
     try:
         target = _context_with_model(window, "cold")
@@ -652,7 +634,6 @@ def test_cold_activation_without_camera_fits_once_then_renders_once(
 def test_context_activation_keeps_one_viewport_backend_and_render_window(
     dispose_gui_widget,
 ):
-    _application()
     window = FEMMainWindow()
     try:
         viewport = window.viewport

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from fem.application import ModelSession
 from fem_gui.main_window import FEMMainWindow

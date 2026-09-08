@@ -1,4 +1,4 @@
-"""Focused Phase 7 workspace lifecycle and bounded stability checks."""
+"""Focused workspace lifecycle and bounded stability checks."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication
 
 from fem.application import ModelSession
 from fem_gui.main_window import FEMMainWindow
@@ -34,7 +33,7 @@ class _DeferredController(QObject):
 
     @property
     def current_task_name(self) -> str:
-        return "phase7-test" if self._busy else ""
+        return "workspace-test" if self._busy else ""
 
     def request_cancel(self, *, after_cleanup=None) -> bool:
         if after_cleanup is not None:
@@ -55,12 +54,6 @@ class _DeferredController(QObject):
         self._after_cleanup = None
         if callback is not None:
             callback()
-
-
-def _app() -> QApplication:
-    application = QApplication.instance()
-    assert application is not None
-    return application
 
 
 def _add_model(window: FEMMainWindow, name: str):
@@ -91,6 +84,7 @@ def _add_result(window: FEMMainWindow, name: str):
 
 
 def test_busy_document_close_is_deferred_until_cooperative_cleanup(
+    gui_application,
     dispose_gui_widget,
 ) -> None:
     window = FEMMainWindow()
@@ -108,7 +102,7 @@ def test_busy_document_close_is_deferred_until_cooperative_cleanup(
         assert controller.cancel_requested
 
         controller.finish()
-        _app().processEvents()
+        gui_application.processEvents()
         assert context.document_id not in window.workspace.models
         assert context.document_id not in window.model_tree.roots
     finally:

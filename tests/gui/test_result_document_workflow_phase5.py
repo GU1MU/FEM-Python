@@ -38,7 +38,7 @@ from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
 )
-from tests.gui.test_project_io import _native_project_snapshot
+from tests.helpers.gui_projects import make_native_project_snapshot
 from fem.mesh.settings import MeshSettings
 
 
@@ -956,7 +956,7 @@ def test_real_fempy_project_vertical_remains_openable(
     monkeypatch.setattr(FEMMainWindow, "_show_error", lambda *_args, **_kwargs: None)
     # Keep the native route end-to-end while using a coarse, fully constrained
     # sketch so this focused test does not become a mesh/solver benchmark.
-    project = _native_project_snapshot()
+    project = make_native_project_snapshot()
     base_step = project.analysis_definitions[0]
     step = replace(
         base_step,

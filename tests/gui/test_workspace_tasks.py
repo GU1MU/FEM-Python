@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from fem.application import ModelSession, SessionDelta, UnitContext
+from fem.application import ModelSession, UnitContext
 from fem.geometry import RectangleGeometry
 from fem_agent.geometry_authoring import GEOMETRY_FEATURE_CATALOG_TOOL_NAME
 from fem_gui.agent_authoring import (
@@ -52,7 +52,7 @@ class ManualTaskController(QObject):
 
     @property
     def current_task_name(self) -> str:
-        return "phase6-task" if self._busy else ""
+        return "workspace-task" if self._busy else ""
 
     def start(self, workload, *, task_name, apply_result, project_result=None,
               rebuild_projection=None, on_terminal=None, on_progress=None,
@@ -136,7 +136,7 @@ def test_document_controller_busy_isolated_and_inactive_completion_updates_one_r
         second = window.workspace.add_model(
             session=ModelSession(),
             display_name="Model-B",
-            source_path=Path("phase6-b.inp"),
+            source_path=Path("workspace-b.inp"),
             task_controller=ManualTaskController(),
         )
         assert window._activate_workspace_context(first)
@@ -174,7 +174,7 @@ def test_document_controller_busy_isolated_and_inactive_completion_updates_one_r
         assert window._start_task(
             lambda _context: None,
             projected.append,
-            "phase6",
+            "workspace",
             apply_result=lambda value: TaskApplyOutcome.accepted(task),
             controller=first.task_controller,
             context=first,
@@ -217,7 +217,7 @@ def test_agent_runtime_busy_blocks_activation_and_idle_rebinds_target(
         second = window.workspace.add_model(
             session=ModelSession(),
             display_name="Model-B",
-            source_path=Path("phase6-agent-b.inp"),
+            source_path=Path("workspace-agent-b.inp"),
         )
         runtime = window.viewport_panel.agent_chat_drawer.agent_runtime
         with runtime._lock:
@@ -270,14 +270,14 @@ def test_rebindable_authoring_and_result_ports_require_idle_callback():
         lambda: None,
     )
     bridge = AgentAuthoringBridge(authoring_port)
-    bridge.bind_snapshot(first.projection_snapshot(), document_id="phase6-a")
+    bridge.bind_snapshot(first.projection_snapshot(), document_id="workspace-a")
     controller = create_session_authoring_workflow_controller(
         first,
         bridge,
         AgentResultQueryBridge(result_port),
     )
     authoring_port.bind_session(second, idle=lambda: True)
-    bridge.bind_snapshot(second.projection_snapshot(), document_id="phase6-b")
+    bridge.bind_snapshot(second.projection_snapshot(), document_id="workspace-b")
     assert bridge.context is not None
     controller.reset_for_binding()
     controller.observe_binding(bridge.context)
@@ -285,7 +285,7 @@ def test_rebindable_authoring_and_result_ports_require_idle_callback():
     catalog = controller.dispatch(
         GEOMETRY_FEATURE_CATALOG_TOOL_NAME,
         {},
-        ToolExecutionContext("phase6", 0, "rebound-catalog"),
+        ToolExecutionContext("workspace", 0, "rebound-catalog"),
     )
 
     assert catalog.ok
@@ -346,7 +346,7 @@ def test_inactive_failure_uses_only_target_state_callback(
         assert window._start_task(
             lambda _context: None,
             lambda _value: None,
-            "phase6",
+            "workspace",
             visible_failures.append,
             on_inactive_failure=target_failures.append,
             controller=first.task_controller,

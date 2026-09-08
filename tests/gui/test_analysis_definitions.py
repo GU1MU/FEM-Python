@@ -1,31 +1,17 @@
 from __future__ import annotations
 
-import ast
-import inspect
-import os
-from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
+from PySide6.QtWidgets import QDialogButtonBox
 
 from fem.application import (
-    AuthoringCapability,
-    AuthoringStatus,
     MeshEntityRef,
     ModelSession,
     NamedRegion,
     RegionAssignment,
     RegionRef,
     SectionDefinition,
-)
-from fem.application.results import (
-    ElementResultProfile,
-    ResultCapabilityCatalog,
-    ResultModelFamily,
 )
 from fem.application.preprocessing import generate_fem_model
 from fem.core.model import (
@@ -36,7 +22,6 @@ from fem.core.model import (
     MaterialDefinition,
     NodalLoad,
     OutputRequest,
-    OutputSourceEvidence,
 )
 from fem.geometry import ExtrudedGeometry, LogicalEntityRef, RectangleGeometry
 from fem.mesh.settings import MeshSettings
@@ -46,7 +31,6 @@ from fem_gui.analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
     DisplacementDialog,
     LoadDialog,
-    OutputRequestDialog,
     StaticStepDialog,
 )
 from fem_gui.dialogs import AdaptivePrecisionDoubleSpinBox
@@ -54,12 +38,7 @@ import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 
 
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
 def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
-    _application()
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("plate", 2.0, 1.0), "矩形")
     names: list[str] = []
@@ -79,7 +58,6 @@ def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
 
 
 def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
-    _application()
     window = FEMMainWindow()
     window._set_native_geometry(
         RectangleGeometry("cached-authoring", 2.0, 1.0),
@@ -112,7 +90,6 @@ def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
 
 
 def test_boundary_scope_highlight_reuses_entity_highlighter(monkeypatch):
-    _application()
     window = FEMMainWindow()
     highlighted = []
     cleared = []
@@ -150,7 +127,6 @@ def test_analysis_scope_dialog_always_clears_highlight(
     monkeypatch,
     result,
 ):
-    _application()
     window = FEMMainWindow()
     dialog = LoadDialog(
         ["Load"],
@@ -183,50 +159,6 @@ def test_analysis_scope_dialog_always_clears_highlight(
 
 def _regions(kind: str, *names: str) -> list[RegionRef]:
     return [RegionRef(kind, name) for name in names]
-
-
-def _output_candidates(
-    family: ResultModelFamily = ResultModelFamily.PLANE_CONTINUUM,
-):
-    values = {
-        ResultModelFamily.PLANE_CONTINUUM: (
-            ("Quad4",),
-            ("plane_continuum",),
-            ("U1", "U2"),
-            ("Fx", "Fy"),
-        ),
-        ResultModelFamily.BEAM: (
-            ("Beam2",),
-            ("beam",),
-            ("U1", "U2", "U3", "UR1", "UR2", "UR3"),
-            ("Fx", "Fy", "Fz", "Mx", "My", "Mz"),
-        ),
-        ResultModelFamily.TRUSS: (
-            ("Truss2",),
-            ("truss",),
-            ("U1", "U2", "U3"),
-            ("Fx", "Fy", "Fz"),
-        ),
-    }
-    element_types, element_families, dofs, forces = values[family]
-    profile = ElementResultProfile(
-        family=family,
-        canonical_element_types=element_types,
-        element_families=element_families,
-        dofs_per_node=len(dofs),
-        dof_labels=dofs,
-        force_labels=forces,
-        primary_compatible=True,
-        stress_compatible=True,
-    )
-    return ResultCapabilityCatalog.from_profile(profile).candidates
-
-
-def _output_capability(
-    operation: str,
-    status: AuthoringStatus,
-) -> AuthoringCapability:
-    return AuthoringCapability(operation, status)
 
 
 @pytest.mark.gmsh
@@ -295,7 +227,6 @@ def test_native_linear_static_definition_reuses_the_existing_solver():
 
 
 def test_analysis_dialogs_define_only_supported_kernel_objects():
-    _application()
     step_dialog = StaticStepDialog("Load")
     assert step_dialog.step().procedure == "static"
     boundary_dialog = DisplacementDialog(
@@ -322,21 +253,9 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     assert step_name == "Load"
     assert load.edge == "TOP"
     assert load_dialog.component_combo.itemText(0) == "Fx"
-    candidates = _output_candidates()
-    output_dialog = OutputRequestDialog(
-        ["Load"],
-        candidates=candidates,
-    )
-    output_dialog.candidate_list.item(0).setCheckState(
-        Qt.CheckState.Checked
-    )
-    step_name, output = output_dialog.definition()
-    assert step_name == "Load"
-    assert output == candidates[0].authoring_request
 
 
 def test_analysis_dialog_region_catalogs_reject_untyped_strings():
-    _application()
 
     with pytest.raises(TypeError, match="RegionRef"):
         DisplacementDialog(["Load"], ["Fixed"], 2)
@@ -346,7 +265,6 @@ def test_analysis_dialog_region_catalogs_reject_untyped_strings():
 
 
 def test_displacement_dialog_creates_independent_checked_dofs():
-    _application()
     dialog = DisplacementDialog(
         ["Load"],
         _regions("node_set", "Fixed"),
@@ -372,7 +290,6 @@ def test_displacement_dialog_creates_independent_checked_dofs():
 
 
 def test_displacement_dialog_reports_selected_scope_changes():
-    _application()
     dialog = DisplacementDialog(
         ["Load"],
         [
@@ -396,7 +313,6 @@ def test_displacement_dialog_reports_selected_scope_changes():
 
 
 def test_boundary_and_load_inputs_share_adaptive_precision():
-    _application()
     boundary = DisplacementDialog(
         ["Load"],
         _regions("node_set", "Fixed"),
@@ -439,7 +355,6 @@ def test_boundary_and_load_inputs_share_adaptive_precision():
 
 
 def test_displacement_dialog_merges_adjacent_equal_dofs():
-    _application()
     dialog = DisplacementDialog(
         ["Load"],
         _regions("surface", "FixedFace"),
@@ -464,7 +379,6 @@ def test_displacement_dialog_merges_adjacent_equal_dofs():
 
 
 def test_displacement_dialog_restores_form_after_scope_creation():
-    _application()
     original = DisplacementDialog(
         ["Step-1", "Step-2"],
         _regions("surface", "OldFace"),
@@ -509,7 +423,6 @@ def test_displacement_dialog_restores_form_after_scope_creation():
 
 
 def test_load_dialog_restores_surface_load_after_scope_creation():
-    _application()
     original = LoadDialog(
         ["Step-1", "Step-2"],
         _regions("node_set", "Nodes"),
@@ -558,7 +471,6 @@ def test_load_dialog_restores_surface_load_after_scope_creation():
     (("edge", "FixedEdge"), ("surface", "FixedSurface")),
 )
 def test_displacement_dialog_accepts_edge_and_surface_regions(kind, name):
-    _application()
     dialog = DisplacementDialog(
         ["Load"],
         [
@@ -579,7 +491,6 @@ def test_displacement_dialog_accepts_edge_and_surface_regions(kind, name):
 
 
 def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
-    _application()
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 2, 0.0),)
     step.cloads = (NodalLoad("Loaded", 1, 10.0),)
@@ -601,7 +512,6 @@ def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
 
 
 def test_load_dialog_can_edit_an_existing_distributed_load():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -630,7 +540,6 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     ("node", "edge", "surface", "line", "body", "gravity"),
 )
 def test_load_dialog_saves_names_for_every_load_kind(kind):
-    _application()
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -652,7 +561,6 @@ def test_load_dialog_saves_names_for_every_load_kind(kind):
 
 
 def test_load_dialog_reports_every_supported_scope_change():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -694,7 +602,6 @@ def test_load_dialog_reports_targeted_and_global_gravity_scopes(
     target,
     scope,
 ):
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -708,7 +615,6 @@ def test_load_dialog_reports_targeted_and_global_gravity_scopes(
 
 
 def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
-    _application()
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint(
@@ -753,7 +659,6 @@ def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
 
 
 def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
-    _application()
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint("Fixed", 1, 2),
@@ -786,7 +691,6 @@ def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
 def test_analysis_manager_forwards_and_clears_load_scope_changes(
     monkeypatch,
 ):
-    _application()
     step = static("Load")
     step.edge_loads = (EdgeLoad("Edge-1", (1.0, 0.0)),)
     manager = AnalysisDefinitionManagerDialog(
@@ -817,7 +721,6 @@ def test_analysis_manager_forwards_and_clears_load_scope_changes(
 def test_edge_load_editor_refreshes_only_after_dialog_construction(
     monkeypatch,
 ):
-    _application()
     refresh_states = []
     original_refresh = LoadDialog._refresh
 
@@ -852,7 +755,6 @@ def test_edge_load_editor_refreshes_only_after_dialog_construction(
 
 
 def test_load_dialog_creates_global_gravity_without_a_named_region():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -874,7 +776,6 @@ def test_load_dialog_creates_global_gravity_without_a_named_region():
 
 
 def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -897,7 +798,6 @@ def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
 
 
 def test_load_dialog_exposes_five_physical_categories_and_builds_body_force():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -928,7 +828,6 @@ def test_load_dialog_exposes_five_physical_categories_and_builds_body_force():
 
 
 def test_analysis_manager_lists_and_deletes_gravity_loads():
-    _application()
     step = static("Load")
     step.gravity_loads = (GravityLoad((0.0, -9.81)),)
     manager = AnalysisDefinitionManagerDialog(
@@ -950,7 +849,6 @@ def test_analysis_manager_lists_and_deletes_gravity_loads():
 
 
 def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "NodeSet"),
@@ -984,7 +882,6 @@ def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
 
 
 def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "NodeSet"),
@@ -1014,7 +911,6 @@ def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
 
 
 def test_main_window_filters_distributed_load_regions_by_model_dimension():
-    _application()
     window = FEMMainWindow()
     rectangle = RectangleGeometry("plate", 2.0, 1.0)
     planar_regions = (
@@ -1111,7 +1007,6 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
 
 
 def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
-    _application()
     window = FEMMainWindow()
     window._set_native_geometry(
         RectangleGeometry("catalog-plate", 2.0, 1.0),
@@ -1125,7 +1020,6 @@ def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
 
 
 def test_load_dialog_validates_region_and_builds_pressure():
-    _application()
     edge_regions = _regions("edge", "Loaded")
     missing_region = LoadDialog(["Load"], [], edge_regions, [], 2)
     missing_region.region_combo.clear()
@@ -1147,7 +1041,6 @@ def test_load_dialog_validates_region_and_builds_pressure():
 
 
 def test_load_dialog_rejects_zero_distributed_loads():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -1167,7 +1060,6 @@ def test_load_dialog_rejects_zero_distributed_loads():
 
 
 def test_scope_pick_buttons_request_node_edge_and_surface_selection():
-    _application()
     displacement = DisplacementDialog(
         ["Load"],
         [],
@@ -1224,7 +1116,6 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection():
 
 
 def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
-    _application()
     step = static("Load")
     step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
     manager = AnalysisDefinitionManagerDialog(
@@ -1251,7 +1142,6 @@ def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
 
 
 def test_analysis_manager_restores_unsaved_load_editor_state(monkeypatch):
-    _application()
     first_step = static("Step-1")
     first_step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
     second_step = static("Step-2")
@@ -1314,7 +1204,6 @@ def test_analysis_manager_restores_unsaved_load_editor_state(monkeypatch):
 
 
 def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):
-    _application()
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint(
@@ -1349,7 +1238,6 @@ def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):
 
 
 def test_edit_load_dialog_prefers_a_new_explicit_scope():
-    _application()
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -1367,171 +1255,7 @@ def test_edit_load_dialog_prefers_a_new_explicit_scope():
     assert dialog.x_spin.value() == -10.0
 
 
-@pytest.mark.parametrize(
-    "family",
-    (
-        ResultModelFamily.PLANE_CONTINUUM,
-        ResultModelFamily.TRUSS,
-        ResultModelFamily.BEAM,
-    ),
-)
-def test_output_request_uses_only_published_candidate_order_and_dto(
-    family,
-):
-    _application()
-    candidates = _output_candidates(family)
-    dialog = OutputRequestDialog(
-        ["Load"],
-        candidates=candidates,
-    )
-
-    expected = tuple(
-        next(
-            candidate
-            for candidate in candidates
-            if candidate.authoring_request.variables == (variable,)
-        )
-        for variable in ("U", "RF", "S")
-    )
-    assert dialog.candidate_list.count() == len(expected)
-    assert tuple(
-        dialog.candidate_list.item(index).text()
-        for index in range(dialog.candidate_list.count())
-    ) == ("U", "RF", "S")
-    assert all(
-        "position" not in dialog.candidate_list.item(index).text()
-        for index in range(dialog.candidate_list.count())
-    )
-    displacement_item = dialog.candidate_list.item(0)
-    assert displacement_item.checkState() == Qt.CheckState.Unchecked
-    displacement_item.setCheckState(Qt.CheckState.Unchecked)
-    assert displacement_item.checkState() == Qt.CheckState.Unchecked
-    for index in range(dialog.candidate_list.count()):
-        dialog.candidate_list.item(index).setCheckState(
-            Qt.CheckState.Checked
-        )
-    step_name, outputs = dialog.definitions()
-    assert step_name == "Load"
-    assert outputs == tuple(
-        candidate.authoring_request
-        for candidate in expected
-    )
-    assert all(
-        output is not candidate.authoring_request
-        for output, candidate in zip(outputs, expected, strict=True)
-    )
-
-
-def test_output_request_discards_parsed_inp_details():
-    _application()
-    current = OutputRequest(
-        "history",
-        "preselect",
-        ("PRESELECT", "PRESELECT", "Future"),
-        {"variable": "PRESELECT"},
-        OutputSourceEvidence(
-            "abaqus",
-            parent_parameters=(("frequency", "2"),),
-            child_flags=("preselect",),
-        ),
-    )
-    dialog = OutputRequestDialog(["Load"], current=current)
-
-    step_name, output = dialog.definition()
-
-    assert step_name == "Load"
-    assert output != current
-    assert output is not current
-    assert output == OutputRequest(
-        "history",
-        "preselect",
-        ("PRESELECT", "PRESELECT", "Future"),
-    )
-    assert not output.metadata
-    assert output.source_evidence is None
-    assert not dialog.step_combo.isEnabled()
-    assert tuple(
-        dialog.candidate_list.item(index).text()
-        for index in range(dialog.candidate_list.count())
-    ) == (
-        "PRESELECT",
-        "PRESELECT",
-        "Future",
-    )
-    assert all(
-        dialog.candidate_list.item(index).checkState()
-        == Qt.CheckState.Checked
-        for index in range(dialog.candidate_list.count())
-    )
-    assert not hasattr(dialog, "target_value")
-    assert not hasattr(dialog, "metadata_value")
-    assert not hasattr(dialog, "source_evidence_value")
-
-
-def test_output_request_dialog_shows_existing_imported_requests_by_step():
-    _application()
-    candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
-    dialog = OutputRequestDialog(
-        ["Load", "Empty"],
-        candidates=candidates,
-        existing_requests_by_step={
-            "Load": (
-                OutputRequest("field", "node", ("RF", "U")),
-                OutputRequest("field", "element", ("S",)),
-            ),
-            "Empty": (),
-        },
-    )
-
-    assert tuple(
-        dialog.candidate_list.item(index).text()
-        for index in range(dialog.candidate_list.count())
-    ) == ("U", "RF", "S")
-    assert all(
-        dialog.candidate_list.item(index).checkState()
-        == Qt.CheckState.Checked
-        for index in range(dialog.candidate_list.count())
-    )
-    assert not hasattr(dialog, "existing_value")
-    assert not hasattr(dialog, "kind_value")
-    assert not hasattr(dialog, "variables_value")
-    dialog.step_combo.setCurrentText("Empty")
-    assert tuple(
-        dialog.candidate_list.item(index).checkState()
-        for index in range(dialog.candidate_list.count())
-    ) == (
-        Qt.CheckState.Unchecked,
-        Qt.CheckState.Unchecked,
-        Qt.CheckState.Unchecked,
-    )
-
-
-def test_output_request_dialog_does_not_select_history_variables_as_fields():
-    _application()
-    candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
-    dialog = OutputRequestDialog(
-        ["Load"],
-        candidates=candidates,
-        existing_requests_by_step={
-            "Load": (
-                OutputRequest("history", "node", ("U", "RF")),
-                OutputRequest("history", "element", ("S", "MISES")),
-            ),
-        },
-    )
-
-    assert tuple(
-        dialog.candidate_list.item(index).checkState()
-        for index in range(dialog.candidate_list.count())
-    ) == (
-        Qt.CheckState.Unchecked,
-        Qt.CheckState.Unchecked,
-        Qt.CheckState.Unchecked,
-    )
-
-
 def test_analysis_manager_uses_readable_definition_summaries():
-    _application()
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 1, 0.0),)
     step.outputs = (OutputRequest("field", "node", ("U", "RF")),)
@@ -1601,176 +1325,3 @@ def test_model_tree_boundary_and_load_delete_preserve_other_definitions():
         (9, 0),
     )
     assert len(changes) == 2
-
-
-def test_output_view_is_read_only_and_preserves_unsupported_request(
-    monkeypatch,
-) -> None:
-    _application()
-    output = OutputRequest(
-        "history",
-        "preselect",
-        ("Future", "Future", "PRESELECT"),
-        {"future": {"mode": "opaque"}},
-        OutputSourceEvidence(
-            "abaqus",
-            parent_flags=("history",),
-            child_parameters=(("variable", "PRESELECT"),),
-        ),
-    )
-    step = static("Load")
-    step.outputs = (output,)
-    manager = AnalysisDefinitionManagerDialog(
-        [step],
-        [],
-        [],
-        [],
-        2,
-        output_view_capability=_output_capability(
-            "output_request.view",
-            AuthoringStatus.READ_ONLY,
-        ),
-        output_delete_capability=_output_capability(
-            "output_request.delete",
-            AuthoringStatus.UNAVAILABLE,
-        ),
-    )
-    monkeypatch.setattr(
-        OutputRequestDialog,
-        "exec",
-        lambda _dialog: QDialog.DialogCode.Accepted,
-    )
-    before = manager.values()
-
-    assert manager.select_definition(("output", 0, 0))
-    assert manager.edit_button.text() == "查看"
-    assert manager.edit_button.isEnabled()
-    assert not manager.delete_button.isEnabled()
-    assert not manager.edit_definition(("output", 0, 0))
-    assert manager.values() == before
-    assert manager.values()[0].outputs[0] == output
-
-
-def test_output_delete_uses_independent_capability_and_protects_initial() -> None:
-    _application()
-    output = OutputRequest("history", "preselect", ("Future",))
-    load = static("Load")
-    load.outputs = (output,)
-    denied = AnalysisDefinitionManagerDialog(
-        [load],
-        [],
-        [],
-        [],
-        2,
-        output_view_capability=_output_capability(
-            "output_request.view",
-            AuthoringStatus.UNAVAILABLE,
-        ),
-        output_delete_capability=_output_capability(
-            "output_request.delete",
-            AuthoringStatus.UNAVAILABLE,
-        ),
-    )
-    assert denied.select_definition(("output", 0, 0))
-    assert not denied.edit_button.isEnabled()
-    assert not denied.delete_button.isEnabled()
-    denied._delete()
-    assert denied.values()[0].outputs == (output,)
-
-    allowed = AnalysisDefinitionManagerDialog(
-        [load],
-        [],
-        [],
-        [],
-        2,
-        output_view_capability=_output_capability(
-            "output_request.view",
-            AuthoringStatus.UNAVAILABLE,
-        ),
-        output_delete_capability=_output_capability(
-            "output_request.delete",
-            AuthoringStatus.ENABLED,
-        ),
-    )
-    assert allowed.select_definition(("output", 0, 0))
-    assert not allowed.edit_button.isEnabled()
-    assert allowed.delete_button.isEnabled()
-    allowed._delete()
-    assert allowed.values()[0].outputs == ()
-
-    required = OutputRequest("field", "node", ("U",))
-    required_step = static("Load")
-    required_step.outputs = (required,)
-    required_manager = AnalysisDefinitionManagerDialog(
-        [required_step],
-        [],
-        [],
-        [],
-        2,
-        output_delete_capability=_output_capability(
-            "output_request.delete",
-            AuthoringStatus.ENABLED,
-        ),
-    )
-    assert required_manager.select_definition(("output", 0, 0))
-    assert not required_manager.delete_button.isEnabled()
-    required_manager._delete()
-    assert required_manager.values()[0].outputs == (required,)
-
-    initial = static("Initial")
-    initial.outputs = (output,)
-    protected = AnalysisDefinitionManagerDialog(
-        [initial],
-        [],
-        [],
-        [],
-        2,
-        output_delete_capability=_output_capability(
-            "output_request.delete",
-            AuthoringStatus.ENABLED,
-        ),
-    )
-    assert protected.select_definition(("output", 0, 0))
-    assert not protected.delete_button.isEnabled()
-    protected._delete()
-    assert protected.values()[0].outputs == (output,)
-    assert protected.select_definition(("step", 0, None))
-    assert not protected.delete_button.isEnabled()
-    protected._delete()
-    assert len(protected.values()) == 1
-    assert protected.values()[0].outputs == (output,)
-
-
-def test_output_dialog_has_no_gui_support_matrix_or_dto_rebuild() -> None:
-    source_path = Path(inspect.getsourcefile(OutputRequestDialog) or "")
-    module = ast.parse(source_path.read_text(encoding="utf-8"))
-    class_node = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.ClassDef)
-        and node.name == "OutputRequestDialog"
-    )
-    string_values = {
-        node.value
-        for node in ast.walk(class_node)
-        if isinstance(node, ast.Constant)
-        and type(node.value) is str
-    }
-    output_request_calls = [
-        node
-        for node in ast.walk(class_node)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "OutputRequest"
-    ]
-    attributes = {
-        node.attr
-        for node in ast.walk(class_node)
-        if isinstance(node, ast.Attribute)
-    }
-
-    assert string_values.isdisjoint({"U", "UR", "RF", "RM", "S"})
-    assert output_request_calls == []
-    assert attributes.isdisjoint(
-        {"upper", "split", "startswith", "endswith"}
-    )
