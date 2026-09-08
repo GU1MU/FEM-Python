@@ -29,6 +29,9 @@ from fem_gui.agent_authoring import (
 )
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _controller(session: ModelSession):
     holder: dict[str, object] = {}
 

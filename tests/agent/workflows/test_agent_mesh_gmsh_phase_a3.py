@@ -15,6 +15,11 @@ from fem.mesh import gmsh as gmsh_meshing
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent
 
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
 
 def _types(model) -> set[str]:
     return {str(element.type) for element in model.mesh.elements}

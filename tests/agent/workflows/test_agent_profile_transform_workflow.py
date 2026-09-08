@@ -38,6 +38,9 @@ from fem_gui.agent_authoring import (
 )
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _text(value: str) -> ProviderResponse:
     return ProviderResponse(
         AssistantMessage("assistant", content=value),

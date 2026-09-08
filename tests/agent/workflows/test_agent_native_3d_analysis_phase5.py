@@ -62,6 +62,9 @@ from fem_gui.agent_authoring import (
 )
 
 
+pytestmark = pytest.mark.integration
+
+
 def _path_sweep() -> PathSweptGeometry:
     return PathSweptGeometry(
         RectangleGeometry("Sweep profile", 0.4, 0.3),

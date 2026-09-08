@@ -17,6 +17,9 @@ from fem_gui.agent_workspace import (
 )
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _reference(workspace_path, relative_path):
     workspace = normalize_user_workspace(workspace_path)
     return build_workspace_file_reference(

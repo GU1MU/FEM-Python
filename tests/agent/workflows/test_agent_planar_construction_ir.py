@@ -21,6 +21,9 @@ from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import ToolExecutionContext
 
 
+pytestmark = pytest.mark.local_session
+
+
 def test_publishes_strict_schema_and_bounded_context() -> None:
     _bridge, controller = make_planar_authoring_controller(ModelSession())
     definition = next(

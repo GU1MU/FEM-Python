@@ -107,8 +107,11 @@ def pytest_collection_modifyitems(
     deselected: list[pytest.Item] = []
     for item in items:
         path = Path(str(item.path)).resolve()
-        if path.is_relative_to(_GUI_TEST_ROOT):
-            # Local GUI dependencies run by default; fixtures still own runtime
+        if (
+            path.is_relative_to(_GUI_TEST_ROOT)
+            or item.get_closest_marker("local_session") is not None
+        ):
+            # Local GUI and session/bridge dependencies run by default; fixtures own
             # setup and cleanup, and unavailable optional runtimes still skip.
             if _requires_native_gmsh(item) and not gmsh_available:
                 item.add_marker(missing_gmsh)

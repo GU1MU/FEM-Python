@@ -29,6 +29,9 @@ from fem_gui.agent_authoring import (
 from tests.helpers.profile_sketches import two_profile_sketch
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _controller(session: ModelSession, refresh=None):
     if refresh is None:
         def refresh():

@@ -19,6 +19,11 @@ from fem.mesh.settings import MeshSettings
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from tests.helpers.agent_session_fixtures import _a5_session
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def test_production_entry_solves_and_reads_one_accepted_result() -> None:
     session = _a5_session()

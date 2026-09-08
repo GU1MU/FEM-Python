@@ -154,7 +154,7 @@
         "Agent query retains an independent field and recovery path during Phase 8"
       ],
       "golden_tests": [
-        "tests/agent/test_result_queries.py::test_query_results_matches_direct_displacement_and_reaction_apis"
+        "tests/agent/tools/test_result_queries.py::test_query_results_matches_direct_displacement_and_reaction_apis"
       ]
     },
     {
@@ -170,7 +170,7 @@
         "Agent export retains the legacy post CSV and VTK path during Phase 8"
       ],
       "golden_tests": [
-        "tests/agent/test_exports.py::test_vtk_export_registers_vtk_and_materialized_csv_dependencies"
+        "tests/agent/tools/test_exports.py::test_vtk_export_registers_vtk_and_materialized_csv_dependencies"
       ]
     }
   ]

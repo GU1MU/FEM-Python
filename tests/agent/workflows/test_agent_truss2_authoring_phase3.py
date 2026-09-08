@@ -25,6 +25,9 @@ from tests.helpers.agent_authoring_workflows import (
 )
 
 
+pytestmark = pytest.mark.integration
+
+
 def test_agent_truss2_full_loop_matches_oracle_exports_and_reopens(
     real_gmsh,
     tmp_path: Path,

@@ -29,6 +29,11 @@ from tests.helpers.fixtures.planar_feature_chain_baseline import (
     feature_recipe_fingerprint,
 )
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def _spy_worker(monkeypatch) -> dict[str, object]:
     """Capture the worker payload and the thread that produced it."""

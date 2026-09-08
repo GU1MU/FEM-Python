@@ -38,6 +38,9 @@ from tests.helpers.profile_sketches import (
 from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_sketch
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _controller(session: ModelSession):
     bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)

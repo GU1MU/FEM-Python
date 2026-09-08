@@ -23,6 +23,11 @@ from tests.helpers.profile_transform_capture import (
     tool_schema_hash,
 )
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def _ring_controller() -> tuple[ModelSession, object]:
     fixture = concentric_ring_fixture()

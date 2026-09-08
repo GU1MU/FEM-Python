@@ -26,6 +26,11 @@ from fem_gui.agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def _extrusion(name: str) -> ExtrudedGeometry:
     sketch = RectangleGeometry(name, 2.0, 1.0)

@@ -28,6 +28,9 @@ from fem_gui.agent_authoring import (
 from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
 
 
+pytestmark = pytest.mark.local_session
+
+
 _LEGACY_COMPOSITE_KINDS = {
     "planar_profiles",
     "extruded_profiles",

@@ -24,6 +24,11 @@ from tests.helpers.agent_line_fixtures import (
 )
 from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 PLATE_STEP_NAME = "分析步-静力"
 

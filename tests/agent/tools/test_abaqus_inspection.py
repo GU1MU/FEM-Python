@@ -14,7 +14,7 @@ from tests.helpers.file_builders import write_inp
 
 
 LINE_FIXTURES = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"

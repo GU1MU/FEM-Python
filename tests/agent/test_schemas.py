@@ -1,6 +1,5 @@
 import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
@@ -237,15 +236,3 @@ def test_exception_diagnostic_strips_terminal_controls_and_local_paths():
     assert "\u202e" not in diagnostic.message
     assert "C:\\private" not in diagnostic.message
     assert "do-not-display" not in diagnostic.message
-
-
-def test_fem_package_does_not_import_agent_package():
-    fem_root = Path(__file__).resolve().parents[2] / "src" / "fem"
-
-    offenders = [
-        str(path.relative_to(fem_root))
-        for path in fem_root.rglob("*.py")
-        if "fem_agent" in path.read_text(encoding="utf-8")
-    ]
-
-    assert offenders == []

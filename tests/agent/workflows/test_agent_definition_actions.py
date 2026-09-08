@@ -33,6 +33,9 @@ from tests.helpers.agent_session_fixtures import _a4_session, _a5_session
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
 
+pytestmark = pytest.mark.local_session
+
+
 def _edit_patch(
     session: ModelSession,
     object_type: str,

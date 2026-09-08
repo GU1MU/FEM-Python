@@ -12,6 +12,11 @@ from fem_agent.geometry_authoring import profile_transform_context
 from fem_agent.tools.registry import ToolExecutionContext
 from tests.helpers.agent_planar_construction import make_planar_authoring_controller
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def _construction(*nodes: dict[str, object], result: str) -> dict[str, object]:
     return {

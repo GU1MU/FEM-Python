@@ -30,6 +30,11 @@ from fem_agent.result_authoring import (
     AgentResultVariable,
 )
 
+import pytest
+
+
+pytestmark = pytest.mark.local_session
+
 
 def _second_success(session: ModelSession):
     task = session.prepare_solve(STATIC_STEP_NAME, "作业-stage1-2")

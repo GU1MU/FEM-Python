@@ -44,8 +44,11 @@ from fem_gui.agent_authoring import (
 from tests.helpers.agent_session_fixtures import _a5_session
 
 
+pytestmark = pytest.mark.integration
+
+
 _FIXTURE = (
-    Path(__file__).parents[1]
+    Path(__file__).parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
