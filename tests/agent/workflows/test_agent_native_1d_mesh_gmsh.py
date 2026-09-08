@@ -10,7 +10,7 @@ from fem.application.preprocessing import generate_fem_model
 from fem.geometry import LogicalEntityRef
 from fem.geometry.part_namespace import namespace_part_logical_id
 from fem.geometry.recipes import WireGeometry, WireMember, WirePoint
-from fem.io.project_v3 import load_project_v3, save_project_v3
+from fem.io.project import load_project, save_project
 from fem_agent.authoring import ProposalState
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
 from fem_gui.agent_authoring import (
@@ -127,13 +127,13 @@ def test_real_agent_line_mesh_materializes_stable_scopes_and_reopens(
     }
 
     save_task = session.prepare_project_save()
-    path = save_project_v3(
+    path = save_project(
         tmp_path / f"agent-{line_element_type}.femproj",
-        save_task.snapshot,
+        save_task,
     )
     assert session.accept_project_saved(save_task.token, path).accepted
     reopened = ModelSession()
-    assert reopened.replace_from_snapshot(load_project_v3(path)).accepted
+    assert reopened.replace_from_snapshot(load_project(path).snapshot).accepted
     regenerated_task = reopened.prepare_mesh_generation()
     regenerated = generate_fem_model(regenerated_task)
     assert reopened.accept_generated_model(
@@ -149,11 +149,11 @@ def test_real_agent_line_mesh_materializes_stable_scopes_and_reopens(
     } == {line_element_type}
     assert mesh_references_for_logical_entities(
         reopened_snapshot.artifact.model,
-        (LogicalEntityRef("point:B"),),
+        (_logical("point:B"),),
         mesh_kind="node",
     )
     assert mesh_references_for_logical_entities(
         reopened_snapshot.artifact.model,
-        (LogicalEntityRef("edge:BC"),),
+        (_logical("edge:BC"),),
         mesh_kind="element",
     )
