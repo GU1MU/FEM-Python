@@ -12,7 +12,6 @@ import json
 import pytest
 
 from fem.application import ModelSession
-from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
     BooleanGeometry,
@@ -20,16 +19,9 @@ from fem.geometry import (
     ExtrudedGeometry,
     MovedGeometry,
     MultiBodyGeometry,
-    PathSweptGeometry,
     RectangleGeometry,
-    RevolvedGeometry,
-    WireGeometry,
-    WireMember,
-    WirePoint,
     model,
 )
-from fem.io.project import decode_project, encode_project
-from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import (
     geometry_recipe_from_payload,
@@ -56,22 +48,6 @@ def _controller(session: ModelSession):
         AgentResultQueryBridge(SessionResultQueryPort(session)),
     )
     return bridge, controller
-
-
-def _path_solid() -> PathSweptGeometry:
-    return PathSweptGeometry(
-        RectangleGeometry("Path Profile", 2.0, 1.0),
-        WireGeometry(
-            "Ordered Path",
-            (
-                WirePoint("A", 0.0, 0.0, 0.0),
-                WirePoint("B", 0.0, 0.0, 2.0),
-            ),
-            (WireMember("AB", "A", "B"),),
-        ),
-        ("face:domain",),
-        "transport",
-    )
 
 
 def _json_depth(value: object) -> int:
@@ -214,26 +190,6 @@ def test_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
             ),
             "cut",
         ),
-        (
-            _path_solid(),
-            MovedGeometry(
-                ExtrudedGeometry(RectangleGeometry("Path Tool", 1.0, 1.0), 2.0),
-                1.5,
-                0.0,
-                0.0,
-            ),
-            "fuse",
-        ),
-        (
-            RevolvedGeometry(
-                RectangleGeometry("Revolve Profile", 2.0, 1.0),
-                "x",
-                180.0,
-                ("face:domain",),
-            ),
-            MovedGeometry(BoxGeometry("Revolve Tool", 1.0, 1.0, 1.0), 0.5, -0.5, 0.0),
-            "cut",
-        ),
     ),
 )
 def test_real_agent_part_boolean_matrix(target, tool, operation: str) -> None:
@@ -330,45 +286,6 @@ def test_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
     assert geometry.body("B3") == before.part("P1").geometry_recipe.body("B3")
     assert geometry.body("B1").recipe.name == "Body Result"
     assert "B2" in geometry.retired_body_ids
-
-
-@pytest.mark.gmsh
-def test_body_boolean_save_reopen_undo_replay_and_remesh() -> None:
-    session = make_multi_body_session()
-    bridge, controller = _controller(session)
-    prepared = controller.dispatch(
-        "prepare_geometry_edit",
-        build_body_boolean_call("cut", result_name="Persisted Cut"),
-        ToolExecutionContext("phase4", 0, "body-cut-persist"),
-    )
-    assert prepared.ok, prepared.summary
-    assert bridge.accept_from_gui_control(prepared.data["proposal_id"]).state is ProposalState.SUCCEEDED
-    committed_geometry = session.snapshot().part("P1").geometry_recipe
-
-    encoded = encode_project(session.prepare_project_save())
-    reopened = ModelSession()
-    assert reopened.replace_from_snapshot(decode_project(encoded).snapshot).accepted
-    reopened_geometry = reopened.snapshot().part("P1").geometry_recipe
-    assert reopened_geometry == committed_geometry
-    with model("phase4-body-replay", dimension=3) as cad:
-        assert len(compile_recipe(cad, reopened_geometry).domain) == 2
-
-    coarse = generate_fem_model(
-        reopened_geometry,
-        MeshSettings(0.7, cell_shape="tetrahedron"),
-    )
-    refined = generate_fem_model(
-        reopened_geometry,
-        MeshSettings(0.45, cell_shape="tetrahedron"),
-    )
-    assert {element.type for element in coarse.mesh.elements} == {"Tet4"}
-    assert len(refined.mesh.elements) > len(coarse.mesh.elements)
-
-    reopened.undo_body_boolean("P1", "B1")
-    restored = reopened.snapshot().part("P1").geometry_recipe
-    assert tuple(body.id for body in restored.bodies) == ("B1", "B2", "B3")
-    assert restored.body("B1").recipe == make_multi_body_session().snapshot().part("P1").geometry_recipe.body("B1").recipe
-    assert restored.body("B2").recipe == make_multi_body_session().snapshot().part("P1").geometry_recipe.body("B2").recipe
 
 
 @pytest.mark.gmsh

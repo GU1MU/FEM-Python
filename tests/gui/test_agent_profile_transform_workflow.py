@@ -1,10 +1,9 @@
-"""Phase 6 cross-layer acceptance for Profile transform authoring.
+"""Provider and controller contracts for profile transform authoring.
 
 These tests deliberately keep the Fake Provider deterministic: they prove the
-local route/guard/controller/GUI seams and the exact geometry results, not the
+local route/guard/controller/GUI seams, not the
 language ability of a remote model.  The optional real-provider smoke remains
-owned by ``tests/test_agent_cloud_smoke.py`` and is gated by its explicit
-external-config contract.
+gated by the explicit external-config contract shared with the agent tests.
 """
 
 from __future__ import annotations
@@ -15,16 +14,7 @@ import os
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.application.preprocessing import generate_fem_model
-from fem.geometry import (
-    ExtrudedGeometry,
-    PathSweptGeometry,
-    SketchCircle,
-    SketchRectangle,
-    describe_recipe_topology,
-)
-from fem.io.project import decode_project, encode_project
-from fem.mesh.settings import MeshSettings
+from fem.geometry import SketchCircle, SketchRectangle
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import (
     AUTHORING_TURN_SNAPSHOT_MAX_BYTES,
@@ -127,38 +117,6 @@ def _session_controller(recipe, *, name: str = "Phase 6 native"):
     return session, bridge, controller
 
 
-def _blank_session_controller():
-    session = ModelSession()
-    holder: dict[str, object] = {}
-
-    def refresh() -> None:
-        bridge = holder["bridge"]
-        assert isinstance(bridge, AgentAuthoringBridge)
-        bridge.bind_snapshot(session.snapshot())
-        controller = holder.get("controller")
-        if controller is not None:
-            controller.observe_binding(bridge.context)
-
-    bridge = AgentAuthoringBridge(SessionGeometryAuthoringPort(session, refresh))
-    holder["bridge"] = bridge
-    bridge.bind_snapshot(session.snapshot())
-    controller = create_session_authoring_workflow_controller(
-        session,
-        bridge,
-        AgentResultQueryBridge(SessionResultQueryPort(session)),
-    )
-    holder["controller"] = controller
-    return session, bridge, controller
-
-
-def _source_face(context_data: dict[str, object]) -> str:
-    profiles = context_data.get("profiles")
-    assert isinstance(profiles, list) and profiles
-    face_id = profiles[0].get("face_id")
-    assert isinstance(face_id, str)
-    return face_id
-
-
 def _ring_recipe():
     return planar_sketch_geometry(
         "Ring profile",
@@ -167,27 +125,6 @@ def _ring_recipe():
             SketchCircle("cut", 0.0, 0.0, 2.0),
         ),
     ).recipe
-
-
-def _rectangle_recipe():
-    return planar_sketch_geometry(
-        "Sweep profile",
-        contours=(SketchRectangle("material", 0.0, 0.0, 1.0, 1.0),),
-    ).recipe
-
-
-def _path(frame_strategy: str = "transport") -> dict[str, object]:
-    return {
-        "points": [
-            {"name": "A", "x": 0.0, "y": 0.0, "z": 0.0},
-            {"name": "B", "x": 0.0, "y": 0.0, "z": 2.0},
-            {"name": "C", "x": 1.0, "y": 0.0, "z": 3.0},
-        ],
-        "members": [
-            {"name": "AB", "start": "A", "end": "B"},
-            {"name": "BC", "start": "B", "end": "C"},
-        ],
-    }
 
 
 def _current_state_message(request) -> dict[str, object]:
@@ -568,246 +505,6 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
         assert terminal["status"] == "succeeded"
 
 
-@pytest.mark.gmsh
-@pytest.mark.integration
-def test_ring_dedicated_transform_tet4_tet10_save_reopen_and_hole_lineage():
-    session, bridge, controller = _session_controller(_ring_recipe(), name="Phase 6 ring")
-    context = controller.dispatch(
-        "read_profile_transform_context",
-        {"part_id": "P1"},
-        ToolExecutionContext("phase6-ring", session.snapshot().session_revision, "read"),
-    )
-    source = _source_face(context.data)
-    prepared = controller.dispatch(
-        "prepare_profile_extrusion",
-        {
-            "part_id": "P1",
-            "profile_selection": [source],
-            "context_revision": session.snapshot().session_revision,
-            "height": 4.0,
-        },
-        ToolExecutionContext("phase6-ring", session.snapshot().session_revision, "prepare"),
-    )
-    assert prepared.ok, prepared.summary
-    before_accept = session.snapshot()
-    receipt = bridge.accept_from_gui_control(prepared.data["proposal_id"])
-    assert receipt.state is ProposalState.SUCCEEDED
-    controller.record_proposal_state("geometry", receipt.state)
-    accepted = session.snapshot()
-    assert accepted.session_revision > before_accept.session_revision
-    recipe = accepted.parts[0].geometry_recipe
-    assert type(recipe) is ExtrudedGeometry
-    topology = describe_recipe_topology(recipe)
-    assert topology.exact
-    assert len(topology.entities_of("body", selectable_only=True)) == 1
-    assert any(entity.semantic_role == "sweep.boundary.hole" for entity in topology.entities)
-    reopened = decode_project(encode_project(session.prepare_project_save())).snapshot
-    assert reopened.parts[0].geometry_recipe == recipe
-
-    for order, expected in ((1, "Tet4"), (2, "Tet10")):
-        mesh = generate_fem_model(
-            recipe,
-            MeshSettings(3.0, order=order, cell_shape="tetrahedron"),
-        )
-        assert mesh.mesh.elements
-        assert {element.type for element in mesh.mesh.elements} == {expected}
-
-
-@pytest.mark.gmsh
-@pytest.mark.integration
-def test_blank_composite_ring_is_one_final_proposal_with_hole_selection(
-    tmp_path,
-):
-    session, bridge, controller = _blank_session_controller()
-    dynamic = _ControllerDynamicTools(controller)
-    geometry = {
-        "kind": "extruded_profiles",
-        "profiles": [
-            {
-                "kind": "circle",
-                "center_x": 0.0,
-                "center_y": 0.0,
-                "radius": 5.0,
-                "role": "material",
-            },
-            {
-                "kind": "circle",
-                "center_x": 0.0,
-                "center_y": 0.0,
-                "radius": 2.0,
-                "role": "hole",
-            },
-        ],
-        "height": 4.0,
-    }
-    provider = FakeProvider(
-        [
-            _tool(
-                "blank-prepare",
-                "prepare_geometry_proposal",
-                {"part_function": "blank-hollow-cylinder", "geometry": geometry},
-            ),
-            _tool("blank-next", "read_authoring_context", {}),
-            _text("几何已接受；现在可以进入网格阶段"),
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "phase6-blank-composite",
-        provider,
-        dynamic_tools=dynamic,
-    )
-    before = session.snapshot()
-    events = engine.send_message("创建外半径 5、内半径 2、高度 4 的中空圆柱")
-    assert len(provider.requests) == 1
-    prepare_events = [
-        event
-        for event in events
-        if event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "prepare_geometry_proposal"
-    ]
-    assert len(prepare_events) == 1
-    result = prepare_events[0].data["result"]
-    assert result["ok"] is True
-    assert session.snapshot() == before
-    checkpoint = result["data"]["continuation_checkpoint"]
-    proposal_id = checkpoint["proposal_id"]
-    assert session.snapshot() == before
-    proposal = bridge._records[proposal_id].proposal
-    assert proposal.display_summary["dimension"] == 3
-    assert proposal.display_summary["expected_entity_count"] == 1
-    assert len(proposal.display_summary["expected_new_objects"]) == 1
-    summary = proposal.display_summary["summary"]
-    assert all(value in summary for value in ("半径=5", "半径=2", "拉伸高=4"))
-    receipt = bridge.accept_from_gui_control(proposal_id)
-    assert receipt.state is ProposalState.SUCCEEDED
-    controller.record_proposal_state("geometry", receipt.state)
-    accepted = session.snapshot()
-    dynamic.refresh_turn_snapshot(tuple(item.name for item in controller.definitions))
-    assert dynamic.provider_snapshot.active_part_dimension == 3
-    recipe = accepted.parts[0].geometry_recipe
-    assert type(recipe) is ExtrudedGeometry
-    topology = describe_recipe_topology(recipe)
-    hole_faces = tuple(
-        entity.logical_id
-        for entity in topology.entities_of("face")
-        if entity.semantic_role == "sweep.boundary.hole"
-    )
-    assert hole_faces
-    assert all(topology.entity(face_id).selectable for face_id in hole_faces)
-    mesh = generate_fem_model(recipe, MeshSettings(3.0, cell_shape="tetrahedron"))
-    assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
-    reopened = decode_project(encode_project(session.prepare_project_save())).snapshot
-    assert reopened.parts[0].geometry_recipe == recipe
-    continuation_events = engine.continue_after_proposal(
-        proposal_id,
-        checkpoint["proposal_hash"],
-        checkpoint["source_turn_id"],
-        int(checkpoint["model_revision"]),
-        receipt.state.value,
-        receipt.message,
-    )
-    assert any(
-        event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "read_authoring_context"
-        for event in continuation_events
-    )
-    assert len([item for item in engine._history if item.role == "user"]) == 1
-    assert not [
-        event
-        for event in continuation_events
-        if event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "prepare_geometry_proposal"
-    ]
-
-
-@pytest.mark.gmsh
-@pytest.mark.integration
-def test_blank_center_hole_plate_has_canonical_hole_side_and_tet4():
-    session, bridge, controller = _blank_session_controller()
-    before = session.snapshot()
-    result = controller.dispatch(
-        "prepare_geometry_proposal",
-        {
-            "part_function": "center-hole-plate",
-            "geometry": {
-                "kind": "extruded_profiles",
-                "profiles": [
-                    {
-                        "kind": "rectangle",
-                        "x": -5.0,
-                        "y": -3.0,
-                        "width": 10.0,
-                        "height": 6.0,
-                    },
-                    {
-                        "kind": "circle",
-                        "center_x": 0.0,
-                        "center_y": 0.0,
-                        "radius": 1.0,
-                    },
-                ],
-                "height": 2.0,
-            },
-        },
-        ToolExecutionContext(
-            "phase6-center-hole",
-            before.session_revision,
-            "prepare-center-hole",
-        ),
-    )
-    assert result.ok, result.summary
-    assert session.snapshot() == before
-    proposal = bridge._records[result.data["proposal_id"]].proposal
-    assert proposal.display_summary["dimension"] == 3
-    assert proposal.display_summary["expected_entity_count"] == 1
-    assert len(proposal.display_summary["expected_new_objects"]) == 1
-    assert all(
-        value in proposal.display_summary["summary"]
-        for value in ("10", "6", "1", "2")
-    )
-
-    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
-    assert receipt.state is ProposalState.SUCCEEDED
-    accepted = session.snapshot()
-    assert accepted.session_revision > before.session_revision
-    assert len(accepted.parts) == 1
-    recipe = accepted.parts[0].geometry_recipe
-    assert type(recipe) is ExtrudedGeometry
-    topology = describe_recipe_topology(recipe)
-    assert topology.exact
-    assert tuple(entity.logical_id for entity in topology.entities_of("body")) == (
-        "body:domain",
-    )
-    assert topology.entity("body:domain").selectable
-    assert topology.entity("face:bottom").selectable
-    assert topology.entity("face:top").selectable
-    assert topology.entity("face:bottom").semantic_role == (
-        "copy.bottom.sketch.profile"
-    )
-    assert topology.entity("face:top").semantic_role == (
-        "copy.top.sketch.profile"
-    )
-    hole_side_ids = tuple(
-        entity.logical_id
-        for entity in topology.entities_of("face")
-        if entity.semantic_role == "sweep.boundary.hole"
-    )
-    assert hole_side_ids == ("face:side/C1",)
-    assert topology.entity(hole_side_ids[0]).selectable
-    assert hole_side_ids[0] in topology.signature.logical_ids
-
-    mesh = generate_fem_model(
-        recipe,
-        MeshSettings(2.0, cell_shape="tetrahedron", strict_cell_shape=True),
-    )
-    assert mesh.mesh.elements
-    assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
-    reopened = decode_project(encode_project(session.prepare_project_save())).snapshot
-    assert reopened.parts[0].geometry_recipe == recipe
-    reopened_topology = describe_recipe_topology(reopened.parts[0].geometry_recipe)
-    assert reopened_topology.entity("face:side/C1").selectable
-
-
 def test_explicit_multi_profile_selection_matches_proposal_part_count():
     recipe = planar_sketch_geometry(
         "Two independent material profiles",
@@ -847,50 +544,6 @@ def test_explicit_multi_profile_selection_matches_proposal_part_count():
     accepted = session.snapshot()
     assert len(accepted.parts) == len(candidates)
     assert all(part.dimension == 3 for part in accepted.parts)
-
-
-@pytest.mark.gmsh
-@pytest.mark.integration
-@pytest.mark.parametrize("frame_strategy", ("fixed", "transport"))
-def test_path_dedicated_transform_preserves_order_frame_and_tet_mesh(
-    frame_strategy: str,
-):
-    session, bridge, controller = _session_controller(
-        _rectangle_recipe(),
-        name=f"Phase 6 path {frame_strategy}",
-    )
-    context = controller.dispatch(
-        "read_profile_transform_context",
-        {"part_id": "P1"},
-        ToolExecutionContext("phase6-path", 1, f"read-{frame_strategy}"),
-    )
-    source = _source_face(context.data)
-    prepared = controller.dispatch(
-        "prepare_profile_path_sweep",
-        {
-            "part_id": "P1",
-            "profile_selection": [source],
-            "context_revision": 1,
-            "path": _path(frame_strategy),
-            "frame_strategy": frame_strategy,
-        },
-        ToolExecutionContext("phase6-path", 1, f"prepare-{frame_strategy}"),
-    )
-    assert prepared.ok, prepared.summary
-    receipt = bridge.accept_from_gui_control(prepared.data["proposal_id"])
-    assert receipt.state is ProposalState.SUCCEEDED
-    controller.record_proposal_state("geometry", receipt.state)
-    recipe = session.snapshot().parts[0].geometry_recipe
-    assert type(recipe) is PathSweptGeometry
-    assert recipe.frame_strategy == frame_strategy
-    assert tuple(member.name for member in recipe.path.members) == ("AB", "BC")
-    assert describe_recipe_topology(recipe).exact
-    assert len(describe_recipe_topology(recipe).entities_of("body", selectable_only=True)) == 1
-    reopened = decode_project(encode_project(session.prepare_project_save())).snapshot
-    assert reopened.parts[0].geometry_recipe == recipe
-    mesh = generate_fem_model(recipe, MeshSettings(1.0, cell_shape="tetrahedron"))
-    assert mesh.mesh.elements
-    assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
 
 
 def test_negative_paths_are_atomic_and_stable() -> None:

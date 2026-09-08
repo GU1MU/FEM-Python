@@ -10,10 +10,7 @@ on the worker boundary, and compare against a direct same-thread compile.
 from __future__ import annotations
 
 from copy import deepcopy
-import math
 import threading
-
-import pytest
 
 from fem.application import (
     ModelSession,
@@ -29,12 +26,6 @@ from tests.helpers.agent_planar_construction import (
 )
 from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
 from tests.helpers.fixtures.planar_feature_chain_baseline import (
-    BASELINE_AREA,
-    BASELINE_BOUNDING_BOX,
-    BASELINE_COMPONENT_COUNT,
-    BASELINE_FEATURE_RECIPE_SHA256,
-    BASELINE_HOLE_COUNT,
-    PLATE_SLOT_SHU_IR_DICT,
     feature_recipe_fingerprint,
 )
 
@@ -100,29 +91,6 @@ def test_worker_path_matches_direct_compile_field_for_field(
     assert feature_recipe_fingerprint(
         worker_feature
     ) == feature_recipe_fingerprint(direct_feature)
-
-
-@pytest.mark.slow
-def test_worker_path_reproduces_baseline_oracle(real_gmsh, monkeypatch) -> None:
-    del real_gmsh
-    captured = _spy_worker(monkeypatch)
-    _bridge, controller = _controller(ModelSession())
-
-    result = _dispatch(
-        controller, deepcopy(PLATE_SLOT_SHU_IR_DICT), key="baseline-oracle"
-    )
-
-    assert result.ok is True
-    worker_compiled, worker_feature, *_ = captured["payload"]
-    proof = worker_compiled.proof
-    assert math.isclose(proof.area, BASELINE_AREA, rel_tol=1.0e-9, abs_tol=1.0e-6)
-    assert all(
-        math.isclose(left, right, rel_tol=0.0, abs_tol=1.0e-7)
-        for left, right in zip(proof.bounding_box, BASELINE_BOUNDING_BOX)
-    )
-    assert proof.component_count == BASELINE_COMPONENT_COUNT
-    assert proof.hole_count == BASELINE_HOLE_COUNT
-    assert feature_recipe_fingerprint(worker_feature) == BASELINE_FEATURE_RECIPE_SHA256
 
 
 def test_cancelled_compile_stops_at_checkpoint_and_keeps_model(

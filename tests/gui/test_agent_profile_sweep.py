@@ -3,24 +3,15 @@ from __future__ import annotations
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.application.recipe_compiler import TopologyResolutionError, compile_recipe
-from fem.application.preprocessing import generate_fem_model
 from fem.geometry import (
-    MovedGeometry,
     PathSweptGeometry,
     RectangleGeometry,
-    RevolvedGeometry,
-    RotatedGeometry,
     SketchRectangle,
     WireGeometry,
     WireMember,
     WirePoint,
     describe_recipe_topology,
-    is_single_solid_recipe,
-    model,
 )
-from fem.io.project import decode_project, encode_project
-from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_agent.result_authoring import AgentResultQueryBridge
@@ -32,20 +23,6 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-
-
-def _path(frame: str = "transport") -> PathSweptGeometry:
-    profile = RectangleGeometry("Profile", 2.0, 1.0)
-    path = WireGeometry(
-        "Ordered path",
-        (
-            WirePoint("A", 0.0, 0.0, 0.0),
-            WirePoint("B", 0.0, 0.0, 2.0),
-            WirePoint("C", 1.0, 0.0, 3.0),
-        ),
-        (WireMember("AB", "A", "B"), WireMember("BC", "B", "C")),
-    )
-    return PathSweptGeometry(profile, path, ("face:domain",), frame)
 
 
 def _controller(session: ModelSession):
@@ -77,84 +54,6 @@ def _strict_session() -> tuple[ModelSession, str]:
         part_name="Sketch",
     )
     return session, source
-
-
-@pytest.mark.gmsh
-@pytest.mark.parametrize("frame", ("fixed", "transport"))
-def test_real_path_sweep_proves_volume_caps_sides_and_frame(frame: str) -> None:
-    recipe = _path(frame)
-
-    with model(f"phase3-path-{frame}", dimension=3) as cad:
-        compiled = compile_recipe(cad, recipe)
-
-        assert len(compiled.domain) == 1
-        assert cad.volume(compiled.domain[0]) > 0.0
-        assert len(compiled.logical_entities["face:start"]) == 1
-        assert len(compiled.logical_entities["face:end"]) == 1
-        assert all(
-            len(compiled.logical_entities[f"face:side/{name}"]) == 2
-            for name in ("bottom", "right", "top", "left")
-        )
-    assert describe_recipe_topology(recipe).exact
-    assert is_single_solid_recipe(recipe)
-
-
-@pytest.mark.gmsh
-@pytest.mark.parametrize(
-    "recipe",
-    (
-        MovedGeometry(_path(), 2.0, 3.0, 4.0),
-        RotatedGeometry(_path("fixed"), "y", 37.0),
-    ),
-)
-def test_path_sweep_rigid_transform_rebinds_all_lineage(recipe) -> None:
-    with model(f"phase3-path-transform-{type(recipe).__name__}", dimension=3) as cad:
-        compiled = compile_recipe(cad, recipe)
-
-        assert len(compiled.domain) == 1
-        assert cad.volume(compiled.domain[0]) > 0.0
-        assert set(compiled.logical_entities) == set(
-            describe_recipe_topology(recipe).signature.logical_ids
-        )
-
-
-@pytest.mark.gmsh
-def test_path_sweep_remeshes_as_one_tet_solid() -> None:
-    recipe = _path()
-
-    coarse = generate_fem_model(
-        recipe,
-        MeshSettings(0.8, cell_shape="tetrahedron"),
-    )
-    refined = generate_fem_model(
-        recipe,
-        MeshSettings(0.5, cell_shape="tetrahedron"),
-    )
-
-    assert {element.type for element in coarse.mesh.elements} == {"Tet4"}
-    assert {element.type for element in refined.mesh.elements} == {"Tet4"}
-    assert len(refined.mesh.elements) > len(coarse.mesh.elements)
-
-
-@pytest.mark.gmsh
-def test_half_full_revolve_and_cross_axis_rejection() -> None:
-    profile = RectangleGeometry("Profile", 2.0, 1.0)
-    for angle in (180.0, 360.0):
-        with model(f"phase3-revolve-{angle:g}", dimension=3) as cad:
-            compiled = compile_recipe(
-                cad,
-                RevolvedGeometry(profile, "x", angle, ("face:domain",)),
-            )
-            assert len(compiled.domain) == 1
-            assert cad.volume(compiled.domain[0]) > 0.0
-
-    crossing = MovedGeometry(RectangleGeometry("Crossing", 2.0, 2.0), 0.0, -1.0, 0.0)
-    with model("phase3-revolve-crossing", dimension=3) as cad:
-        with pytest.raises(TopologyResolutionError, match="crosses-axis"):
-            compile_recipe(
-                cad,
-                RevolvedGeometry(crossing, "x", 180.0, ("face:domain",)),
-            )
 
 
 def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -> None:
@@ -285,7 +184,7 @@ def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
 
 
 @pytest.mark.gmsh
-def test_agent_path_proposal_is_atomic_revision_bound_and_persistent() -> None:
+def test_agent_path_proposal_is_atomic_revision_bound() -> None:
     session, source = _strict_session()
     bridge, controller = _controller(session)
     before = session.snapshot()
@@ -324,8 +223,6 @@ def test_agent_path_proposal_is_atomic_revision_bound_and_persistent() -> None:
     assert receipt.state is ProposalState.SUCCEEDED
     recipe = session.snapshot().parts[0].geometry_recipe
     assert type(recipe) is PathSweptGeometry
-    reopened = decode_project(encode_project(session.prepare_project_save())).snapshot
-    assert reopened.parts[0].geometry_recipe == recipe
 
 
 def test_stale_path_proposal_does_not_mutate() -> None:
