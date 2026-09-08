@@ -1356,7 +1356,7 @@ def test_fresh_base_only_process_writes_and_reads_with_optional_imports_blocked(
 
     completed = subprocess.run(
         [sys.executable, "-c", script, str(target)],
-        cwd=Path(__file__).resolve().parents[2],
+        cwd=Path(__file__).resolve().parents[3],
         check=False,
         capture_output=True,
         text=True,

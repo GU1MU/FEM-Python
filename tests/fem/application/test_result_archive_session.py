@@ -14,7 +14,7 @@ from fem.application import (
     TokenStatus,
 )
 from fem.application.results import FieldPosition
-from tests.application.test_result_materialization_session import (
+from tests.fem.application.test_result_materialization_session import (
     _key,
     _materialize,
     _session,

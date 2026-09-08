@@ -198,7 +198,7 @@ def test_worst_element_order_is_deterministic_for_equal_scores() -> None:
 
 
 def test_quality_module_has_no_gui_import() -> None:
-    path = Path(__file__).parents[2] / "src" / "fem" / "mesh" / "quality.py"
+    path = Path(__file__).parents[3] / "src" / "fem" / "mesh" / "quality.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     imports = {
         alias.name

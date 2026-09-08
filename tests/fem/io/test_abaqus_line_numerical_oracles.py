@@ -14,7 +14,7 @@ from tests.helpers.beam_reference_data import ABAQUS_B31_DLOAD_ORACLE
 
 
 STANDARD = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"

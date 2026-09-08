@@ -123,7 +123,7 @@ def test_resolution_aggregates_missing_and_incompatible_information() -> None:
 
 def test_real_importer_internal_section_set_uses_the_same_resolution() -> None:
     fixture = (
-        Path(__file__).parents[1]
+        Path(__file__).parents[2]
         / "helpers" / "fixtures"
         / "inp"
         / "internal_section_set.inp"

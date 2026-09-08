@@ -20,7 +20,7 @@ from fem.post.fields import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_signature_can_only_be_created_by_factory_or_strict_decoder() -> None:

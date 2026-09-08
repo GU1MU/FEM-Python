@@ -12,7 +12,7 @@ from fem.solvers.static_linear import solve
 
 
 FIXTURES = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"

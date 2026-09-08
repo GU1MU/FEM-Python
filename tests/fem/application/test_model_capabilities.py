@@ -29,7 +29,7 @@ from fem.mesh.settings import MeshSettings
 
 
 _FIXTURES = (
-    Path(__file__).parents[1]
+    Path(__file__).parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"

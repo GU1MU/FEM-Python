@@ -27,7 +27,7 @@ import fem.io.result_archive_v1 as archive_codec
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.io.test_result_archive_v1 import (
+from tests.fem.io.test_result_archive_v1 import (
     _manifest_and_entries,
     _rewrite,
 )

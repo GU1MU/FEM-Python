@@ -22,7 +22,7 @@ from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
 from tests.helpers.result_archives import make_result_archive
-from tests.io.test_result_archive_v1 import (
+from tests.fem.io.test_result_archive_v1 import (
     _manifest_and_entries,
     _replace_manifest,
     _rewrite,
