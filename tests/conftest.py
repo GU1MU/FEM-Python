@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-import importlib.util
 import os
 from pathlib import Path
 from typing import Any
@@ -9,10 +8,6 @@ from typing import Any
 import pytest
 
 
-_GMSH_FIXTURE_NAMES = frozenset({"live_gmsh", "real_gmsh"})
-_GUI_TEST_ROOT = Path(__file__).resolve().parent / "gui"
-_AGENT_TEST_ROOT = Path(__file__).resolve().parent / "agent"
-_INTEGRATION_TEST_ROOT = Path(__file__).resolve().parent / "integration"
 _PYTEST_TEMP_ROOT = (
     Path(__file__).resolve().parent
     / ".pytest-runtime"
@@ -73,75 +68,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.add_cleanup(monkeypatch.undo)
     monkeypatch.setattr(os, "mkdir", sandbox_compatible_mkdir)
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(temp_root))
-
-
-def _requires_native_gmsh(item: pytest.Item) -> bool:
-    fixture_names = set(getattr(item, "fixturenames", ()))
-    return (
-        item.get_closest_marker("gmsh") is not None
-        or bool(fixture_names & _GMSH_FIXTURE_NAMES)
-    )
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    run_native = any(
-        os.environ.get(name) == "1"
-        for name in ("FEM_RUN_NATIVE_TESTS", "FEM_RUN_GUI_NATIVE")
-    )
-    run_slow = any(
-        os.environ.get(name) == "1"
-        for name in ("FEM_RUN_SLOW_TESTS", "FEM_RUN_SLOW_PERF")
-    )
-    run_integration = (
-        run_native
-        or os.environ.get("FEM_RUN_INTEGRATION_TESTS") == "1"
-    )
-    gmsh_available = importlib.util.find_spec("gmsh") is not None
-    missing_gmsh = pytest.mark.skip(
-        reason="the optional native Gmsh runtime is not installed"
-    )
-    selected: list[pytest.Item] = []
-    deselected: list[pytest.Item] = []
-    for item in items:
-        path = Path(str(item.path)).resolve()
-        if (
-            path.is_relative_to(_GUI_TEST_ROOT)
-            or path.is_relative_to(_AGENT_TEST_ROOT)
-        ):
-            # Local GUI and agent dependencies run by default; fixtures own
-            # setup and cleanup, and unavailable optional runtimes still skip.
-            if _requires_native_gmsh(item) and not gmsh_available:
-                item.add_marker(missing_gmsh)
-            selected.append(item)
-            continue
-        if path.is_relative_to(_INTEGRATION_TEST_ROOT):
-            item.add_marker(pytest.mark.integration)
-        requires_native = _requires_native_gmsh(item)
-        if requires_native:
-            item.add_marker(pytest.mark.integration)
-            item.add_marker(pytest.mark.gmsh)
-        if requires_native and not run_native:
-            deselected.append(item)
-            continue
-        if item.get_closest_marker("slow") is not None and not run_slow:
-            deselected.append(item)
-            continue
-        if (
-            item.get_closest_marker("integration") is not None
-            and not run_integration
-        ):
-            deselected.append(item)
-            continue
-        if requires_native and not gmsh_available:
-            item.add_marker(missing_gmsh)
-        selected.append(item)
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = selected
 
 
 def _model_counts(gmsh: Any) -> Counter[str]:

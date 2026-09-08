@@ -56,7 +56,7 @@ filterwarnings = [
 markers = [
     "integration: tests that cross package or external-runtime boundaries",
     "gmsh: tests that require the optional native Gmsh runtime",
-    "slow: tests gated by the slow-opt-in contract",
+    "slow: longer-running scalability or performance tests",
     "cloud: tests gated by the cloud-opt-in contract",
     "platform: tests gated by a platform capability",
     "optional_runtime: tests gated by an optional native runtime",

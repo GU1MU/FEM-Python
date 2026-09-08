@@ -37,6 +37,7 @@ from fem.selection import faces as mesh_faces
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_rectangle_scope_materializes_on_the_existing_mesh() -> None:
     recipe = RectangleGeometry("ScopeRectangle", 2.0, 1.0)
     model = generate_fem_model(recipe, MeshSettings(0.25))
@@ -65,6 +66,7 @@ def test_rectangle_scope_materializes_on_the_existing_mesh() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_scope_edit_reuses_mesh_and_builds_edge_lookup_once(monkeypatch) -> None:
     model = generate_fem_model(
         RectangleGeometry("ScopeLookupRectangle", 2.0, 1.0),
@@ -98,6 +100,7 @@ def test_scope_edit_reuses_mesh_and_builds_edge_lookup_once(monkeypatch) -> None
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_native_catalog_expands_one_geometry_edge_to_its_mesh_chain() -> None:
     recipe = RectangleGeometry("ScopeCatalogRectangle", 2.0, 1.0)
     model = generate_fem_model(recipe, MeshSettings(0.25))
@@ -117,6 +120,7 @@ def test_native_catalog_expands_one_geometry_edge_to_its_mesh_chain() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_imported_mesh_can_add_a_mesh_scope_without_remeshing(
     tmp_path,
 ) -> None:
@@ -168,6 +172,7 @@ def test_imported_mesh_can_add_a_mesh_scope_without_remeshing(
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_box_face_scope_materializes_nodes_and_element_faces() -> None:
     recipe = BoxGeometry("ScopeBox", 2.0, 1.0, 0.5)
     model = generate_fem_model(
@@ -194,6 +199,7 @@ def test_box_face_scope_materializes_nodes_and_element_faces() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_wire_point_and_member_scopes_use_the_existing_line_mesh() -> None:
     recipe = WireGeometry(
         "ScopeWire",
@@ -237,6 +243,7 @@ def test_wire_point_and_member_scopes_use_the_existing_line_mesh() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_remeshing_invalidates_mesh_scopes_and_their_dependents() -> None:
     recipe = RectangleGeometry("RemeshScope", 2.0, 1.0)
     settings = MeshSettings(0.25)

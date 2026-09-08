@@ -974,6 +974,7 @@ def test_nested_sessions_keep_independent_numeric_option_ledgers(
 
 @pytest.mark.gmsh
 def test_real_owned_session_close_finalizes_native_default_model() -> None:
+    pytest.importorskip("gmsh", reason="[optional-native-runtime] Gmsh is unavailable")
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
@@ -1003,6 +1004,7 @@ assert not bool(gmsh.isInitialized())
 
 @pytest.mark.gmsh
 def test_real_owned_session_can_initialize_in_background_worker() -> None:
+    pytest.importorskip("gmsh", reason="[optional-native-runtime] Gmsh is unavailable")
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
@@ -1039,6 +1041,7 @@ assert not bool(gmsh.isInitialized())
 
 @pytest.mark.gmsh
 def test_real_owned_session_preserves_added_duplicate_empty_model() -> None:
+    pytest.importorskip("gmsh", reason="[optional-native-runtime] Gmsh is unavailable")
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys
@@ -1074,6 +1077,7 @@ finally:
 
 @pytest.mark.gmsh
 def test_real_owned_session_preserves_replaced_default_model() -> None:
+    pytest.importorskip("gmsh", reason="[optional-native-runtime] Gmsh is unavailable")
     src_dir = Path(__file__).resolve().parents[2] / "src"
     script = f"""
 import sys

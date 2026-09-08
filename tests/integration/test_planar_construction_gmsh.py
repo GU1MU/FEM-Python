@@ -111,6 +111,7 @@ def test_h_plate_fixture_is_exact_deterministic_and_tag_free(real_gmsh) -> None:
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("shape", ("h", "t", "e", "cross"))
+@pytest.mark.usefixtures("real_gmsh")
 def test_three_or_more_rectangles_form_one_exact_region(shape: str) -> None:
     result = _compile(_shape_nodes(shape))
     assert result.profile_analysis.valid
@@ -122,6 +123,7 @@ def test_three_or_more_rectangles_form_one_exact_region(shape: str) -> None:
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("shape", ("h", "t", "e", "cross"))
+@pytest.mark.usefixtures("real_gmsh")
 def test_plate_difference_preserves_each_composite_slot(shape: str) -> None:
     nodes = _shape_nodes(shape)
     nodes[-1] = {**nodes[-1], "id": "slot"}
@@ -185,6 +187,7 @@ def test_plate_difference_preserves_each_composite_slot(shape: str) -> None:
         ),
     ),
 )
+@pytest.mark.usefixtures("real_gmsh")
 def test_curved_boolean_matrix(nodes, area, types) -> None:
     result = _compile(nodes)
     assert result.profile_analysis.valid
@@ -194,6 +197,7 @@ def test_curved_boolean_matrix(nodes, area, types) -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_polygon_and_positive_intersection_compile_exactly() -> None:
     result = _compile(
         [
@@ -217,6 +221,7 @@ def test_polygon_and_positive_intersection_compile_exactly() -> None:
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("cap", ("butt", "square", "round"))
+@pytest.mark.usefixtures("real_gmsh")
 def test_path_stroke_supports_all_caps(cap: str) -> None:
     result = _compile(
         [
@@ -236,6 +241,7 @@ def test_path_stroke_supports_all_caps(cap: str) -> None:
 
 @pytest.mark.gmsh
 @pytest.mark.parametrize("join", ("miter", "bevel", "round"))
+@pytest.mark.usefixtures("real_gmsh")
 def test_path_stroke_supports_all_joins(join: str) -> None:
     result = _compile(
         [
@@ -254,6 +260,7 @@ def test_path_stroke_supports_all_joins(join: str) -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_path_stroke_accepts_collinear_intermediate_points() -> None:
     result = _compile(
         [
@@ -271,6 +278,7 @@ def test_path_stroke_accepts_collinear_intermediate_points() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_transform_and_pattern_nodes_feed_boolean_exactly() -> None:
     nodes = [
         _rectangle("plate", -20, -20, 40, 40),
@@ -336,6 +344,7 @@ def test_transform_and_pattern_nodes_feed_boolean_exactly() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_multiple_components_and_material_island_are_preserved() -> None:
     result = _compile(
         [
@@ -380,6 +389,7 @@ def test_multiple_components_and_material_island_are_preserved() -> None:
         ],
     ),
 )
+@pytest.mark.usefixtures("real_gmsh")
 def test_empty_and_near_degenerate_booleans_fail_closed(nodes) -> None:
     with pytest.raises(PlanarConstructionCompileError) as caught:
         _compile(nodes)
@@ -391,6 +401,7 @@ def test_empty_and_near_degenerate_booleans_fail_closed(nodes) -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_point_tangent_union_fails_closed() -> None:
     with pytest.raises(PlanarConstructionCompileError) as caught:
         _compile(

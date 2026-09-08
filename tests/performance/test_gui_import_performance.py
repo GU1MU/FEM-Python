@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from time import perf_counter
 
 import pytest
@@ -12,19 +11,7 @@ from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
 
 
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not any(
-            os.environ.get(name) == "1"
-            for name in ("FEM_RUN_SLOW_TESTS", "FEM_RUN_SLOW_PERF")
-        ),
-        reason=(
-            "[slow-opt-in] set FEM_RUN_SLOW_PERF=1 to run "
-            "scalability benchmarks"
-        ),
-    ),
-]
+pytestmark = pytest.mark.slow
 
 
 def _plate_model(element_count: int, pressure: bool) -> FEMModel:

@@ -358,6 +358,7 @@ def test_v5_reader_rejects_non_multi_body_3d_geometry() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_forged_incomplete_boolean_proof() -> None:
     payload = encode_project_v5(_proven_boolean_snapshot())
     context = payload["project"]["authoring"]["geometry"]["bodies"][0][
@@ -373,6 +374,7 @@ def test_v5_rejects_forged_incomplete_boolean_proof() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_unknown_boolean_mapping_source() -> None:
     payload = encode_project_v5(_proven_boolean_snapshot())
     mappings = payload["project"]["authoring"]["geometry"]["bodies"][0][
@@ -406,6 +408,7 @@ def test_v5_rejects_unknown_boolean_mapping_source() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_duplicate_active_boolean_feature_ids() -> None:
     payload = encode_project_v5(_proven_boolean_snapshot())
     geometry = payload["project"]["authoring"]["geometry"]
@@ -434,6 +437,7 @@ def test_v5_rejects_duplicate_active_boolean_feature_ids() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_active_retired_boolean_feature_conflict() -> None:
     payload = encode_project_v5(_proven_boolean_snapshot())
     payload["project"]["authoring"]["geometry"][
@@ -448,6 +452,7 @@ def test_v5_rejects_active_retired_boolean_feature_conflict() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_noncanonical_boolean_proof_order() -> None:
     payload = encode_project_v5(_proven_boolean_snapshot())
     entities = payload["project"]["authoring"]["geometry"]["bodies"][0][
@@ -463,6 +468,7 @@ def test_v5_rejects_noncanonical_boolean_proof_order() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_rejects_structurally_consistent_forged_boolean_proof() -> None:
     with pytest.raises(
         ProjectV5EncodeError,
@@ -472,6 +478,7 @@ def test_v5_rejects_structurally_consistent_forged_boolean_proof() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_roundtrip_accepts_nested_boolean_tool_history() -> None:
     source = MultiBodyGeometry(
         "Nested Boolean Geometry",
@@ -549,6 +556,7 @@ def test_v5_roundtrip_accepts_nested_boolean_tool_history() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_save_prunes_undo_records_for_deleted_boolean_history() -> None:
     session = ModelSession()
     session.replace_from_snapshot(_proven_boolean_snapshot())
@@ -580,6 +588,7 @@ def test_v5_save_prunes_undo_records_for_deleted_boolean_history() -> None:
 
 
 @pytest.mark.gmsh
+@pytest.mark.usefixtures("real_gmsh")
 def test_v5_preserves_historical_definition_context_for_conflicting_undo() -> None:
     fixture = _proven_boolean_snapshot()
     record = fixture.boolean_reference_undo_records[0]
