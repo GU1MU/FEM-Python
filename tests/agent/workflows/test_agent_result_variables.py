@@ -19,6 +19,7 @@ from fem_agent.result_authoring import (
     result_query_tool_schema,
 )
 from fem_gui.agent_authoring import SessionResultQueryPort
+
 from tests.helpers.agent_authoring_workflows import (
     dispatch_authoring_tool,
     make_authoring_controller,
@@ -34,7 +35,7 @@ from tests.helpers.agent_line_fixtures import (
     make_meshed_line_session,
     solve_authoring_session,
 )
-from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
 pytestmark = pytest.mark.local_session
@@ -163,7 +164,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
     assert not rejected_edit.ok
     assert beam.session_revision == revision
 
-    plate = _plate_session()
+    plate = make_defined_plate_session()
     plate_controller, _bridge = make_authoring_controller(plate)
     step = dispatch_authoring_tool(
         plate_controller,

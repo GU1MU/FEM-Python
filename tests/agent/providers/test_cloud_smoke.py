@@ -2,23 +2,15 @@ import os
 
 import pytest
 
-from fem_agent.config import (
-    ConfigError,
-    LocalAgentConfig,
-    TEST_CONFIG_NAME,
-)
-from fem_agent.providers.base import (
-    AssistantMessage,
-    ToolDefinition,
-)
+from fem_agent.config import ConfigError, LocalAgentConfig, TEST_CONFIG_NAME
+from fem_agent.providers.base import AssistantMessage, ToolDefinition
 from fem_agent.providers.deepseek import DeepSeekProvider
 
-
-from tests.helpers.agent_session_fixtures import (
+from tests.helpers.agent_cloud_config import (
     CLOUD_SMOKE_CONFIG_ENV,
     CLOUD_SMOKE_OPT_IN_ENV,
-    _CLOUD_OPT_IN_REASON,
-    _cloud_smoke_config,
+    CLOUD_OPT_IN_REASON,
+    load_cloud_smoke_config,
 )
 
 
@@ -42,10 +34,10 @@ def test_cloud_smoke_config_requires_both_explicit_gates_without_reading_config(
         "load",
         classmethod(fail_if_loaded),
     )
-    config, reason = _cloud_smoke_config(environ)
+    config, reason = load_cloud_smoke_config(environ)
 
     assert config is None
-    assert reason == _CLOUD_OPT_IN_REASON
+    assert reason == CLOUD_OPT_IN_REASON
 
 
 def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
@@ -69,7 +61,7 @@ def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
         encoding="utf-8",
     )
 
-    config, reason = _cloud_smoke_config({
+    config, reason = load_cloud_smoke_config({
         CLOUD_SMOKE_OPT_IN_ENV: "1",
         CLOUD_SMOKE_CONFIG_ENV: str(path),
     })
@@ -100,7 +92,7 @@ def test_cloud_smoke_config_rejects_nonofficial_endpoint_before_network(
     )
 
     with pytest.raises(ConfigError, match="official HTTPS API endpoint"):
-        _cloud_smoke_config({
+        load_cloud_smoke_config({
             CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: str(path),
         })
@@ -108,7 +100,7 @@ def test_cloud_smoke_config_rejects_nonofficial_endpoint_before_network(
 
 def test_cloud_smoke_config_requires_an_absolute_external_path():
     with pytest.raises(ConfigError, match="must be absolute"):
-        _cloud_smoke_config({
+        load_cloud_smoke_config({
             CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: TEST_CONFIG_NAME,
         })
@@ -128,14 +120,14 @@ def test_cloud_smoke_diagnostics_do_not_echo_config_values(tmp_path):
     )
 
     with pytest.raises(ConfigError) as captured:
-        _cloud_smoke_config({
+        load_cloud_smoke_config({
             CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: str(path),
         })
 
     failure_output = f"invalid cloud smoke configuration: {captured.value}"
     assert secret not in failure_output
-    assert secret not in _CLOUD_OPT_IN_REASON
+    assert secret not in CLOUD_OPT_IN_REASON
 
 
 def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
@@ -151,7 +143,7 @@ def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
         encoding="utf-8",
     )
 
-    config, reason = _cloud_smoke_config({
+    config, reason = load_cloud_smoke_config({
         CLOUD_SMOKE_OPT_IN_ENV: "1",
         CLOUD_SMOKE_CONFIG_ENV: str(path),
     })
@@ -166,7 +158,7 @@ def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
 @pytest.mark.integration
 def test_opt_in_deepseek_tool_call_smoke():
     try:
-        config, reason = _cloud_smoke_config(os.environ)
+        config, reason = load_cloud_smoke_config(os.environ)
     except ConfigError as error:
         pytest.fail(f"invalid cloud smoke configuration: {error}")
     if config is None:

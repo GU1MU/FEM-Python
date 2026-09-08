@@ -6,13 +6,8 @@ from fem_agent.providers.base import ToolCall, ToolDefinition
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
-from tests.helpers.agent_engine_registry_fixtures import (
-    _AdditionalModelToolRegistry,
-)
+from tests.helpers.agent_engine_registry_fixtures import _AdditionalModelToolRegistry
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -90,7 +85,7 @@ def test_blank_geometry_omitted_units_cannot_create_a_unit_question(tmp_path):
         "我需要先确认一下你的项目单位制。请告诉我：你希望使用什么单位制？"
     )
     provider = FakeProvider(
-        [_text_response(question), _text_response(question)]
+        [text_response(question), text_response(question)]
     )
     controller = AuthoringWorkflowController(lambda: {}, {})
     engine = AgentSessionEngine(
@@ -117,7 +112,7 @@ def test_explicit_native_geometry_units_do_not_activate_default_unit_guard(
     tmp_path,
 ):
     response = "将按用户指定的 m-kN-kPa 单位制继续。"
-    provider = FakeProvider([_text_response(response)])
+    provider = FakeProvider([text_response(response)])
     controller = AuthoringWorkflowController(lambda: {}, {})
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -139,14 +134,14 @@ def test_explicit_native_geometry_units_do_not_activate_default_unit_guard(
 def test_new_model_tool_cannot_stop_before_requested_geometry_proposal(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall("create-model", "create_native_model_document", {})
             ),
-            _text_response("新模型已创建。"),
-            _tool_response(
+            text_response("新模型已创建。"),
+            tool_response(
                 ToolCall("read-new-model", "read_authoring_context", {})
             ),
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "prepare-new-geometry",
                     "prepare_planar_construction_proposal",
@@ -197,7 +192,7 @@ def test_completed_stage_requirements_cannot_stop_before_the_proposal_card(
 ):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "record-mesh-requirements",
                     "set_authoring_requirements",
@@ -210,11 +205,11 @@ def test_completed_stage_requirements_cannot_stop_before_the_proposal_card(
                     },
                 )
             ),
-            _text_response(
+            text_response(
                 "网格方案如下，操作卡片已就绪：二次三角形、全局 10 mm。"
                 "确认后即生成网格。"
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("prepare-mesh-card", "prepare_mesh_proposal", {})
             ),
         ]
@@ -244,7 +239,7 @@ def test_completed_stage_requirements_cannot_stop_before_the_proposal_card(
 def test_stage_proposal_correction_retry_limit_recovers_locally(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "record-mesh-requirements",
                     "set_authoring_requirements",
@@ -254,8 +249,8 @@ def test_stage_proposal_correction_retry_limit_recovers_locally(tmp_path):
                     },
                 )
             ),
-            _text_response("网格参数已记录，操作卡片已就绪。"),
-            _text_response("网格参数已记录，操作卡片仍然就绪。"),
+            text_response("网格参数已记录，操作卡片已就绪。"),
+            text_response("网格参数已记录，操作卡片仍然就绪。"),
         ]
     )
     tools = _StageProposalToolRegistry()

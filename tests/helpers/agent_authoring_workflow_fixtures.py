@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from fem_agent.authoring import AuthoringContext, LocalModelBinding
-from fem_agent.authoring_runtime import AuthoringWorkflowController
+from fem_agent.authoring_runtime import (
+    AuthoringTurnSnapshot,
+    AuthoringWorkflowController,
+)
 from fem_agent.tools.registry import ToolExecutionContext
 
 
@@ -90,3 +93,29 @@ def _dispatch(
         arguments,
         ToolExecutionContext("session-a8", 0, f"key-{index}"),
     )
+
+
+class ControllerDynamicTools:
+    def __init__(self, controller) -> None:
+        self.controller = controller
+        self._snapshot = controller.set_published_tool_names(
+            tuple(item.name for item in controller.definitions)
+        )
+
+    @property
+    def definitions(self):
+        return tuple(self.controller.definitions)
+
+    @property
+    def provider_snapshot(self) -> AuthoringTurnSnapshot:
+        return self._snapshot
+
+    def refresh_turn_snapshot(self, published_tool_names=()):
+        names = tuple(published_tool_names) or tuple(
+            item.name for item in self.controller.definitions
+        )
+        self._snapshot = self.controller.set_published_tool_names(names)
+        return self._snapshot
+
+    def dispatch(self, name, arguments, context):
+        return self.controller.dispatch(name, arguments, context)

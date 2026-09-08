@@ -5,14 +5,11 @@ from fem_agent.providers.base import ToolCall, ToolDefinition
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
 from tests.helpers.agent_engine_registry_fixtures import (
     _GeometryEditToolRegistry,
     _GeometryEditWithCatalogToolRegistry,
 )
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -133,7 +130,7 @@ def test_planar_retry_limit_stops_provider_after_three_failed_calls(tmp_path):
 
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     f"retry-{index}",
                     "prepare_planar_construction_proposal",
@@ -160,12 +157,12 @@ def test_planar_retry_limit_stops_provider_after_three_failed_calls(tmp_path):
 def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_path):
     provider = FakeProvider(
         [
-            _text_response("我现在提交修订方案。"),
-            _tool_response(
+            text_response("我现在提交修订方案。"),
+            tool_response(
                 ToolCall("read-edit", "read_geometry_edit_context", {})
             ),
-            _text_response("提交。"),
-            _tool_response(
+            text_response("提交。"),
+            tool_response(
                 ToolCall(
                     "prepare-edit",
                     "prepare_geometry_edit",
@@ -219,17 +216,17 @@ def test_geometry_proposal_requires_current_edit_context(tmp_path):
     }
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall("premature-prepare", "prepare_geometry_edit", edit)
             ),
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "read-edit",
                     "read_geometry_edit_context",
                     {"part_id": "P1"},
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("prepared", "prepare_geometry_edit", edit)
             ),
         ]
@@ -260,14 +257,14 @@ def test_geometry_proposal_requires_current_edit_context(tmp_path):
 def test_planar_edit_allows_clarification_after_context_read(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "read-edit",
                     "read_geometry_edit_context",
                     {"part_id": "P1"},
                 )
             ),
-            _text_response("请提供U形槽的槽宽和外包尺寸。"),
+            text_response("请提供U形槽的槽宽和外包尺寸。"),
         ]
     )
     tools = _GeometryEditWithCatalogToolRegistry()
@@ -313,16 +310,16 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
     }
     provider = FakeProvider(
         [
-            _text_response("我先按旧版本说明。"),
-            _tool_response(
+            text_response("我先按旧版本说明。"),
+            tool_response(
                 ToolCall("sync", "read_authoring_context", {})
             ),
-            _text_response("修正轮廓如下。"),
-            _tool_response(
+            text_response("修正轮廓如下。"),
+            tool_response(
                 ToolCall("read-edit", "read_geometry_edit_context", {})
             ),
-            _text_response("方案已确认，等待本地操作执行完成。"),
-            _tool_response(
+            text_response("方案已确认，等待本地操作执行完成。"),
+            tool_response(
                 ToolCall("prepare-edit", "prepare_geometry_edit", corrected_edit)
             ),
         ]

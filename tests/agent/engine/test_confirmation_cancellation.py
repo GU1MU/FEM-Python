@@ -11,14 +11,8 @@ from fem_agent.tools.registry import ToolExecutionContext
 from fem_agent.worker import InspectionWorkerError
 
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
-from tests.helpers.agent_engine_fixtures import (
-    _attached_engine,
-    _ready_engine,
-)
+from tests.helpers.agent_engine_fixtures import _attached_engine, _ready_engine
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -27,10 +21,10 @@ pytestmark = pytest.mark.integration
 def test_natural_language_and_model_tool_call_cannot_bypass_confirm(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall("call_solve", "solve_confirmed_analysis", {})
             ),
-            _text_response("请在本地输入 /confirm。"),
+            text_response("请在本地输入 /confirm。"),
         ]
     )
     engine, _ = _attached_engine(tmp_path, provider)

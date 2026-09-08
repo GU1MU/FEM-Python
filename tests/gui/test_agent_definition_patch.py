@@ -1,41 +1,33 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
+import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QToolButton
+import pytest
 
 from fem.application import AnalysisRun, ModelSession, RunStatus, UnitContext
 from fem.mesh.settings import MeshSettings
-from fem_agent.authoring import (
-    AuthoringAuthorizationError,
-    ModelPatch,
-    ProposalState,
-)
+from fem_agent.authoring import AuthoringAuthorizationError, ModelPatch, ProposalState
 from fem_agent.definition_authoring import create_scope_definition_change
-from fem_agent.incremental_authoring import (
-    create_incremental_definition_patch,
-)
+from fem_agent.incremental_authoring import create_incremental_definition_patch
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     AppliedPatchState,
     SessionGeometryAuthoringPort,
     authoring_context_from_snapshot,
 )
-from fem_gui.widgets.agent_chat import (
-    AgentChatDrawer,
-    _AGENT_CHAT_STYLESHEET,
-)
+from fem_gui.widgets.agent_chat import AgentChatDrawer, _AGENT_CHAT_STYLESHEET
+
 from tests.helpers.agent_definition_fixtures import build_plate_definition_patch
 from tests.helpers.agent_session_fixtures import (
-    _a4_plate_model as _plate_model,
-    _a4_recipe as _recipe,
-    _a4_session as _session,
+    make_eccentric_plate_model,
+    make_eccentric_plate_recipe,
+    make_meshed_eccentric_plate_session,
 )
 
 
@@ -45,7 +37,7 @@ def _application() -> QApplication:
 
 def test_bridge_applies_once_and_gui_card_undoes_once(gui_application) -> None:
     application = _application()
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     full_refreshes: list[str] = []
     definition_deltas: list[object] = []
     port = SessionGeometryAuthoringPort(
@@ -96,7 +88,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _application()
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     port = SessionGeometryAuthoringPort(
         session,
         lambda: None,
@@ -154,7 +146,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
 
 
 def test_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     port = SessionGeometryAuthoringPort(
         session,
         lambda: None,
@@ -173,7 +165,7 @@ def test_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
 
 def test_revision_change_disables_old_undo_entry(gui_application) -> None:
     _application()
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     port = SessionGeometryAuthoringPort(
         session,
         lambda: None,
@@ -202,7 +194,7 @@ def test_revision_change_disables_old_undo_entry(gui_application) -> None:
 
 
 def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     run = AnalysisRun(
@@ -250,7 +242,7 @@ def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
 def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
     monkeypatch,
 ) -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     patch = build_plate_definition_patch(session)
     snapshot = session.snapshot()
     artifact = snapshot.artifact
@@ -302,7 +294,7 @@ def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
 
 
 def test_inverse_id_is_bounded_for_maximum_forward_id() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     port = SessionGeometryAuthoringPort(
         session,
         lambda: None,
@@ -346,7 +338,7 @@ def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
     session.create_native_project_with_first_part(
         "模型-偏心孔板",
         UnitContext("mm", "N", "MPa"),
-        _recipe(),
+        make_eccentric_plate_recipe(),
         part_name="部件-偏心孔板",
     )
     task = session.prepare_agent_mesh_generation(
@@ -355,7 +347,7 @@ def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
         "a" * 64,
         expected_session_revision=session.session_revision,
     )
-    session.accept_agent_generated_model(task.token, _plate_model())
+    session.accept_agent_generated_model(task.token, make_eccentric_plate_model())
     window._rebuild_full_projection()
     window.agent_authoring_bridge.bind_snapshot(session.snapshot())
     patch = build_plate_definition_patch(session)

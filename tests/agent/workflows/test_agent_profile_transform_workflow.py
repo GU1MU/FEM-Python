@@ -9,23 +9,19 @@ from fem.geometry import SketchCircle
 from fem_agent.authoring import ProposalState
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import planar_sketch_geometry
-from fem_agent.providers.base import ProviderResponse
+from fem_agent.providers.base import ToolCall, ProviderResponse
 from fem_agent.providers.fake import FakeProvider
 
-
-from tests.helpers.agent_planar_construction import (
-    ControllerDynamicTools as _ControllerDynamicTools,
-    make_planar_authoring_controller,
-    text_response as _text,
-    tool_response as _tool,
-)
+from tests.helpers.agent_authoring_workflow_fixtures import ControllerDynamicTools
+from tests.helpers.agent_planar_construction import make_planar_authoring_controller
+from tests.helpers.agent_provider_fixtures import text_response, tool_response
 
 
 pytestmark = pytest.mark.local_session
 
 
 def _refusal() -> ProviderResponse:
-    return _text("拉伸不受支持；必须先生成网格。")
+    return text_response("拉伸不受支持；必须先生成网格。")
 
 
 def _session_controller(recipe, *, name: str = "Phase 6 native"):
@@ -67,22 +63,26 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
     tmp_path,
 ) -> None:
     session, bridge, controller = _session_controller(_ring_recipe())
-    dynamic = _ControllerDynamicTools(controller)
+    dynamic = ControllerDynamicTools(controller)
     provider = FakeProvider(
         [
             _refusal(),
-            _tool("read", "read_profile_transform_context", {"part_id": "P1"}),
-            _tool(
-                "prepare",
-                "prepare_profile_extrusion",
-                {
-                    "part_id": "P1",
-                    "profile_selection": "unique_material_profile",
-                    "height": 4.0,
-                },
+            tool_response(
+                ToolCall("read", "read_profile_transform_context", {"part_id": "P1"}),
             ),
-            _tool("next", "read_authoring_context", {}),
-            _text("geometry accepted; mesh stage is ready"),
+            tool_response(
+                ToolCall(
+                    "prepare",
+                    "prepare_profile_extrusion",
+                    {
+                        "part_id": "P1",
+                        "profile_selection": "unique_material_profile",
+                        "height": 4.0,
+                    },
+                ),
+            ),
+            tool_response(ToolCall("next", "read_authoring_context", {})),
+            text_response("geometry accepted; mesh stage is ready"),
         ]
     )
     engine = AgentSessionEngine(

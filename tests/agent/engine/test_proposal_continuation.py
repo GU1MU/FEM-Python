@@ -5,14 +5,12 @@ from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolCal
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-    _StreamingFakeProvider,
-    _ReasoningStreamingFakeProvider,
-)
-from tests.helpers.agent_engine_registry_fixtures import (
-    _GeometryEditToolRegistry,
+from tests.helpers.agent_engine_registry_fixtures import _GeometryEditToolRegistry
+from tests.helpers.agent_provider_fixtures import (
+    tool_response,
+    text_response,
+    StreamingFakeProvider,
+    ReasoningStreamingFakeProvider,
 )
 
 
@@ -22,8 +20,8 @@ pytestmark = pytest.mark.integration
 def test_unbacked_proposal_execution_claim_is_not_exposed(tmp_path):
     provider = FakeProvider(
         [
-            _text_response("方案已确认，等待本地操作执行完成。"),
-            _text_response("当前没有可执行的本地提案。"),
+            text_response("方案已确认，等待本地操作执行完成。"),
+            text_response("当前没有可执行的本地提案。"),
         ]
     )
     engine = AgentSessionEngine(
@@ -77,7 +75,7 @@ def _register_test_continuation(
 
 def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
     provider = FakeProvider(
-        [_text_response("等待本地确认"), _text_response("继续下一阶段")]
+        [text_response("等待本地确认"), text_response("继续下一阶段")]
     )
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -132,7 +130,7 @@ def test_succeeded_proposal_suppresses_reconfirmation_and_refusal(tmp_path):
         "当前无法创建几何，请你在本地 UI 中再次点击并确认这个提案。"
     )
     provider = FakeProvider(
-        [_text_response("等待本地确认"), _text_response(contradiction)]
+        [text_response("等待本地确认"), text_response(contradiction)]
     )
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -162,8 +160,8 @@ def test_succeeded_proposal_suppresses_reconfirmation_and_refusal(tmp_path):
 def test_succeeded_proposal_suppresses_unpublished_tool_call(tmp_path):
     provider = FakeProvider(
         [
-            _text_response("等待本地确认"),
-            _tool_response(
+            text_response("等待本地确认"),
+            tool_response(
                 ToolCall("missing-tool", "draft_native_geometry", {})
             ),
         ]
@@ -197,7 +195,7 @@ def test_succeeded_proposal_suppresses_unpublished_tool_call(tmp_path):
 
 def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
     provider = FakeProvider(
-        [_text_response("等待本地确认"), _text_response("请修正后重试")]
+        [text_response("等待本地确认"), text_response("请修正后重试")]
     )
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -229,12 +227,12 @@ def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "provider_type", [_StreamingFakeProvider, _ReasoningStreamingFakeProvider]
+    "provider_type", [StreamingFakeProvider, ReasoningStreamingFakeProvider]
 )
 def test_terminal_result_is_authoritative_for_streaming_providers(tmp_path, provider_type):
     provider = provider_type(
         [
-            _text_response("等待本地确认"),
+            text_response("等待本地确认"),
             ProviderResponse(
                 AssistantMessage(
                     "assistant",
@@ -265,8 +263,8 @@ def test_terminal_result_is_authoritative_for_streaming_providers(tmp_path, prov
 
 
 def test_post_terminal_streamed_summary_replays_once_after_guards(tmp_path):
-    provider = _StreamingFakeProvider(
-        [_text_response("等待本地确认"), _text_response("下一阶段开始")]
+    provider = StreamingFakeProvider(
+        [text_response("等待本地确认"), text_response("下一阶段开始")]
     )
     streamed = []
     engine = AgentSessionEngine(

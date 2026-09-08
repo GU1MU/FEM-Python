@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from tests.helpers.agent_surface_fixtures import (
-    make_surface_load_session,
-)
-
 import pytest
 
 from fem.application import (
@@ -18,10 +14,9 @@ from fem.application.native_scope_materialization import (
 from fem.geometry import LogicalEntityRef, namespace_part_logical_id
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
-from fem_agent.editing_authoring import (
-    apply_edit_operation,
-    create_edit_patch,
-)
+from fem_agent.editing_authoring import apply_edit_operation, create_edit_patch
+from fem_gui.agent_authoring import authoring_context_from_snapshot
+
 from tests.helpers.agent_authoring_workflows import (
     STATIC_STEP_NAME,
     apply_static_analysis_definitions,
@@ -29,8 +24,11 @@ from tests.helpers.agent_authoring_workflows import (
     make_authoring_controller,
     solve_and_read_displacement,
 )
-from tests.helpers.agent_session_fixtures import _a4_session, _a5_session
-from fem_gui.agent_authoring import authoring_context_from_snapshot
+from tests.helpers.agent_session_fixtures import (
+    make_meshed_eccentric_plate_session,
+    make_defined_plate_session,
+)
+from tests.helpers.agent_surface_fixtures import make_surface_load_session
 
 
 pytestmark = pytest.mark.local_session
@@ -61,7 +59,7 @@ def _edit_patch(
 
 
 def test_strict_production_action_requires_unit_direction_and_confirmation() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     created = dispatch_authoring_tool(
         controller,
@@ -104,7 +102,7 @@ def test_strict_production_action_requires_unit_direction_and_confirmation() -> 
 
 
 def test_strict_production_action_supports_nodal_loads() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     snapshot = session.snapshot()
     session.apply_scoped_definition_batch(
         ScopedDefinitionBatch(
@@ -167,7 +165,7 @@ def test_strict_production_action_supports_nodal_loads() -> None:
 
 
 def test_definition_iteration_applies_directly_and_retains_history() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, bridge = make_authoring_controller(session)
     apply_static_analysis_definitions(controller, session)
     solve_and_read_displacement(controller, bridge, session)
@@ -241,7 +239,7 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
 
 
 def test_definition_edit_applies_directly_and_retains_history() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, bridge = make_authoring_controller(session)
     apply_static_analysis_definitions(controller, session)
     solve_and_read_displacement(controller, bridge, session)
@@ -298,7 +296,7 @@ def test_definition_edit_applies_directly_and_retains_history() -> None:
 
 
 def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     apply_static_analysis_definitions(controller, session)
     revision = session.session_revision
@@ -383,7 +381,7 @@ def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
 
 
 def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
-    session = _a4_session()
+    session = make_meshed_eccentric_plate_session()
     controller, _bridge = make_authoring_controller(session)
     topology = dispatch_authoring_tool(
         controller,

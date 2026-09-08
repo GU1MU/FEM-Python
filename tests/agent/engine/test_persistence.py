@@ -7,13 +7,8 @@ from fem_agent.engine import AgentSessionEngine, EngineConfig, EngineEventType
 from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
-from tests.helpers.agent_engine_fixtures import (
-    _attached_engine,
-)
+from tests.helpers.agent_engine_fixtures import _attached_engine
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -22,14 +17,14 @@ pytestmark = pytest.mark.integration
 def test_request_context_is_ephemeral_across_provider_tool_loop(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "call_capabilities",
                     "show_capabilities",
                     {"detail": "summary"},
                 )
             ),
-            _text_response("能力检查完成。"),
+            text_response("能力检查完成。"),
         ]
     )
     engine = AgentSessionEngine(
@@ -79,7 +74,7 @@ def test_request_context_is_ephemeral_across_provider_tool_loop(tmp_path):
 
 
 def test_credential_in_request_context_is_rejected_before_provider(tmp_path):
-    provider = FakeProvider([_text_response("不应调用。")])
+    provider = FakeProvider([text_response("不应调用。")])
     engine = AgentSessionEngine(
         tmp_path / "workspace",
         provider,
@@ -111,14 +106,14 @@ def test_credential_in_request_context_is_rejected_before_provider(tmp_path):
 
 
 def test_engine_conversation_can_be_reopened_without_provider_objects(tmp_path):
-    provider = FakeProvider([_text_response("已记录。")])
+    provider = FakeProvider([text_response("已记录。")])
     engine, _ = _attached_engine(tmp_path, provider)
     engine.send_message("保留这条会话记录。")
     session_id = engine.session_id
 
     reopened = AgentSessionEngine(
         engine.workspace,
-        FakeProvider([_text_response("继续。")]),
+        FakeProvider([text_response("继续。")]),
         session_id=session_id,
     )
     events = reopened.send_message("继续。")
@@ -132,7 +127,7 @@ def test_engine_conversation_can_be_reopened_without_provider_objects(tmp_path):
 
 def test_conversation_storage_is_byte_bounded_and_reopenable(tmp_path):
     provider = FakeProvider(
-        [_text_response("答" * 500) for _ in range(10)]
+        [text_response("答" * 500) for _ in range(10)]
     )
     config = EngineConfig(
         max_provider_message_chars=2_000,
@@ -159,7 +154,7 @@ def test_conversation_storage_is_byte_bounded_and_reopenable(tmp_path):
 
     reopened = AgentSessionEngine(
         engine.workspace,
-        FakeProvider([_text_response("继续")]),
+        FakeProvider([text_response("继续")]),
         session_id=engine.session_id,
         config=config,
     )
@@ -176,11 +171,11 @@ def test_conversation_window_keeps_complete_tool_result_for_provider(tmp_path):
             for message in messages
             if message.role == "tool"
         )
-        return _text_response("已读取工具结果。")
+        return text_response("已读取工具结果。")
 
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "small_window_capabilities",
                     "show_capabilities",
@@ -226,14 +221,14 @@ def test_tool_audit_is_byte_bounded_and_remains_appendable(tmp_path):
     for index in range(20):
         responses.extend(
             (
-                _tool_response(
+                tool_response(
                     ToolCall(
                         f"audit_{index}",
                         "show_capabilities",
                         {},
                     )
                 ),
-                _text_response("能力已列出。"),
+                text_response("能力已列出。"),
             )
         )
     engine = AgentSessionEngine(
@@ -257,10 +252,10 @@ def test_tool_audit_is_byte_bounded_and_remains_appendable(tmp_path):
         engine.workspace,
         FakeProvider(
             [
-                _tool_response(
+                tool_response(
                     ToolCall("audit_final", "show_capabilities", {})
                 ),
-                _text_response("完成。"),
+                text_response("完成。"),
             ]
         ),
         session_id=engine.session_id,
@@ -273,7 +268,7 @@ def test_tool_audit_is_byte_bounded_and_remains_appendable(tmp_path):
 def test_unstorable_provider_turn_returns_resource_diagnostic(tmp_path):
     engine = AgentSessionEngine(
         tmp_path / "workspace",
-        FakeProvider([_text_response("答" * 500)]),
+        FakeProvider([text_response("答" * 500)]),
         session_id="ses_oversized_turn",
         config=EngineConfig(
             max_provider_message_chars=1_000,
@@ -290,7 +285,7 @@ def test_unstorable_provider_turn_returns_resource_diagnostic(tmp_path):
     )
     reopened = AgentSessionEngine(
         engine.workspace,
-        FakeProvider([_text_response("可继续。")]),
+        FakeProvider([text_response("可继续。")]),
         session_id=engine.session_id,
         config=EngineConfig(
             max_provider_message_chars=1_000,
@@ -316,7 +311,7 @@ def test_session_switch_is_rejected_while_provider_operation_is_active(
     def complete(*args, **kwargs):
         entered.set()
         assert release.wait(2.0)
-        return _text_response("done")
+        return text_response("done")
 
     monkeypatch.setattr(provider, "complete", complete)
     original_session = engine.session_id

@@ -5,11 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from fem.application import (
-    AnalysisRun,
-    ModelSession,
-    RunStatus,
-)
+from fem.application import AnalysisRun, ModelSession, RunStatus
 from fem.core.model import MaterialDefinition
 from fem.io.project import dumps_project, loads_project
 from fem.mesh.settings import MeshSettings
@@ -37,8 +33,8 @@ from fem_gui.agent_authoring import (
 )
 
 from tests.helpers.agent_session_fixtures import (
-    _a5_analysis as _analysis,
-    _a5_session as _session,
+    make_plate_static_analysis,
+    make_defined_plate_session,
 )
 
 
@@ -58,12 +54,12 @@ def _change(
         context=authoring_context_from_snapshot(snapshot),
         snapshot=snapshot,
         draft_revision=5,
-        analysis=_analysis() if analysis is None else analysis,
+        analysis=make_plate_static_analysis() if analysis is None else analysis,
     )
 
 
 def _renamed_analysis(suffix: str) -> LinearStaticAnalysis:
-    original = _analysis()
+    original = make_plate_static_analysis()
     step_name = f"{original.step_name}-{suffix}"
     return replace(
         original,
@@ -96,7 +92,7 @@ def _renamed_analysis(suffix: str) -> LinearStaticAnalysis:
 
 
 def test_complete_static_definition_applies_atomically_and_undoes() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     projections = []
     port = SessionGeometryAuthoringPort(
         session,
@@ -152,32 +148,32 @@ def test_complete_static_definition_applies_atomically_and_undoes() -> None:
 
 
 def test_missing_confirmation_dimension_and_unit_fail_closed() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     before = session.snapshot()
     with pytest.raises(AnalysisAuthoringError, match="unit must exactly match"):
-        _change(session, _analysis(load_unit="kN/mm"))
+        _change(session, make_plate_static_analysis(load_unit="kN/mm"))
     assert session.snapshot().session_revision == before.session_revision
 
     with pytest.raises(AnalysisAuthoringError, match="not confirmed"):
         replace(
-            _analysis().displacements[0],
+            make_plate_static_analysis().displacements[0],
             confirmed=False,
         )
 
     with pytest.raises(AnalysisAuthoringError, match="exceeds"):
         replace(
-            _analysis(),
+            make_plate_static_analysis(),
             displacements=(
-                replace(_analysis().displacements[0], last_component=3),
+                replace(make_plate_static_analysis().displacements[0], last_component=3),
             ),
         )
     duplicate = replace(
-        _analysis(),
+        make_plate_static_analysis(),
         results=(
-            _analysis().results[0],
+            make_plate_static_analysis().results[0],
             replace(
-                _analysis().results[1],
-                name=_analysis().results[0].name,
+                make_plate_static_analysis().results[1],
+                name=make_plate_static_analysis().results[0].name,
             ),
         ),
     )
@@ -186,12 +182,12 @@ def test_missing_confirmation_dimension_and_unit_fail_closed() -> None:
 
 
 def test_pressure_direction_has_persistent_kernel_sign() -> None:
-    step = _analysis(pressure=True).to_step()
+    step = make_plate_static_analysis(pressure=True).to_step()
     assert step.edge_loads[0].magnitude == -12.0
     assert step.edge_loads[0].load_type == "pressure"
     with pytest.raises(AnalysisAuthoringError, match="positive inward"):
         replace(
-            _analysis(pressure=True).loads[0],
+            make_plate_static_analysis(pressure=True).loads[0],
             magnitude=12.0,
         )
 
@@ -268,7 +264,7 @@ def test_current_node_and_three_dimensional_face_loads_compile_to_kernel() -> No
 
 
 def test_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     patch = _change(session)
     snapshot = session.snapshot()
     definitions = deepcopy(
@@ -306,7 +302,7 @@ def test_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
 
 
 def test_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     first = _change(session)
     batch = scoped_definition_batch_from_operations(
         first.operations,
@@ -346,7 +342,7 @@ def test_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> None
 
 
 def test_invalid_scope_exception_is_atomic() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     patch = _change(session)
     snapshot = session.snapshot()
     definitions = deepcopy(
@@ -370,7 +366,7 @@ def test_invalid_scope_exception_is_atomic() -> None:
 
 
 def test_valid_result_forces_gui_confirmation() -> None:
-    session = _session()
+    session = make_defined_plate_session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     run = AnalysisRun(
@@ -392,7 +388,7 @@ def test_valid_result_forces_gui_confirmation() -> None:
         context=authoring_context_from_snapshot(result_snapshot),
         snapshot=result_snapshot,
         draft_revision=5,
-        analysis=_analysis(),
+        analysis=make_plate_static_analysis(),
     )
 
     assert type(change) is AgentProposal

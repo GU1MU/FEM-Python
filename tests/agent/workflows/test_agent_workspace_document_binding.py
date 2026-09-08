@@ -19,7 +19,8 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.helpers.agent_session_fixtures import _a5_session
+
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
 pytestmark = pytest.mark.integration
@@ -35,7 +36,7 @@ _FIXTURE = (
 STEP_NAME = "Tension"
 
 def test_context_read_restores_stale_workspace_binding() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
     )

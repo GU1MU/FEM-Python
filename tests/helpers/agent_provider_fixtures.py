@@ -2,21 +2,21 @@ from fem_agent.providers.base import AssistantMessage, ProviderResponse
 from fem_agent.providers.fake import FakeProvider
 
 
-def _tool_response(*calls):
+def tool_response(*calls):
     return ProviderResponse(
         AssistantMessage("assistant", tool_calls=tuple(calls)),
         finish_reason="tool_calls",
     )
 
 
-def _text_response(text):
+def text_response(text):
     return ProviderResponse(
         AssistantMessage("assistant", content=text),
         finish_reason="stop",
     )
 
 
-class _StreamingFakeProvider(FakeProvider):
+class StreamingFakeProvider(FakeProvider):
     def complete_stream(self, messages, tools, on_text_delta):
         response = super().complete(messages, tools)
         content = response.message.content or ""
@@ -27,7 +27,7 @@ class _StreamingFakeProvider(FakeProvider):
         return response
 
 
-class _ReasoningStreamingFakeProvider(FakeProvider):
+class ReasoningStreamingFakeProvider(FakeProvider):
     supports_reasoning_stream = True
 
     def complete_stream(

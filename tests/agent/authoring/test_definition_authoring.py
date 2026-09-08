@@ -15,8 +15,8 @@ from fem.application import (
 )
 from fem.application.native_scope_materialization import NATIVE_SCOPE_CATALOG_KEY
 from fem.geometry import SketchCircle, SketchRectangle
-from fem.mesh.settings import MeshSettings
 from fem.io.project import dumps_project, loads_project
+from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import AgentProposal, ModelPatch, ProposalKind
 from fem_agent.definition_authoring import (
     ScopeSelectionError,
@@ -27,17 +27,15 @@ from fem_agent.definition_authoring import (
 from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
-from tests.helpers.agent_definition_fixtures import (
-    build_plate_definition_patch,
-)
+from tests.helpers.agent_definition_fixtures import build_plate_definition_patch
 from tests.helpers.agent_session_fixtures import (
-    _a4_plate_model as _plate_model,
-    _a4_session as _session,
+    make_eccentric_plate_model,
+    make_meshed_eccentric_plate_session,
 )
 
 
 def test_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None:
-    scopes = build_eccentric_plate_scopes(_session().snapshot())
+    scopes = build_eccentric_plate_scopes(make_meshed_eccentric_plate_session().snapshot())
 
     assert {region.name for region in scopes.regions} == {
         "边-固定端",
@@ -86,7 +84,7 @@ def test_plate_scopes_accept_general_strict_sketch_recipe() -> None:
         "b" * 64,
         expected_session_revision=session.session_revision,
     )
-    model = _plate_model()
+    model = make_eccentric_plate_model()
     catalog = model.metadata[NATIVE_SCOPE_CATALOG_KEY]
     catalog[f"edge:P1/{circle.id}"] = catalog.pop("edge:P1/hole-loop")
     assert session.accept_agent_generated_model(task.token, model).accepted
@@ -102,7 +100,7 @@ def test_plate_scopes_accept_general_strict_sketch_recipe() -> None:
 
 
 def test_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     snapshot = session.snapshot()
     snapshot.artifact.model.metadata[NATIVE_SCOPE_CATALOG_KEY][
         "edge:P1/hole-loop"
@@ -116,7 +114,7 @@ def test_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
 
 
 def test_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     before = session.snapshot()
     patch = build_plate_definition_patch(session)
     assert type(patch) is ModelPatch
@@ -148,7 +146,7 @@ def test_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
 
 
 def test_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     patch = build_plate_definition_patch(session)
     snapshot = session.snapshot()
     batch = scoped_definition_batch_from_operations(
@@ -177,7 +175,7 @@ def test_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
 
 
 def test_existing_result_turns_change_into_confirmation_proposal() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     run = AnalysisRun(
@@ -214,7 +212,7 @@ def test_existing_result_turns_change_into_confirmation_proposal() -> None:
 
 
 def test_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
-    session = _session()
+    session = make_meshed_eccentric_plate_session()
     patch = build_plate_definition_patch(session)
     before = session.snapshot()
     session.apply_scoped_definition_batch(

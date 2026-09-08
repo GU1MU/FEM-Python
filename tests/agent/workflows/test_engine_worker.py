@@ -11,14 +11,8 @@ from fem_agent.schemas import RunStatus, SessionPhase
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_agent.worker import WorkerResponse, WorkerResponseIntegrityError
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
-from tests.helpers.agent_engine_fixtures import (
-    _attached_engine,
-    _ready_engine,
-)
+from tests.helpers.agent_engine_fixtures import _attached_engine, _ready_engine
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -67,13 +61,13 @@ def test_solved_model_is_queried_then_explained_by_agent_without_new_run(
         scalar = payload["data"]["result_summary"]["scalars"][0]
         assert scalar["region"] == "Surf-right"
         assert scalar["unit"] == "mm"
-        return _text_response(
+        return text_response(
             f"自由端最大位移为 {scalar['value']:.6g} mm，"
             f"位于节点 {scalar['node_id']}。"
         )
 
     provider.queue(
-        _tool_response(
+        tool_response(
             ToolCall(
                 "postsolve_edge_displacement",
                 "query_results",
@@ -179,7 +173,7 @@ def test_reopened_solved_session_can_query_saved_solution(tmp_path):
     run_id = engine.get_snapshot().active_run_id
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "reopened_query",
                     "query_results",
@@ -193,7 +187,7 @@ def test_reopened_solved_session_can_query_saved_solution(tmp_path):
                     },
                 )
             ),
-            _text_response("已从保存的解中分析自由端位移。"),
+            text_response("已从保存的解中分析自由端位移。"),
         ]
     )
     reopened = AgentSessionEngine(

@@ -1,3 +1,5 @@
+from tests.helpers.agent_provider_fixtures import text_response
+
 """A privacy-safe Provider request capture for Phase 0 evidence.
 
 Unlike ``FakeProvider``, this helper intentionally retains no messages or
@@ -14,11 +16,7 @@ import json
 import re
 from typing import Iterable, Mapping, Sequence
 
-from fem_agent.providers.base import (
-    AssistantMessage,
-    ProviderResponse,
-    ToolDefinition,
-)
+from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolDefinition
 
 
 _WINDOWS_PATH = re.compile(r"(?i)\b[A-Z]:\\[^\s\"']+")
@@ -155,10 +153,7 @@ class RequestCaptureProvider:
     ) -> ProviderResponse:
         self.requests.append(capture_request(messages, tools))
         if not self._responses:
-            return ProviderResponse(
-                AssistantMessage("assistant", content=""),
-                finish_reason="stop",
-            )
+            return text_response("")
         response = self._responses.popleft()
         if isinstance(response, BaseException):
             raise response

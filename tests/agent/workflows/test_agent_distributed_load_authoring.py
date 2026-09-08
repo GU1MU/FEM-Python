@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fem.application import (
     MeshEntityRef,
     NamedRegion,
@@ -7,24 +9,21 @@ from fem.application import (
     UnitContext,
 )
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
+
 from tests.helpers.agent_authoring_workflows import (
     apply_static_analysis_definitions,
     dispatch_authoring_tool,
     make_authoring_controller,
     solve_and_read_displacement,
 )
-from tests.helpers.agent_surface_fixtures import make_surface_load_session
 from tests.helpers.agent_beam_fixtures import (
-    BEAM_STEP_NAME as BEAM_STEP_NAME,
+    BEAM_STEP_NAME,
     apply_line_scopes_and_material,
     apply_beam_definitions,
 )
-from tests.helpers.agent_line_fixtures import (
-    make_meshed_line_session,
-)
-from tests.helpers.agent_session_fixtures import _a5_session as _plate_session
-
-import pytest
+from tests.helpers.agent_line_fixtures import make_meshed_line_session
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
+from tests.helpers.agent_surface_fixtures import make_surface_load_session
 
 
 pytestmark = pytest.mark.local_session
@@ -69,7 +68,7 @@ def _add_all_element_region(session: object, name: str) -> None:
 
 
 def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
-    session = _plate_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     _create_step(controller, session, PLATE_STEP_NAME)
 
@@ -263,7 +262,7 @@ def test_creates_global_and_local_beam_line_loads() -> None:
 
 
 def test_line_rejects_non_beam_element_region_atomically() -> None:
-    session = _plate_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     _create_step(controller, session, PLATE_STEP_NAME)
     revision = session.session_revision
@@ -351,7 +350,7 @@ def test_local_line_and_gravity_fail_closed_without_capability() -> None:
 
 
 def test_gravity_accepts_global_target_with_explicit_unit() -> None:
-    session = _plate_session(
+    session = make_defined_plate_session(
         UnitContext("mm", "N", "MPa", acceleration="mm/s^2")
     )
     controller, _bridge = make_authoring_controller(session)
@@ -441,7 +440,7 @@ def test_creates_three_dimensional_body_force() -> None:
 
 
 def test_new_load_retains_accepted_result_history() -> None:
-    session = _plate_session()
+    session = make_defined_plate_session()
     controller, bridge = make_authoring_controller(session)
     apply_static_analysis_definitions(controller, session)
     solve_and_read_displacement(controller, bridge, session)

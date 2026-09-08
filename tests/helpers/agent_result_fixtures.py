@@ -9,9 +9,10 @@ from fem_agent.result_authoring import (
     AgentResultQuery,
     AgentResultVariable,
 )
+
 from tests.helpers.agent_session_fixtures import (
-    _a5_analysis as _analysis,
-    _a5_session as _session,
+    make_plate_static_analysis,
+    make_defined_plate_session,
 )
 
 
@@ -19,7 +20,7 @@ STATIC_STEP_NAME = "分析步-静力"
 
 
 def make_solved_session():
-    session = _session()
+    session = make_defined_plate_session()
     snapshot = session.snapshot()
     delta = session.apply_scoped_definition_batch(
         ScopedDefinitionBatch(
@@ -28,7 +29,7 @@ def make_solved_session():
             snapshot.materials,
             snapshot.sections,
             snapshot.assignments,
-            (_analysis().to_step(),),
+            (make_plate_static_analysis().to_step(),),
         )
     )
     assert delta.accepted

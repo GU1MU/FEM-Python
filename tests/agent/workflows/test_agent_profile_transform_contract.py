@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 
 from fem.application import ModelSession, UnitContext
 from fem.geometry import describe_recipe_topology
@@ -7,7 +8,6 @@ from fem_agent.authoring_runtime import AuthoringWorkflowStage
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import geometry_contract_proof
 from fem_agent.providers.fake import FakeProvider
-from fem_agent.providers.base import AssistantMessage, ProviderResponse
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
@@ -15,11 +15,9 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
-from tests.helpers.fixtures.profile_transform_baseline import (
-    concentric_ring_fixture,
-)
 
-import pytest
+from tests.helpers.agent_provider_fixtures import text_response
+from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_fixture
 
 
 pytestmark = pytest.mark.local_session
@@ -128,13 +126,7 @@ def test_repeated_refusal_gets_one_correction_and_local_recovery(tmp_path) -> No
     refusal = "拉伸不受支持；必须先生成网格。"
     provider = FakeProvider(
         [
-            ProviderResponse(
-                AssistantMessage(
-                    "assistant",
-                    content=refusal,
-                ),
-                finish_reason="stop",
-            )
+            text_response(refusal)
             for _ in range(2)
         ]
     )

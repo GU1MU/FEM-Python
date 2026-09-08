@@ -2,10 +2,7 @@ import json
 
 import pytest
 
-from fem_agent.engine import (
-    AgentSessionEngine,
-    EngineEventType,
-)
+from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import (
     AssistantMessage,
     ProviderResponse,
@@ -15,15 +12,15 @@ from fem_agent.providers.base import (
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-    _StreamingFakeProvider,
-    _ReasoningStreamingFakeProvider,
-)
 from tests.helpers.agent_engine_registry_fixtures import (
     _AdditionalModelToolRegistry,
     _RetryingGeometryEditWithCatalogToolRegistry,
+)
+from tests.helpers.agent_provider_fixtures import (
+    tool_response,
+    text_response,
+    StreamingFakeProvider,
+    ReasoningStreamingFakeProvider,
 )
 
 
@@ -68,7 +65,7 @@ class _PatchToolRegistry:
 
 
 def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
-    provider = _StreamingFakeProvider([_text_response("正在检查当前模型")])
+    provider = StreamingFakeProvider([text_response("正在检查当前模型")])
     streamed = []
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -95,8 +92,8 @@ def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
 
 
 def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
-    provider = _StreamingFakeProvider(
-        [_text_response("Please provide the target value.")]
+    provider = StreamingFakeProvider(
+        [text_response("Please provide the target value.")]
     )
     engine = AgentSessionEngine(
         tmp_path / "workspace",
@@ -118,7 +115,7 @@ def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
     "provider_type, formal_event",
     [
         (FakeProvider, EngineEventType.MESSAGE_STARTED),
-        (_ReasoningStreamingFakeProvider, EngineEventType.MESSAGE_PRESENTATION),
+        (ReasoningStreamingFakeProvider, EngineEventType.MESSAGE_PRESENTATION),
     ],
 )
 def test_reasoning_precedes_formal_content_and_survives_reopen(
@@ -152,7 +149,7 @@ def test_reasoning_precedes_formal_content_and_survives_reopen(
         for event in events
     )
 
-    replay = FakeProvider([_text_response("Continue.")])
+    replay = FakeProvider([text_response("Continue.")])
     reopened = AgentSessionEngine(engine.workspace, replay, session_id=engine.session_id)
     reopened.send_message("Continue.")
     restored = next(
@@ -166,8 +163,8 @@ def test_reasoning_precedes_formal_content_and_survives_reopen(
 def test_chinese_turn_retries_and_hides_an_english_only_response(tmp_path):
     provider = FakeProvider(
         [
-            _text_response("I will inspect the current model."),
-            _text_response("我会检查当前模型。"),
+            text_response("I will inspect the current model."),
+            text_response("我会检查当前模型。"),
         ]
     )
     engine = AgentSessionEngine(
@@ -202,7 +199,7 @@ def test_chinese_turn_drops_english_tool_narration_but_keeps_the_tool_call(tmp_p
                 ),
                 finish_reason="tool_calls",
             ),
-            _text_response("已读取当前能力。"),
+            text_response("已读取当前能力。"),
         ]
     )
     engine = AgentSessionEngine(
@@ -244,7 +241,7 @@ def test_proposal_preview_precedes_the_proposal_result(tmp_path):
         "output": "planar",
     }
     tool = "prepare_planar_construction_proposal"
-    provider = FakeProvider([_tool_response(ToolCall("proposal", tool, arguments))])
+    provider = FakeProvider([tool_response(ToolCall("proposal", tool, arguments))])
     engine = AgentSessionEngine(
         tmp_path / "workspace", provider, dynamic_tools=_AdditionalModelToolRegistry()
     )
@@ -294,7 +291,7 @@ def test_automatic_model_patch_has_natural_preview_before_tool_execution(
                 ),
                 finish_reason="tool_calls",
             ),
-            _text_response("材料已创建。"),
+            text_response("材料已创建。"),
         ]
     )
     tools = _PatchToolRegistry()
@@ -349,17 +346,17 @@ def test_failed_tool_self_correction_is_presented_as_process(tmp_path):
     )
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "read-edit",
                     "read_geometry_edit_context",
                     {"part_id": "P1"},
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
             ),
-            _text_response(self_correction),
+            text_response(self_correction),
         ]
     )
     tools = _RetryingGeometryEditWithCatalogToolRegistry()

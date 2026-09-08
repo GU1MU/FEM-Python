@@ -6,35 +6,19 @@ from fem.io import inp as abaqus
 from fem.solvers import static_linear
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine, EngineEventType
-from fem_agent.providers.base import (
-    AssistantMessage,
-    ProviderResponse,
-    ToolCall,
-)
+from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import SessionPhase
 from fem_agent.tools.registry import ToolExecutionContext
+
 from tests.helpers.abaqus_builders import (
     write_hex20_block_inp,
     write_perforated_plate_style_inp,
 )
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
-
-
-def _tool_response(*calls):
-    return ProviderResponse(
-        AssistantMessage("assistant", tool_calls=tuple(calls)),
-        finish_reason="tool_calls",
-    )
-
-
-def _text_response(text):
-    return ProviderResponse(
-        AssistantMessage("assistant", content=text),
-        finish_reason="stop",
-    )
 
 
 @pytest.mark.integration
@@ -48,7 +32,7 @@ def test_full_fake_provider_confirmation_worker_and_export_matches_direct_fem(
     )
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "e2e_units",
                     "set_unit_context",
@@ -79,10 +63,10 @@ def test_full_fake_provider_confirmation_worker_and_export_matches_direct_fem(
                     },
                 ),
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("e2e_summary", "get_analysis_summary", {})
             ),
-            _text_response("摘要已准备好，请输入 /confirm。"),
+            text_response("摘要已准备好，请输入 /confirm。"),
         ]
     )
     workspace = tmp_path / "workspace"
@@ -145,7 +129,7 @@ def test_full_fake_provider_confirmation_worker_and_export_matches_direct_fem(
     assert {"csv", "vtk", "manifest", "diagnostics", "result_summary"} <= export_kinds
 
     provider.queue(
-        _tool_response(
+        tool_response(
             ToolCall(
                 "e2e_changed_units",
                 "set_unit_context",
@@ -158,7 +142,7 @@ def test_full_fake_provider_confirmation_worker_and_export_matches_direct_fem(
                 },
             )
         ),
-        _text_response("单位上下文已变更，需要重新确认。"),
+        text_response("单位上下文已变更，需要重新确认。"),
     )
     engine.send_message("把单位上下文改成 SI。")
     changed = engine.get_snapshot()
@@ -260,7 +244,7 @@ def test_hex20_agent_pipeline_matches_direct_fem_result(tmp_path):
     source = write_hex20_block_inp(tmp_path, "agent_hex20.inp")
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "hex20_units",
                     "set_unit_context",
@@ -288,10 +272,10 @@ def test_hex20_agent_pipeline_matches_direct_fem_result(tmp_path):
                     },
                 ),
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("hex20_summary", "get_analysis_summary", {})
             ),
-            _text_response("Hex20 摘要已准备好，请输入 /confirm。"),
+            text_response("Hex20 摘要已准备好，请输入 /confirm。"),
         ]
     )
     workspace = tmp_path / "workspace"
@@ -341,7 +325,7 @@ def test_hex20_agent_pipeline_matches_direct_fem_result(tmp_path):
     assert agent_maximum == pytest.approx(direct_maximum)
 
     provider.queue(
-        _tool_response(
+        tool_response(
             ToolCall(
                 "hex20_surface_query",
                 "query_results",
@@ -355,7 +339,7 @@ def test_hex20_agent_pipeline_matches_direct_fem_result(tmp_path):
                 },
             )
         ),
-        _text_response("已分析加载表面的最大位移。"),
+        text_response("已分析加载表面的最大位移。"),
     )
     queried = engine.send_message("加载表面 Surf-loaded 的最大位移是多少？")
     tool_result = next(

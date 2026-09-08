@@ -35,8 +35,8 @@ from fem_gui.agent_authoring import (
 
 from tests.helpers.agent_result_fixtures import STATIC_STEP_NAME, make_solved_session
 from tests.helpers.agent_session_fixtures import (
-    _a5_analysis as _analysis,
-    _a5_session as _session,
+    make_plate_static_analysis,
+    make_defined_plate_session,
 )
 
 
@@ -81,7 +81,7 @@ def _solve_again_with_double_load(
     assert first_run_id is not None
     baseline = _reference(session, first_run_id)
     snapshot = session.snapshot()
-    analysis = _analysis()
+    analysis = make_plate_static_analysis()
     doubled = replace(
         analysis,
         loads=(replace(analysis.loads[0], vector=(20.0, 0.0)),),
@@ -353,7 +353,7 @@ def test_comparison_fails_closed_for_foreign_stale_and_unavailable_inputs(
 
 
 def test_comparison_tool_visibility_tracks_retained_result_count() -> None:
-    empty = _session()
+    empty = make_defined_plate_session()
     one = make_solved_session()
     two = make_solved_session()
     _solve_again_with_double_load(two)

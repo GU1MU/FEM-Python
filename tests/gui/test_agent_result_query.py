@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import os
+
 from tests.helpers.agent_result_fixtures import (
     STATIC_STEP_NAME,
     make_solved_session,
@@ -7,13 +10,10 @@ from tests.helpers.agent_result_fixtures import (
     build_result_query,
 )
 
-import math
-import os
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import pytest
 from PySide6.QtWidgets import QApplication
+import pytest
 
 from fem.application.results import (
     FieldPosition,
@@ -36,10 +36,11 @@ from fem_agent.result_authoring import (
 )
 from fem_gui.agent_authoring import SessionResultQueryPort
 from fem_gui.main_window import FEMMainWindow
+
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
 from tests.helpers.phase8_result_characterization import (
     make_continuum_nodal_semantics_result,
 )
-from tests.helpers.agent_session_fixtures import _a5_session as _session
 
 
 def _application() -> QApplication:
@@ -289,7 +290,7 @@ def test_public_provider_region_resolution_is_exact_and_fail_closed() -> None:
 
 
 def test_no_result_component_region_and_position_fail_without_value() -> None:
-    empty = SessionResultQueryPort(_session())
+    empty = SessionResultQueryPort(make_defined_plate_session())
     stale_source = AcceptedResultSource(
         "result-none",
         "session-none",

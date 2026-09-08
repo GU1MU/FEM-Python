@@ -28,14 +28,15 @@ from fem_agent.editing_authoring import (
     editable_object_catalog,
 )
 from fem_gui.agent_authoring import authoring_context_from_snapshot
-from tests.helpers.agent_session_fixtures import _a5_session as _base_session
+
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
 STEP = "分析步-静力"
 
 
 def _session() -> ModelSession:
-    session = _base_session()
+    session = make_defined_plate_session()
     snapshot = session.snapshot()
     session.apply_scoped_definition_batch(
         ScopedDefinitionBatch(

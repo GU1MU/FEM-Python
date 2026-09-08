@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
+import os
+
 from tests.helpers.agent_authoring_workflows import (
     STATIC_STEP_NAME,
     make_authoring_controller,
@@ -8,25 +11,23 @@ from tests.helpers.agent_authoring_workflows import (
     solve_and_read_displacement,
 )
 
-from copy import deepcopy
-import os
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
 
 from fem.application import ModelSession
 from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
-from tests.helpers.agent_session_fixtures import _a5_session
 
-import pytest
+from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
 pytestmark = pytest.mark.local_session
 
 
 def test_production_entry_solves_and_reads_one_accepted_result() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, bridge = make_authoring_controller(session)
 
     assert controller.stage is AuthoringWorkflowStage.DEFINITIONS_READY
@@ -39,7 +40,7 @@ def test_production_entry_solves_and_reads_one_accepted_result() -> None:
 def test_save_reopen_remesh_resumes_preflight_solve_and_result(
     tmp_path,
 ) -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     apply_static_analysis_definitions(controller, session)
     remeshed_candidate = deepcopy(session.snapshot().artifact.model)
@@ -69,7 +70,7 @@ def test_save_reopen_remesh_resumes_preflight_solve_and_result(
 
 
 def test_direct_definitions_reject_nonconforming_visible_names() -> None:
-    session = _a5_session()
+    session = make_defined_plate_session()
     controller, _bridge = make_authoring_controller(session)
     before = session.snapshot()
 

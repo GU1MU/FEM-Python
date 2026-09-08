@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pathlib import Path
-
 from fem.application import (
     MeshEntityRef,
     ModelSession,
@@ -27,71 +24,10 @@ from fem_agent.analysis_authoring import (
     ConfirmedResultRequest,
     LinearStaticAnalysis,
 )
-from fem_agent.config import (
-    ConfigError,
-    LocalAgentConfig,
-    TEST_CONFIG_NAME,
-    resolve_local_config,
-)
 
 
-# ---------------------------------------------------------------------------
-# Cloud smoke config (extracted from tests/test_agent_cloud_smoke.py)
-# ---------------------------------------------------------------------------
-
-CLOUD_SMOKE_OPT_IN_ENV = "FEM_AGENT_CLOUD_SMOKE"
-CLOUD_SMOKE_CONFIG_ENV = "FEM_AGENT_CLOUD_SMOKE_CONFIG"
-_CLOUD_OPT_IN_REASON = (
-    "[cloud-opt-in] set FEM_AGENT_CLOUD_SMOKE=1 and "
-    "FEM_AGENT_CLOUD_SMOKE_CONFIG to an absolute external config path"
-)
-
-
-def _cloud_smoke_config(
-    environ: Mapping[str, str],
-) -> tuple[LocalAgentConfig | None, str | None]:
-    if environ.get(CLOUD_SMOKE_OPT_IN_ENV) != "1":
-        return None, _CLOUD_OPT_IN_REASON
-    raw_path = environ.get(CLOUD_SMOKE_CONFIG_ENV)
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        return None, _CLOUD_OPT_IN_REASON
-
-    path = Path(raw_path)
-    if not path.is_absolute():
-        raise ConfigError(
-            "the cloud smoke config path must be absolute"
-        )
-    file_config = LocalAgentConfig.load(path)
-
-    resolved = resolve_local_config(file_config, environ=environ)
-    if resolved.provider.casefold() != "deepseek":
-        raise ConfigError("the cloud smoke test requires provider='deepseek'")
-    if not resolved.has_api_key:
-        return None, (
-            "[cloud-opt-in] configure api_key in the explicit cloud smoke "
-            "config or set DEEPSEEK_API_KEY"
-        )
-    return (
-        LocalAgentConfig(
-            provider="deepseek",
-            model=resolved.model,
-            base_url=resolved.base_url,
-            api_key=resolved.api_key,
-            timeout_seconds=min(resolved.timeout_seconds, 30),
-            max_retries=0,
-            max_output_tokens=min(resolved.max_output_tokens, 256),
-            enabled=True,
-        ),
-        None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Session and analysis fixtures for analysis authoring tests.
-# ---------------------------------------------------------------------------
-
-
-def _a5_session(unit_context: UnitContext | None = None) -> ModelSession:
+def make_defined_plate_session(unit_context: UnitContext | None = None) -> ModelSession:
+    """Two Tri3 elements with regions, material and section; no analysis step."""
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-板",
@@ -165,7 +101,7 @@ def _a5_session(unit_context: UnitContext | None = None) -> ModelSession:
     return session
 
 
-def _a5_analysis(
+def make_plate_static_analysis(
     *,
     load_unit: str = "N/mm",
     pressure: bool = False,
@@ -245,12 +181,7 @@ def _a5_analysis(
     )
 
 
-# ---------------------------------------------------------------------------
-# Session and plate model fixtures for definition authoring tests.
-# ---------------------------------------------------------------------------
-
-
-def _a4_recipe() -> PlateWithHoleGeometry:
+def make_eccentric_plate_recipe() -> PlateWithHoleGeometry:
     return PlateWithHoleGeometry(
         "实体-偏心孔板",
         10.0,
@@ -261,7 +192,8 @@ def _a4_recipe() -> PlateWithHoleGeometry:
     )
 
 
-def _a4_plate_model() -> FEMModel:
+def make_eccentric_plate_model() -> FEMModel:
+    """Eight Tri3 elements with outer/hole boundary catalog and part ownership."""
     mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
@@ -365,12 +297,13 @@ def _a4_plate_model() -> FEMModel:
     )
 
 
-def _a4_session() -> ModelSession:
+def make_meshed_eccentric_plate_session() -> ModelSession:
+    """Install the hole plate mesh without material or analysis definitions."""
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-偏心孔板",
         UnitContext("mm", "N", "MPa"),
-        _a4_recipe(),
+        make_eccentric_plate_recipe(),
         part_name="部件-偏心孔板",
     )
     task = session.prepare_agent_mesh_generation(
@@ -381,6 +314,6 @@ def _a4_session() -> ModelSession:
     )
     assert session.accept_agent_generated_model(
         task.token,
-        _a4_plate_model(),
+        make_eccentric_plate_model(),
     ).accepted
     return session

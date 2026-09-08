@@ -21,13 +21,13 @@ from fem.io.project import load_project, save_project
 from fem.mesh.settings import MeshSettings
 from fem_agent.authoring import ProposalState
 from fem_agent.engine import AgentSessionEngine, EngineEventType
+from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import ToolExecutionContext
-from tests.helpers.agent_planar_construction import (
-    ControllerDynamicTools,
-    make_planar_authoring_controller,
-    tool_response,
-)
+
+from tests.helpers.agent_authoring_workflow_fixtures import ControllerDynamicTools
+from tests.helpers.agent_planar_construction import make_planar_authoring_controller
+from tests.helpers.agent_provider_fixtures import tool_response
 
 
 def _h_plate() -> dict[str, object]:
@@ -423,7 +423,13 @@ def test_phase7_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
         },
     }
     provider = FakeProvider(
-        [tool_response("direct-extrusion", "prepare_planar_construction_proposal", arguments)]
+        [tool_response(
+            ToolCall(
+                "direct-extrusion",
+                "prepare_planar_construction_proposal",
+                arguments,
+            ),
+        )]
     )
     engine = AgentSessionEngine(
         tmp_path / "phase7-direct-extrusion",

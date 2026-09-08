@@ -3,17 +3,12 @@ import json
 import pytest
 
 from fem_agent.artifacts import ArtifactStore
-from fem_agent.engine import (
-    AgentSessionEngine,
-    EngineEventType,
-)
-from fem_agent.providers.base import (
-    AssistantMessage,
-    ProviderConfig,
-    ProviderResponse,
-)
+from fem_agent.engine import AgentSessionEngine, EngineEventType
+from fem_agent.providers.base import ProviderConfig
 from fem_agent.providers.deepseek import DeepSeekProvider
 from fem_agent.providers.fake import FakeProvider
+
+from tests.helpers.agent_provider_fixtures import text_response
 from tests.helpers.file_builders import write_inp
 
 
@@ -43,10 +38,7 @@ def test_inp_comment_coordinates_connectivity_and_path_never_reach_provider(
     )
     provider = FakeProvider(
         [
-            ProviderResponse(
-                AssistantMessage("assistant", "需要单位和结果要求。"),
-                finish_reason="stop",
-            )
+            text_response("需要单位和结果要求。")
         ]
     )
     workspace = tmp_path / "workspace"

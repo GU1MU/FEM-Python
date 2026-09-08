@@ -1,28 +1,10 @@
 import pytest
 
-from fem_agent.artifacts import ArtifactStore
-from fem_agent.engine import AgentSessionEngine
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import AgentToolRegistry, ToolExecutionContext
 from fem_agent.worker import InspectionWorkerError
-from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
 
-
-def _attached_engine(tmp_path):
-    source = write_perforated_plate_style_inp(
-        tmp_path,
-        "registry_model.inp",
-        ("*Boundary", "Set-right, 1, 1, 0.05"),
-    )
-    workspace = tmp_path / "workspace"
-    engine = AgentSessionEngine(
-        workspace,
-        FakeProvider(),
-        session_id="ses_registry",
-    )
-    artifact = ArtifactStore(workspace).copy_input(engine.session_id, source)
-    engine.attach_artifact(artifact.artifact_id)
-    return engine, source
+from tests.helpers.agent_engine_fixtures import _attached_engine
 
 
 def test_registry_publishes_bounded_analysis_tools(tmp_path):
@@ -83,7 +65,7 @@ def test_postsolve_query_tool_requires_bounded_queries(tmp_path):
 def test_result_configuration_allows_exports_without_precomputed_queries(
     tmp_path,
 ):
-    engine, _ = _attached_engine(tmp_path)
+    engine, _ = _attached_engine(tmp_path, FakeProvider())
     current = engine.revisions.require_current(engine.session_id)
 
     result = engine.registry.dispatch(
@@ -104,7 +86,7 @@ def test_result_configuration_allows_exports_without_precomputed_queries(
 
 @pytest.mark.integration
 def test_malformed_tool_arguments_fail_before_revision_mutation(tmp_path):
-    engine, _ = _attached_engine(tmp_path)
+    engine, _ = _attached_engine(tmp_path, FakeProvider())
     registry = engine.registry
     before = engine.revisions.require_current(engine.session_id)
     context = ToolExecutionContext(
@@ -133,7 +115,7 @@ def test_malformed_tool_arguments_fail_before_revision_mutation(tmp_path):
 
 @pytest.mark.integration
 def test_cloud_tool_cannot_authorize_a_solve(tmp_path):
-    engine, _ = _attached_engine(tmp_path)
+    engine, _ = _attached_engine(tmp_path, FakeProvider())
     current = engine.revisions.require_current(engine.session_id)
 
     result = engine.registry.dispatch(
@@ -168,7 +150,7 @@ def test_inspection_worker_failure_is_classified_as_infrastructure(
     monkeypatch,
     tmp_path,
 ):
-    engine, _ = _attached_engine(tmp_path)
+    engine, _ = _attached_engine(tmp_path, FakeProvider())
     current = engine.revisions.require_current(engine.session_id)
 
     def fail_inspection(*args, **kwargs):

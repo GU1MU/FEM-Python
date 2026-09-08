@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 from dataclasses import replace
+import json
 
 import pytest
 
@@ -20,10 +20,11 @@ from fem_agent.authoring_runtime import (
     AuthoringWorkflowStage,
 )
 from fem_agent.engine import AgentSessionEngine
-from fem_agent.providers.base import AssistantMessage, ProviderResponse
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import tool_schema_hash
 from fem_gui.agent_runtime import QtAgentRuntime
+
+from tests.helpers.agent_provider_fixtures import text_response
 
 
 def _context(revision: int = 4) -> AuthoringContext:
@@ -335,14 +336,8 @@ def test_runtime_binding_invalidation_hides_old_tools_until_rebind(
     controller.observe_binding(current)
     provider = FakeProvider(
         [
-            ProviderResponse(
-                AssistantMessage("assistant", content="invalidated"),
-                finish_reason="stop",
-            ),
-            ProviderResponse(
-                AssistantMessage("assistant", content="rebound"),
-                finish_reason="stop",
-            ),
+            text_response("invalidated"),
+            text_response("rebound"),
         ]
     )
     runtime = QtAgentRuntime(
@@ -390,10 +385,7 @@ def test_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
 
     provider = FakeProvider(
         [
-            ProviderResponse(
-                AssistantMessage("assistant", content="已读取当前建模状态。"),
-                finish_reason="stop",
-            )
+            text_response("已读取当前建模状态。")
         ]
     )
     engine = AgentSessionEngine(

@@ -1,15 +1,5 @@
 from __future__ import annotations
 
-from tests.helpers.agent_planar_construction import (
-    tool_response,
-    text_response,
-    ControllerDynamicTools,
-    make_planar_authoring_controller,
-    build_planar_arguments,
-    build_rectangle_arguments,
-    dispatch_planar_construction,
-)
-
 import json
 
 import pytest
@@ -17,8 +7,18 @@ import pytest
 from fem.application import ModelSession
 from fem_agent.authoring import ProposalState
 from fem_agent.engine import AgentSessionEngine, EngineEventType
+from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.tools.registry import ToolExecutionContext
+
+from tests.helpers.agent_authoring_workflow_fixtures import ControllerDynamicTools
+from tests.helpers.agent_planar_construction import (
+    make_planar_authoring_controller,
+    build_planar_arguments,
+    build_rectangle_arguments,
+    dispatch_planar_construction,
+)
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.local_session
@@ -92,9 +92,11 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     provider = FakeProvider(
         [
             tool_response(
-                "prepare-ir",
-                "prepare_planar_construction_proposal",
-                build_rectangle_arguments(),
+                ToolCall(
+                    "prepare-ir",
+                    "prepare_planar_construction_proposal",
+                    build_rectangle_arguments(),
+                ),
             )
         ]
     )
@@ -130,7 +132,7 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     controller.record_proposal_state("geometry", receipt.state, receipt.message)
     dynamic.refresh_turn_snapshot(tuple(item.name for item in controller.definitions))
     provider.queue(
-        tool_response("read-new", "read_authoring_context", {}),
+        tool_response(ToolCall("read-new", "read_authoring_context", {})),
         text_response("二维部件已进入后续建模阶段。"),
     )
     continuation = engine.continue_after_proposal(

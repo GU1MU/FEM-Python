@@ -15,17 +15,12 @@ from fem_agent.schemas import SessionPhase
 from fem_agent.worker import InspectionWorkerError
 
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-    _text_response,
-)
-from tests.helpers.agent_engine_fixtures import (
-    _attached_engine,
-)
+from tests.helpers.agent_engine_fixtures import _attached_engine
 from tests.helpers.agent_engine_registry_fixtures import (
     _GeometryEditWithCatalogToolRegistry,
     _RetryingGeometryEditWithCatalogToolRegistry,
 )
+from tests.helpers.agent_provider_fixtures import tool_response, text_response
 
 
 pytestmark = pytest.mark.integration
@@ -50,7 +45,7 @@ def test_tool_round_keeps_explicit_user_decision_visible(tmp_path):
                 ),
                 finish_reason="tool_calls",
             ),
-            _text_response("读取完成。"),
+            text_response("读取完成。"),
         ]
     )
     tools = _GeometryEditWithCatalogToolRegistry()
@@ -98,17 +93,17 @@ def test_failed_tool_mixed_process_and_decision_are_presented_separately(
     decision = "请提供开口深度。"
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "read-edit",
                     "read_geometry_edit_context",
                     {"part_id": "P1"},
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("prepare-invalid", "prepare_geometry_edit", edit)
             ),
-            _text_response(f"{process}\n\n{decision}"),
+            text_response(f"{process}\n\n{decision}"),
         ]
     )
     tools = _RetryingGeometryEditWithCatalogToolRegistry()
@@ -170,7 +165,7 @@ def test_attach_does_not_report_draft_requirements_as_input_errors(tmp_path):
 def test_fake_provider_completes_unit_result_and_summary_tool_loop(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "call_units",
                     "set_unit_context",
@@ -198,10 +193,10 @@ def test_fake_provider_completes_unit_result_and_summary_tool_loop(tmp_path):
                     },
                 ),
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("call_summary", "get_analysis_summary", {})
             ),
-            _text_response("分析摘要已准备好，请检查后输入 /confirm。"),
+            text_response("分析摘要已准备好，请检查后输入 /confirm。"),
         ]
     )
     engine, _ = _attached_engine(tmp_path, provider)
@@ -237,11 +232,11 @@ def test_inspection_worker_failure_prevents_same_turn_tool_retry(
 ):
     def finish_without_tools(messages, tools):
         assert tools == ()
-        return _text_response("模型检查进程暂时失败，请重试。")
+        return text_response("模型检查进程暂时失败，请重试。")
 
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall("call_summary_failed", "get_analysis_summary", {})
             ),
             finish_without_tools,
@@ -277,7 +272,7 @@ def test_inspection_worker_failure_prevents_same_turn_tool_retry(
     ] == ["get_analysis_summary"]
 
     provider.queue(
-        _tool_response(
+        tool_response(
             ToolCall("call_summary_retried", "get_analysis_summary", {})
         ),
         finish_without_tools,
@@ -327,9 +322,9 @@ def test_provider_retry_of_identical_mutation_is_idempotent(tmp_path):
     )
     provider = FakeProvider(
         [
-            _tool_response(call),
-            _tool_response(call),
-            _text_response("单位已记录。"),
+            tool_response(call),
+            tool_response(call),
+            text_response("单位已记录。"),
         ]
     )
     engine, _ = _attached_engine(tmp_path, provider)
@@ -354,10 +349,10 @@ def test_same_provider_call_id_in_a_new_user_turn_is_not_stale(tmp_path):
     )
     provider = FakeProvider(
         [
-            _tool_response(call),
-            _text_response("第一次记录完成。"),
-            _tool_response(call),
-            _text_response("第二次记录完成。"),
+            tool_response(call),
+            text_response("第一次记录完成。"),
+            tool_response(call),
+            text_response("第二次记录完成。"),
         ]
     )
     engine, _ = _attached_engine(tmp_path, provider)
@@ -373,7 +368,7 @@ def test_same_provider_call_id_in_a_new_user_turn_is_not_stale(tmp_path):
 def test_oversized_tool_call_batch_is_rejected_before_persistence(tmp_path):
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 *(
                     ToolCall(
                         f"too_many_{index}",
@@ -401,7 +396,7 @@ def test_oversized_tool_call_batch_is_rejected_before_persistence(tmp_path):
     )
     reopened = AgentSessionEngine(
         engine.workspace,
-        FakeProvider([_text_response("会话仍可继续。")]),
+        FakeProvider([text_response("会话仍可继续。")]),
         session_id=engine.session_id,
     )
     assert reopened.send_message("继续。")

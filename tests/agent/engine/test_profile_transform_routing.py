@@ -4,15 +4,12 @@ import pytest
 
 from fem_agent.authoring_runtime import AuthoringTurnSnapshot
 from fem_agent.engine import AgentSessionEngine, EngineEventType
-from fem_agent.providers.base import (
-    AssistantMessage,
-    ProviderResponse,
-    ToolCall,
-    ToolDefinition,
-)
+from fem_agent.providers.base import ProviderResponse, ToolCall, ToolDefinition
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.routing import geometry_route_hint
 from fem_agent.schemas import ToolResult
+
+from tests.helpers.agent_provider_fixtures import text_response, tool_response
 
 
 _TOOLS = (
@@ -76,10 +73,7 @@ class _DynamicRegistry:
 
 
 def _refusal() -> ProviderResponse:
-    return ProviderResponse(
-        AssistantMessage("assistant", "拉伸不受支持；必须先生成网格。"),
-        finish_reason="stop",
-    )
+    return text_response("拉伸不受支持；必须先生成网格。")
 
 
 @pytest.mark.parametrize("text, operation, missing", [
@@ -108,10 +102,7 @@ def test_explicit_arbitrary_size_needs_no_clarification(text):
 def test_guard_allows_a_first_round_missing_field_question(tmp_path) -> None:
     provider = FakeProvider(
         [
-            ProviderResponse(
-                AssistantMessage("assistant", "请提供拉伸高度。"),
-                finish_reason="stop",
-            )
+            text_response("请提供拉伸高度。")
         ]
     )
     engine = AgentSessionEngine(
@@ -134,23 +125,14 @@ def test_guard_retry_continues_after_the_required_probe(tmp_path) -> None:
     provider = FakeProvider(
         [
             _refusal(),
-            ProviderResponse(
-                AssistantMessage(
-                    "assistant",
-                    tool_calls=(
-                        ToolCall(
-                            "corrected-probe",
-                            "read_profile_transform_context",
-                            {"part_id": "P1"},
-                        ),
-                    ),
+            tool_response(
+                ToolCall(
+                    "corrected-probe",
+                    "read_profile_transform_context",
+                    {"part_id": "P1"},
                 ),
-                finish_reason="tool_calls",
             ),
-            ProviderResponse(
-                AssistantMessage("assistant", "请提供拉伸高度。"),
-                finish_reason="stop",
-            ),
+            text_response("请提供拉伸高度。"),
         ]
     )
     engine = AgentSessionEngine(
@@ -247,10 +229,7 @@ def test_guard_does_not_intercept_missing_fields_diagnostics_or_cancel(
     for index, (request, response_text) in enumerate(cases):
         provider = FakeProvider(
             [
-                ProviderResponse(
-                    AssistantMessage("assistant", response_text),
-                    finish_reason="stop",
-                )
+                text_response(response_text)
             ]
         )
         engine = AgentSessionEngine(

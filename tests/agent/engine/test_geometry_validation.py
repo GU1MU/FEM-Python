@@ -1,19 +1,14 @@
 import pytest
 
-from fem_agent.engine import (
-    AgentSessionEngine,
-    EngineEventType,
-)
+from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 
-from tests.helpers.agent_engine_providers import (
-    _tool_response,
-)
 from tests.helpers.agent_engine_registry_fixtures import (
     _AdditionalModelToolRegistry,
     _GeometryEditToolRegistry,
 )
+from tests.helpers.agent_provider_fixtures import tool_response
 
 
 pytestmark = pytest.mark.integration
@@ -38,7 +33,7 @@ def test_explicit_2d_request_cannot_fall_back_to_a_derived_3d_output(tmp_path):
     }
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "wrong-3d",
                     "prepare_planar_construction_proposal",
@@ -53,7 +48,7 @@ def test_explicit_2d_request_cannot_fall_back_to_a_derived_3d_output(tmp_path):
                     },
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "correct-2d",
                     "prepare_planar_construction_proposal",
@@ -193,14 +188,14 @@ def test_branching_slot_rejects_single_path_before_dispatch(tmp_path):
     }
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "invalid-slot",
                     "prepare_planar_construction_proposal",
                     invalid,
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "corrected-slot",
                     "prepare_planar_construction_proposal",
@@ -255,14 +250,14 @@ def test_nonbranching_path_slot_rejects_disconnected_rectangle_fallback(tmp_path
     }
     provider = FakeProvider(
         [
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "read-edit",
                     "read_geometry_edit_context",
                     {"part_id": "P1"},
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall(
                     "bad-edit",
                     "prepare_geometry_edit",
@@ -297,7 +292,7 @@ def test_nonbranching_path_slot_rejects_disconnected_rectangle_fallback(tmp_path
                     },
                 )
             ),
-            _tool_response(
+            tool_response(
                 ToolCall("correct-edit", "prepare_geometry_edit", correct_edit)
             ),
         ]
