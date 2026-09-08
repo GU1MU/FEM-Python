@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLabel
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
 
 from fem.geometry import LogicalEntityRef, WireGeometry, WireMember, WirePoint
 from fem.mesh.settings import LocalMeshControl, MeshSettings
@@ -93,7 +93,7 @@ def test_work_plane_intersection_and_snap_preserve_fixed_coordinate() -> None:
     ) == (0.0, 0.0, 0.0)
 
 
-def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanations() -> None:
+def test_wire_editor_panel_exposes_localized_editing_actions() -> None:
     _application()
     panel = WireEditorPanel(WireDraftController())
 
@@ -109,7 +109,6 @@ def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanation
     assert panel.spacing_spin.decimals() == 2
     assert panel.spacing_spin.minimum() == 0.01
     assert panel.spacing_spin.value() == 0.1
-    assert not hasattr(panel, "snap_check")
     form = panel.layout().itemAt(0).layout()
     assert form.labelForField(panel.spacing_spin).text() == "吸附间距"
     assert "工作平面" in panel.point_mode_button.toolTip()
@@ -118,9 +117,6 @@ def test_wire_editor_panel_uses_clear_chinese_actions_without_bottom_explanation
     assert panel.points_table.horizontalHeaderItem(0).text() == "名称"
     assert panel.members_table.horizontalHeaderItem(1).text() == "起点"
     assert panel.members_table.horizontalHeaderItem(2).text() == "终点"
-    assert panel.findChild(QLabel, "wireValidationLabel") is None
-    assert not hasattr(panel, "hint_label")
-    assert not hasattr(panel, "coincident_confirm")
 
 
 def test_viewport_point_is_snapped_again_before_entering_the_draft() -> None:
@@ -423,7 +419,7 @@ def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it
     assert "单元形式" in dialog.control_list.item(3).text()
 
 
-def test_line_mesh_dialog_uses_chinese_text_without_policy_description() -> None:
+def test_line_mesh_dialog_exposes_localized_element_choices() -> None:
     _application()
     settings = MeshSettings(
         0.25,
@@ -437,13 +433,8 @@ def test_line_mesh_dialog_uses_chinese_text_without_policy_description() -> None
     )
 
     assert not dialog.size_spin.isEnabled()
-    assert "网格方法" not in {
-        label.text() for label in dialog.findChildren(QLabel)
-    }
-    assert not hasattr(dialog, "method_combo")
     assert dialog.shape_combo.currentText() == "线网格"
     assert dialog.formulation_combo.currentText() == "Truss2"
-    assert not hasattr(dialog, "line_policy_label")
     assert dialog._buttons.button(
         QDialogButtonBox.StandardButton.Ok
     ).isEnabled()

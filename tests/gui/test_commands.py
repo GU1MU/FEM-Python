@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import gc
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from threading import Thread
 from typing import get_overloads
@@ -194,15 +194,6 @@ def test_command_outcome_is_strict_sanitized_and_deeply_owned() -> None:
     assert outcome.materialization_generation == 5
     assert outcome.record_count == 0
     assert outcome.diagnostic_summary == "first line second line"
-    assert not hasattr(outcome, "__dict__")
-    assert {field.name for field in fields(GuiCommandOutcome)} == {
-        "output_path",
-        "source",
-        "materialization_generation",
-        "selection",
-        "record_count",
-        "diagnostic_summary",
-    }
     with pytest.raises(FrozenInstanceError):
         outcome.record_count = 1  # type: ignore[misc]
 

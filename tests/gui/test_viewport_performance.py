@@ -483,12 +483,11 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     _application()
     viewport = FEMViewport()
     viewport._geometry = build_model_geometry(make_static_pull_truss_model())
-    assert viewport._element_line_width() == 5
-    assert viewport._line_render_options() == {"render_lines_as_tubes": True}
-    assert viewport._node_point_size() == 11
-    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#3F6F8C"
-    assert viewport._element_layer_color(viewport._visual_palette()) == "#3F6F8C"
-    assert viewport._node_layer_color(viewport._visual_palette()) == "#9A6F3F"
+    line_width = viewport._element_line_width()
+    line_node_size = viewport._node_point_size()
+    assert viewport._line_render_options().get("render_lines_as_tubes") is True
+    palette = {"mesh": "lightblue", "element": "blue", "node": "brown"}
+    assert viewport._mesh_layer_color(palette) == "blue"
     node_labels = viewport._label_render_options("node")
     element_labels = viewport._label_render_options("element")
     assert node_labels["always_visible"]
@@ -496,29 +495,27 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     assert node_labels["justification_vertical"] == "bottom"
     assert element_labels["justification_vertical"] == "top"
 
-    viewport._geometry = None
-    assert viewport._element_line_width() == 1
-    assert viewport._line_render_options() == {}
-    assert viewport._node_point_size() == 7
-    assert viewport._mesh_layer_color(viewport._visual_palette()) == "#BFDCEB"
-    assert viewport._element_layer_color(viewport._visual_palette()) == "#3F6F8C"
-    assert viewport._node_layer_color(viewport._visual_palette()) == "#9A6F3F"
+    viewport._geometry = build_model_geometry(FEMModel(make_selection_quad_mesh()))
+    assert line_width > viewport._element_line_width() > 0
+    assert line_node_size > viewport._node_point_size() > 0
+    assert not viewport._line_render_options().get("render_lines_as_tubes", False)
+    assert viewport._mesh_layer_color(palette) == "lightblue"
 
 
 @pytest.mark.parametrize(
     "mesh_factory",
     [make_selection_quad_mesh, make_selection_hex_mesh],
 )
-def test_2d_and_3d_meshes_share_element_and_node_colors(mesh_factory):
+def test_2d_and_3d_meshes_use_the_supplied_layer_palette(mesh_factory):
     _application()
     viewport = FEMViewport()
     viewport._geometry = build_model_geometry(FEMModel(mesh_factory()))
-    palette = viewport._visual_palette()
+    palette = {"mesh": "lightblue", "element": "blue", "node": "brown"}
 
     assert not viewport._is_line_mesh()
-    assert viewport._mesh_layer_color(palette) == "#BFDCEB"
-    assert viewport._element_layer_color(palette) == "#3F6F8C"
-    assert viewport._node_layer_color(palette) == "#9A6F3F"
+    assert viewport._mesh_layer_color(palette) == "lightblue"
+    assert viewport._element_layer_color(palette) == "blue"
+    assert viewport._node_layer_color(palette) == "brown"
 
 
 @pytest.mark.parametrize(

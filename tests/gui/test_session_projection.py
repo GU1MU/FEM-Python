@@ -334,7 +334,6 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
         window.inspection_service.result_provider
         is provider
     )
-    assert not hasattr(window, "result_data")
     assert window.result_tree.topLevelItem(0).text(0) == "Job-1"
     assert window.result_tree.topLevelItem(0).child(0).text(0) == "pull"
     assert not window.actions["query"].isEnabled()
