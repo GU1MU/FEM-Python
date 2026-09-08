@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import ast
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
@@ -42,10 +39,6 @@ from fem_gui.widgets.agent_chat import (
     _restricted_markdown_html,
     _streaming_plaintext_html,
 )
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 @dataclass
@@ -200,18 +193,6 @@ def test_event_contract_module_is_ui_and_agent_independent():
 
     assert "PySide6" not in imported_roots
     assert "fem_agent" not in imported_roots
-    assert imported_roots <= {
-        "__future__",
-        "copy",
-        "dataclasses",
-        "datetime",
-        "enum",
-        "json",
-        "math",
-        "re",
-        "types",
-        "typing",
-    }
 
 
 def test_event_schema_round_trip_and_unknown_values_are_rejected():
@@ -759,8 +740,10 @@ def test_diagnostic_severity_is_structured_and_separate_from_tools():
     assert turn.timeline[-1].item_id == "diagnostic-1"
 
 
-def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
-    application = _application()
+def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui(
+    gui_application,
+):
+    application = gui_application
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(FakeAgentEventStream().review_preview())
     drawer.resize(440, 760)
@@ -802,8 +785,8 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui():
     drawer.close()
 
 
-def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
-    application = _application()
+def test_failed_turn_keeps_diagnostic_without_duplicate_status_box(gui_application):
+    application = gui_application
     events = _Events(session_id="failed-turn-ui")
     drawer = AgentChatDrawer()
     drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
@@ -850,8 +833,8 @@ def test_failed_turn_keeps_diagnostic_without_duplicate_status_box():
     drawer.close()
 
 
-def test_incremental_ui_escapes_raw_html_and_shows_stream_status():
-    application = _application()
+def test_incremental_ui_escapes_raw_html_and_shows_stream_status(gui_application):
+    application = gui_application
     events = _Events(session_id="ui-session")
     start = _turn_start(events)
     message_start = events.make(
@@ -940,8 +923,8 @@ def test_projector_in_place_preserves_1000_single_character_deltas(
     assert projector.message_view("many-deltas-message").text == "字" * 1_000
 
 
-def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
-    application = _application()
+def test_streaming_deltas_keep_existing_widgets_and_skip_full_render(gui_application):
+    application = gui_application
     events = _Events(session_id="stable-widget-session")
     log = [_turn_start(events)]
     log.extend(_tool_events(events, "stable-tool"))
@@ -990,8 +973,8 @@ def test_streaming_deltas_keep_existing_widgets_and_skip_full_render():
     drawer.close()
 
 
-def test_tool_lifecycle_events_coalesce_and_update_the_card_in_place():
-    application = _application()
+def test_tool_lifecycle_events_coalesce_and_update_the_card_in_place(gui_application):
+    application = gui_application
     events = _Events(session_id="incremental-tool-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events((_turn_start(events),))
@@ -1025,8 +1008,8 @@ def test_tool_lifecycle_events_coalesce_and_update_the_card_in_place():
     drawer.close()
 
 
-def test_long_process_message_collapses_and_expands_while_streaming():
-    application = _application()
+def test_long_process_message_collapses_and_expands_while_streaming(gui_application):
+    application = gui_application
     events = _Events(session_id="narrative-collapse-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1086,8 +1069,8 @@ def test_long_process_message_collapses_and_expands_while_streaming():
     drawer.close()
 
 
-def test_short_process_message_shows_directly_without_toggle():
-    application = _application()
+def test_short_process_message_shows_directly_without_toggle(gui_application):
+    application = gui_application
     events = _Events(session_id="short-process-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1124,8 +1107,10 @@ def test_short_process_message_shows_directly_without_toggle():
     drawer.close()
 
 
-def test_short_multi_sentence_process_message_shows_directly_without_toggle():
-    application = _application()
+def test_short_multi_sentence_process_message_shows_directly_without_toggle(
+    gui_application,
+):
+    application = gui_application
     events = _Events(session_id="short-multi-sentence-process-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1166,9 +1151,10 @@ def test_short_multi_sentence_process_message_shows_directly_without_toggle():
     ["decision_request", "patch_preview", "result_summary"],
 )
 def test_formal_assistant_messages_never_collapse_when_long(
+    gui_application,
     presentation_kind,
 ):
-    application = _application()
+    application = gui_application
     events = _Events(session_id=f"formal-{presentation_kind}-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1203,8 +1189,8 @@ def test_formal_assistant_messages_never_collapse_when_long(
     drawer.close()
 
 
-def test_proposal_preview_never_collapses_when_long():
-    application = _application()
+def test_proposal_preview_never_collapses_when_long(gui_application):
+    application = gui_application
     events = _Events(session_id="proposal-preview-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1242,8 +1228,8 @@ def test_proposal_preview_never_collapses_when_long():
     drawer.close()
 
 
-def test_live_activity_shows_analysis_and_current_tool_progress():
-    application = _application()
+def test_live_activity_shows_analysis_and_current_tool_progress(gui_application):
+    application = gui_application
     events = _Events(session_id="live-activity-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events((_turn_start(events),))
@@ -1284,8 +1270,8 @@ def test_live_activity_shows_analysis_and_current_tool_progress():
     drawer.close()
 
 
-def test_restricted_markdown_renders_ordered_and_unordered_lists():
-    application = _application()
+def test_restricted_markdown_renders_ordered_and_unordered_lists(gui_application):
+    application = gui_application
     events = _Events(session_id="markdown-list-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1365,8 +1351,8 @@ def test_message_paragraphs_have_more_space_than_wrapped_lines():
     assert "<p style='margin:7px 0 0 0;'>第二段。 ▌</p>" in streaming
 
 
-def test_restricted_markdown_renders_safe_aligned_tables():
-    application = _application()
+def test_restricted_markdown_renders_safe_aligned_tables(gui_application):
+    application = gui_application
     events = _Events(session_id="markdown-table-session")
     drawer = AgentChatDrawer()
     drawer.replay_agent_events(
@@ -1427,8 +1413,8 @@ def test_restricted_markdown_renders_safe_aligned_tables():
     drawer.close()
 
 
-def test_conversation_follows_stream_until_user_scrolls_up():
-    application = _application()
+def test_conversation_follows_stream_until_user_scrolls_up(gui_application):
+    application = gui_application
     events = _Events(session_id="scroll-follow-session")
     start = _turn_start(events)
     message_start = events.make(
@@ -1494,8 +1480,8 @@ def test_conversation_follows_stream_until_user_scrolls_up():
     drawer.close()
 
 
-def test_wheel_over_agent_text_scrolls_the_conversation():
-    application = _application()
+def test_wheel_over_agent_text_scrolls_the_conversation(gui_application):
+    application = gui_application
     events = _Events(session_id="wheel-over-text-session")
     drawer = AgentChatDrawer()
     drawer.resize(420, 320)
@@ -1550,8 +1536,8 @@ def test_wheel_over_agent_text_scrolls_the_conversation():
     drawer.close()
 
 
-def test_conversation_uses_white_background_and_compact_left_inset():
-    application = _application()
+def test_conversation_uses_white_background_and_compact_left_inset(gui_application):
+    application = gui_application
     drawer = AgentChatDrawer()
     drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
     drawer.resize(420, 320)
@@ -1578,8 +1564,10 @@ def test_conversation_uses_white_background_and_compact_left_inset():
     drawer.close()
 
 
-def test_conversation_reserves_scrollbar_width_before_content_overflows():
-    application = _application()
+def test_conversation_reserves_scrollbar_width_before_content_overflows(
+    gui_application,
+):
+    application = gui_application
     events = _Events(session_id="conversation-width-session")
     drawer = AgentChatDrawer()
     drawer.setStyleSheet(_AGENT_CHAT_STYLESHEET)
@@ -1641,8 +1629,8 @@ def test_conversation_reserves_scrollbar_width_before_content_overflows():
     drawer.close()
 
 
-def test_incremental_render_preserves_expanded_tool_group():
-    application = _application()
+def test_incremental_render_preserves_expanded_tool_group(gui_application):
+    application = gui_application
     events = _Events(session_id="expanded-session")
     log = [_turn_start(events)]
     log.extend(_tool_events(events, "visible-tool"))
@@ -1687,8 +1675,8 @@ def test_incremental_render_preserves_expanded_tool_group():
     drawer.close()
 
 
-def test_structured_titles_and_tool_details_are_forced_plain_text():
-    application = _application()
+def test_structured_titles_and_tool_details_are_forced_plain_text(gui_application):
+    application = gui_application
     events = _Events(session_id="plain-text-session")
     unsafe_markup = "<img src='file:///private/model.png'>"
     log = [

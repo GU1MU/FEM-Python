@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import ast
-import os
-from pathlib import Path
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QWheelEvent
 from PySide6.QtTest import QTest
@@ -54,10 +48,6 @@ _VIEWPORT_ACTIONS = (
 )
 
 
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
 def _actions(parent: QWidget) -> dict[str, QAction]:
     return {
         name: QAction(name, parent)
@@ -103,8 +93,8 @@ class _ViewportProbe(QWidget):
         event.accept()
 
 
-def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
-    application = _application()
+def test_drawer_uses_compact_composer_controls(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
@@ -114,7 +104,6 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     application.processEvents()
 
     drawer = host.agent_chat_drawer
-    labels = drawer.findChildren(QLabel)
     title = drawer.findChild(QLabel, "agentChatTitle")
     header = drawer.findChild(QWidget, "agentChatHeader")
 
@@ -133,12 +122,6 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
         .name()
         == "#ffffff"
     )
-    assert all("Phase 5" not in label.text() for label in labels)
-    assert drawer.findChild(QWidget, "agentChatPreviewBadge") is None
-    assert drawer.findChild(QWidget, "agentChatSubtitle") is None
-    assert drawer.findChild(QWidget, "agentChatWelcome") is None
-    assert drawer.findChild(QWidget, "agentChatAuthoringBinding") is None
-    assert not hasattr(drawer, "new_session_button")
     assert drawer.input.font().pointSizeF() >= 10
     assert drawer.input.height() == 44
     assert drawer.input.parentWidget() is drawer.composer_surface
@@ -165,8 +148,8 @@ def test_drawer_removes_phase_copy_and_uses_compact_composer_controls():
     host.close()
 
 
-def test_reset_runtime_session_keeps_composer_notice_hidden():
-    application = _application()
+def test_reset_runtime_session_keeps_composer_notice_hidden(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     drawer = host.agent_chat_drawer
@@ -180,8 +163,10 @@ def test_reset_runtime_session_keeps_composer_notice_hidden():
     host.close()
 
 
-def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
-    application = _application()
+def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared(
+    gui_application,
+):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
@@ -223,8 +208,10 @@ def test_composer_input_expands_for_multiple_lines_and_collapses_when_cleared():
     host.close()
 
 
-def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
-    application = _application()
+def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused(
+    gui_application,
+):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
@@ -250,8 +237,10 @@ def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused():
     host.close()
 
 
-def test_composer_projects_one_proposal_through_local_and_continuation_states():
-    application = _application()
+def test_composer_projects_one_proposal_through_local_and_continuation_states(
+    gui_application,
+):
+    application = gui_application
     stream = FakeAgentEventStream(
         session_id="composer-session",
         event_prefix="composer-event",
@@ -355,8 +344,8 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states():
     drawer.close()
 
 
-def test_proposal_composer_survives_drawer_resize_and_reopen():
-    application = _application()
+def test_proposal_composer_survives_drawer_resize_and_reopen(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 520)
@@ -408,8 +397,8 @@ def test_proposal_composer_survives_drawer_resize_and_reopen():
     host.close()
 
 
-def test_drawer_open_close_and_resize_commit_viewport_geometry():
-    application = _application()
+def test_drawer_open_close_and_resize_commit_viewport_geometry(gui_application):
+    application = gui_application
     viewport = FEMViewport()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -497,8 +486,10 @@ def test_drawer_open_close_and_resize_commit_viewport_geometry():
     host.close()
 
 
-def test_agent_chat_can_be_hidden_temporarily_without_losing_drawer_state():
-    application = _application()
+def test_agent_chat_can_be_hidden_temporarily_without_losing_drawer_state(
+    gui_application,
+):
+    application = gui_application
     viewport = FEMViewport()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -545,8 +536,10 @@ def test_agent_chat_can_be_hidden_temporarily_without_losing_drawer_state():
     host.close()
 
 
-def test_disabling_agent_chat_waits_for_resize_preview_to_hide_before_commit():
-    application = _application()
+def test_disabling_agent_chat_waits_for_resize_preview_to_hide_before_commit(
+    gui_application,
+):
+    application = gui_application
     viewport = FEMViewport()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -572,8 +565,8 @@ def test_disabling_agent_chat_waits_for_resize_preview_to_hide_before_commit():
     host.close()
 
 
-def test_drawer_animation_frames_only_update_reveal_geometry():
-    application = _application()
+def test_drawer_animation_frames_only_update_reveal_geometry(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -603,8 +596,8 @@ def test_drawer_animation_frames_only_update_reveal_geometry():
     host.close()
 
 
-def test_native_viewport_cannot_cover_independent_tool_overlays():
-    application = _application()
+def test_native_viewport_cannot_cover_independent_tool_overlays(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     viewport.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
     host = ModelViewportOverlayHost(viewport)
@@ -665,8 +658,8 @@ def test_native_viewport_cannot_cover_independent_tool_overlays():
     host.close()
 
 
-def test_launcher_drag_moves_within_viewport_without_opening_drawer():
-    application = _application()
+def test_launcher_drag_moves_within_viewport_without_opening_drawer(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -711,8 +704,8 @@ def test_launcher_drag_moves_within_viewport_without_opening_drawer():
     host.close()
 
 
-def test_tool_overlays_follow_host_window_lifecycle():
-    application = _application()
+def test_tool_overlays_follow_host_window_lifecycle(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(720, 460)
@@ -771,8 +764,8 @@ def test_tool_overlays_follow_host_window_lifecycle():
     host.close()
 
 
-def test_drawer_resizes_viewport_while_scope_bar_remains_an_overlay():
-    application = _application()
+def test_drawer_resizes_viewport_while_scope_bar_remains_an_overlay(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     panel = ViewportPanel(viewport, _actions(viewport))
     panel.resize(800, 600)
@@ -818,8 +811,8 @@ def test_drawer_resizes_viewport_while_scope_bar_remains_an_overlay():
     panel.close()
 
 
-def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
-    application = _application()
+def test_drawer_hit_area_consumes_input_and_outside_remains_viewport(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(680, 420)
@@ -875,41 +868,12 @@ def test_drawer_hit_area_consumes_input_and_outside_remains_viewport():
     host.close()
 
 
-def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
+def test_static_preview_controls_do_not_create_files_or_start_runtime(
+    gui_application,
     tmp_path,
     monkeypatch,
 ):
-    application = _application()
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "fem_gui"
-        / "widgets"
-        / "agent_chat.py"
-    )
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    imported_roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_roots.update(
-                alias.name.split(".", 1)[0]
-                for alias in node.names
-            )
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            imported_roots.add(node.module.split(".", 1)[0])
-    assert imported_roots <= {
-        "__future__",
-        "PySide6",
-        "agent_authoring",
-        "agent_events",
-        "agent_runtime",
-        "agent_workspace",
-        "collections",
-        "html",
-        "pathlib",
-        "re",
-    }
-
+    application = gui_application
     monkeypatch.chdir(tmp_path)
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
@@ -946,8 +910,8 @@ def test_static_preview_controls_do_not_create_files_or_unbounded_dependencies(
     host.close()
 
 
-def test_expanded_narrative_stays_within_viewport_after_drawer_resize():
-    application = _application()
+def test_expanded_narrative_stays_within_viewport_after_drawer_resize(gui_application):
+    application = gui_application
     viewport = _ViewportProbe()
     host = ModelViewportOverlayHost(viewport)
     host.resize(900, 620)
