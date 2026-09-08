@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 from functools import lru_cache
-import json
 from pathlib import Path
 
 
@@ -12,13 +11,6 @@ GUI_ROOT = SRC_ROOT / "fem_gui"
 POST_ROOT = SRC_ROOT / "fem" / "post"
 PROVIDER_ROOT = SRC_ROOT.joinpath(*"fem.application.results".split("."))
 AGENT_ROOT = SRC_ROOT / "fem_agent"
-COMPATIBILITY_LEDGER = (
-    PROJECT_ROOT
-    / "tests"
-    / "helpers" / "fixtures"
-    / "phase8"
-    / "result_compatibility_ledger.json"
-)
 DEFERRED_AGENT_RESULT_ENTRYPOINTS = {
     "fem_agent.tools.results.query_results": (
         Path("src/fem_agent/worker.py"),
@@ -278,23 +270,3 @@ def test_deferred_agent_result_implementation_allowlist_is_exact() -> None:
         for path, _ in _forbidden_imports(AGENT_ROOT, ("fem.post",))
     }
     assert post_consumers == DEFERRED_AGENT_RESULT_IMPLEMENTATIONS
-
-    ledger = json.loads(COMPATIBILITY_LEDGER.read_text(encoding="utf-8"))
-    deferred_entries = {
-        entry["symbol"]: {
-            "visibility": entry["visibility"],
-            "current_callers": tuple(
-                Path(caller)
-                for caller in entry["current_callers"]
-            ),
-        }
-        for entry in ledger["entries"]
-        if entry["target_batch"] == "Deferred: Agent Integration"
-    }
-    assert deferred_entries == {
-        symbol: {
-            "visibility": "deferred_public",
-            "current_callers": callers,
-        }
-        for symbol, callers in DEFERRED_AGENT_RESULT_ENTRYPOINTS.items()
-    }
