@@ -7,19 +7,10 @@ import pytest
 
 from fem.application import (
     AnalysisRun,
-    MeshEntityRef,
     ModelSession,
-    NamedRegion,
-    RegionAssignment,
     RunStatus,
-    ScopedDefinitionBatch,
-    SectionDefinition,
-    UnitContext,
 )
-from fem.application.native_scope_materialization import NATIVE_PART_OWNERSHIP_KEY
-from fem.core.mesh import Element2D, Mesh2D, Node2D
-from fem.core.model import FEMModel, MaterialDefinition
-from fem.geometry import RectangleGeometry
+from fem.core.model import MaterialDefinition
 from fem.io.project import dumps_project, loads_project
 from fem.mesh.settings import MeshSettings
 from fem_agent.analysis_authoring import (
@@ -44,7 +35,6 @@ from fem_gui.agent_authoring import (
     SessionGeometryAuthoringPort,
     authoring_context_from_snapshot,
 )
-
 
 from tests.helpers.agent_session_fixtures import (
     _a5_analysis as _analysis,
@@ -105,7 +95,7 @@ def _renamed_analysis(suffix: str) -> LinearStaticAnalysis:
     )
 
 
-def test_a5_complete_static_definition_applies_atomically_and_undoes() -> None:
+def test_complete_static_definition_applies_atomically_and_undoes() -> None:
     session = _session()
     projections = []
     port = SessionGeometryAuthoringPort(
@@ -161,7 +151,7 @@ def test_a5_complete_static_definition_applies_atomically_and_undoes() -> None:
     assert len(projections) == 2
 
 
-def test_a5_missing_confirmation_dimension_and_unit_fail_closed() -> None:
+def test_missing_confirmation_dimension_and_unit_fail_closed() -> None:
     session = _session()
     before = session.snapshot()
     with pytest.raises(AnalysisAuthoringError, match="unit must exactly match"):
@@ -195,7 +185,7 @@ def test_a5_missing_confirmation_dimension_and_unit_fail_closed() -> None:
         _change(session, duplicate)
 
 
-def test_a5_pressure_direction_has_persistent_kernel_sign() -> None:
+def test_pressure_direction_has_persistent_kernel_sign() -> None:
     step = _analysis(pressure=True).to_step()
     assert step.edge_loads[0].magnitude == -12.0
     assert step.edge_loads[0].load_type == "pressure"
@@ -206,7 +196,7 @@ def test_a5_pressure_direction_has_persistent_kernel_sign() -> None:
         )
 
 
-def test_a5_current_node_and_three_dimensional_face_loads_compile_to_kernel() -> None:
+def test_current_node_and_three_dimensional_face_loads_compile_to_kernel() -> None:
     analysis = LinearStaticAnalysis(
         "分析步-静力3D",
         3,
@@ -277,7 +267,7 @@ def test_a5_current_node_and_three_dimensional_face_loads_compile_to_kernel() ->
     assert step.surface_loads[0].vector == (1.0, 0.0, 0.0)
 
 
-def test_a5_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
+def test_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
     session = _session()
     patch = _change(session)
     snapshot = session.snapshot()
@@ -315,7 +305,7 @@ def test_a5_tampered_nlgeom_and_widened_json_types_are_rejected() -> None:
         )
 
 
-def test_a5_replays_legacy_a4_definition_operation_without_steps() -> None:
+def test_replays_legacy_definition_operation_without_steps() -> None:
     session = _session()
     session.replace_model_definitions(
         session.snapshot().materials,
@@ -349,7 +339,7 @@ def test_a5_replays_legacy_a4_definition_operation_without_steps() -> None:
     assert batch.steps == snapshot.steps
 
 
-def test_a5_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> None:
+def test_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> None:
     session = _session()
     first = _change(session)
     batch = scoped_definition_batch_from_operations(
@@ -389,7 +379,7 @@ def test_a5_overwrite_reject_and_stale_proposal_leave_gui_state_unchanged() -> N
     assert bridge.state(other.proposal_id) is ProposalState.STALE
 
 
-def test_a5_invalid_scope_exception_is_atomic() -> None:
+def test_invalid_scope_exception_is_atomic() -> None:
     session = _session()
     patch = _change(session)
     snapshot = session.snapshot()
@@ -415,7 +405,7 @@ def test_a5_invalid_scope_exception_is_atomic() -> None:
     assert after.steps == ()
 
 
-def test_a5_valid_result_forces_gui_confirmation() -> None:
+def test_valid_result_forces_gui_confirmation() -> None:
     session = _session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact

@@ -32,6 +32,7 @@ from fem_gui.agent_authoring import (
     SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
+
 from tests.helpers.agent_result_fixtures import STATIC_STEP_NAME, make_solved_session
 from tests.helpers.agent_session_fixtures import (
     _a5_analysis as _analysis,

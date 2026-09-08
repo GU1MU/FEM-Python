@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fem.application.preprocessing import generate_fem_model
 from fem.geometry import (
     DiskGeometry,
@@ -15,8 +17,6 @@ from fem.mesh import gmsh as gmsh_meshing
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent
 
-import pytest
-
 
 pytestmark = pytest.mark.integration
 
@@ -25,7 +25,7 @@ def _types(model) -> set[str]:
     return {str(element.type) for element in model.mesh.elements}
 
 
-def test_real_a3_explicit_strict_quad_uses_requested_size_without_fallback(
+def test_real_explicit_strict_quad_uses_requested_size_without_fallback(
     real_gmsh,
     monkeypatch,
 ) -> None:
@@ -64,7 +64,7 @@ def test_real_a3_explicit_strict_quad_uses_requested_size_without_fallback(
     )
 
 
-def test_real_a3_auto_triangle_with_generic_local_refinement_keeps_absolute_sizes(
+def test_real_auto_triangle_with_generic_local_refinement_keeps_absolute_sizes(
     real_gmsh,
     monkeypatch,
 ) -> None:
@@ -112,7 +112,7 @@ def test_real_a3_auto_triangle_with_generic_local_refinement_keeps_absolute_size
     assert specs[0].cell_shape == "tri"
 
 
-def test_real_a3_strict_quad_failure_does_not_downgrade_to_triangles(
+def test_real_strict_quad_failure_does_not_downgrade_to_triangles(
     real_gmsh,
 ) -> None:
     del real_gmsh

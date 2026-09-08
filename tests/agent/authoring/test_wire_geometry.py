@@ -44,7 +44,7 @@ def _frame_arguments() -> dict[str, object]:
     }
 
 
-def test_phase1_wire_draft_payload_preview_and_round_trip_preserve_identity() -> None:
+def test_wire_draft_payload_preview_and_round_trip_preserve_identity() -> None:
     recipe = WireGeometry(
         "线框-折线",
         (
@@ -74,7 +74,7 @@ def test_phase1_wire_draft_payload_preview_and_round_trip_preserve_identity() ->
     assert preview["lines"] == [[0, 1], [1, 2]]
 
 
-def test_phase1_wire_keeps_coincident_names_and_unshared_crossings_independent() -> None:
+def test_wire_keeps_coincident_names_and_unshared_crossings_independent() -> None:
     coincident = WireGeometry(
         "线框-同坐标",
         (
@@ -146,7 +146,7 @@ def test_phase1_wire_keeps_coincident_names_and_unshared_crossings_independent()
         ),
     ],
 )
-def test_phase1_wire_rejects_invalid_topology_deterministically(
+def test_wire_rejects_invalid_topology_deterministically(
     points,
     members,
     error,
@@ -155,7 +155,7 @@ def test_phase1_wire_rejects_invalid_topology_deterministically(
         wire_geometry("线框-无效", points=points, members=members)
 
 
-def test_phase1_wire_rejects_non_finite_coordinates_and_payload_extensions() -> None:
+def test_wire_rejects_non_finite_coordinates_and_payload_extensions() -> None:
     with pytest.raises(ValueError, match="finite real number"):
         WirePoint("A", math.nan, 0.0, 0.0)
 
@@ -173,7 +173,7 @@ def test_phase1_wire_rejects_non_finite_coordinates_and_payload_extensions() -> 
         )
 
 
-def test_phase1_prepare_geometry_schema_exposes_only_bounded_named_wire() -> None:
+def test_prepare_geometry_schema_exposes_only_bounded_named_wire() -> None:
     variants = _PREPARE_GEOMETRY.parameters["properties"]["geometry"]["oneOf"]
     wire = next(
         item
@@ -188,7 +188,7 @@ def test_phase1_prepare_geometry_schema_exposes_only_bounded_named_wire() -> Non
     assert wire["properties"]["members"]["items"]["additionalProperties"] is False
 
 
-def test_phase1_plate_or_slot_intent_cannot_be_downgraded_to_wire() -> None:
+def test_plate_or_slot_intent_cannot_be_downgraded_to_wire() -> None:
     session = ModelSession()
     bridge = AgentAuthoringBridge(
         SessionGeometryAuthoringPort(session, lambda: None)
@@ -216,7 +216,7 @@ def test_phase1_plate_or_slot_intent_cannot_be_downgraded_to_wire() -> None:
     assert session.snapshot().parts == ()
 
 
-def test_phase1_gui_bridge_commits_wire_once_then_project_round_trips(tmp_path) -> None:
+def test_gui_bridge_commits_wire_once_then_project_round_trips(tmp_path) -> None:
     session = ModelSession()
     refreshes: list[int] = []
     bridge = AgentAuthoringBridge(
@@ -259,7 +259,7 @@ def test_phase1_gui_bridge_commits_wire_once_then_project_round_trips(tmp_path) 
     assert reopened.parts[0].geometry_recipe == accepted.parts[0].geometry_recipe
 
 
-def test_phase1_rejected_wire_proposal_leaves_blank_session_unchanged() -> None:
+def test_rejected_wire_proposal_leaves_blank_session_unchanged() -> None:
     session = ModelSession()
     refreshes: list[int] = []
     bridge = AgentAuthoringBridge(
@@ -290,7 +290,7 @@ def test_phase1_rejected_wire_proposal_leaves_blank_session_unchanged() -> None:
     assert refreshes == []
 
 
-def test_phase1_stale_wire_proposal_cannot_add_a_part() -> None:
+def test_stale_wire_proposal_cannot_add_a_part() -> None:
     session = ModelSession()
     units = UnitContext("mm", "N", "MPa", convention="N-mm-MPa")
     session.create_native_project_with_first_part(

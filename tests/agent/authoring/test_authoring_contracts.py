@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import pytest
 
+from fem_agent.naming import NameAllocator, NamePolicy, NamePolicyError
 from fem_agent.authoring import (
     AgentDraft,
     AgentProposal,
@@ -24,6 +25,7 @@ from fem_agent.authoring import (
     ProposalState,
     RequirementLedger,
     RequirementStatus,
+    UnitContextSummary,
 )
 
 
@@ -299,3 +301,52 @@ def test_hash_rejects_nonfinite_and_local_or_executable_payloads() -> None:
     proposal = _proposal()
     with pytest.raises(AuthoringContractError, match="hash"):
         replace(proposal, proposal_hash="0" * 64)
+
+
+def test_name_policy_allocates_normalized_unique_stable_names() -> None:
+    policy = NamePolicy()
+    allocator = NameAllocator(
+        {
+            "parts": (
+                "部件-偏心孔板",
+                "部件-偏心孔板-2",
+                "部件-Ａ板",
+            ),
+            "models": ("模型-偏心孔板",),
+        },
+        policy=policy,
+    )
+
+    assert allocator.allocate("parts", "部件", "偏心孔板") == "部件-偏心孔板-3"
+    assert allocator.allocate("models", "部件", "偏心孔板") == "部件-偏心孔板"
+    assert allocator.allocate("parts", "部件", "A板") == "部件-A板-2"
+    assert policy.compose("边", "固定端") == "边-固定端"
+
+    with pytest.raises(NamePolicyError):
+        policy.compose("部件", " 偏心孔板")
+    with pytest.raises(NamePolicyError):
+        policy.compose("未知", "偏心孔板")
+    with pytest.raises(NamePolicyError):
+        policy.compose("部件", "Part-1")
+    with pytest.raises(NamePolicyError):
+        policy.validate("部件-Ａ板")
+
+
+def test_unit_summary_keeps_explicit_not_applicable_fields() -> None:
+    units = UnitContextSummary(
+        length="mm",
+        force="N",
+        stress="MPa",
+        density=None,
+        acceleration=None,
+        convention="N-mm-MPa",
+    )
+
+    assert units.to_dict() == {
+        "length": "mm",
+        "force": "N",
+        "stress": "MPa",
+        "density": None,
+        "acceleration": None,
+        "convention": "N-mm-MPa",
+    }

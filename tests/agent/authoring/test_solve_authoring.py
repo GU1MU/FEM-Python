@@ -38,6 +38,7 @@ from fem_agent.solve_authoring import (
     solve_operation_identity,
 )
 from fem_agent.tools.registry import AgentToolRegistry
+
 from tests.helpers.model_builders import make_static_pull_truss_model
 
 
@@ -168,7 +169,7 @@ def _proposal(session: ModelSession, proposal_id: str = "proposal-a6"):
     )
 
 
-def test_a6_validation_stamp_is_deterministic_and_tracks_report_content() -> None:
+def test_validation_stamp_is_deterministic_and_tracks_report_content() -> None:
     session = _native_session()
     record = session.validation_for(STEP_NAME)
     assert record is not None
@@ -192,7 +193,7 @@ def test_a6_validation_stamp_is_deterministic_and_tracks_report_content() -> Non
     assert first.stamp_hash != changed.stamp_hash
 
 
-def test_a6_blocking_diagnostic_cannot_create_executable_proposal() -> None:
+def test_blocking_diagnostic_cannot_create_executable_proposal() -> None:
     session = _native_session(blocked=True)
 
     with pytest.raises(SolveAuthoringError, match="blocking"):
@@ -201,7 +202,7 @@ def test_a6_blocking_diagnostic_cannot_create_executable_proposal() -> None:
     assert session.snapshot().runs == ()
 
 
-def test_a6_summary_and_proposal_are_bounded_and_provider_safe() -> None:
+def test_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     session = _native_session()
     snapshot = session.snapshot()
     summary = build_solve_summary(
@@ -237,7 +238,7 @@ def test_a6_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     assert AgentProposal.from_dict(proposal.to_dict()) == proposal
 
 
-def test_a6_preserves_legacy_solve_operation_but_rejects_mixed_shape() -> None:
+def test_preserves_legacy_solve_operation_but_rejects_mixed_shape() -> None:
     legacy = ModelOperation(
         OperationKind.REQUEST_SOLVE,
         {"step_name": "Static-1", "validation_stamp": "legacy-stamp"},
@@ -257,7 +258,7 @@ def test_a6_preserves_legacy_solve_operation_but_rejects_mixed_shape() -> None:
         solve_operation_identity(legacy)
 
 
-def test_a6_provider_tool_catalog_exposes_no_confirmation_authority(
+def test_provider_tool_catalog_exposes_no_confirmation_authority(
     tmp_path,
 ) -> None:
     names = {

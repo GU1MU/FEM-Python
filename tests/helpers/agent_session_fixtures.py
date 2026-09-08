@@ -87,7 +87,7 @@ def _cloud_smoke_config(
 
 
 # ---------------------------------------------------------------------------
-# Phase A5 session and analysis (extracted from tests/test_agent_authoring_phase_a5.py)
+# Session and analysis fixtures for analysis authoring tests.
 # ---------------------------------------------------------------------------
 
 
@@ -246,7 +246,7 @@ def _a5_analysis(
 
 
 # ---------------------------------------------------------------------------
-# Phase A4 session and plate model (extracted from tests/test_agent_authoring_phase_a4.py)
+# Session and plate model fixtures for definition authoring tests.
 # ---------------------------------------------------------------------------
 
 

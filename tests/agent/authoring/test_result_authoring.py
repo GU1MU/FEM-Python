@@ -54,7 +54,7 @@ def _query(
     )
 
 
-def test_a7_query_schema_is_strict_complete_and_round_trips() -> None:
+def test_query_schema_is_strict_complete_and_round_trips() -> None:
     query = _query()
 
     assert AgentResultQuery.from_dict(query.to_dict()) == query
@@ -71,7 +71,7 @@ def test_a7_query_schema_is_strict_complete_and_round_trips() -> None:
         AgentResultQuery.from_dict(widened)
 
 
-def test_a7_sum_is_limited_to_reaction_force() -> None:
+def test_sum_is_limited_to_reaction_force() -> None:
     with pytest.raises(ResultAuthoringError, match="only for reaction"):
         _query(aggregation=AgentResultAggregation.SUM)
 
@@ -84,7 +84,7 @@ def test_a7_sum_is_limited_to_reaction_force() -> None:
     assert reaction.aggregation is AgentResultAggregation.SUM
 
 
-def test_a7_fake_port_explanation_uses_only_returned_scalar() -> None:
+def test_fake_port_explanation_uses_only_returned_scalar() -> None:
     request = _query()
     scalar = AgentResultScalar(
         variable=request.variable,
@@ -132,7 +132,7 @@ def test_a7_fake_port_explanation_uses_only_returned_scalar() -> None:
     assert "step 分析步-静力" in explanation
 
 
-def test_a7_no_result_failure_has_no_engineering_scalar() -> None:
+def test_no_result_failure_has_no_engineering_scalar() -> None:
     request = _query()
     response = FakeAgentResultQueryPort().query(request)
 
@@ -142,7 +142,7 @@ def test_a7_no_result_failure_has_no_engineering_scalar() -> None:
     assert "not configured" in explain_result_response(response)
 
 
-def test_a7_provider_payload_is_bounded_and_contains_no_local_bulk_data() -> None:
+def test_provider_payload_is_bounded_and_contains_no_local_bulk_data() -> None:
     request = _query()
     scalar = AgentResultScalar(
         variable=request.variable,
@@ -176,7 +176,7 @@ def test_a7_provider_payload_is_bounded_and_contains_no_local_bulk_data() -> Non
         assert forbidden not in payload.casefold()
 
 
-def test_a7_tool_catalog_exposes_query_without_display_or_confirmation() -> None:
+def test_tool_catalog_exposes_query_without_display_or_confirmation() -> None:
     query_schema = result_query_tool_schema()
     catalog_schema = result_catalog_tool_schema()
     encoded = json.dumps(

@@ -14,6 +14,7 @@ from fem.geometry.gmsh_coordinator import (
     GmshExecutionCoordinator,
 )
 from fem.mesh.settings import MeshSettings
+
 from tests.helpers.mesh_builders import (
     make_selection_mixed_plane_mesh,
     make_selection_quad_mesh,
@@ -69,7 +70,7 @@ def _agent_settings() -> MeshSettings:
     )
 
 
-def test_a3_prepare_keeps_current_intent_and_mesh_then_accepts_both_atomically() -> (
+def test_prepare_keeps_current_intent_and_mesh_then_accepts_both_atomically() -> (
     None
 ):
     session = _meshed_session()
@@ -100,7 +101,7 @@ def test_a3_prepare_keeps_current_intent_and_mesh_then_accepts_both_atomically()
     assert session.validate_task_token(task.token).value == "already_completed"
 
 
-def test_a3_failed_accept_and_explicit_termination_keep_old_mesh() -> None:
+def test_failed_accept_and_explicit_termination_keep_old_mesh() -> None:
     session = _meshed_session()
     before = session.snapshot()
     task = session.prepare_agent_mesh_generation(
@@ -127,7 +128,7 @@ def test_a3_failed_accept_and_explicit_termination_keep_old_mesh() -> None:
     assert session.validate_task_token(task.token).value == "already_completed"
 
 
-def test_a3_cancelled_task_consumes_token_and_keeps_old_mesh() -> None:
+def test_cancelled_task_consumes_token_and_keeps_old_mesh() -> None:
     session = _meshed_session()
     before = session.snapshot()
     task = session.prepare_agent_mesh_generation(
@@ -144,7 +145,7 @@ def test_a3_cancelled_task_consumes_token_and_keeps_old_mesh() -> None:
     assert session.validate_task_token(task.token).value == "already_completed"
 
 
-def test_a3_stale_result_is_discarded_then_token_is_consumed() -> None:
+def test_stale_result_is_discarded_then_token_is_consumed() -> None:
     session = _meshed_session()
     task = session.prepare_agent_mesh_generation(
         "P1",
@@ -165,7 +166,7 @@ def test_a3_stale_result_is_discarded_then_token_is_consumed() -> None:
     assert session.validate_task_token(task.token).value == "already_completed"
 
 
-def test_a3_process_gmsh_coordinator_serializes_threads_and_recovers() -> None:
+def test_process_gmsh_coordinator_serializes_threads_and_recovers() -> None:
     coordinator = GmshExecutionCoordinator()
     state_lock = Lock()
     active = 0
@@ -194,7 +195,7 @@ def test_a3_process_gmsh_coordinator_serializes_threads_and_recovers() -> None:
     assert coordinator.snapshot().owner_thread_id is None
 
 
-def test_a3_waiting_gmsh_owner_is_cancellable() -> None:
+def test_waiting_gmsh_owner_is_cancellable() -> None:
     coordinator = GmshExecutionCoordinator()
     cancel = Event()
     entered = Event()

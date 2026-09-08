@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from fem.application import ModelSession, run_static_preflight
+from fem.application.preprocessing import generate_fem_model
+from fem.io.project import load_project, save_project
+from fem_agent.definition_action_authoring import create_definition_change
+from fem_gui.agent_authoring import authoring_context_from_snapshot
+
 from tests.helpers.agent_line_fixtures import (
     TRUSS_STEP_NAME,
     make_meshed_line_session,
@@ -8,17 +18,6 @@ from tests.helpers.agent_line_fixtures import (
     solve_authoring_session,
     export_line_result,
 )
-
-from pathlib import Path
-
-import pytest
-
-from fem.application import ModelSession, run_static_preflight
-from fem.application.preprocessing import generate_fem_model
-from fem.io.project import load_project, save_project
-from fem_agent.authoring import ProposalState
-from fem_agent.definition_action_authoring import create_definition_change
-from fem_gui.agent_authoring import authoring_context_from_snapshot
 from tests.helpers.agent_authoring_workflows import (
     dispatch_authoring_tool,
     make_authoring_controller,

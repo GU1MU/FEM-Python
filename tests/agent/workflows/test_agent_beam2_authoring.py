@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-from tests.helpers.agent_beam_fixtures import (
-    BEAM_STEP_NAME,
-    apply_line_scopes_and_material,
-    apply_beam_definitions,
-)
-
 from math import isfinite
 from pathlib import Path
 
@@ -15,9 +9,15 @@ from fem.application import BeamOrientation, ModelSession
 from fem.application.preprocessing import generate_fem_model
 from fem.elements.beam_section import parse_beam2_section
 from fem.io.project import load_project, save_project
-from fem_agent.authoring import ModelPatch, ProposalState
+from fem_agent.authoring import ModelPatch
 from fem_agent.definition_action_authoring import create_definition_change
 from fem_gui.agent_authoring import authoring_context_from_snapshot
+
+from tests.helpers.agent_beam_fixtures import (
+    BEAM_STEP_NAME,
+    apply_line_scopes_and_material,
+    apply_beam_definitions,
+)
 from tests.helpers.agent_line_fixtures import (
     apply_definition_action,
     export_line_result,

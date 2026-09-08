@@ -82,7 +82,7 @@ def _recipes() -> tuple[object, ...]:
     return extrusion, revolve, path_sweep, boolean, multi_body
 
 
-def test_phase1_boolean_body_context_payload_round_trip() -> None:
+def test_boolean_body_context_payload_round_trip() -> None:
     recipe = BooleanGeometry(
         "Joined", "fuse", BoxGeometry("Target", 2.0, 2.0, 2.0),
         MovedGeometry(BoxGeometry("Tool", 1.0, 1.0, 1.0), 1.0, 0.0, 0.0),
@@ -93,7 +93,7 @@ def test_phase1_boolean_body_context_payload_round_trip() -> None:
 
 
 @pytest.mark.parametrize("recipe", _recipes())
-def test_phase1_versioned_3d_payload_round_trip_is_strict(recipe: object) -> None:
+def test_versioned_3d_payload_round_trip_is_strict(recipe: object) -> None:
     payload = geometry_recipe_to_payload(recipe)
 
     assert payload["schema_version"] == 1
@@ -105,7 +105,7 @@ def test_phase1_versioned_3d_payload_round_trip_is_strict(recipe: object) -> Non
         geometry_recipe_from_payload(unknown)
 
 
-def test_phase1_payload_rejects_unknown_type_version_and_budgets() -> None:
+def test_payload_rejects_unknown_type_version_and_budgets() -> None:
     with pytest.raises(ValueError, match="fields"):
         geometry_recipe_from_payload({"schema_version": 1, "kind": "loft"})
     with pytest.raises(ValueError, match="schema_version"):
@@ -134,7 +134,7 @@ def test_phase1_payload_rejects_unknown_type_version_and_budgets() -> None:
         geometry_recipe_from_payload(oversized)
 
 
-def test_phase1_legacy_a2_payload_without_version_remains_readable() -> None:
+def test_legacy_payload_without_version_remains_readable() -> None:
     legacy = {"kind": "rectangle", "name": "Legacy", "width": 2.0, "height": 1.0}
 
     assert geometry_recipe_from_payload(legacy) == RectangleGeometry(
@@ -142,7 +142,7 @@ def test_phase1_legacy_a2_payload_without_version_remains_readable() -> None:
     )
 
 
-def test_phase1_proposal_summary_exposes_feature_contract_and_invalidation() -> None:
+def test_proposal_summary_exposes_feature_contract_and_invalidation() -> None:
     recipe = _recipes()[0]
     context = AuthoringContext(
         binding=LocalModelBinding("doc", "session", 0, "blank", True),
@@ -176,7 +176,7 @@ def test_phase1_proposal_summary_exposes_feature_contract_and_invalidation() -> 
 
 
 @pytest.mark.parametrize("recipe", _recipes())
-def test_phase1_catalog_proof_and_project_round_trip_preserve_identity(
+def test_catalog_proof_and_project_round_trip_preserve_identity(
     recipe: object,
 ) -> None:
     before_catalog = feature_topology_catalog(recipe, part_id="P1")
@@ -229,7 +229,7 @@ def test_phase1_catalog_proof_and_project_round_trip_preserve_identity(
         assert proof.expected_body_count >= 1
 
 
-def test_phase3_proves_path_body_while_unproven_boolean_never_guesses() -> None:
+def test_proves_path_body_while_unproven_boolean_never_guesses() -> None:
     path_sweep = _recipes()[2]
     boolean = _recipes()[3]
 
@@ -245,7 +245,7 @@ def test_phase3_proves_path_body_while_unproven_boolean_never_guesses() -> None:
     assert not feature_topology_catalog(boolean)["exact"]
 
 
-def test_phase1_feature_catalog_rejects_an_unbounded_topology() -> None:
+def test_feature_catalog_rejects_an_unbounded_topology() -> None:
     points = tuple(
         WirePoint(f"P{index}", float(index), 0.0, 0.0)
         for index in range(130)

@@ -36,7 +36,7 @@ def _local_control() -> LocalMeshControl:
     )
 
 
-def test_a3_mesh_intent_requires_exactly_one_density_mode() -> None:
+def test_mesh_intent_requires_exactly_one_density_mode() -> None:
     explicit = MeshIntent(
         "triangle",
         1,
@@ -61,7 +61,7 @@ def test_a3_mesh_intent_requires_exactly_one_density_mode() -> None:
         )
 
 
-def test_a3_mesh_intent_json_round_trip_keeps_generic_stable_ref_and_falloff() -> None:
+def test_mesh_intent_json_round_trip_keeps_generic_stable_ref_and_falloff() -> None:
     intent = MeshIntent(
         "quadrilateral",
         2,
@@ -83,7 +83,7 @@ def test_a3_mesh_intent_json_round_trip_keeps_generic_stable_ref_and_falloff() -
     )
 
 
-def test_a3_mesh_intent_connects_mesh_settings_and_strict_auto_spec() -> None:
+def test_mesh_intent_connects_mesh_settings_and_strict_auto_spec() -> None:
     explicit = MeshIntent(
         "quadrilateral",
         1,
@@ -113,7 +113,7 @@ def test_a3_mesh_intent_connects_mesh_settings_and_strict_auto_spec() -> None:
     )
 
 
-def test_a3_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None:
+def test_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
         "模型-偏心孔板",
@@ -155,7 +155,7 @@ def test_a3_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None
     )
 
 
-def test_a3_provider_tool_catalog_exposes_no_confirmation_capability(
+def test_provider_tool_catalog_exposes_no_confirmation_capability(
     tmp_path,
 ) -> None:
     names = {

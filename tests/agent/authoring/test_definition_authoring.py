@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from tests.helpers.agent_definition_fixtures import (
-    build_plate_definition_patch,
-)
-
 from dataclasses import replace
 
 import pytest
@@ -32,14 +28,16 @@ from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_agent.tools.registry import AgentToolRegistry
 from fem_gui.agent_authoring import authoring_context_from_snapshot
 
-
+from tests.helpers.agent_definition_fixtures import (
+    build_plate_definition_patch,
+)
 from tests.helpers.agent_session_fixtures import (
     _a4_plate_model as _plate_model,
     _a4_session as _session,
 )
 
 
-def test_a4_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None:
+def test_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None:
     scopes = build_eccentric_plate_scopes(_session().snapshot())
 
     assert {region.name for region in scopes.regions} == {
@@ -63,7 +61,7 @@ def test_a4_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None
     )
 
 
-def test_a4_plate_scopes_accept_general_strict_sketch_recipe() -> None:
+def test_plate_scopes_accept_general_strict_sketch_recipe() -> None:
     draft = planar_sketch_geometry(
         "草图-孔板",
         contours=(
@@ -104,7 +102,7 @@ def test_a4_plate_scopes_accept_general_strict_sketch_recipe() -> None:
     }
 
 
-def test_a4_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
+def test_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
     session = _session()
     snapshot = session.snapshot()
     snapshot.artifact.model.metadata[NATIVE_SCOPE_CATALOG_KEY][
@@ -118,7 +116,7 @@ def test_a4_scope_selection_fails_closed_on_abnormal_catalog_identity() -> None:
         build_eccentric_plate_scopes(snapshot)
 
 
-def test_a4_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
+def test_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
     session = _session()
     before = session.snapshot()
     patch = build_plate_definition_patch(session)
@@ -150,7 +148,7 @@ def test_a4_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
     assert "域-板体" in after.artifact.model.element_sets
 
 
-def test_a4_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
+def test_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
     session = _session()
     patch = build_plate_definition_patch(session)
     snapshot = session.snapshot()
@@ -179,7 +177,7 @@ def test_a4_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
     assert not session.snapshot().named_regions
 
 
-def test_a4_existing_result_turns_change_into_confirmation_proposal() -> None:
+def test_existing_result_turns_change_into_confirmation_proposal() -> None:
     session = _session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact
@@ -216,7 +214,7 @@ def test_a4_existing_result_turns_change_into_confirmation_proposal() -> None:
     assert session.snapshot().session_revision == snapshot.session_revision
 
 
-def test_a4_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
+def test_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
     session = _session()
     patch = build_plate_definition_patch(session)
     before = session.snapshot()
@@ -250,7 +248,7 @@ def test_a4_current_schema_round_trip_preserves_scopes_and_definitions() -> None
     assert loaded.assignments[0].region_name == "域-板体"
 
 
-def test_a4_provider_catalog_exposes_no_confirmation_or_undo_tool(
+def test_provider_catalog_exposes_no_confirmation_or_undo_tool(
     tmp_path,
 ) -> None:
     names = {

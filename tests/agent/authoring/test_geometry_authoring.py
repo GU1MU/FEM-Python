@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from fem.geometry import SketchCircle, SketchGeometry, SketchRectangle
-from fem_agent.authoring import UnitContextSummary
 from fem_agent.geometry_authoring import (
     add_planar_circle,
     add_planar_polygon,
@@ -20,39 +19,9 @@ from fem_agent.geometry_authoring import (
     translate_geometry,
     update_planar_point,
 )
-from fem_agent.naming import NameAllocator, NamePolicy, NamePolicyError
 
 
-def test_a2_name_policy_allocates_normalized_unique_stable_names() -> None:
-    policy = NamePolicy()
-    allocator = NameAllocator(
-        {
-            "parts": (
-                "部件-偏心孔板",
-                "部件-偏心孔板-2",
-                "部件-Ａ板",
-            ),
-            "models": ("模型-偏心孔板",),
-        },
-        policy=policy,
-    )
-
-    assert allocator.allocate("parts", "部件", "偏心孔板") == "部件-偏心孔板-3"
-    assert allocator.allocate("models", "部件", "偏心孔板") == "部件-偏心孔板"
-    assert allocator.allocate("parts", "部件", "A板") == "部件-A板-2"
-    assert policy.compose("边", "固定端") == "边-固定端"
-
-    with pytest.raises(NamePolicyError):
-        policy.compose("部件", " 偏心孔板")
-    with pytest.raises(NamePolicyError):
-        policy.compose("未知", "偏心孔板")
-    with pytest.raises(NamePolicyError):
-        policy.compose("部件", "Part-1")
-    with pytest.raises(NamePolicyError):
-        policy.validate("部件-Ａ板")
-
-
-def test_a2_recipe_tools_cover_required_primitives_transforms_and_bounded_preview() -> (
+def test_recipe_tools_cover_required_primitives_transforms_and_bounded_preview() -> (
     None
 ):
     rectangle = rectangle_geometry("实体-矩形", width=10.0, height=4.0)
@@ -71,7 +40,7 @@ def test_a2_recipe_tools_cover_required_primitives_transforms_and_bounded_previe
         assert draft.preview.to_dict()["kind"] == "bounded_wireframe"
 
 
-def test_a2_plate_hole_accepts_coordinates_or_offset_and_rejects_incomplete_hole() -> (
+def test_plate_hole_accepts_coordinates_or_offset_and_rejects_incomplete_hole() -> (
     None
 ):
     by_coordinate = plate_with_hole_geometry(
@@ -110,7 +79,7 @@ def test_a2_plate_hole_accepts_coordinates_or_offset_and_rejects_incomplete_hole
         )
 
 
-def test_a2_incremental_circle_migrates_legacy_recipe_to_general_sketch() -> None:
+def test_incremental_circle_migrates_legacy_recipe_to_general_sketch() -> None:
     legacy = plate_with_hole_geometry(
         "实体-旧孔板",
         width=100.0,
@@ -148,7 +117,7 @@ def test_a2_incremental_circle_migrates_legacy_recipe_to_general_sketch() -> Non
     ] == [(50.0, 100.0, 10.0), (50.0, 130.0, 5.0)]
 
 
-def test_a2_active_planar_draft_uses_no_single_hole_recipe() -> None:
+def test_active_planar_draft_uses_no_single_hole_recipe() -> None:
     draft = planar_sketch_geometry(
         "草图-双孔板",
         contours=(
@@ -163,7 +132,7 @@ def test_a2_active_planar_draft_uses_no_single_hole_recipe() -> None:
     assert len(draft.preview.points) == 54
 
 
-def test_a2_general_polygon_profile_can_be_extended_and_reshaped() -> None:
+def test_general_polygon_profile_can_be_extended_and_reshaped() -> None:
     polygon = planar_polygon_geometry(
         "草图-三角板",
         vertices=((0.0, 0.0), (10.0, 0.0), (0.0, 10.0)),
@@ -187,23 +156,3 @@ def test_a2_general_polygon_profile_can_be_extended_and_reshaped() -> None:
     assert with_second_profile.recipe_payload["kind"] == "planar_sketch"
     assert with_second_profile.recipe.point("P2").u == 12.0
     assert len(with_second_profile.recipe.curves) == 7
-
-
-def test_a2_unit_summary_keeps_explicit_not_applicable_fields() -> None:
-    units = UnitContextSummary(
-        length="mm",
-        force="N",
-        stress="MPa",
-        density=None,
-        acceleration=None,
-        convention="N-mm-MPa",
-    )
-
-    assert units.to_dict() == {
-        "length": "mm",
-        "force": "N",
-        "stress": "MPa",
-        "density": None,
-        "acceleration": None,
-        "convention": "N-mm-MPa",
-    }
