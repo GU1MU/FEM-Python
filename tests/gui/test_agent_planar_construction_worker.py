@@ -20,15 +20,12 @@ from fem.application import (
     compile_planar_construction,
     compile_planar_feature_recipe,
 )
-from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
 from fem.geometry.construction_ir import PlanarConstructionIR
 import fem_gui.agent_authoring as agent_authoring
-from fem_gui.agent_authoring import (
-    AgentAuthoringBridge,
-    SessionGeometryAuthoringPort,
-    SessionResultQueryPort,
-    create_session_authoring_workflow_controller,
+from tests.helpers.agent_planar_construction import (
+    make_planar_authoring_controller as _controller,
+    build_rectangle_arguments,
 )
 from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
 from tests.helpers.fixtures.planar_feature_chain_baseline import (
@@ -40,26 +37,6 @@ from tests.helpers.fixtures.planar_feature_chain_baseline import (
     PLATE_SLOT_SHU_IR_DICT,
     feature_recipe_fingerprint,
 )
-
-
-def _controller(session: ModelSession):
-    holder: dict[str, object] = {}
-
-    def refresh() -> None:
-        bridge.bind_snapshot(session.snapshot())
-        controller = holder.get("controller")
-        if controller is not None:
-            controller.observe_binding(bridge.context)  # type: ignore[arg-type]
-
-    bridge = AgentAuthoringBridge(SessionGeometryAuthoringPort(session, refresh))
-    bridge.bind_snapshot(session.snapshot())
-    controller = create_session_authoring_workflow_controller(
-        session,
-        bridge,
-        AgentResultQueryBridge(SessionResultQueryPort(session)),
-    )
-    holder["controller"] = controller
-    return bridge, controller
 
 
 def _spy_worker(monkeypatch) -> dict[str, object]:
@@ -100,16 +77,20 @@ def test_worker_path_matches_direct_compile_field_for_field(
     captured = _spy_worker(monkeypatch)
     _bridge, controller = _controller(ModelSession())
 
-    result = _dispatch(
-        controller, deepcopy(EXPECTED_H_CONSTRUCTION), key="equivalence"
-    )
+    raw = build_rectangle_arguments()["construction"]
+    raw["nodes"].extend([
+        {"id": "hole", "kind": "circle", "center_x": 20, "center_y": 20, "radius": 2},
+        {"id": "result", "kind": "difference", "base": "plate", "subtract": ["hole"]},
+    ])
+    raw["result_node_id"] = "result"
+    result = _dispatch(controller, raw, key="equivalence")
 
     assert result.ok is True
     assert captured["thread"] != threading.get_ident()
     worker_compiled, worker_feature, kind, _recipe, _mesh = captured["payload"]
     assert kind == "planar"
 
-    construction = PlanarConstructionIR.from_dict(EXPECTED_H_CONSTRUCTION)
+    construction = PlanarConstructionIR.from_dict(raw)
     direct_compiled = compile_planar_construction(construction)
     direct_feature = compile_planar_feature_recipe(
         construction, compiled=direct_compiled

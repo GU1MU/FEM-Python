@@ -90,9 +90,27 @@ def build_planar_arguments() -> dict[str, object]:
     }
 
 
-def dispatch_planar_construction(controller, *, key: str = "phase3"):
+def build_rectangle_arguments() -> dict[str, object]:
+    """Small real geometry for proposal lifecycle tests, without repeated H-slot CAD."""
+    return {
+        "part_function": "二维矩形板",
+        "construction": {
+            "schema_version": 1,
+            "name": "lifecycle rectangle",
+            "plane": "XY",
+            "nodes": [
+                {"id": "plate", "kind": "rectangle", "x": 0, "y": 0,
+                 "width": 100, "height": 300},
+            ],
+            "result_node_id": "plate",
+        },
+        "output": "planar",
+    }
+
+
+def dispatch_planar_construction(controller, *, key: str = "phase3", arguments=None):
     return controller.dispatch(
         "prepare_planar_construction_proposal",
-        build_planar_arguments(),
+        build_planar_arguments() if arguments is None else arguments,
         ToolExecutionContext("phase3-planar", 0, key),
     )

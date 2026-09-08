@@ -120,48 +120,6 @@ def _dispatch(controller, arguments: dict[str, object], key: str):
     )
 
 
-def test_output_schema_and_context_publish_four_strict_kinds() -> None:
-    _bridge, controller = make_planar_authoring_controller(ModelSession())
-    definition = next(
-        item
-        for item in controller.definitions
-        if item.name == "prepare_planar_construction_proposal"
-    )
-    outputs = definition.parameters["properties"]["output"]["oneOf"]
-    assert outputs[0] == {"const": "planar"}
-    branches = {item["properties"]["kind"]["const"]: item for item in outputs[1:]}
-    assert branches["extrusion"]["required"] == [
-        "kind",
-        "profile_selection",
-        "height",
-    ]
-    assert branches["revolution"]["required"] == [
-        "kind",
-        "profile_selection",
-        "axis",
-        "angle_degrees",
-    ]
-    assert branches["path_sweep"]["required"] == [
-        "kind",
-        "profile_selection",
-        "path",
-        "frame_strategy",
-    ]
-    assert all(branch["additionalProperties"] is False for branch in branches.values())
-
-    context = controller.dispatch(
-        "read_authoring_context",
-        {},
-        ToolExecutionContext("phase4-ir-transform", 0, "context"),
-    )
-    assert context.data["context"]["planar_construction_ir"]["output_kinds"] == [
-        "planar",
-        "extrusion",
-        "revolution",
-        "path_sweep",
-    ]
-
-
 def test_direct_h_plate_extrusion_is_one_atomic_3d_proposal() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)

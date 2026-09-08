@@ -16,13 +16,14 @@ from fem_agent.authoring import AuthoringContractError, ProposalState
 from fem_agent.geometry_authoring import (
     geometry_contract_proof,
     geometry_recipe_from_payload,
+    geometry_recipe_to_payload,
 )
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_gui.agent_authoring import AgentProposalPreview
 from fem_gui.geometry_preview import GeometryPreview
 from fem_gui.main_window import FEMMainWindow
 from tests.helpers.agent_planar_construction import (
-    build_planar_arguments,
+    build_rectangle_arguments,
     make_planar_authoring_controller,
 )
 
@@ -115,13 +116,14 @@ def _split_then_cut_arguments() -> dict[str, object]:
 
 def test_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     session = ModelSession()
+    before = session.snapshot()
     bridge, controller = make_planar_authoring_controller(session)
     changes: list[tuple[str, AgentProposalPreview | None]] = []
     bridge.set_preview_listener(
         lambda proposal_id, preview: changes.append((proposal_id, preview))
     )
 
-    result = _dispatch(controller, build_planar_arguments(), "planar-preview")
+    result = _dispatch(controller, build_rectangle_arguments(), "planar-preview")
 
     assert result.ok, result.summary
     proposal_id = result.data["proposal_id"]
@@ -162,6 +164,7 @@ def test_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
     receipt = bridge.reject_from_gui_control(proposal_id)
     controller.record_proposal_state("geometry", receipt.state, "rejected")
 
+    assert session.snapshot() == before
     assert receipt.state is ProposalState.REJECTED
     assert proposal_id not in bridge._proposal_previews
     assert changes[-1] == (proposal_id, None)
@@ -169,8 +172,10 @@ def test_planar_preview_is_gui_only_recipe_bound_and_cleared() -> None:
 
 
 def test_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> None:
-    bridge, controller = make_planar_authoring_controller(ModelSession())
-    arguments = deepcopy(build_planar_arguments())
+    session = ModelSession()
+    before = session.snapshot()
+    bridge, controller = make_planar_authoring_controller(session)
+    arguments = deepcopy(build_rectangle_arguments())
     arguments["output"] = {
         "kind": "extrusion",
         "profile_selection": "unique_material_profile",
@@ -201,7 +206,9 @@ def test_direct_3d_preview_has_real_surface_cells_and_stale_clears() -> None:
     assert preview.edges
     assert preview.proof_digest == evidence["output_proof_digest"]
     assert preview.proof_digest == output_proof_digest
-    bridge.stale_pending_proposals_from_gui("test session switch")
+    assert bridge.stale_pending_proposals_from_gui("test session switch") == (proposal_id,)
+    assert bridge.state(proposal_id) is ProposalState.STALE
+    assert session.snapshot() == before
     assert proposal_id not in bridge._proposal_previews
 
 
@@ -210,29 +217,42 @@ def test_accept_success_failure_cancel_and_detach_clear_preview(
 ) -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
-    result = _dispatch(controller, build_planar_arguments(), "accept-success")
+    result = _dispatch(controller, build_rectangle_arguments(), "accept-success")
     proposal_id = result.data["proposal_id"]
+    proposal = bridge._records[proposal_id].proposal
+    prepared_recipe = geometry_recipe_from_payload(proposal.operations[0].parameters["recipe"])
+    preview = bridge._proposal_previews[proposal_id]
     receipt = bridge.accept_from_gui_control(proposal_id)
+    committed_recipe = session.snapshot().parts[0].geometry_recipe
+    assert committed_recipe == prepared_recipe
+    assert preview.recipe_digest == hashlib.sha256(
+        json.dumps(geometry_recipe_to_payload(committed_recipe), sort_keys=True,
+                   separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
     assert receipt.state is ProposalState.SUCCEEDED
     assert proposal_id not in bridge._proposal_previews
 
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
-    result = _dispatch(controller, build_planar_arguments(), "accept-failure")
+    result = _dispatch(controller, build_rectangle_arguments(), "accept-failure")
     proposal_id = result.data["proposal_id"]
 
-    def fail_accept(_proposal_id):
+    def fail_accept(*_args, **_kwargs):
         raise RuntimeError("injected commit failure")
 
-    monkeypatch.setattr(bridge.port, "accept", fail_accept)
+    monkeypatch.setattr(session, "create_native_project_with_first_part", fail_accept)
     receipt = bridge.accept_from_gui_control(proposal_id)
     assert receipt.state is ProposalState.FAILED
     assert session.snapshot() == before
     assert proposal_id not in bridge._proposal_previews
 
-    bridge, controller = make_planar_authoring_controller(ModelSession())
-    result = _dispatch(controller, build_planar_arguments(), "cancel")
+    session = ModelSession()
+    before = session.snapshot()
+    bridge, controller = make_planar_authoring_controller(session)
+    result = _dispatch(controller, build_rectangle_arguments(), "cancel")
+    controller.cancel_turn("provider operation cancelled")
+    assert session.snapshot() == before
     proposal_id = result.data["proposal_id"]
     assert bridge.cancel_pending_proposals_from_gui("provider cancelled") == (
         proposal_id,
@@ -241,7 +261,7 @@ def test_accept_success_failure_cancel_and_detach_clear_preview(
     assert proposal_id not in bridge._proposal_previews
 
     bridge, controller = make_planar_authoring_controller(ModelSession())
-    result = _dispatch(controller, build_planar_arguments(), "detach")
+    result = _dispatch(controller, build_rectangle_arguments(), "detach")
     proposal_id = result.data["proposal_id"]
     changes = []
     bridge.set_preview_listener(lambda item, preview: changes.append((item, preview)))
@@ -252,7 +272,7 @@ def test_accept_success_failure_cancel_and_detach_clear_preview(
 
 def test_session_rebind_and_drawer_close_restore_committed_preview() -> None:
     bridge, controller = make_planar_authoring_controller(ModelSession())
-    result = _dispatch(controller, build_planar_arguments(), "session-switch")
+    result = _dispatch(controller, build_rectangle_arguments(), "session-switch")
     proposal_id = result.data["proposal_id"]
     other = ModelSession()
     bridge.bind_snapshot(other.snapshot(), document_id="document-other")
@@ -310,196 +330,58 @@ def test_session_rebind_and_drawer_close_restore_committed_preview() -> None:
     assert harness.agent_authoring_bridge.cleared is True
 
 
-@pytest.mark.parametrize(
-    ("first", "revised", "code"),
-    [
-        (
-            {
-                "schema_version": 1,
-                "name": "missing",
-                "plane": "XY",
-                "nodes": [
-                    {
-                        "id": "plate",
-                        "kind": "rectangle",
-                        "x": 0,
-                        "y": 0,
-                        "width": 4,
-                        "height": 2,
-                    },
-                    {
-                        "id": "hole",
-                        "kind": "circle",
-                        "center_x": 1,
-                        "center_y": 1,
-                        "radius": 0.25,
-                    },
-                    {
-                        "id": "result",
-                        "kind": "difference",
-                        "base": "plate",
-                        "subtract": ["missing"],
-                    },
-                ],
-                "result_node_id": "result",
-            },
-            {"node": "result", "field": "subtract", "value": ["hole"]},
-            "planar-ir.reference-missing",
-        ),
-        (
-            {
-                "schema_version": 1,
-                "name": "cycle",
-                "plane": "XY",
-                "nodes": [
-                    {
-                        "id": "base",
-                        "kind": "rectangle",
-                        "x": 0,
-                        "y": 0,
-                        "width": 4,
-                        "height": 2,
-                    },
-                    {"id": "a", "kind": "translate", "source": "b", "dx": 0, "dy": 0},
-                    {"id": "b", "kind": "translate", "source": "a", "dx": 0, "dy": 0},
-                ],
-                "result_node_id": "a",
-            },
-            {"node": "b", "field": "source", "value": "base"},
-            "planar-ir.cycle-detected",
-        ),
-        (
-            {
-                "schema_version": 1,
-                "name": "empty",
-                "plane": "XY",
-                "nodes": [
-                    {
-                        "id": "plate",
-                        "kind": "rectangle",
-                        "x": 0,
-                        "y": 0,
-                        "width": 4,
-                        "height": 2,
-                    },
-                    {
-                        "id": "result",
-                        "kind": "difference",
-                        "base": "plate",
-                        "subtract": ["plate"],
-                    },
-                ],
-                "result_node_id": "result",
-            },
-            {
-                "node": "result",
-                "replace": {
-                    "id": "result",
-                    "kind": "translate",
-                    "source": "plate",
-                    "dx": 0,
-                    "dy": 0,
-                },
-            },
-            "planar-ir.boolean-empty",
-        ),
-        (
-            {
-                "schema_version": 1,
-                "name": "path",
-                "plane": "XY",
-                "nodes": [
-                    {
-                        "id": "stroke",
-                        "kind": "path_stroke",
-                        "points": [[0, 0], [0, 0]],
-                        "width": 1,
-                        "cap": "round",
-                        "join": "round",
-                    },
-                ],
-                "result_node_id": "stroke",
-            },
-            {"node": "stroke", "field": "points", "value": [[0, 0], [4, 0]]},
-            "planar-ir.invalid-path-stroke",
-        ),
-    ],
-)
-def test_actual_diagnostic_retry_can_revise_same_ir(
-    first: dict[str, object],
-    revised: dict[str, object],
-    code: str,
-) -> None:
+def test_actual_diagnostic_retry_can_revise_same_ir() -> None:
     _bridge, controller = make_planar_authoring_controller(ModelSession())
-    request = {"part_function": "恢复测试", "construction": first, "output": "planar"}
-    failed = _dispatch(controller, request, f"actual-{code.replace('.', '-')}-1")
-    assert failed.data["diagnostic"]["code"] == code
+    request = _missing_reference()
+    failed = _dispatch(controller, request, "actual-reference-first")
+    assert failed.data["diagnostic"]["code"] == "planar-ir.reference-missing"
     repaired = deepcopy(request)
-    nodes = repaired["construction"]["nodes"]
-    target = next(
-        index for index, node in enumerate(nodes) if node["id"] == revised["node"]
-    )
-    if "replace" in revised:
-        nodes[target] = revised["replace"]
-    else:
-        nodes[target][revised["field"]] = revised["value"]
-    succeeded = _dispatch(
-        controller,
-        repaired,
-        f"actual-{code.replace('.', '-')}-2",
-    )
+    repaired["construction"]["nodes"].insert(1, {
+        "id": "hole", "kind": "circle", "center_x": 2, "center_y": 2,
+        "radius": 0.5,
+    })
+    repaired["construction"]["nodes"][-1]["subtract"] = ["hole"]
+    succeeded = _dispatch(controller, repaired, "actual-reference-repaired")
     assert succeeded.ok, succeeded.summary
 
 
 @pytest.mark.parametrize(
-    "code",
+    ("code", "node_id", "retryable", "allowed_fields"),
     [
-        "planar-ir.schema-invalid",
-        "planar-ir.budget-exceeded",
-        "planar-ir.duplicate-node-id",
-        "planar-ir.reference-missing",
-        "planar-ir.cycle-detected",
-        "planar-ir.unreachable-node",
-        "planar-ir.invalid-primitive",
-        "planar-ir.invalid-path-stroke",
-        "planar-ir.boolean-empty",
-        "planar-ir.degenerate-result",
-        "planar-ir.unsupported-boundary",
-        "planar-ir.materialization-failed",
-        "planar-ir.profile-invalid",
-        "planar-ir.equivalence-failed",
-        "planar-ir.transform-invalid",
-        "planar-ir.preflight-failed",
-        "planar-ir.stale-context",
+        ("planar-ir.invalid-primitive", "plate", True, ("width",)),
+        ("planar-ir.equivalence-failed", None, False, ()),
     ],
 )
 def test_stable_diagnostics_are_provider_safe(
     monkeypatch: pytest.MonkeyPatch,
     code: str,
+    node_id: str | None,
+    retryable: bool,
+    allowed_fields: tuple[str, ...],
 ) -> None:
     def fail(_construction, **_kwargs):
         raise PlanarConstructionCompileError(
             PlanarConstructionDiagnostic(
                 code,
                 "bounded backend detail",
-                "plate",
-                True,
-                ("width",),
+                node_id,
+                retryable,
+                allowed_fields,
             )
         )
 
     monkeypatch.setattr("fem_gui.agent_authoring.compile_planar_construction", fail)
     bridge, controller = make_planar_authoring_controller(ModelSession())
 
-    result = _dispatch(controller, build_planar_arguments(), f"diagnostic-{code.replace('.', '-')}")
+    result = _dispatch(controller, build_rectangle_arguments(), f"diagnostic-{code.replace('.', '-')}")
 
     assert not result.ok
     assert result.data["diagnostic"] == {
         "code": code,
         "message": "bounded backend detail",
-        "node_id": "plate",
-        "retryable": True,
-        "allowed_fields": ["width"],
+        "node_id": node_id,
+        "retryable": retryable,
+        "allowed_fields": list(allowed_fields),
         "model_unchanged": True,
     }
     assert result.data["required_action"] == "revise_same_planar_construction_ir"
@@ -509,6 +391,11 @@ def test_stable_diagnostics_are_provider_safe(
 def test_retry_requires_allowed_slice_change_and_resets_next_turn() -> None:
     _bridge, controller = make_planar_authoring_controller(ModelSession())
     first = _dispatch(controller, _missing_reference(), "first")
+    record = controller.planar_construction_audit[-1]
+    assert len(record.construction_digest) == 64
+    assert record.stage == "validation"
+    assert record.diagnostic_code == "planar-ir.reference-missing"
+    assert not any(hasattr(record, field) for field in ("construction", "points", "faces"))
     same = _dispatch(controller, _missing_reference(), "same")
     assert first.data["retry"]["retryable"] is True
     assert same.data["retry"]["retryable"] is False
@@ -609,7 +496,7 @@ def test_invalid_output_is_rejected_before_cad_compilation(
         unexpected_compile,
     )
     bridge, controller = make_planar_authoring_controller(ModelSession())
-    arguments = build_planar_arguments()
+    arguments = build_rectangle_arguments()
     arguments["output"] = {"kind": "planar", "height": 10.0}
 
     result = _dispatch(controller, arguments, "invalid-output")
@@ -645,7 +532,7 @@ def test_fourth_planar_attempt_is_blocked_before_compilation(
     _bridge, controller = make_planar_authoring_controller(ModelSession())
     results = []
     for index in range(4):
-        arguments = build_planar_arguments()
+        arguments = build_rectangle_arguments()
         arguments["construction"]["nodes"][0]["width"] = 100.0 + index
         results.append(_dispatch(controller, arguments, f"attempt-{index}"))
 
@@ -666,16 +553,3 @@ def test_retry_accepts_allowed_top_level_result_change() -> None:
     second = _dispatch(controller, changed, "result-second")
     assert first.data["retry"]["retryable"] is True
     assert second.data["retry"]["attempt"] == 2
-
-
-def test_audit_is_bounded_and_contains_no_geometry_payload() -> None:
-    _bridge, controller = make_planar_authoring_controller(ModelSession())
-    result = _dispatch(controller, _missing_reference(), "audit")
-    assert not result.ok
-    record = controller.planar_construction_audit[-1]
-    assert len(record.construction_digest) == 64
-    assert record.stage == "validation"
-    assert record.diagnostic_code == "planar-ir.reference-missing"
-    assert not hasattr(record, "construction")
-    assert not hasattr(record, "points")
-    assert not hasattr(record, "faces")

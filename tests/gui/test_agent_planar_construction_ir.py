@@ -6,6 +6,7 @@ from tests.helpers.agent_planar_construction import (
     ControllerDynamicTools,
     make_planar_authoring_controller,
     build_planar_arguments,
+    build_rectangle_arguments,
     dispatch_planar_construction,
 )
 
@@ -39,6 +40,26 @@ def test_publishes_strict_schema_and_bounded_context() -> None:
         "revolution",
         "path_sweep",
     }
+    branches = {item["properties"]["kind"]["const"]: item for item in outputs[1:]}
+    assert branches["extrusion"]["required"] == [
+        "kind",
+        "profile_selection",
+        "height",
+    ]
+    assert branches["revolution"]["required"] == [
+        "kind",
+        "profile_selection",
+        "axis",
+        "angle_degrees",
+    ]
+    assert branches["path_sweep"]["required"] == [
+        "kind",
+        "profile_selection",
+        "path",
+        "frame_strategy",
+    ]
+    assert all(branch["additionalProperties"] is False for branch in branches.values())
+
     planar_object = next(
         item
         for item in outputs[1:]
@@ -121,6 +142,7 @@ def test_publishes_strict_schema_and_bounded_context() -> None:
         ToolExecutionContext("phase3-planar", 0, "context"),
     )
     capability = context.data["context"]["planar_construction_ir"]
+    assert capability["output_kinds"] == ["planar", "extrusion", "revolution", "path_sweep"]
     assert capability["schema_version"] == 1
     assert capability["plane"] == "XY"
     assert capability["budgets"]["max_node_count"] == 64
@@ -215,7 +237,9 @@ def test_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None
     bridge, controller = make_planar_authoring_controller(session)
     before = session.snapshot()
 
-    result = dispatch_planar_construction(controller)
+    arguments = build_planar_arguments()
+    arguments["output"] = {"kind": "planar"}
+    result = dispatch_planar_construction(controller, arguments=arguments)
 
     assert result.ok, result.summary
     assert session.snapshot() == before
@@ -279,12 +303,23 @@ def test_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None
     assert proposal_hash_with(changed_ir) != proposal.proposal_hash
     assert proposal_hash_with(changed_proof) != proposal.proposal_hash
 
+    bridge.set_lifecycle_listener(
+        lambda proposal, state, message: controller.record_proposal_state(
+            proposal.proposal_kind.value, state, message,
+        )
+    )
     receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
+    assert controller.stage is AuthoringWorkflowStage.MESH_READY
+    assert {item.name for item in controller.definitions}.issuperset(
+        {"read_geometry_edit_context", "prepare_geometry_edit"}
+    )
 
     assert receipt.state is ProposalState.SUCCEEDED
     accepted = session.snapshot()
     assert accepted.session_revision == before.session_revision + 1
     assert len(accepted.parts) == 1
+    assert accepted.parts[0].dimension == 2
+    assert evidence["output_kind"] == "planar"
     recipe = accepted.parts[0].geometry_recipe
     assert type(recipe) is BooleanGeometry
     assert recipe.planar_context is not None and recipe.planar_context.proven
@@ -313,26 +348,6 @@ def test_h_plate_is_proven_before_one_card_and_accepts_one_strict_part() -> None
         )
         == 4
     )
-
-
-def test_planar_object_output_normalizes_to_the_same_2d_recipe() -> None:
-    session = ModelSession()
-    bridge, controller = make_planar_authoring_controller(session)
-    arguments = build_planar_arguments()
-    arguments["output"] = {"kind": "planar"}
-
-    result = controller.dispatch(
-        "prepare_planar_construction_proposal",
-        arguments,
-        ToolExecutionContext("phase3-planar", 0, "object-planar"),
-    )
-
-    assert result.ok, result.summary
-    proposal = bridge._records[result.data["proposal_id"]].proposal
-    assert proposal.preconditions["local_evidence"]["output_kind"] == "planar"
-    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert session.snapshot().parts[0].dimension == 2
 
 
 def test_agent_appends_a_second_round_path_slot_as_a_new_cut_feature() -> None:
@@ -433,7 +448,9 @@ def test_closed_path_slot_edit_returns_same_representation_repair_guidance(
 ) -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
-    initial = dispatch_planar_construction(controller, key="closed-slot-initial")
+    initial = dispatch_planar_construction(
+        controller, key="closed-slot-initial", arguments=build_rectangle_arguments()
+    )
     receipt = bridge.accept_from_gui_control(str(initial.data["proposal_id"]))
     assert receipt.state is ProposalState.SUCCEEDED
     controller.record_proposal_state("geometry", receipt.state, receipt.message)
@@ -489,27 +506,6 @@ def test_closed_path_slot_edit_returns_same_representation_repair_guidance(
     ]
 
 
-def test_accept_refreshes_revision_before_clearing_pending_operation() -> None:
-    session = ModelSession()
-    bridge, controller = make_planar_authoring_controller(session)
-    result = dispatch_planar_construction(controller, key="accept-refresh-order")
-    bridge.set_lifecycle_listener(
-        lambda proposal, state, message: controller.record_proposal_state(
-            proposal.proposal_kind.value,
-            state,
-            message,
-        )
-    )
-
-    receipt = bridge.accept_from_gui_control(result.data["proposal_id"])
-
-    assert receipt.state is ProposalState.SUCCEEDED
-    assert controller.stage is AuthoringWorkflowStage.MESH_READY
-    assert {item.name for item in controller.definitions}.issuperset(
-        {"read_geometry_edit_context", "prepare_geometry_edit"}
-    )
-
-
 def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     tmp_path,
 ) -> None:
@@ -521,7 +517,7 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
             tool_response(
                 "prepare-ir",
                 "prepare_planar_construction_proposal",
-                build_planar_arguments(),
+                build_rectangle_arguments(),
             )
         ]
     )
@@ -532,7 +528,7 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     )
     before = session.snapshot()
 
-    events = engine.send_message("创建带 H 形槽和四角孔的二维板")
+    events = engine.send_message("创建二维矩形板")
 
     assert session.snapshot() == before
     assert len(provider.requests) == 1
@@ -586,28 +582,6 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
     )
 
 
-@pytest.mark.parametrize("terminal", ["reject", "stale"])
-def test_reject_and_stale_keep_the_blank_session_unchanged(
-    terminal: str,
-) -> None:
-    session = ModelSession()
-    bridge, controller = make_planar_authoring_controller(session)
-    before = session.snapshot()
-    result = dispatch_planar_construction(controller, key=terminal)
-    proposal_id = result.data["proposal_id"]
-
-    if terminal == "reject":
-        receipt = bridge.reject_from_gui_control(proposal_id)
-        assert receipt.state is ProposalState.REJECTED
-    else:
-        assert bridge.stale_pending_proposals_from_gui("binding changed") == (
-            proposal_id,
-        )
-        assert bridge.state(proposal_id) is ProposalState.STALE
-
-    assert session.snapshot() == before
-
-
 def test_invalid_ir_fails_without_a_card_or_model_change() -> None:
     session = ModelSession()
     bridge, controller = make_planar_authoring_controller(session)
@@ -627,36 +601,6 @@ def test_invalid_ir_fails_without_a_card_or_model_change() -> None:
     assert "proposal_id" not in result.data
     assert not bridge._records
     assert session.snapshot() == before
-
-
-def test_cancel_and_accept_failure_keep_session_unchanged(monkeypatch) -> None:
-    cancelled_session = ModelSession()
-    _cancelled_bridge, cancelled_controller = make_planar_authoring_controller(cancelled_session)
-    cancelled_before = cancelled_session.snapshot()
-    result = dispatch_planar_construction(cancelled_controller, key="cancel")
-    assert result.ok
-
-    cancelled_controller.cancel_turn("provider operation cancelled")
-
-    assert cancelled_session.snapshot() == cancelled_before
-
-    failed_session = ModelSession()
-    failed_bridge, failed_controller = make_planar_authoring_controller(failed_session)
-    failed_before = failed_session.snapshot()
-    failed = dispatch_planar_construction(failed_controller, key="failed-accept")
-
-    def fail_commit(*_args, **_kwargs) -> None:
-        raise RuntimeError("injected commit failure")
-
-    monkeypatch.setattr(
-        failed_session,
-        "create_native_project_with_first_part",
-        fail_commit,
-    )
-    receipt = failed_bridge.accept_from_gui_control(failed.data["proposal_id"])
-
-    assert receipt.state is ProposalState.FAILED
-    assert failed_session.snapshot() == failed_before
 
 
 def test_legacy_planar_profiles_remains_callable_and_auditable() -> None:
