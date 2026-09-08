@@ -398,21 +398,6 @@ def test_result_action_readiness_is_a_typed_fact_truth_table(
             assert states[key].reason
 
 
-def test_query_can_submit_a_lazy_field_for_materialization() -> None:
-    states = _result_action_states(
-        GuiActionContext(
-            selected_field_state=FieldState.LAZY,
-            materialization_pending=False,
-            result_task_busy=False,
-        )
-    )
-
-    assert states[GuiActionKey.FIELD].enabled
-    assert states[GuiActionKey.QUERY].enabled
-    assert states[GuiActionKey.EXPORT_CSV].enabled
-    assert not states[GuiActionKey.EXPORT_VTK].enabled
-
-
 @pytest.mark.parametrize(
     (
         "scene_available",

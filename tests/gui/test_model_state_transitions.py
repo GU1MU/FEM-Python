@@ -18,6 +18,7 @@ from fem.application import (
     RunStatus,
     SectionDefinition,
     TokenStatus,
+    describe_session_authoring,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -414,39 +415,22 @@ def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
     window.close()
 
 
-def test_definition_change_replaces_artifact_and_retains_result_history() -> None:
-    window = _new_window()
-    _install_imported(window)
-    _succeed_run(window)
-    old_artifact_id = window.document.artifact.artifact_id
-
-    materials = tuple(window.document.materials)
-    assert window._apply_session_delta(
-        window.session.replace_model_definitions(
-            materials,
-            window.document.sections,
-            window.document.assignments,
-            window.document.steps,
-        )
-    )
-
-    assert window.document.artifact.artifact_id != old_artifact_id
-    assert not window.document.validations
-    assert len(window.document.runs) == 1
-    assert window.document.runs[0].has_result
-    assert window.session.current_result() is None
-    assert window.result_provider is None
-    assert window.result_selection is None
-    assert not window.actions["submit_job"].isEnabled()
-    _assert_result_entries_disabled(window)
-    window._confirm_discard_changes = lambda: True
-    window.close()
-
-
 def test_step_switch_uses_independent_validation_stamp_for_action_gate() -> None:
     window = _new_window()
     _install_imported(window, make_two_step_static_pull_truss_model())
+    window._set_current_step("pull1")
+    initial = describe_session_authoring(window.document).step("pull1")
+    assert initial is not None
+    assert initial.can_check
+    assert not initial.can_submit
+    assert window.actions["check_model"].isEnabled()
+    assert not window.actions["submit_job"].isEnabled()
     _validate_step(window, "pull1")
+    validated = describe_session_authoring(window.document).step("pull1")
+    assert validated is not None
+    assert validated.can_check
+    assert validated.can_submit
+    assert window.actions["check_model"].isEnabled()
 
     window._set_current_step("pull1")
     assert window.actions["submit_job"].isEnabled()

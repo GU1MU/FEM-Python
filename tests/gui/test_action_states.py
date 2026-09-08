@@ -83,6 +83,30 @@ def _global_local_control(
 def test_actions_follow_document_and_result_context(gui_inp_path):
     _application()
     window = FEMMainWindow()
+    assert window.actions["new_native"].text() == "新建模型"
+    assert window.actions["delete_model"].text() == "删除模型"
+    assert window.actions["open_project"].text() == "打开模型"
+    assert window.actions["save_project"].text() == "保存模型"
+    assert window.actions["save_project_as"].text() == "模型另存为..."
+    assert window.actions["open"].text() == "打开 INP"
+    assert window.actions["submit_job"].text() == "创建作业"
+    assert window.actions["save_result_as"].text() == "结果另存为..."
+    assert window.actions["export_csv"].text() == "导出 CSV"
+    assert window.actions["export_vtk"].text() == "导出 VTK"
+    assert window.actions["screenshot"].text() == "导出视口"
+    assert window.actions["load_create"].text() == "载荷边界条件"
+    assert window.actions["job_manager"].text() == "作业管理"
+    assert "export" not in window.actions
+
+    decorated = [
+        name
+        for name, action in window.actions.items()
+        if not action.isEnabled()
+        and action.toolTip().strip() != action.text().strip()
+    ]
+
+    assert decorated == []
+
     assert window.actions["open"].isEnabled()
     assert window.actions["geometry_create"].isEnabled()
     assert window.actions["geometry_create"].toolTip() == "新建部件"
@@ -480,21 +504,6 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
     window.close()
 
 
-def test_every_disabled_action_keeps_its_plain_command_tooltip():
-    _application()
-    window = FEMMainWindow()
-
-    decorated = [
-        name
-        for name, action in window.actions.items()
-        if not action.isEnabled()
-        and action.toolTip().strip() != action.text().strip()
-    ]
-
-    assert decorated == []
-    window.close()
-
-
 def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     _application()
     window = FEMMainWindow()
@@ -675,27 +684,6 @@ def test_truss_member_policy_disables_only_local_mesh_control():
     assert not window.actions["mesh_generate"].isEnabled()
     assert window.actions["mesh_generate"].toolTip() == "生成网格"
     assert window.actions["mesh_controls"].isEnabled()
-    window.close()
-
-
-def test_short_action_labels_fit_the_ribbon_vocabulary():
-    _application()
-    window = FEMMainWindow()
-
-    assert window.actions["new_native"].text() == "新建模型"
-    assert window.actions["delete_model"].text() == "删除模型"
-    assert window.actions["open_project"].text() == "打开模型"
-    assert window.actions["save_project"].text() == "保存模型"
-    assert window.actions["save_project_as"].text() == "模型另存为..."
-    assert window.actions["open"].text() == "打开 INP"
-    assert window.actions["submit_job"].text() == "创建作业"
-    assert window.actions["save_result_as"].text() == "结果另存为..."
-    assert window.actions["export_csv"].text() == "导出 CSV"
-    assert window.actions["export_vtk"].text() == "导出 VTK"
-    assert window.actions["screenshot"].text() == "导出视口"
-    assert window.actions["load_create"].text() == "载荷边界条件"
-    assert window.actions["job_manager"].text() == "作业管理"
-    assert "export" not in window.actions
     window.close()
 
 

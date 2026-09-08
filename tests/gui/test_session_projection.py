@@ -18,7 +18,6 @@ from fem.io.inp import read
 from fem.application import (
     DefinitionEditBatch,
     RegionAssignment,
-    describe_session_authoring,
 )
 from fem.core.model import OutputRequest
 from fem.application.results import (
@@ -535,6 +534,23 @@ def test_boundary_edit_keeps_old_result_and_allows_new_job(monkeypatch) -> None:
     old_run = window.session.find_run(old_run_id)
     assert old_run is not None and old_run.has_result
     assert window.document.unsaved_result_count == 1
+    assert not window.document.validations
+    assert len(window.document.runs) == 1
+    assert window.document.runs[0].has_result
+    assert window.session.current_result() is None
+    assert window.result_provider is None
+    assert window.result_selection is None
+    assert not window.actions["submit_job"].isEnabled()
+    for name in (
+        "undeformed", "deformed", "contour", "overlay", "field",
+        "display_settings", "scale", "contour_options", "query",
+        "export_csv", "export_vtk", "screenshot",
+    ):
+        assert not window.actions[name].isEnabled(), name
+    assert not window.result_variable_combo.isEnabled()
+    assert not window.result_component_combo.isEnabled()
+    assert not window.result_position_combo.isEnabled()
+    assert not window.result_scale_combo.isEnabled()
     assert window.result_tree.topLevelItem(0).text(0) == "Job-1"
 
     window.open_job_result("Job-1")
@@ -576,35 +592,6 @@ def test_boundary_edit_keeps_old_result_and_allows_new_job(monkeypatch) -> None:
         for index in range(window.result_tree.topLevelItemCount())
     } == {"Job-1", "Job-2"}
     window._confirm_discard_changes = lambda: True
-    window.close()
-
-
-def test_action_gates_use_the_session_authoring_lifecycle_projection() -> None:
-    window = _window_with_imported_model()
-    window._update_action_states()
-    initial = describe_session_authoring(window.document).step("pull")
-
-    assert initial is not None
-    assert initial.can_check
-    assert not initial.can_submit
-    assert window.actions["check_model"].isEnabled()
-    assert not window.actions["submit_job"].isEnabled()
-
-    validation = window.session.prepare_validation("pull")
-    assert window._apply_session_delta(
-        window.session.accept_validation(
-            validation.token,
-            passing_preflight_report(validation.token),
-        )
-    )
-    window._update_action_states()
-    validated = describe_session_authoring(window.document).step("pull")
-
-    assert validated is not None
-    assert validated.can_check
-    assert validated.can_submit
-    assert window.actions["check_model"].isEnabled()
-    assert window.actions["submit_job"].isEnabled()
     window.close()
 
 

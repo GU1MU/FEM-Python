@@ -111,8 +111,9 @@ def _result_payload(window: FEMMainWindow) -> ResultRenderPayload:
     return payload
 
 
-def test_successful_solve_projects_one_typed_result_spine(
+def test_ready_selection_is_synchronous_and_revision_neutral(
     solved_window: FEMMainWindow,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     window = solved_window
     record = window.session.current_result()
@@ -140,12 +141,6 @@ def test_successful_solve_projects_one_typed_result_spine(
     assert payload.topology.source == provider.source
     assert payload.topology.selection == selection
 
-
-def test_ready_selection_is_synchronous_and_revision_neutral(
-    solved_window: FEMMainWindow,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    window = solved_window
     provider = window.result_provider
     current = window.result_selection
     assert type(provider) is ResultProvider
