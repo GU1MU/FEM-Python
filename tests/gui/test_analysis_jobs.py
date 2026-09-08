@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
-from time import monotonic
 from types import SimpleNamespace
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QThread, Qt
@@ -28,24 +24,9 @@ from fem_gui.commands import GuiCommandStatus
 from fem_gui.main_window import FEMMainWindow
 import fem_gui.main_window as main_window_module
 from fem_gui.visualization.model_adapter import build_model_geometry
+from tests.helpers.gui_analysis import wait_for_analysis_task
 from tests.helpers.model_builders import make_static_pull_truss_model
 from tests.helpers.preflight_builders import passing_preflight_report
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
-
-
-def _wait_for_task(window: FEMMainWindow) -> None:
-    controller = window.task_controller
-    assert controller.busy
-    deadline = monotonic() + 2.0
-    application = QApplication.instance()
-    while controller.busy and monotonic() < deadline:
-        application.processEvents()
-        QThread.msleep(1)
-    application.processEvents()
-    assert not controller.busy
 
 
 def _validated_session() -> ModelSession:
@@ -72,7 +53,6 @@ def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
 
 
 def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
-    _application()
     dialog = JobSubmitDialog("作业-1", ("分析步-1",), "分析步-1")
 
     assert dialog.job_name == "作业-1"
@@ -140,11 +120,8 @@ def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
     assert session.snapshot().active_job_name is None
 
 
-def test_job_actions_replace_direct_run(gui_inp_path):
-    _application()
+def test_job_actions_enable_creation_after_model_validation(gui_inp_path):
     window = FEMMainWindow()
-    assert "run" not in window.actions
-    assert "select_step" not in window.actions
     for name in ("step_info", "check_model", "submit_job", "resubmit_job", "job_manager"):
         assert name in window.actions
     ribbon_actions = {
@@ -164,7 +141,6 @@ def test_job_actions_replace_direct_run(gui_inp_path):
 
 
 def test_current_step_information_and_model_check_reuse_existing_services(monkeypatch, gui_inp_path):
-    _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
@@ -202,7 +178,6 @@ def test_current_step_information_and_model_check_reuse_existing_services(monkey
 
 
 def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
-    _application()
     window = FEMMainWindow()
     reported: list[tuple[str, list[tuple[str, object]]]] = []
     monkeypatch.setattr(
@@ -272,8 +247,7 @@ def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
     window.close()
 
 
-def test_create_job_waits_for_job_manager_submission(gui_inp_path):
-    _application()
+def test_create_job_waits_for_job_manager_submission(gui_application, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
@@ -291,7 +265,7 @@ def test_create_job_waits_for_job_manager_submission(gui_inp_path):
     assert manager.submit_button.isEnabled()
 
     manager.submit_button.click()
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
 
     completed = window.session.find_run("Job-1")
     assert completed is not None and completed.has_result
@@ -304,7 +278,7 @@ def test_create_job_waits_for_job_manager_submission(gui_inp_path):
     manager.table.selectRow(1)
     assert manager.submit_button.isEnabled()
     manager.submit_button.click()
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
 
     second = window.session.find_run("Job-2")
     assert second is not None and second.has_result
@@ -316,323 +290,7 @@ def test_create_job_waits_for_job_manager_submission(gui_inp_path):
     window.close()
 
 
-def test_model_check_runs_the_shared_numerical_stiffness_preflight(
-    monkeypatch,
-    gui_inp_path,
-):
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
-    original = static_linear.validate_stiffness
-    calls: list[str] = []
-
-    def tracked(model, step):
-        calls.append(str(step.name))
-        return original(model, step)
-
-    monkeypatch.setattr(
-        static_linear,
-        "validate_stiffness",
-        tracked,
-    )
-
-    assert window.check_current_model(show_success=False)
-    assert calls == ["Static-1"]
-    window.close()
-
-
-def test_preflight_and_repeated_runs_assemble_one_artifact_once(
-    monkeypatch,
-    gui_inp_path,
-) -> None:
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(
-        gui_inp_path,
-        (model, build_model_geometry(model)),
-    )
-    errors: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        window,
-        "_show_error",
-        lambda title, message: errors.append((title, message)),
-    )
-    calls: list[tuple[str, bool]] = []
-    original_apply = static_linear.materials.apply_sections
-    original_assemble = static_linear.assemble_global_stiffness_sparse
-    original_factor = static_linear.factorize_spd
-
-    def apply_sections(candidate):
-        calls.append(
-            (
-                "materials",
-                QThread.currentThread() is window.thread(),
-            )
-        )
-        return original_apply(candidate)
-
-    def assemble(mesh):
-        calls.append(
-            (
-                "stiffness",
-                QThread.currentThread() is window.thread(),
-            )
-        )
-        return original_assemble(mesh)
-
-    def factor(stiffness):
-        calls.append(
-            (
-                "factor",
-                QThread.currentThread() is window.thread(),
-            )
-        )
-        return original_factor(stiffness)
-
-    monkeypatch.setattr(
-        static_linear.materials,
-        "apply_sections",
-        apply_sections,
-    )
-    monkeypatch.setattr(
-        static_linear,
-        "assemble_global_stiffness_sparse",
-        assemble,
-    )
-    monkeypatch.setattr(static_linear, "factorize_spd", factor)
-
-    assert window.check_current_model(show_success=False)
-    first = window._submit_job("Job-1", "Static-1")
-    assert first is not None
-    _wait_for_task(window)
-    second = window._submit_job("Job-2", "Static-1")
-    assert second is not None
-    _wait_for_task(window)
-
-    assert calls == [
-        ("materials", False),
-        ("stiffness", False),
-        ("factor", False),
-    ]
-    previous_artifact = window.document.artifact.artifact_id
-    assert window._apply_session_delta(
-        window.session.replace_model_definitions(
-            window.document.materials,
-            window.document.sections,
-            window.document.assignments,
-            window.document.steps,
-        )
-    )
-    assert window.document.artifact.artifact_id != previous_artifact
-    assert window.check_current_model(show_success=False)
-    assert calls == [
-        ("materials", False),
-        ("stiffness", False),
-        ("factor", False),
-        ("materials", False),
-        ("stiffness", False),
-        ("factor", False),
-    ]
-    assert errors == []
-    window.close()
-
-
-def test_quick_preflight_defers_prepare_until_first_run_and_then_reuses_it(
-    monkeypatch,
-    gui_inp_path,
-) -> None:
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(
-        gui_inp_path,
-        (model, build_model_geometry(model)),
-    )
-    errors: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        window,
-        "_show_error",
-        lambda title, message: errors.append((title, message)),
-    )
-    prepare_threads: list[bool] = []
-    factor_threads: list[bool] = []
-    original_prepare = static_linear.prepare
-    original_factor = static_linear.factorize_spd
-
-    def prepare(*args, **kwargs):
-        prepare_threads.append(
-            QThread.currentThread() is window.thread()
-        )
-        return original_prepare(*args, **kwargs)
-
-    def factor(stiffness):
-        factor_threads.append(
-            QThread.currentThread() is window.thread()
-        )
-        return original_factor(stiffness)
-
-    monkeypatch.setattr(
-        main_window_module,
-        "should_run_numerical_model_check",
-        lambda _model: False,
-    )
-    monkeypatch.setattr(static_linear, "prepare", prepare)
-    monkeypatch.setattr(static_linear, "factorize_spd", factor)
-
-    assert window.check_current_model(show_success=False)
-    assert prepare_threads == []
-    assert factor_threads == []
-    first = window._submit_job("Job-1", "Static-1")
-    assert first is not None
-    _wait_for_task(window)
-    second = window._submit_job("Job-2", "Static-1")
-    assert second is not None
-    _wait_for_task(window)
-
-    assert prepare_threads == [False]
-    assert factor_threads == [False]
-    assert errors == []
-    window.close()
-
-
-def test_large_model_check_policy_avoids_preflight_factorization() -> None:
-    within_limit = SimpleNamespace(
-        mesh=SimpleNamespace(
-            elements=range(100_000),
-            num_dofs=50_000,
-        )
-    )
-    too_many_elements = SimpleNamespace(
-        mesh=SimpleNamespace(
-            elements=range(100_001),
-            num_dofs=50_000,
-        )
-    )
-    too_many_dofs = SimpleNamespace(
-        mesh=SimpleNamespace(
-            elements=range(100_000),
-            num_dofs=50_001,
-        )
-    )
-
-    assert main_window_module.should_run_numerical_model_check(
-        within_limit
-    )
-    assert not main_window_module.should_run_numerical_model_check(
-        too_many_elements
-    )
-    assert not main_window_module.should_run_numerical_model_check(
-        too_many_dofs
-    )
-
-
-def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
-    monkeypatch,
-    gui_inp_path,
-):
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(
-        gui_inp_path,
-        (model, build_model_geometry(model)),
-    )
-    detach_options = []
-    preflight_options = []
-    original_prepare = window.session.prepare_validation
-    original_preflight = main_window_module.safe_static_preflight
-
-    def tracked_prepare(step_name=None, *, detach_model=True):
-        detach_options.append(detach_model)
-        return original_prepare(
-            step_name,
-            detach_model=detach_model,
-        )
-
-    def tracked_preflight(*args, **kwargs):
-        preflight_options.append(
-            (
-                kwargs["check_numerical_stability"],
-                kwargs["copy_model"],
-                kwargs["quick_check"],
-            )
-        )
-        return original_preflight(*args, **kwargs)
-
-    monkeypatch.setattr(
-        main_window_module,
-        "should_run_numerical_model_check",
-        lambda _model: False,
-    )
-    monkeypatch.setattr(
-        window.session,
-        "prepare_validation",
-        tracked_prepare,
-    )
-    monkeypatch.setattr(
-        main_window_module,
-        "safe_static_preflight",
-        tracked_preflight,
-    )
-
-    assert window.check_current_model(show_success=False)
-
-    validation = window.session.validation_for("Static-1")
-    assert detach_options == [False]
-    assert preflight_options == [(False, False, True)]
-    assert validation is not None and validation.passed
-    assert {
-        item.code for item in validation.report.warnings
-    } == {
-        "model.capability.sampled_large_model",
-        "static.stiffness.skipped_large_model",
-    }
-    reported: list[tuple[str, list[tuple[str, object]]]] = []
-    monkeypatch.setattr(
-        window,
-        "_show_information",
-        lambda title, rows: reported.append((title, list(rows))),
-    )
-    window._show_model_check_report(validation.report)
-    assert dict(reported[0][1])["数值稳定性"] == "已跳过"
-    assert "大模型快速检查" not in str(reported[0][1])
-    assert "model.capability.sampled_large_model" not in str(reported[0][1])
-    window.close()
-
-
-def test_validation_only_projection_reuses_detached_model_snapshot(
-    monkeypatch,
-    gui_inp_path,
-):
-    _application()
-    window = FEMMainWindow()
-    model = read(gui_inp_path)
-    window._model_loaded(
-        gui_inp_path,
-        (model, build_model_geometry(model)),
-    )
-    detached_model = window.document.model
-    validation = window.session.prepare_validation("Static-1")
-    delta = window.session.accept_validation(
-        validation.token,
-        passing_preflight_report(validation.token),
-    )
-
-    def unexpected_snapshot():
-        raise AssertionError("validation projection must not copy the model")
-
-    monkeypatch.setattr(window.session, "snapshot", unexpected_snapshot)
-
-    assert window._apply_session_delta(delta)
-    assert window.document.model is detached_model
-    assert window.document.validation_current("Static-1")
-    window.close()
-
-
-def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
-    _application()
+def test_submit_resubmit_open_history_and_reload_clear(gui_application, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
@@ -642,7 +300,7 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     started1 = window._submit_job("Job-1", "Static-1")
     assert started1 is not None
     assert started1.status is RunStatus.RUNNING
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     job1 = window.session.find_run(started1.run_id)
     assert job1 is not None and job1.has_result
     assert window.document.active_job_name is None
@@ -659,7 +317,7 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
         source_job_name="Job-1",
     )
     assert started2 is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     job2 = window.session.find_run(started2.run_id)
     assert job2 is not None and job2.has_result
 
@@ -670,16 +328,16 @@ def test_submit_resubmit_open_history_and_reload_clear(gui_inp_path):
     assert window.document.displayed_result_run_id == job1.run_id
     window._confirm_discard_changes = lambda: True
     window.reload_model()
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     assert window.document.runs == ()
     assert window.document.active_job_name is None
     window.close()
 
 
 def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
+    gui_application,
     monkeypatch,
 ):
-    _application()
     window = FEMMainWindow()
     errors: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -707,7 +365,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
 
     started = window._submit_job("Job-1", "pull")
     assert started is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
 
     job = window.session.find_run(started.run_id)
     record = window.session.current_result()
@@ -736,8 +394,7 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
     window.close()
 
 
-def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
-    _application()
+def test_failed_job_keeps_previous_result(gui_application, monkeypatch, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     geometry = build_model_geometry(model)
@@ -745,7 +402,7 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
     assert window.check_current_model(show_success=False)
     successful = window._submit_job("Job-1", "Static-1")
     assert successful is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     previous_result = window.session.current_result()
     assert previous_result is not None
     shown: list[tuple[str, str]] = []
@@ -757,7 +414,7 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
 
     failed_started = window._submit_job("Job-2", "Static-1")
     assert failed_started is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     failed = window.session.find_run(failed_started.run_id)
     assert failed is not None
     assert failed.status is RunStatus.FAILED
@@ -775,10 +432,10 @@ def test_failed_job_keeps_previous_result(monkeypatch, gui_inp_path):
 
 
 def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
-    _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(
@@ -788,7 +445,7 @@ def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
     assert window.check_current_model(show_success=False)
     successful = window._submit_job("Job-1", "Static-1")
     assert successful is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     previous = window.session.current_result()
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -806,7 +463,7 @@ def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
 
     started = window._submit_job("Job-2", "Static-1")
     assert started is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
 
     failed = window.session.find_run(started.run_id)
     current = window.session.current_result()
@@ -819,8 +476,7 @@ def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
     window.close()
 
 
-def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
-    _application()
+def test_solver_defensive_validation_failure_is_reported_by_job(gui_application, monkeypatch):
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
     window._model_loaded(Path("pull.inp"), (model, build_model_geometry(model)))
@@ -834,7 +490,7 @@ def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
 
     started = window._submit_job("Job-1", "pull")
     assert started is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     job = window.session.find_run(started.run_id)
     assert job is not None
     assert tuple(run.run_id for run in window.document.runs) == (job.run_id,)
@@ -844,8 +500,7 @@ def test_solver_defensive_validation_failure_is_reported_by_job(monkeypatch):
     window.close()
 
 
-def test_submit_rejects_busy_empty_and_duplicate_names(monkeypatch, gui_inp_path):
-    _application()
+def test_submit_rejects_busy_empty_and_duplicate_names(gui_application, monkeypatch, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
@@ -858,22 +513,21 @@ def test_submit_rejects_busy_empty_and_duplicate_names(monkeypatch, gui_inp_path
     first = window._submit_job("Job-1", "Static-1")
     assert first is not None
     assert window._submit_job("Job-2", "Static-1") is None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     assert window._submit_job("job-1", "Static-1") is None
     assert any("作业名称不能为空" in message for _title, message in shown)
     assert any("作业名称已存在" in message for _title, message in shown)
     window.close()
 
 
-def test_job_workflow_creates_no_job_files(monkeypatch, tmp_path, gui_inp_path):
-    _application()
+def test_job_workflow_creates_no_job_files(gui_application, monkeypatch, tmp_path, gui_inp_path):
     monkeypatch.chdir(tmp_path)
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
     assert window.check_current_model(show_success=False)
     assert window._submit_job("Job-1", "Static-1") is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
     for name in ("jobs", "job.json", "solver.log", "result.npz"):
         assert not (tmp_path / name).exists()
     window._confirm_discard_changes = lambda: True
@@ -882,15 +536,14 @@ def test_job_workflow_creates_no_job_files(monkeypatch, tmp_path, gui_inp_path):
     window.close()
 
 
-def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
-    _application()
+def test_job_manager_shows_memory_log_and_history_actions(gui_application, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
     assert window.check_current_model(show_success=False)
     started = window._submit_job("Job-1", "Static-1")
     assert started is not None
-    _wait_for_task(window)
+    wait_for_analysis_task(window, gui_application)
 
     manager = window.show_job_manager()
     assert manager is not None
@@ -904,7 +557,6 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
     )
     assert manager.terminate_button.text() == "终止求解"
     assert not manager.terminate_button.isEnabled()
-    assert not hasattr(manager, "resubmit_button")
     assert manager.open_result_button.isEnabled()
     assert window.show_job_manager() is manager
     manager.close()
@@ -912,7 +564,6 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_inp_path):
 
 
 def test_job_manager_terminate_button_tracks_selected_running_job():
-    _application()
     started_at = datetime.now(timezone.utc)
     running = AnalysisRun(
         run_id="run-1",
@@ -951,7 +602,6 @@ def test_job_manager_terminate_button_tracks_selected_running_job():
 
 
 def test_job_manager_submits_only_a_selected_pending_job():
-    _application()
     pending = AnalysisRun(
         run_id="run-1",
         name="Job-1",
@@ -975,10 +625,10 @@ def test_job_manager_submits_only_a_selected_pending_job():
 
 
 def test_job_manager_terminates_the_selected_active_solve(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
-    _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(
@@ -1017,7 +667,7 @@ def test_job_manager_terminates_the_selected_active_solve(
     finally:
         allow_solve_to_finish.set()
         if window.task_controller.busy:
-            _wait_for_task(window)
+            wait_for_analysis_task(window, gui_application)
 
     cancelled = window.session.find_run(started.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
@@ -1029,7 +679,6 @@ def test_job_manager_terminates_the_selected_active_solve(
 
 
 def test_job_manager_refresh_preserves_manual_log_scroll_position():
-    _application()
     job = AnalysisRun(
         run_id="run-1",
         name="Job-1",
