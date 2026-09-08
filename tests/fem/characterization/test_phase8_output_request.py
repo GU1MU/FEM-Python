@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog
 
 from fem.io import inp
 from fem.application import (
@@ -17,16 +14,14 @@ from fem.application import (
     run_static_preflight,
 )
 from fem.application.results import project_output_requests
-from fem.core.model import AnalysisStep, OutputRequest
-from fem_gui.analysis_definition_dialogs import (
-    AnalysisDefinitionManagerDialog,
-    OutputRequestDialog,
+from fem.core.model import (
+    OutputRequest,
 )
 from tests.helpers.file_builders import write_inp
 
 
 _STANDARD_INP_FIXTURES = (
-    Path(__file__).parents[1] / "helpers" / "fixtures" / "inp" / "abaqus_standard"
+    Path(__file__).parents[2] / "helpers" / "fixtures" / "inp" / "abaqus_standard"
 )
 
 
@@ -55,10 +50,6 @@ def _output_deck(tmp_path: Path, *output_lines: str):
         ],
     )
     return inp.read_with_report(path)
-
-
-def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
 
 
 def test_installed_capability_publishes_intrinsic_create_and_catalog() -> None:
@@ -292,41 +283,3 @@ def test_abaqus_same_layer_parameter_collision_fails_closed_case_insensitively(
         _output_deck(tmp_path, *lines)
 
     assert caught.value.code == "abaqus.keyword.parameter_duplicate"
-
-
-def test_existing_output_view_acceptance_preserves_exact_dto_phase8_oracle(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Superseded by the Phase 8 typed read-only view contract: accepting a
-    # viewer must not rebuild, normalize, or replace the saved request.
-    application = _application()
-    original = OutputRequest(
-        "field",
-        "node",
-        ("rf", "U", "U", "custom", "Custom"),
-        {"nested": {"value": 1}},
-    )
-    manager = AnalysisDefinitionManagerDialog(
-        [AnalysisStep("Step-A", outputs=(original,))],
-        [],
-        [],
-        [],
-        3,
-    )
-    before_view = manager.steps[0].outputs[0]
-    monkeypatch.setattr(
-        OutputRequestDialog,
-        "exec",
-        lambda _self: QDialog.DialogCode.Accepted,
-    )
-
-    changed = manager.edit_definition(("output", 0, 0))
-    after_view = manager.steps[0].outputs[0]
-
-    assert not changed
-    assert after_view is before_view
-    assert before_view.variables == ("rf", "U", "U", "custom", "Custom")
-    assert after_view == before_view
-
-    manager.close()
-    assert application is QApplication.instance()

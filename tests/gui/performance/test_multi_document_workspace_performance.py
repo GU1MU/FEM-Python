@@ -17,7 +17,7 @@ import pytest
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry
 from fem_gui.workspace import DocumentPresentationCache
-from tests.performance.benchmark_multi_document_workspace import _plate_model
+from tests.gui.performance.benchmark_multi_document_workspace import _plate_model
 
 
 pytestmark = pytest.mark.slow

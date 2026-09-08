@@ -6,12 +6,17 @@ import pytest
 
 from fem.application.preprocessing import generate_fem_model
 from fem.mesh.settings import MeshSettings
-from tests.helpers.fixtures.profile_transform_baseline import (
-    RING_EXTRUSION_HEIGHT,
-    RING_INNER_RADIUS,
-    RING_OUTER_RADIUS,
-    concentric_ring_fixture,
+from fem.geometry import (
+    ExtrudedGeometry,
+    SketchCircle,
+    SketchGeometry,
+    analyze_sketch_profiles,
+    legacy_sketch_to_strict,
 )
+
+RING_OUTER_RADIUS = 50.0
+RING_INNER_RADIUS = 25.0
+RING_EXTRUSION_HEIGHT = 10.0
 
 
 def _signed_tetrahedron_volume(points):
@@ -28,9 +33,26 @@ def _signed_tetrahedron_volume(points):
 
 
 def test_ring_extrusion_mesh_preserves_hole_and_analytic_volume(real_gmsh) -> None:
-    fixture = concentric_ring_fixture()
+    # Build a strict circular profile with one concentric hole.
+    sketch = legacy_sketch_to_strict(
+        SketchGeometry(
+            "ring-profile",
+            (
+                SketchCircle("material", 0.0, 0.0, RING_OUTER_RADIUS),
+                SketchCircle("cut", 0.0, 0.0, RING_INNER_RADIUS),
+            ),
+        )
+    )
+    material_profiles = tuple(
+        profile for profile in analyze_sketch_profiles(sketch).profiles
+        if profile.role == "outer"
+    )
+    assert len(material_profiles) == 1
+    extrusion = ExtrudedGeometry(
+        sketch, RING_EXTRUSION_HEIGHT, (f"face:{material_profiles[0].id}",),
+    )
     generated = generate_fem_model(
-        fixture.extrusion,
+        extrusion,
         MeshSettings(20.0, cell_shape="tetrahedron"),
     )
     mesh = generated.mesh

@@ -611,9 +611,9 @@ def test_schema_v1_wraps_manifest_numeric_overflow_as_typed_decode_error() -> No
 
 
 def test_snapshot_factory_detaches_an_accepted_result_record():
-    from tests.characterization.test_phase0_result_contracts import _session_with_success
+    from tests.helpers.result_builders import make_session_with_success
 
-    session, _solve = _session_with_success()
+    session, _solve = make_session_with_success()
     record = session.current_result()
     assert record is not None
     snapshot = ResultArchiveSnapshot.from_result_record(record)

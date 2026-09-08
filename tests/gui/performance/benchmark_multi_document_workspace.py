@@ -8,10 +8,10 @@ inspection, and archive measurements and reports the unavailable GUI metrics.
 
 Examples (from the repository root)::
 
-    python tests/performance/benchmark_multi_document_workspace.py
-    python tests/performance/benchmark_multi_document_workspace.py --scenario 5000
-    python tests/performance/benchmark_multi_document_workspace.py --scenario archive
-    python tests/performance/benchmark_multi_document_workspace.py --output phase0.json
+    python tests/gui/performance/benchmark_multi_document_workspace.py
+    python tests/gui/performance/benchmark_multi_document_workspace.py --scenario 5000
+    python tests/gui/performance/benchmark_multi_document_workspace.py --scenario archive
+    python tests/gui/performance/benchmark_multi_document_workspace.py --output phase0.json
 
 The default run covers the empty document, 5,000 and 20,000 element models,
 and a medium temporary result archive.  ``--scenario`` selects exactly one
@@ -37,11 +37,11 @@ from time import perf_counter
 from typing import Any, Callable, Iterator
 
 
-# A direct ``python tests/performance/...py`` invocation does not put the
+# A direct ``python tests/gui/performance/...py`` invocation does not put the
 # repository root on sys.path.  Keep the script runnable without installing the
 # package while remaining a no-op when the root is already present (for pytest
 # and ``python -m`` callers).
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 _SOURCE_ROOT = _REPOSITORY_ROOT / "src"

@@ -18,7 +18,7 @@ from fem.io import gmsh as gmsh_io
 from fem.mesh import gmsh as gmsh_meshing
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 
 class _UnreadableModel:

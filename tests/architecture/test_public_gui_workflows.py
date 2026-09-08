@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 TESTS_ROOT = Path(__file__).parents[1]
-INTEGRATION_ROOT = TESTS_ROOT / "integration"
+INTEGRATION_ROOT = TESTS_ROOT / "gui" / "integration"
 PUBLIC_GUI_WORKFLOW = (
     TESTS_ROOT / "gui" / "test_public_workflow_commands.py"
 )

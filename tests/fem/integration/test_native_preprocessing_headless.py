@@ -146,7 +146,7 @@ def test_mesh_task_snapshot_rejects_named_region_override() -> None:
 
 def test_headless_preprocessing_module_has_no_gui_imports() -> None:
     module_path = (
-        Path(__file__).parents[2] / "src" / "fem" / "application" / "preprocessing.py"
+        Path(__file__).parents[3] / "src" / "fem" / "application" / "preprocessing.py"
     )
     tree = ast.parse(module_path.read_text(encoding="utf-8"))
     imports = {

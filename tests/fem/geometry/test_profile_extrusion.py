@@ -19,7 +19,6 @@ from fem.geometry import (
     resolve_extrusion_source_faces,
 )
 from fem.geometry.recipe_topology import describe_recipe_topology
-from fem_gui.geometry_preview import build_geometry_preview
 
 
 def test_resolver_canonicalizes_aliases_and_filters_boundary_closure() -> None:
@@ -143,19 +142,3 @@ def test_hole_boundary_is_part_of_selected_material_profile_closure() -> None:
     )
     assert topology.entity("face:side/L5").selectable
     assert topology.entity("face:side/L8").selectable
-
-
-def test_selected_only_preview_omits_unselected_profile() -> None:
-    sketch = two_profile_sketch()
-    first = profile_face_id(sketch, "L1")
-
-    preview = build_geometry_preview(
-        ExtrudedGeometry(sketch, 2.0, (first,))
-    )
-
-    assert max(point[0] for point in preview.points) == pytest.approx(2.0)
-    assert min(point[2] for point in preview.points) == pytest.approx(0.0)
-    assert max(point[2] for point in preview.points) == pytest.approx(2.0)
-    assert "face:side/L1" in preview.face_logical_ids
-    assert "face:side/L5" not in preview.face_logical_ids
-    assert preview.body_logical_id == "body:domain"

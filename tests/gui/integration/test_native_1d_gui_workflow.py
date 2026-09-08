@@ -47,6 +47,9 @@ from tests.helpers.gui_command_receipts import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("gui_runtime")
+
+
 PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
     "new_native_project",
     "apply_native_geometry_edit",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -35,17 +37,16 @@ from tests.helpers.file_builders import write_inp
 
 
 FIXTURES = (
-    Path(__file__).parents[1]
+    Path(__file__).parents[2]
     / "helpers" / "fixtures"
     / "inp"
     / "abaqus_standard"
 )
-MIXED_PLATE = (
-    Path(__file__).parents[2]
-    / "data"
-    / "MixedPlateCps3Cps4_PerforatedJob.inp"
-)
+MIXED_PLATE = FIXTURES / 'mixed_cps3_cps4_output.inp'
 B31_NOTICE = "abaqus.b31.linear_timoshenko_support_boundary"
+
+pytestmark = pytest.mark.usefixtures("gui_runtime")
+
 
 PUBLIC_GUI_WORKFLOW_ENTRYPOINTS = (
     "open_inp_path",

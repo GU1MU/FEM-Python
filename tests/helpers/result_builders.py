@@ -114,3 +114,40 @@ def assert_result_records_equivalent(
             actual_field.values,
             expected_field.values,
         )
+
+
+def make_session_with_success():
+    from fem.application import ModelSession, NativePart
+    from fem.geometry.recipes import BoxGeometry
+    from tests.helpers.model_builders import make_simple_truss_mesh
+    from tests.helpers.preflight_builders import passing_preflight_report
+
+    session = ModelSession()
+    session.new_native_project()
+    session.replace_geometry((NativePart(),), BoxGeometry("Box", 1.0, 1.0, 1.0))
+    session.replace_model_definitions(
+        (),
+        (),
+        (),
+        (AnalysisStep("Step-A"),),
+    )
+    mesh_task = session.prepare_mesh_generation()
+    session.accept_generated_model(
+        mesh_task.token,
+        FEMModel(
+            mesh=make_simple_truss_mesh(),
+            steps=(AnalysisStep("Step-A"),),
+        ),
+    )
+    validation = session.prepare_validation("Step-A")
+    session.accept_validation(
+        validation.token,
+        passing_preflight_report(validation.token),
+    )
+    solve = session.prepare_solve("Step-A", "Phase-0-Job")
+    session.begin_run(solve.token)
+    session.accept_run_succeeded(
+        solve.token,
+        make_solve_result_bundle(solve, marker=1.0),
+    )
+    return session, solve
