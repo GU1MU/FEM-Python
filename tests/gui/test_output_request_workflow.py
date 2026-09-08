@@ -116,6 +116,7 @@ def _capture_warnings(monkeypatch):
 
 
 def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:
@@ -165,6 +166,7 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
 
 
 def test_imported_history_variables_are_not_selected_and_are_replaced(
+    gui_application,
     gui_inp_path,
     tmp_path,
     monkeypatch,
@@ -236,6 +238,7 @@ def test_imported_history_variables_are_not_selected_and_are_replaced(
 
 
 def test_imported_delete_checks_capability_warns_and_reload_restores_source(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:
@@ -278,6 +281,7 @@ def test_imported_delete_checks_capability_warns_and_reload_restores_source(
 
 
 def test_imported_existing_view_acceptance_has_zero_session_mutation(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:
@@ -309,6 +313,7 @@ def test_imported_existing_view_acceptance_has_zero_session_mutation(
 
 
 def test_delete_rechecks_session_capability_before_mutation_or_warning(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:
@@ -434,6 +439,7 @@ def test_native_create_survives_project_save_and_reopen(
 
 
 def test_native_create_accepts_multiple_output_variables(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -494,7 +500,7 @@ def test_native_create_accepts_multiple_output_variables(
     window.close()
 
 
-def test_create_capability_rejection_has_zero_mutation(monkeypatch) -> None:
+def test_create_capability_rejection_has_zero_mutation(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     before = window.document
@@ -524,6 +530,7 @@ def test_create_capability_rejection_has_zero_mutation(monkeypatch) -> None:
 
 
 def test_imported_cancelled_or_failed_create_does_not_warn_or_mutate(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:

@@ -32,7 +32,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_compact_number_input_hides_only_insignificant_trailing_zeroes():
+def test_compact_number_input_hides_only_insignificant_trailing_zeroes(gui_application):
     _application()
     editor = CompactDoubleSpinBox()
     editor.setDecimals(8)
@@ -45,7 +45,7 @@ def test_compact_number_input_hides_only_insignificant_trailing_zeroes():
     assert editor.value() == 0.0001
 
 
-def test_adaptive_number_input_preserves_only_user_typed_precision():
+def test_adaptive_number_input_preserves_only_user_typed_precision(gui_application):
     _application()
     editor = AdaptivePrecisionDoubleSpinBox()
 
@@ -65,7 +65,7 @@ def test_adaptive_number_input_preserves_only_user_typed_precision():
     assert editor.text() == "3.46"
 
 
-def test_contour_display_and_symbol_dialogs_round_trip_settings():
+def test_contour_display_and_symbol_dialogs_round_trip_settings(gui_application):
     _application()
     contour = ContourSettingsDialog(
         {
@@ -240,7 +240,7 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings():
     assert symbols.settings().scale == 1.5
 
 
-def test_contour_dialog_defaults_to_abaqus_rainbow():
+def test_contour_dialog_defaults_to_abaqus_rainbow(gui_application):
     _application()
     contour = ContourSettingsDialog({})
 
@@ -250,7 +250,7 @@ def test_contour_dialog_defaults_to_abaqus_rainbow():
     assert contour.shaded_mode.isChecked()
 
 
-def test_display_settings_defaults_to_geometry_edges():
+def test_display_settings_defaults_to_geometry_edges(gui_application):
     _application()
     display = DisplaySettingsDialog({})
 
@@ -267,7 +267,7 @@ def test_display_settings_defaults_to_geometry_edges():
     assert not hidden.settings()["edges"]
 
 
-def test_contour_and_display_dialogs_split_render_and_edge_modes():
+def test_contour_and_display_dialogs_split_render_and_edge_modes(gui_application):
     _application()
     contour = ContourSettingsDialog(
         {
@@ -291,7 +291,7 @@ def test_contour_and_display_dialogs_split_render_and_edge_modes():
     assert display.settings()["edges"]
 
 
-def test_viewport_background_dialog_supports_presets_and_live_preview():
+def test_viewport_background_dialog_supports_presets_and_live_preview(gui_application):
     _application()
     dialog = ViewportBackgroundDialog(ViewportBackgroundSettings(), False)
     previews = []

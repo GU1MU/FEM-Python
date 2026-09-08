@@ -188,6 +188,7 @@ def test_native_wire_edges_expand_to_line_elements() -> None:
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_geometry_edge_box_selection_expands_and_ctrl_toggles(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -241,6 +242,7 @@ def test_geometry_edge_box_selection_expands_and_ctrl_toggles(
 
 
 def test_box_selection_bounds_are_direction_independent(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -266,6 +268,7 @@ def test_box_selection_bounds_are_direction_independent(
 
 
 def test_completed_scope_creation_reopens_load_editor_with_new_scope(
+    gui_application,
     monkeypatch,
 ) -> None:
     application = _application()
@@ -308,6 +311,7 @@ def test_completed_scope_creation_reopens_load_editor_with_new_scope(
 
 
 def test_completed_scope_creation_restores_new_load_form_and_scope(
+    gui_application,
     monkeypatch,
 ) -> None:
     application = _application()
@@ -349,6 +353,7 @@ def test_completed_scope_creation_restores_new_load_form_and_scope(
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -399,6 +404,7 @@ def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_imported_mesh_can_create_an_inferred_whole_edge_scope(
+    gui_application,
     tmp_path,
 ) -> None:
     _application()
@@ -443,6 +449,7 @@ def test_imported_mesh_can_create_an_inferred_whole_edge_scope(
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_2d_section_scope_creation_uses_surface_bar_and_element_set(
+    gui_application,
     monkeypatch,
 ) -> None:
     application = _application()

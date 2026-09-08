@@ -22,6 +22,7 @@ from tests.helpers.gui_result_workflows import (
 
 
 def test_agent_bridge_delegates_to_the_unified_result_invalidation_gate(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = FEMMainWindow()
@@ -43,6 +44,7 @@ def test_agent_bridge_delegates_to_the_unified_result_invalidation_gate(
 
 
 def test_close_event_cancel_preserves_unsaved_result_projection(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -107,7 +109,7 @@ def test_close_event_cancel_preserves_unsaved_result_projection(
     assert not window.isVisible()
 
 
-def test_face_sketch_commit_cancel_preserves_pending_state(monkeypatch) -> None:
+def test_face_sketch_commit_cancel_preserves_pending_state(gui_application, monkeypatch) -> None:
     window = FEMMainWindow()
     operation = object()
     direction = object()
@@ -195,6 +197,7 @@ def test_face_sketch_commit_cancel_preserves_pending_state(monkeypatch) -> None:
 
 
 def test_public_edit_type_validation_precedes_result_confirmation(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -218,7 +221,7 @@ def test_public_edit_type_validation_precedes_result_confirmation(
     window.close()
 
 
-def test_result_transition_confirmation_exposes_unsaved_run(monkeypatch, tmp_path: Path) -> None:
+def test_result_transition_confirmation_exposes_unsaved_run(gui_application, monkeypatch, tmp_path: Path) -> None:
     window = open_result_archive_window(tmp_path, "confirm")
     # Remove the accepted file state to model a genuinely unsaved result run;
     # the count and job label must come from the live Session projection.
@@ -289,6 +292,7 @@ def test_result_transition_confirmation_exposes_unsaved_run(monkeypatch, tmp_pat
 
 
 def test_opening_documents_preserves_dirty_result_and_cancelled_close_keeps_it(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:

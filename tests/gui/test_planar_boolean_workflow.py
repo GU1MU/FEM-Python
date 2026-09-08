@@ -112,7 +112,7 @@ def test_controller_requires_a_valid_face_target() -> None:
         raise AssertionError("an edge was accepted as a planar target")
 
 
-def test_panel_reenables_inputs_after_running_preview_is_cancelled() -> None:
+def test_panel_reenables_inputs_after_running_preview_is_cancelled(gui_application) -> None:
     _application()
     controller = PlanarBooleanController(
         RectangleGeometry("Target", 3.0, 2.0),
@@ -145,7 +145,7 @@ def test_panel_reenables_inputs_after_running_preview_is_cancelled() -> None:
     panel.close()
 
 
-def test_planar_boolean_panel_can_clear_target_and_delete_tool() -> None:
+def test_planar_boolean_panel_can_clear_target_and_delete_tool(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -177,6 +177,7 @@ def test_planar_boolean_panel_can_clear_target_and_delete_tool() -> None:
 
 
 def test_planar_boolean_target_pick_is_persistently_highlighted(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -212,7 +213,7 @@ def test_planar_boolean_target_pick_is_persistently_highlighted(
     window.close()
 
 
-def test_planar_boolean_face_prompt_cancel_restores_original_state() -> None:
+def test_planar_boolean_face_prompt_cancel_restores_original_state(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -229,6 +230,7 @@ def test_planar_boolean_face_prompt_cancel_restores_original_state() -> None:
 
 
 def test_2d_boolean_with_preselected_face_waits_for_confirmation(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -271,7 +273,7 @@ def test_2d_boolean_with_preselected_face_waits_for_confirmation(
     window.close()
 
 
-def test_boolean_actions_are_disabled_for_one_dimensional_geometry() -> None:
+def test_boolean_actions_are_disabled_for_one_dimensional_geometry(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -291,7 +293,7 @@ def test_boolean_actions_are_disabled_for_one_dimensional_geometry() -> None:
     window.close()
 
 
-def test_boolean_actions_are_disabled_while_sketch_editor_is_active() -> None:
+def test_boolean_actions_are_disabled_while_sketch_editor_is_active(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     sketch = _tool_sketch()
@@ -305,6 +307,7 @@ def test_boolean_actions_are_disabled_while_sketch_editor_is_active() -> None:
 
 
 def test_tool_sketch_finish_requests_automatic_boolean_commit(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -347,6 +350,7 @@ def test_tool_sketch_finish_requests_automatic_boolean_commit(
 
 
 def test_successful_automatic_preview_immediately_requests_commit(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -397,7 +401,7 @@ def test_successful_automatic_preview_immediately_requests_commit(
     window.close()
 
 
-def test_automatic_finish_commits_without_reopening_a_panel(monkeypatch) -> None:
+def test_automatic_finish_commits_without_reopening_a_panel(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -445,6 +449,7 @@ def test_automatic_finish_commits_without_reopening_a_panel(monkeypatch) -> None
 
 
 def test_committed_exact_preview_survives_full_projection_rebuild(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -504,6 +509,7 @@ def test_committed_exact_preview_survives_full_projection_rebuild(
 
 
 def test_fuse_tool_accepts_arc_closed_by_target_edge_and_tangent_rectangle(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -553,7 +559,7 @@ def test_fuse_tool_accepts_arc_closed_by_target_edge_and_tangent_rectangle(
     window.close()
 
 
-def test_tool_sketch_cancel_aborts_the_guided_boolean_workflow() -> None:
+def test_tool_sketch_cancel_aborts_the_guided_boolean_workflow(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -573,6 +579,7 @@ def test_tool_sketch_cancel_aborts_the_guided_boolean_workflow() -> None:
 
 
 def test_stale_async_preview_is_discarded_when_operation_changes(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -610,7 +617,7 @@ def test_stale_async_preview_is_discarded_when_operation_changes(
     window.close()
 
 
-def test_occ_preview_failure_keeps_committed_geometry(monkeypatch) -> None:
+def test_occ_preview_failure_keeps_committed_geometry(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -641,7 +648,7 @@ def test_occ_preview_failure_keeps_committed_geometry(monkeypatch) -> None:
     window.close()
 
 
-def test_automatic_preview_failure_reopens_the_tool_sketch(monkeypatch) -> None:
+def test_automatic_preview_failure_reopens_the_tool_sketch(gui_application, monkeypatch) -> None:
     application = _application()
     window = FEMMainWindow()
     source = RectangleGeometry("Target", 3.0, 2.0)
@@ -677,6 +684,7 @@ def test_automatic_preview_failure_reopens_the_tool_sketch(monkeypatch) -> None:
 
 
 def test_tool_sketch_revision_conflict_keeps_latest_committed_geometry(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()

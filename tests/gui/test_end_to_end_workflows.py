@@ -41,7 +41,7 @@ def _apply(window: FEMMainWindow, delta: object) -> None:
     assert window._apply_session_delta(delta)
 
 
-def test_native_preprocess_check_job_result_workflow(monkeypatch):
+def test_native_preprocess_check_job_result_workflow(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     errors: list[tuple[str, str]] = []
@@ -135,7 +135,7 @@ def test_native_preprocess_check_job_result_workflow(monkeypatch):
     window.close()
 
 
-def test_inp_check_job_result_workflow(monkeypatch, gui_inp_path):
+def test_inp_check_job_result_workflow(gui_application, monkeypatch, gui_inp_path):
     _application()
     window = FEMMainWindow()
     errors: list[tuple[str, str]] = []
@@ -159,7 +159,7 @@ def test_inp_check_job_result_workflow(monkeypatch, gui_inp_path):
     window.close()
 
 
-def test_inp_check_accepts_importer_internal_section_element_set(monkeypatch):
+def test_inp_check_accepts_importer_internal_section_element_set(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     errors: list[tuple[str, str]] = []
@@ -183,7 +183,7 @@ def test_inp_check_accepts_importer_internal_section_element_set(monkeypatch):
     window.close()
 
 
-def test_model_check_rejects_an_underconstrained_native_model(monkeypatch):
+def test_model_check_rejects_an_underconstrained_native_model(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     errors: list[tuple[str, str]] = []

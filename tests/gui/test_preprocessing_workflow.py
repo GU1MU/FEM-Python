@@ -80,7 +80,7 @@ def _set_native_mesh_inputs(
 
 
 @pytest.mark.usefixtures("real_gmsh")
-def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
+def test_native_rectangle_mesh_joins_the_existing_model_workflow(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     recipe = RectangleGeometry("gui-native-rectangle", 2.0, 1.0)
@@ -127,7 +127,7 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow() -> None:
 
 
 @pytest.mark.usefixtures("real_gmsh")
-def test_scope_creation_starts_from_the_meshed_model() -> None:
+def test_scope_creation_starts_from_the_meshed_model(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     recipe = RectangleGeometry("scope-plate", 2.0, 1.0)
@@ -290,7 +290,7 @@ def test_rectangle_sketch_extrusion_uses_existing_solid_mesh_workflow(
 
 
 @pytest.mark.usefixtures("real_gmsh")
-def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
+def test_quadrilateral_setting_reaches_the_same_gui_adapter(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     _set_native_mesh_inputs(
@@ -317,7 +317,7 @@ def test_quadrilateral_setting_reaches_the_same_gui_adapter() -> None:
 
 
 @pytest.mark.usefixtures("real_gmsh")
-def test_plate_with_hole_applies_local_refinement_without_implicit_scopes() -> None:
+def test_plate_with_hole_applies_local_refinement_without_implicit_scopes(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     recipe = PlateWithHoleGeometry(
@@ -727,6 +727,7 @@ def test_unproven_boolean_preview_has_no_selectable_subentities() -> None:
 
 
 def test_geometry_preview_never_exposes_internal_entity_ids_as_a_legend(
+    gui_application,
     monkeypatch,
 ) -> None:
     import pyvista
@@ -786,6 +787,7 @@ def test_geometry_preview_never_exposes_internal_entity_ids_as_a_legend(
 
 
 def test_geometry_pick_overlay_keeps_pick_data_without_rendering_over_mesh(
+    gui_application,
     monkeypatch,
 ) -> None:
     import pyvista
@@ -839,7 +841,7 @@ def test_geometry_pick_overlay_keeps_pick_data_without_rendering_over_mesh(
     viewport.close()
 
 
-def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() -> None:
+def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     recipe = BoxGeometry("preview-box", 2.0, 1.0, 0.5)
@@ -862,7 +864,7 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview() 
     window.close()
 
 
-def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(monkeypatch) -> None:
+def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     render_preview = window.viewport.show_geometry_preview
@@ -1099,7 +1101,7 @@ def test_generic_hole_inner_edge_local_control_increases_mesh_density() -> None:
     assert len(refined.mesh.elements) > len(baseline.mesh.elements)
 
 
-def test_local_mesh_command_enters_viewport_edge_selection_first() -> None:
+def test_local_mesh_command_enters_viewport_edge_selection_first(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(

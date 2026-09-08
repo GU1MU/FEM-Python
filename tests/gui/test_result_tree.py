@@ -20,7 +20,7 @@ def _step_item(tree: ResultTree) -> QTreeWidgetItem:
     return tree.topLevelItem(0).child(0)
 
 
-def test_catalog_tree_preserves_published_field_and_component_order() -> None:
+def test_catalog_tree_preserves_published_field_and_component_order(gui_application) -> None:
     catalog = make_result_catalog()
     tree = ResultTree()
 
@@ -48,7 +48,7 @@ def test_catalog_tree_preserves_published_field_and_component_order() -> None:
     ] == ["S22", "S11", "Mises"]
 
 
-def test_catalog_items_keep_complete_typed_identity_and_default_selection() -> None:
+def test_catalog_items_keep_complete_typed_identity_and_default_selection(gui_application) -> None:
     catalog = make_result_catalog()
     tree = ResultTree()
 
@@ -85,7 +85,7 @@ def test_catalog_items_keep_complete_typed_identity_and_default_selection() -> N
     assert tree.currentItem().text(0) == "U1"
 
 
-def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() -> None:
+def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not(gui_application) -> None:
     catalog = make_result_catalog()
     tree = ResultTree()
     tree.set_catalog("Static-1", catalog)
@@ -112,7 +112,7 @@ def test_ready_and_lazy_items_emit_typed_selection_while_unavailable_does_not() 
     assert not unavailable_flags & Qt.ItemFlag.ItemIsSelectable
 
 
-def test_set_catalog_requires_exact_typed_inputs() -> None:
+def test_set_catalog_requires_exact_typed_inputs(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
 
@@ -123,7 +123,7 @@ def test_set_catalog_requires_exact_typed_inputs() -> None:
     assert tree.catalog is None
 
 
-def test_select_selection_prefers_the_exact_component_leaf() -> None:
+def test_select_selection_prefers_the_exact_component_leaf(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     tree.set_catalog("Static-1", catalog)

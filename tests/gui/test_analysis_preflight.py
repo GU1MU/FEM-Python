@@ -14,6 +14,7 @@ from tests.helpers.preflight_builders import passing_preflight_report
 
 
 def test_model_check_runs_the_shared_numerical_stiffness_preflight(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
@@ -225,6 +226,7 @@ def test_large_model_check_policy_avoids_preflight_factorization() -> None:
 
 
 def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
@@ -298,6 +300,7 @@ def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
 
 
 def test_validation_only_projection_reuses_detached_model_snapshot(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):

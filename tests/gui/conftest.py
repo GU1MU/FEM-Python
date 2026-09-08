@@ -2,21 +2,12 @@ from __future__ import annotations
 
 import gc
 import os
-from collections.abc import Iterator
 from time import monotonic
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("FEM_GUI_OFFSCREEN", "1")
 
 import pytest
-from PySide6.QtCore import QEvent, QThread
-from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QFileDialog,
-    QInputDialog,
-    QMessageBox,
-)
 
 from tests.helpers.file_builders import write_inp
 
@@ -26,9 +17,11 @@ _GUI_TEARDOWN_TIMEOUT_SECONDS = 2.0
 _quarantined_gui_widgets: list[object] = []
 
 
-@pytest.fixture(scope="session", autouse=True)
-def gui_application() -> Iterator[QApplication]:
+@pytest.fixture(scope="session")
+def _gui_application():
     """Keep exactly one QApplication wrapper alive for the GUI test session."""
+
+    from PySide6.QtWidgets import QApplication
 
     application = QApplication.instance()
     if application is None:
@@ -38,8 +31,16 @@ def gui_application() -> Iterator[QApplication]:
 
 
 @pytest.fixture
+def gui_application(gui_runtime):
+    """Opt into Qt setup and per-test cleanup while reusing the session app."""
+    return gui_runtime
+
+
+@pytest.fixture
 def dispose_gui_widget(gui_application):
     """Destroy a closed Qt window before the test constructs its replacement."""
+
+    from PySide6.QtCore import QEvent
 
     def dispose(widget) -> None:
         widget.hide()
@@ -50,9 +51,12 @@ def dispose_gui_widget(gui_application):
     return dispose
 
 
-@pytest.fixture(autouse=True)
-def reject_unstubbed_modal_dialogs(monkeypatch, gui_application):
-    """Reject native modal loops and report them after Qt callbacks unwind."""
+@pytest.fixture
+def gui_runtime(monkeypatch, _gui_application):
+    """Guard modal loops and release GUI windows/tasks after each opted-in test."""
+
+    from PySide6.QtCore import QEvent, QThread
+    from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox
 
     unstubbed_modals: list[str] = []
 
@@ -100,11 +104,11 @@ def reject_unstubbed_modal_dialogs(monkeypatch, gui_application):
     for method in ("getDouble", "getInt", "getItem", "getText"):
         monkeypatch.setattr(QInputDialog, method, reject_input_dialog(method))
 
-    yield
+    yield _gui_application
 
     global _gui_cleanup_count
 
-    application = gui_application
+    application = _gui_application
     application.processEvents()
     widgets = tuple(
         widget

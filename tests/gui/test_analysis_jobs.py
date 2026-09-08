@@ -52,7 +52,7 @@ def _accept_validation(window: FEMMainWindow, step_name: str) -> None:
     )
 
 
-def test_job_submit_dialog_uses_a_chinese_default_name_without_description():
+def test_job_submit_dialog_uses_a_chinese_default_name_without_description(gui_application):
     dialog = JobSubmitDialog("作业-1", ("分析步-1",), "分析步-1")
 
     assert dialog.job_name == "作业-1"
@@ -120,7 +120,7 @@ def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
     assert session.snapshot().active_job_name is None
 
 
-def test_job_actions_enable_creation_after_model_validation(gui_inp_path):
+def test_job_actions_enable_creation_after_model_validation(gui_application, gui_inp_path):
     window = FEMMainWindow()
     for name in ("step_info", "check_model", "submit_job", "resubmit_job", "job_manager"):
         assert name in window.actions
@@ -140,7 +140,7 @@ def test_job_actions_enable_creation_after_model_validation(gui_inp_path):
     window.close()
 
 
-def test_current_step_information_and_model_check_reuse_existing_services(monkeypatch, gui_inp_path):
+def test_current_step_information_and_model_check_reuse_existing_services(gui_application, monkeypatch, gui_inp_path):
     window = FEMMainWindow()
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
@@ -177,7 +177,7 @@ def test_current_step_information_and_model_check_reuse_existing_services(monkey
     window.close()
 
 
-def test_model_check_warning_row_hides_internal_diagnostic_names(monkeypatch):
+def test_model_check_warning_row_hides_internal_diagnostic_names(gui_application, monkeypatch):
     window = FEMMainWindow()
     reported: list[tuple[str, list[tuple[str, object]]]] = []
     monkeypatch.setattr(
@@ -563,7 +563,7 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_application, gui_i
     window.close()
 
 
-def test_job_manager_terminate_button_tracks_selected_running_job():
+def test_job_manager_terminate_button_tracks_selected_running_job(gui_application):
     started_at = datetime.now(timezone.utc)
     running = AnalysisRun(
         run_id="run-1",
@@ -601,7 +601,7 @@ def test_job_manager_terminate_button_tracks_selected_running_job():
     manager.close()
 
 
-def test_job_manager_submits_only_a_selected_pending_job():
+def test_job_manager_submits_only_a_selected_pending_job(gui_application):
     pending = AnalysisRun(
         run_id="run-1",
         name="Job-1",
@@ -678,7 +678,7 @@ def test_job_manager_terminates_the_selected_active_solve(
     window.close()
 
 
-def test_job_manager_refresh_preserves_manual_log_scroll_position():
+def test_job_manager_refresh_preserves_manual_log_scroll_position(gui_application):
     job = AnalysisRun(
         run_id="run-1",
         name="Job-1",

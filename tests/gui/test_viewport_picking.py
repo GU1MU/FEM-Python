@@ -85,7 +85,7 @@ def _rendered_viewport() -> tuple[FEMViewport, object]:
     return viewport, plotter
 
 
-def test_isometric_view_matches_abaqus_with_real_vtk() -> None:
+def test_isometric_view_matches_abaqus_with_real_vtk(gui_application) -> None:
     _application()
     plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
     viewport = FEMViewport()
@@ -134,7 +134,7 @@ def test_line_only_polydata_does_not_create_vertex_cells() -> None:
     assert dataset.n_cells == 2
 
 
-def test_qt_to_vtk_position_has_no_high_dpi_one_pixel_offset() -> None:
+def test_qt_to_vtk_position_has_no_high_dpi_one_pixel_offset(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._plotter = SimpleNamespace(
@@ -149,7 +149,7 @@ def test_wire_hover_coordinate_label_has_visible_separators() -> None:
     assert _wire_coordinate_label((0.3, 0.3, 0.0)) == "(0.30, 0.30, 0.00)"
 
 
-def test_sketch_draft_picking_resolves_point_curve_and_profile() -> None:
+def test_sketch_draft_picking_resolves_point_curve_and_profile(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._sketch_draft_render_data = SketchDraftRenderData(
@@ -176,7 +176,7 @@ def test_sketch_draft_picking_resolves_point_curve_and_profile() -> None:
     viewport.close()
 
 
-def test_sketch_authoring_click_emits_stable_draft_ids() -> None:
+def test_sketch_authoring_click_emits_stable_draft_ids(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._sketch_authoring_mode = "select"
@@ -192,6 +192,7 @@ def test_sketch_authoring_click_emits_stable_draft_ids() -> None:
 
 
 def test_empty_sketch_shows_xy_axes_origin_and_cursor_coordinates(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -231,6 +232,7 @@ def test_empty_sketch_shows_xy_axes_origin_and_cursor_coordinates(
 
 
 def test_entering_xy_sketch_places_positive_x_right_and_positive_y_up(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -268,6 +270,7 @@ def test_entering_xy_sketch_places_positive_x_right_and_positive_y_up(
 
 
 def test_sketch_constraint_state_selection_and_hover_have_distinct_colors(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -314,6 +317,7 @@ def test_sketch_constraint_state_selection_and_hover_have_distinct_colors(
 
 
 def test_sketch_second_point_preview_actor_is_cleared_on_cancel(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -364,7 +368,7 @@ def test_sketch_second_point_preview_actor_is_cleared_on_cancel(
     viewport.close()
 
 
-def test_single_wire_point_and_selection_render_as_a_highlight(monkeypatch) -> None:
+def test_single_wire_point_and_selection_render_as_a_highlight(gui_application, monkeypatch) -> None:
     _application()
     plotter = pv.Plotter(off_screen=True, window_size=(400, 400))
     viewport = FEMViewport()
@@ -488,7 +492,7 @@ def test_preview_cells_without_logical_ids_are_not_selectable() -> None:
     assert vertices.n_points == 0
 
 
-def test_face_pick_returns_frontmost_visible_logical_face() -> None:
+def test_face_pick_returns_frontmost_visible_logical_face(gui_application) -> None:
     viewport, plotter = _rendered_viewport()
     try:
         surface = pv.Cube().triangulate()
@@ -512,7 +516,7 @@ def test_face_pick_returns_frontmost_visible_logical_face() -> None:
         viewport.close()
 
 
-def test_node_and_element_picks_read_discontinuous_dataset_ids() -> None:
+def test_node_and_element_picks_read_discontinuous_dataset_ids(gui_application) -> None:
     viewport, plotter = _rendered_viewport()
     try:
         nodes = pv.PolyData(np.asarray(((0.0, 0.0, 0.0), (0.8, 0.0, 0.0))))
@@ -550,7 +554,7 @@ def test_node_and_element_picks_read_discontinuous_dataset_ids() -> None:
         viewport.close()
 
 
-def test_edge_pick_tolerance_is_stable_in_display_pixels_across_zoom() -> None:
+def test_edge_pick_tolerance_is_stable_in_display_pixels_across_zoom(gui_application) -> None:
     viewport, plotter = _rendered_viewport()
     try:
         preview = GeometryPreview(
@@ -596,7 +600,7 @@ def test_edge_pick_tolerance_is_stable_in_display_pixels_across_zoom() -> None:
         viewport.close()
 
 
-def test_click_reuses_current_preselection_candidate(monkeypatch) -> None:
+def test_click_reuses_current_preselection_candidate(gui_application, monkeypatch) -> None:
     _application()
     viewport = FEMViewport()
     viewport._plotter = SimpleNamespace(
@@ -649,6 +653,7 @@ def test_click_reuses_current_preselection_candidate(monkeypatch) -> None:
     ),
 )
 def test_geometry_pick_signal_emits_logical_reference(
+    gui_application,
     kind,
     logical_id,
 ) -> None:
@@ -682,7 +687,7 @@ def test_geometry_pick_signal_emits_logical_reference(
     viewport.close()
 
 
-def test_viewport_allocates_private_tokens_per_display_cell() -> None:
+def test_viewport_allocates_private_tokens_per_display_cell(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     preview = build_geometry_preview(
@@ -713,7 +718,7 @@ def test_viewport_allocates_private_tokens_per_display_cell() -> None:
     viewport.close()
 
 
-def test_strict_sketch_preview_exposes_profile_hole_and_alias_pick_ids() -> None:
+def test_strict_sketch_preview_exposes_profile_hole_and_alias_pick_ids(gui_application) -> None:
     _application()
     recipe = SketchGeometry(
         "strict-preview",
@@ -754,7 +759,7 @@ def test_strict_sketch_preview_exposes_profile_hole_and_alias_pick_ids() -> None
     viewport.close()
 
 
-def test_preview_install_rebuilds_private_pick_maps() -> None:
+def test_preview_install_rebuilds_private_pick_maps(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     first = build_geometry_preview(
@@ -778,7 +783,7 @@ def test_preview_install_rebuilds_private_pick_maps() -> None:
     viewport.close()
 
 
-def test_fem_pick_signal_keeps_integer_node_and_element_ids() -> None:
+def test_fem_pick_signal_keeps_integer_node_and_element_ids(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     picked = []
@@ -805,6 +810,7 @@ def test_fem_pick_signal_keeps_integer_node_and_element_ids() -> None:
 
 
 def test_logical_reference_highlight_covers_every_display_cell(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -858,7 +864,7 @@ def test_logical_reference_highlight_covers_every_display_cell(
     viewport.close()
 
 
-def test_auxiliary_actors_are_never_marked_pickable() -> None:
+def test_auxiliary_actors_are_never_marked_pickable(gui_application) -> None:
     class Actor:
         def __init__(self) -> None:
             self.pickable = None
@@ -895,6 +901,7 @@ def test_auxiliary_actors_are_never_marked_pickable() -> None:
 
 @pytest.mark.parametrize("kind", ("geometry_face", "geometry_body"))
 def test_surface_preselection_never_exposes_internal_triangulation(
+    gui_application,
     monkeypatch,
     kind,
 ) -> None:
@@ -963,6 +970,7 @@ def test_surface_preselection_never_exposes_internal_triangulation(
 
 
 def test_surface_preselection_highlights_every_cell_of_logical_face(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -1024,6 +1032,7 @@ def test_surface_preselection_highlights_every_cell_of_logical_face(
 
 
 def test_geometry_body_selection_highlights_surface_and_geometry_edges(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -1079,6 +1088,7 @@ def test_geometry_body_selection_highlights_surface_and_geometry_edges(
 
 
 def test_mesh_body_preselection_highlights_every_element_in_the_body(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()

@@ -313,7 +313,7 @@ def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay(gui_applicat
     window.close()
 
 
-def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
+def test_menu_ribbon_and_viewport_toolbar_reuse_actions(gui_application):
     window = FEMMainWindow()
     fit = window.actions["fit"]
 
@@ -410,7 +410,7 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions():
     window.close()
 
 
-def test_small_ribbon_commands_use_readable_icons():
+def test_small_ribbon_commands_use_readable_icons(gui_application):
     window = FEMMainWindow()
     geometry_move = next(
         button
@@ -424,7 +424,7 @@ def test_small_ribbon_commands_use_readable_icons():
     window.close()
 
 
-def test_geometry_omits_element_selection_while_model_keeps_all_selection_actions():
+def test_geometry_omits_element_selection_while_model_keeps_all_selection_actions(gui_application):
     window = FEMMainWindow()
     tab_names = [
         window.ribbon.tab_bar.tabText(index)
@@ -529,7 +529,7 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
     window.close()
 
 
-def test_scope_group_is_available_in_mesh_model_and_analysis_pages():
+def test_scope_group_is_available_in_mesh_model_and_analysis_pages(gui_application):
     window = FEMMainWindow()
     tab_names = [
         window.ribbon.tab_bar.tabText(index)
@@ -636,7 +636,7 @@ def test_analysis_page_uses_compact_workflow_groups(gui_application):
     window.close()
 
 
-def test_standard_views_use_abaqus_names():
+def test_standard_views_use_abaqus_names(gui_application):
     window = FEMMainWindow()
     assert window.actions["front"].text() == "前视图"
     assert window.actions["back"].text() == "后视图"
@@ -648,7 +648,7 @@ def test_standard_views_use_abaqus_names():
     window.close()
 
 
-def test_viewport_toolbar_keeps_isometric_view_first():
+def test_viewport_toolbar_keeps_isometric_view_first(gui_application):
     window = FEMMainWindow()
     standard_views = {"front", "back", "top", "bottom", "left", "right", "iso"}
     toolbar_views = [
@@ -713,7 +713,7 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group(gui_appli
     window.close()
 
 
-def test_module_switch_restores_each_selection_space_filter_without_stale_checks():
+def test_module_switch_restores_each_selection_space_filter_without_stale_checks(gui_application):
     window = FEMMainWindow()
     names = ("select_point", "select_element", "select_edge", "select_face", "select_body")
     groups = {window.actions[name].actionGroup() for name in names}
@@ -736,7 +736,7 @@ def test_module_switch_restores_each_selection_space_filter_without_stale_checks
     window.close()
 
 
-def test_viewport_background_updates_placeholder_without_model():
+def test_viewport_background_updates_placeholder_without_model(gui_application):
     window = FEMMainWindow()
     from fem_gui.viewport_background import ViewportBackgroundSettings
 

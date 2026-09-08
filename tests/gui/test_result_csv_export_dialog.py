@@ -48,7 +48,7 @@ def _check_components(
         )
 
 
-def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
+def test_dialog_selects_ready_fields_without_showing_field_status(gui_application) -> None:
     catalog = _catalog()
     dialog = ResultCsvExportDialog(
         catalog,
@@ -104,6 +104,7 @@ def test_dialog_selects_ready_fields_without_showing_field_status() -> None:
 
 
 def test_component_list_supports_multiple_checks_and_preserves_user_path(
+    gui_application,
     tmp_path: Path,
 ) -> None:
     catalog = _catalog()
@@ -137,6 +138,7 @@ def test_component_list_supports_multiple_checks_and_preserves_user_path(
 
 
 def test_browse_normalizes_csv_suffix_and_cancel_keeps_path(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:

@@ -71,7 +71,7 @@ def test_multi_profile_action_requires_valid_face_selection() -> None:
     assert "非面" in wrong_kind.reason
 
 
-def test_dialog_hides_source_descriptions_and_builds_selected_recipe() -> None:
+def test_dialog_hides_source_descriptions_and_builds_selected_recipe(gui_application) -> None:
     _application()
     sketch = two_profile_sketch()
     first = profile_face_id(sketch, "L1")
@@ -93,7 +93,7 @@ def test_dialog_hides_source_descriptions_and_builds_selected_recipe() -> None:
     dialog.close()
 
 
-def test_extruded_profile_caps_sides_and_body_are_pickable() -> None:
+def test_extruded_profile_caps_sides_and_body_are_pickable(gui_application) -> None:
     _application()
     sketch = hole_profile_sketch()
     source = profile_face_id(sketch, "L1")
@@ -119,6 +119,7 @@ def test_extruded_profile_caps_sides_and_body_are_pickable() -> None:
 
 
 def test_gui_extrusion_commits_selected_profile_and_clears_selection(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -143,6 +144,7 @@ def test_gui_extrusion_commits_selected_profile_and_clears_selection(
 
 
 def test_gui_extrusion_cancel_preserves_recipe_and_face_selection(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -162,6 +164,7 @@ def test_gui_extrusion_cancel_preserves_recipe_and_face_selection(
 
 
 def test_gui_extrusion_revision_conflict_preserves_face_selection(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -200,7 +203,7 @@ def test_gui_extrusion_revision_conflict_preserves_face_selection(
     window.close()
 
 
-def test_geometry_edit_prunes_stale_profile_selection() -> None:
+def test_geometry_edit_prunes_stale_profile_selection(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     sketch = two_profile_sketch()
@@ -229,6 +232,7 @@ def test_geometry_edit_prunes_stale_profile_selection() -> None:
 
 
 def test_occ_preflight_failure_keeps_recipe_selection_and_dialog(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -304,7 +308,7 @@ def test_occ_preflight_failure_releases_temporary_runtime(
     assert released == [True]
 
 
-def test_profile_change_preserves_only_surviving_part_regions() -> None:
+def test_profile_change_preserves_only_surviving_part_regions(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     sketch = two_profile_sketch()

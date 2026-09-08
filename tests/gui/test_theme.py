@@ -32,7 +32,7 @@ def test_themed_checkbox_visually_distinguishes_checked_state(themed_application
     assert checkbox.grab().toImage() != unchecked
 
 
-def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
+def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator(gui_application):
     style = FEMStyle()
     option = QStyleOption()
     option.rect = QRect(0, 0, 16, 16)
@@ -90,7 +90,7 @@ def test_fem_style_draws_a_larger_high_contrast_checkbox_indicator():
     assert light_check_pixels >= 8
 
 
-def test_fem_style_draws_a_visible_checked_radio_indicator():
+def test_fem_style_draws_a_visible_checked_radio_indicator(gui_application):
     style = FEMStyle()
     option = QStyleOption()
     option.rect = QRect(0, 0, 16, 16)

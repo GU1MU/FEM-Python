@@ -94,7 +94,7 @@ def _payload(component: str, values: tuple[float, ...]):
     return build_result_render_payload(topology)
 
 
-def test_component_switch_reuses_grid_and_actor() -> None:
+def test_component_switch_reuses_grid_and_actor(gui_application) -> None:
     _application()
     first = _payload("S11", (1.0, 2.0, 3.0))
     second = _payload("S22", (4.0, 5.0, 6.0))
@@ -147,7 +147,7 @@ def test_component_switch_reuses_grid_and_actor() -> None:
     viewport.close()
 
 
-def test_shape_change_reuses_result_actor_surface_and_selection_pipelines() -> None:
+def test_shape_change_reuses_result_actor_surface_and_selection_pipelines(gui_application) -> None:
     _application()
     first = _payload("S11", (1.0, 2.0, 3.0))
     topology = first.topology
@@ -197,7 +197,7 @@ def test_shape_change_reuses_result_actor_surface_and_selection_pipelines() -> N
     viewport.close()
 
 
-def test_contour_toggle_reuses_result_actor() -> None:
+def test_contour_toggle_reuses_result_actor(gui_application) -> None:
     _application()
     payload = _payload("S11", (1.0, 2.0, 3.0))
     viewport = FEMViewport()
@@ -221,6 +221,7 @@ def test_contour_toggle_reuses_result_actor() -> None:
 
 
 def test_failed_component_switch_can_restore_exact_previous_payload(
+    gui_application,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _application()
@@ -253,7 +254,7 @@ def test_failed_component_switch_can_restore_exact_previous_payload(
     viewport.close()
 
 
-def test_cached_layout_reuses_dataset_and_provenance_indexes() -> None:
+def test_cached_layout_reuses_dataset_and_provenance_indexes(gui_application) -> None:
     _application()
     first = _payload("S11", (1.0, 2.0, 3.0))
     first_topology = first.topology
@@ -298,6 +299,7 @@ def test_cached_layout_reuses_dataset_and_provenance_indexes() -> None:
 
 
 def test_install_transaction_reuses_one_payload_validation(
+    gui_application,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _application()
@@ -430,7 +432,7 @@ class _CountingPlotter:
         self.render_count += 1
 
 
-def test_stress_component_switch_has_constant_geometry_work() -> None:
+def test_stress_component_switch_has_constant_geometry_work(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     plotter = _CountingPlotter()

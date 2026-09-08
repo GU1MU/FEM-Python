@@ -118,7 +118,7 @@ def test_failed_detached_decode_cannot_change_a_live_session(tmp_path) -> None:
     assert session.snapshot() == before
 
 
-def test_main_window_opens_current_fempy_project(tmp_path, monkeypatch) -> None:
+def test_main_window_opens_current_fempy_project(gui_application, tmp_path, monkeypatch) -> None:
     _application()
     source = save_project(
         tmp_path / "current.fempy",
@@ -161,7 +161,7 @@ def test_main_window_opens_current_fempy_project(tmp_path, monkeypatch) -> None:
     window.close()
 
 
-def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
+def test_main_window_opens_wire_project_and_projects_preview(gui_application, tmp_path) -> None:
     _application()
     recipe = WireGeometry(
         "Wire",
@@ -195,6 +195,7 @@ def test_main_window_opens_wire_project_and_projects_preview(tmp_path) -> None:
 
 
 def test_main_window_v1_open_then_save_migrates_to_fempy(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -265,6 +266,7 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
 
 
 def test_meshed_project_builds_display_geometry_off_gui_thread(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -309,6 +311,7 @@ def test_meshed_project_builds_display_geometry_off_gui_thread(
 
 
 def test_legacy_project_save_cancel_preserves_document_and_source(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -356,6 +359,7 @@ def test_legacy_project_save_cancel_preserves_document_and_source(
 
 
 def test_main_window_save_failure_keeps_project_dirty(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:

@@ -39,7 +39,7 @@ def _native_window() -> FEMMainWindow:
     return window
 
 
-def test_delete_part_runs_only_from_the_unique_gui_confirmation() -> None:
+def test_delete_part_runs_only_from_the_unique_gui_confirmation(gui_application) -> None:
     window = _native_window()
     controller = window.agent_authoring_controller
     tool_context = ToolExecutionContext(

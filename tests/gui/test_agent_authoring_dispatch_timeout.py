@@ -79,6 +79,7 @@ def _dispatch_from_other_thread(runtime, name: str, key: str) -> ToolResult:
 
 
 def test_dispatch_timeout_returns_structured_result_and_session_continues(
+    gui_application,
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -120,7 +121,7 @@ def test_dispatch_timeout_returns_structured_result_and_session_continues(
     assert follow_up.ok is True
 
 
-def test_whitelisted_tools_get_the_long_budget_tier(monkeypatch, tmp_path) -> None:
+def test_whitelisted_tools_get_the_long_budget_tier(gui_application, monkeypatch, tmp_path) -> None:
     _application()
     monkeypatch.setattr(
         agent_runtime, "_AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS", 0.15

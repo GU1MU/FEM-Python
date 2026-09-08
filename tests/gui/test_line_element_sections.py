@@ -50,6 +50,7 @@ def _steel() -> MaterialDefinition:
     ),
 )
 def test_capability_presets_create_line_sections(
+    gui_application,
     preset,
     values,
     expected,
@@ -69,7 +70,7 @@ def test_capability_presets_create_line_sections(
     assert section.properties == expected
 
 
-def test_truss_requires_only_elastic_modulus_but_beam_requires_poisson_ratio():
+def test_truss_requires_only_elastic_modulus_but_beam_requires_poisson_ratio(gui_application):
     _application()
     axial_material = MaterialDefinition("Axial", {"E": 1000.0})
     truss = SectionEditDialog(
@@ -88,7 +89,7 @@ def test_truss_requires_only_elastic_modulus_but_beam_requires_poisson_ratio():
         beam.section()
 
 
-def test_hollow_circle_relation_is_shown_and_validated():
+def test_hollow_circle_relation_is_shown_and_validated(gui_application):
     _application()
     dialog = SectionEditDialog(
         [_steel()],
@@ -106,7 +107,7 @@ def test_hollow_circle_relation_is_shown_and_validated():
         dialog.section()
 
 
-def test_beam_shape_switch_clears_irrelevant_legacy_fields():
+def test_beam_shape_switch_clears_irrelevant_legacy_fields(gui_application):
     _application()
     original = SectionDefinition(
         "Beam",
@@ -148,7 +149,7 @@ def test_beam_shape_switch_clears_irrelevant_legacy_fields():
     }
 
 
-def test_unknown_imported_section_is_exactly_preserved_read_only():
+def test_unknown_imported_section_is_exactly_preserved_read_only(gui_application):
     _application()
     imported = SectionDefinition(
         "Future",
@@ -171,7 +172,7 @@ def test_unknown_imported_section_is_exactly_preserved_read_only():
     assert dialog.section() is not imported
 
 
-def test_line_section_manager_uses_presets_and_authoring_policy():
+def test_line_section_manager_uses_presets_and_authoring_policy(gui_application):
     _application()
     enabled = SectionManagerDialog(
         [_steel()],
@@ -197,7 +198,7 @@ def test_line_section_manager_uses_presets_and_authoring_policy():
     assert not policy_disabled.add_button.isEnabled()
 
 
-def test_region_assignment_uses_per_section_typed_compatible_targets():
+def test_region_assignment_uses_per_section_typed_compatible_targets(gui_application):
     _application()
     sections = (
         SectionDefinition("Truss", "Steel", "truss", {"area": 1.0}),
@@ -226,7 +227,7 @@ def test_region_assignment_uses_per_section_typed_compatible_targets():
     assert dialog.assignment() == RegionAssignment("Beam", "BEAM_SET")
 
 
-def test_region_assignment_requires_typed_element_set_regions():
+def test_region_assignment_requires_typed_element_set_regions(gui_application):
     _application()
     section = SectionDefinition("Section", "Steel")
     node = RegionRef("node_set", "SAME")
@@ -242,7 +243,7 @@ def test_region_assignment_requires_typed_element_set_regions():
     assert typed.assignment() == RegionAssignment("Section", "SAME")
 
 
-def test_region_assignment_can_request_scope_selection():
+def test_region_assignment_can_request_scope_selection(gui_application):
     _application()
     dialog = RegionAssignmentDialog(
         [SectionDefinition("Section", "Steel")],
@@ -260,7 +261,7 @@ def test_region_assignment_can_request_scope_selection():
     assert dialog.requested_scope_kind() == "element_set"
 
 
-def test_region_assignment_edits_preserves_and_clears_explicit_orientation():
+def test_region_assignment_edits_preserves_and_clears_explicit_orientation(gui_application):
     _application()
     section = SectionDefinition(
         "Beam",
@@ -300,7 +301,7 @@ def test_region_assignment_edits_preserves_and_clears_explicit_orientation():
     assert dialog.assignment() == current
 
 
-def test_region_assignment_explicit_vector_validation_and_candidate_seam():
+def test_region_assignment_explicit_vector_validation_and_candidate_seam(gui_application):
     _application()
     section = SectionDefinition(
         "Beam",
@@ -341,7 +342,7 @@ def test_region_assignment_explicit_vector_validation_and_candidate_seam():
     assert evaluated == [candidate]
 
 
-def test_region_assignment_accepts_automatic_rectangle_without_diagnostic():
+def test_region_assignment_accepts_automatic_rectangle_without_diagnostic(gui_application):
     _application()
     section = SectionDefinition(
         "Beam",
@@ -365,7 +366,7 @@ def test_region_assignment_accepts_automatic_rectangle_without_diagnostic():
     assert dialog.orientation_diagnostic_label.text() == ""
 
 
-def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit():
+def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit(gui_application):
     _application()
     section = SectionDefinition(
         "Beam",
@@ -394,7 +395,7 @@ def test_region_assignment_uses_domain_suggestion_when_switching_to_explicit():
     )
 
 
-def test_assignment_section_switch_keeps_beam_value_and_clears_nonbeam():
+def test_assignment_section_switch_keeps_beam_value_and_clears_nonbeam(gui_application):
     _application()
     sections = (
         SectionDefinition(

@@ -42,7 +42,7 @@ from tests.helpers.gui_result_workflows import (
 )
 
 
-def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: Path) -> None:
+def test_result_actions_have_canonical_descriptors_and_visible_layout(gui_application, tmp_path: Path) -> None:
     window = FEMMainWindow()
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
@@ -92,7 +92,7 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(tmp_path: 
     window.close()
 
 
-def test_open_result_path_installs_read_only_document_and_result_module(tmp_path: Path) -> None:
+def test_open_result_path_installs_read_only_document_and_result_module(gui_application, tmp_path: Path) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "gui")
     path = tmp_path / "display.femres"
     save_result_archive(path, archive)
@@ -180,6 +180,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(tmp_path
 
 
 def test_result_archive_switches_between_result_and_mesh_modules(
+    gui_application,
     tmp_path: Path,
 ) -> None:
     window = open_result_archive_window(tmp_path, "module-switch")
@@ -207,6 +208,7 @@ def test_result_archive_switches_between_result_and_mesh_modules(
 
 
 def test_open_result_reprojects_when_result_module_is_already_current(
+    gui_application,
     tmp_path: Path,
 ) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "already-result")
@@ -229,6 +231,7 @@ def test_open_result_reprojects_when_result_module_is_already_current(
 
 
 def test_result_only_query_inspection_exports_and_default_viewport_projection(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -315,7 +318,7 @@ def test_result_only_query_inspection_exports_and_default_viewport_projection(
     window.close()
 
 
-def test_save_result_path_completes_suffix_and_updates_session_state(tmp_path: Path) -> None:
+def test_save_result_path_completes_suffix_and_updates_session_state(gui_application, tmp_path: Path) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "save")
     source = tmp_path / "source.femres"
     save_result_archive(source, archive)
@@ -336,7 +339,7 @@ def test_save_result_path_completes_suffix_and_updates_session_state(tmp_path: P
     window.close()
 
 
-def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeypatch) -> None:
+def test_result_dialog_handlers_route_to_archive_workers(gui_application, tmp_path: Path, monkeypatch) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "dialog")
     source = tmp_path / "dialog-source.femres"
     save_result_archive(source, archive)
@@ -395,6 +398,7 @@ def test_result_dialog_handlers_route_to_archive_workers(tmp_path: Path, monkeyp
 
 
 def test_result_open_builds_archive_display_payload_off_gui_thread(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -608,6 +612,7 @@ def test_result_action_reasons_are_typed_for_busy_and_no_result() -> None:
 
 
 def test_result_dialog_cancel_keeps_document_and_advertises_femres_filter(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -631,6 +636,7 @@ def test_result_dialog_cancel_keeps_document_and_advertises_femres_filter(
 
 
 def test_save_result_as_dialog_cancel_does_not_start_a_task(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -657,7 +663,7 @@ def test_save_result_as_dialog_cancel_does_not_start_a_task(
     window.close()
 
 
-def test_save_result_worker_runs_off_gui_thread(tmp_path: Path, monkeypatch) -> None:
+def test_save_result_worker_runs_off_gui_thread(gui_application, tmp_path: Path, monkeypatch) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "save-thread")
     source = tmp_path / "save-thread-source.femres"
     save_result_archive(source, archive)
@@ -682,6 +688,7 @@ def test_save_result_worker_runs_off_gui_thread(tmp_path: Path, monkeypatch) -> 
 
 
 def test_save_result_worker_failure_cleans_current_save_token(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -710,6 +717,7 @@ def test_save_result_worker_failure_cleans_current_save_token(
 
 
 def test_save_result_start_rejection_cleans_issued_save_token(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -732,6 +740,7 @@ def test_save_result_start_rejection_cleans_issued_save_token(
 
 
 def test_open_result_decode_failure_preserves_current_document(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -754,7 +763,7 @@ def test_open_result_decode_failure_preserves_current_document(
     window.close()
 
 
-def test_result_save_overwrites_existing_archive_atomically(tmp_path: Path) -> None:
+def test_result_save_overwrites_existing_archive_atomically(gui_application, tmp_path: Path) -> None:
     archive = make_result_archive(make_continuum_nodal_semantics_result, "overwrite")
     source = tmp_path / "overwrite-source.femres"
     target = tmp_path / "overwrite-target.femres"

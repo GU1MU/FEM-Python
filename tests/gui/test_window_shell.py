@@ -16,7 +16,7 @@ def _visible_text(window: FEMMainWindow) -> str:
     return "\n".join((*menu_text, *action_text, *tree_text))
 
 
-def test_shell_has_localized_menus_and_no_placeholder_copy():
+def test_shell_has_localized_menus_and_no_placeholder_copy(gui_application):
     window = FEMMainWindow()
     text = _visible_text(window)
 
@@ -27,7 +27,7 @@ def test_shell_has_localized_menus_and_no_placeholder_copy():
     window.close()
 
 
-def test_action_states_without_model_or_result():
+def test_action_states_without_model_or_result(gui_application):
     window = FEMMainWindow()
 
     assert not window.actions["submit_job"].isEnabled()
@@ -38,7 +38,7 @@ def test_action_states_without_model_or_result():
     window.close()
 
 
-def test_startup_model_tree_has_no_automatic_part_placeholder():
+def test_startup_model_tree_has_no_automatic_part_placeholder(gui_application):
     window = FEMMainWindow()
     document_id = window.workspace.active_document_id
 
@@ -51,7 +51,7 @@ def test_startup_model_tree_has_no_automatic_part_placeholder():
     window.close()
 
 
-def test_main_window_close_explicitly_releases_viewport_backend(monkeypatch):
+def test_main_window_close_explicitly_releases_viewport_backend(gui_application, monkeypatch):
     window = FEMMainWindow()
     runtime = window.viewport_panel.agent_chat_drawer.agent_runtime
     calls: list[bool] = []

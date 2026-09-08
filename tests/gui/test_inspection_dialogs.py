@@ -17,7 +17,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_entity_dialog_uses_read_only_models_and_follows_related_rows(gui_inp_path):
+def test_entity_dialog_uses_read_only_models_and_follows_related_rows(gui_application, gui_inp_path):
     _application()
     service = InspectionService(read(gui_inp_path))
     dialog = EntityInfoDialog(service.inspect("element", 1))
@@ -33,7 +33,7 @@ def test_entity_dialog_uses_read_only_models_and_follows_related_rows(gui_inp_pa
     dialog.close()
 
 
-def test_entity_dialog_export_contains_all_table_rows(monkeypatch, gui_inp_path, tmp_path):
+def test_entity_dialog_export_contains_all_table_rows(gui_application, monkeypatch, gui_inp_path, tmp_path):
     _application()
     service = InspectionService(read(gui_inp_path))
     inspection = service.inspect("node_set", "LEFT")
@@ -52,7 +52,7 @@ def test_entity_dialog_export_contains_all_table_rows(monkeypatch, gui_inp_path,
     dialog.close()
 
 
-def test_small_information_tables_fit_without_vertical_scrollbars(gui_inp_path):
+def test_small_information_tables_fit_without_vertical_scrollbars(gui_application, gui_inp_path):
     app = _application()
     service = InspectionService(read(gui_inp_path))
     for kind, key in (("model", None), ("element", 1), ("node_set", "LEFT")):
@@ -66,7 +66,7 @@ def test_small_information_tables_fit_without_vertical_scrollbars(gui_inp_path):
         dialog.close()
 
 
-def test_mesh_browser_uses_table_models_filters_and_entity_signals(gui_inp_path):
+def test_mesh_browser_uses_table_models_filters_and_entity_signals(gui_application, gui_inp_path):
     _application()
     service = InspectionService(read(gui_inp_path))
     dialog = MeshBrowserDialog(service)

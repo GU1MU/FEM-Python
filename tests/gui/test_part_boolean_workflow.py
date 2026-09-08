@@ -66,7 +66,7 @@ def test_controller_rejects_face_as_part_operand() -> None:
         controller.assign_reference(LogicalEntityRef("face:P1/top"))
 
 
-def test_panel_uses_part_terminology_and_result_name() -> None:
+def test_panel_uses_part_terminology_and_result_name(gui_application) -> None:
     _application()
     panel = BooleanFeaturePanel()
     controller = PartBooleanController(
@@ -88,6 +88,7 @@ def test_panel_uses_part_terminology_and_result_name() -> None:
 
 
 def test_3d_boolean_target_face_pick_does_not_change_session_revision(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -137,7 +138,7 @@ def test_3d_boolean_target_face_pick_does_not_change_session_revision(
     window.close()
 
 
-def test_3d_boolean_parameter_dialog_locks_requested_operation() -> None:
+def test_3d_boolean_parameter_dialog_locks_requested_operation(gui_application) -> None:
     _application()
     dialog = FaceSketchBooleanDialog()
 
@@ -150,7 +151,7 @@ def test_3d_boolean_parameter_dialog_locks_requested_operation() -> None:
     dialog.close()
 
 
-def test_3d_cut_parameters_default_toward_the_solid(monkeypatch) -> None:
+def test_3d_cut_parameters_default_toward_the_solid(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     draft = SketchDraftController("工具草图")

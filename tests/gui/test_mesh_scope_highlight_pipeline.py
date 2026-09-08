@@ -74,7 +74,7 @@ def _first_reference(viewport: FEMViewport, kind: str) -> MeshEntityRef:
     )
 
 
-def test_four_mesh_scope_kinds_reuse_actor_and_threshold_pipeline() -> None:
+def test_four_mesh_scope_kinds_reuse_actor_and_threshold_pipeline(gui_application) -> None:
     viewport, plotter = _viewport_with_scope_pipelines()
     try:
         assert set(viewport._mesh_scope_highlight_pipelines) == {
@@ -119,7 +119,7 @@ def test_four_mesh_scope_kinds_reuse_actor_and_threshold_pipeline() -> None:
         viewport.close()
 
 
-def test_incremental_updates_do_not_extract_or_create_actors(monkeypatch) -> None:
+def test_incremental_updates_do_not_extract_or_create_actors(gui_application, monkeypatch) -> None:
     viewport, plotter = _viewport_with_scope_pipelines()
     try:
         def forbidden_extract(*_args, **_kwargs):
@@ -151,7 +151,7 @@ def test_incremental_updates_do_not_extract_or_create_actors(monkeypatch) -> Non
         viewport.close()
 
 
-def test_body_scope_uses_surface_and_geometry_edges_without_element_wireframe() -> None:
+def test_body_scope_uses_surface_and_geometry_edges_without_element_wireframe(gui_application) -> None:
     viewport, plotter = _viewport_with_scope_pipelines()
     try:
         viewport.highlight_mesh_entities(
@@ -177,7 +177,7 @@ def test_body_scope_uses_surface_and_geometry_edges_without_element_wireframe() 
         viewport.close()
 
 
-def test_body_surface_is_reused_for_hover_and_selection(monkeypatch) -> None:
+def test_body_surface_is_reused_for_hover_and_selection(gui_application, monkeypatch) -> None:
     viewport, plotter = _viewport_with_scope_pipelines()
     calls = 0
     original = pyvista.DataSet.extract_cells
@@ -212,7 +212,7 @@ def test_result_provenance_ids_are_grouped_in_one_pass() -> None:
     assert grouped[50_000] == (49_999, 99_999, 149_999)
 
 
-def test_scope_render_requests_are_coalesced_and_keep_final_selection() -> None:
+def test_scope_render_requests_are_coalesced_and_keep_final_selection(gui_application) -> None:
     application = _application()
     viewport, plotter = _viewport_with_scope_pipelines()
     try:
@@ -246,7 +246,7 @@ def test_scope_render_requests_are_coalesced_and_keep_final_selection() -> None:
         viewport.close()
 
 
-def test_definition_rebind_reuses_pipelines_and_remesh_rebuilds_them() -> None:
+def test_definition_rebind_reuses_pipelines_and_remesh_rebuilds_them(gui_application) -> None:
     viewport, plotter = _viewport_with_scope_pipelines()
     try:
         original = {
@@ -437,7 +437,7 @@ def test_completed_scope_clears_persistent_viewport_selection() -> None:
     assert fake._pending_scope_kind is None
 
 
-def test_single_toggle_in_100k_selection_is_below_old_rebuild_cost() -> None:
+def test_single_toggle_in_100k_selection_is_below_old_rebuild_cost(gui_application) -> None:
     _application()
     count = 100_000
     references = {MeshEntityRef.node(index + 1) for index in range(count)}

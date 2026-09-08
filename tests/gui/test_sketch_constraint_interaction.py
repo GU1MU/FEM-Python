@@ -94,7 +94,7 @@ def test_radius_overlay_shows_value_away_from_circle_center() -> None:
     )
 
 
-def test_panel_constraint_crud_filters_selection_and_driving_dimension() -> None:
+def test_panel_constraint_crud_filters_selection_and_driving_dimension(gui_application) -> None:
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
     controller.select_curve("L1")
@@ -140,7 +140,7 @@ def test_panel_constraint_crud_filters_selection_and_driving_dimension() -> None
     assert {item.id for item in controller.constraints} == {horizontal.id, dimension.id}
 
 
-def test_reference_dimension_ignores_typed_target_and_reports_measurement() -> None:
+def test_reference_dimension_ignores_typed_target_and_reports_measurement(gui_application) -> None:
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
     dimension = panel.create_constraint(
@@ -152,7 +152,7 @@ def test_reference_dimension_ignores_typed_target_and_reports_measurement() -> N
     assert restored.value == 2.0
 
 
-def test_staged_selection_creates_point_on_curve_without_stable_ids() -> None:
+def test_staged_selection_creates_point_on_curve_without_stable_ids(gui_application) -> None:
     controller = _constraint_controller()
     panel = SketchEditorPanel(controller)
     panel._start_constraint_command("point_on_curve")
@@ -175,6 +175,7 @@ def test_staged_selection_creates_point_on_curve_without_stable_ids() -> None:
 
 
 def test_dimension_is_reference_until_edit_dialog_sets_driving_value(
+    gui_application,
     monkeypatch,
 ) -> None:
     controller = _line_controller()
@@ -208,6 +209,7 @@ def test_dimension_is_reference_until_edit_dialog_sets_driving_value(
 
 
 def test_fixed_constraint_lists_coordinates_and_edit_moves_circle(
+    gui_application,
     monkeypatch,
 ) -> None:
     controller = SketchDraftController("固定圆心")
@@ -246,7 +248,7 @@ def test_fixed_constraint_lists_coordinates_and_edit_moves_circle(
     assert (restored.u, restored.v) == (5.0, 4.0)
 
 
-def test_editing_constraint_value_preserves_table_order_and_selection() -> None:
+def test_editing_constraint_value_preserves_table_order_and_selection(gui_application) -> None:
     controller = SketchDraftController("稳定约束列表")
     for point_id, u in (("P1", 0.0), ("P2", 1.0), ("P3", 2.0)):
         controller.add_circle(
@@ -275,7 +277,7 @@ def test_editing_constraint_value_preserves_table_order_and_selection() -> None:
     assert panel.constraints_table.currentColumn() == 1
 
 
-def test_constraint_table_selection_highlights_its_sketch_entities() -> None:
+def test_constraint_table_selection_highlights_its_sketch_entities(gui_application) -> None:
     controller = _line_controller()
     controller.add_constraint(SketchFixedConstraint("F1", "P1", 0.0, 0.0))
     controller.add_constraint(SketchHorizontalConstraint("H1", "L1"))
@@ -301,7 +303,7 @@ def test_constraint_table_selection_highlights_its_sketch_entities() -> None:
     viewport.close()
 
 
-def test_distance_table_highlight_prefers_direct_line_then_falls_back_to_points() -> None:
+def test_distance_table_highlight_prefers_direct_line_then_falls_back_to_points(gui_application) -> None:
     controller = _line_controller()
     controller.add_point("P3", 0.0, 2.0)
     controller.add_point("P4", 2.0, 2.0)
@@ -343,7 +345,7 @@ def test_fixed_constraint_overlay_is_offset_from_the_constrained_point() -> None
     assert overlay.position[:2] == pytest.approx((0.07, 0.07))
 
 
-def test_staged_fixed_selection_creates_one_constraint_per_point_atomically() -> None:
+def test_staged_fixed_selection_creates_one_constraint_per_point_atomically(gui_application) -> None:
     controller = SketchDraftController("批量固定")
     controller.add_point("P1", 0.0, 0.0)
     controller.add_point("P2", 2.0, 3.0)
@@ -375,6 +377,7 @@ def test_staged_fixed_selection_creates_one_constraint_per_point_atomically() ->
     ),
 )
 def test_staged_multi_line_selection_creates_independent_constraints_atomically(
+    gui_application,
     kind, expected_type
 ) -> None:
     controller = SketchDraftController("批量直线约束")
@@ -406,7 +409,7 @@ def test_staged_multi_line_selection_creates_independent_constraints_atomically(
     assert controller.snapshot().constraints == ()
 
 
-def test_staged_multi_radius_selection_creates_dimensions_atomically() -> None:
+def test_staged_multi_radius_selection_creates_dimensions_atomically(gui_application) -> None:
     controller = SketchDraftController("批量圆弧半径")
     controller.add_circle(
         (0.0, 0.0),
@@ -444,7 +447,7 @@ def test_staged_multi_radius_selection_creates_dimensions_atomically() -> None:
     assert controller.snapshot().constraints == ()
 
 
-def test_rectangle_fixed_corner_and_two_edited_lengths_fully_constrain() -> None:
+def test_rectangle_fixed_corner_and_two_edited_lengths_fully_constrain(gui_application) -> None:
     controller = SketchDraftController("矩形约束流程")
     controller.add_rectangle((1.0, 1.0), (5.0, 3.0))
     panel = SketchEditorPanel(controller)
@@ -488,6 +491,7 @@ def test_rectangle_fixed_corner_and_two_edited_lengths_fully_constrain() -> None
     ),
 )
 def test_all_seven_create_api_entries_validate_targets(
+    gui_application,
     kind, targets, value, expected_type
 ) -> None:
     panel = SketchEditorPanel(_constraint_controller())
@@ -508,13 +512,13 @@ def test_all_seven_create_api_entries_validate_targets(
         ("radius", ("L1",)),
     ),
 )
-def test_invalid_constraint_targets_raise_chinese_value_error(kind, targets) -> None:
+def test_invalid_constraint_targets_raise_chinese_value_error(gui_application, kind, targets) -> None:
     panel = SketchEditorPanel(_constraint_controller())
     with pytest.raises(ValueError, match="约束目标无效"):
         panel.create_constraint(kind, targets, value=1.0)
 
 
-def test_staged_selection_ignores_wrong_entity_kind_without_crashing() -> None:
+def test_staged_selection_ignores_wrong_entity_kind_without_crashing(gui_application) -> None:
     panel = SketchEditorPanel(_constraint_controller())
     panel._start_constraint_command("point_on_curve")
     panel._select_curve("L1")
@@ -552,7 +556,7 @@ def test_inference_preview_switch_grid_exception_and_atomic_confirmation() -> No
     assert controller.snapshot().constraints == before.constraints
 
 
-def test_drag_preview_is_history_free_and_release_is_one_undo() -> None:
+def test_drag_preview_is_history_free_and_release_is_one_undo(gui_application) -> None:
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
     before = controller.snapshot()
@@ -565,7 +569,7 @@ def test_drag_preview_is_history_free_and_release_is_one_undo() -> None:
     assert controller.snapshot().points == before.points
 
 
-def test_viewport_drag_signals_use_temporary_then_atomic_panel_paths() -> None:
+def test_viewport_drag_signals_use_temporary_then_atomic_panel_paths(gui_application) -> None:
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
     viewport = FEMViewport()
@@ -618,7 +622,7 @@ def test_intersection_confirmation_adds_two_point_on_curve_relations_atomically(
     assert controller.snapshot().constraints == ()
 
 
-def test_viewport_signal_path_confirms_intersection_auto_relations_once() -> None:
+def test_viewport_signal_path_confirms_intersection_auto_relations_once(gui_application) -> None:
     controller = SketchDraftController("信号交点")
     for point in (
         SketchPoint("A", -1.0, 0.0), SketchPoint("B", 1.0, 0.0),
@@ -646,7 +650,7 @@ def test_viewport_signal_path_confirms_intersection_auto_relations_once() -> Non
     ]
 
 
-def test_viewport_signal_path_auto_off_reuses_points_and_grid_adds_no_constraints() -> None:
+def test_viewport_signal_path_auto_off_reuses_points_and_grid_adds_no_constraints(gui_application) -> None:
     controller = SketchDraftController("信号开关")
     controller.add_point("P1", 0.0, 0.0)
     controller.add_point("P2", 2.0, 0.1)
@@ -674,7 +678,7 @@ def test_viewport_signal_path_auto_off_reuses_points_and_grid_adds_no_constraint
     assert controller.constraints == ()
 
 
-def test_hover_preview_and_cancel_are_visible_but_history_free() -> None:
+def test_hover_preview_and_cancel_are_visible_but_history_free(gui_application) -> None:
     controller = SketchDraftController("预览取消")
     controller.add_point("P1", 0.0, 0.0)
     panel = SketchEditorPanel(controller)
@@ -713,7 +717,7 @@ def test_hover_preview_and_cancel_are_visible_but_history_free() -> None:
     assert viewport._sketch_draft_render_data.inference_preview == ()
     assert controller.snapshot() == before
 
-def test_auto_constraint_uses_fixed_default_despite_existing_store(tmp_path) -> None:
+def test_auto_constraint_uses_fixed_default_despite_existing_store(gui_application, tmp_path) -> None:
     store = QSettings(str(tmp_path / "sketch.ini"), QSettings.Format.IniFormat)
     store.setValue("sketch/auto_constraints", False)
     panel = SketchEditorPanel(SketchDraftController("偏好"), settings=store)

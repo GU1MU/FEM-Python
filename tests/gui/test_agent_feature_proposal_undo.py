@@ -130,7 +130,7 @@ def test_plain_recipe_replacement_is_not_mislabeled_as_feature_undo() -> None:
     assert not bridge.can_undo_proposal(proposal.proposal_id)
 
 
-def test_completed_modify_part_card_exposes_feature_undo_button() -> None:
+def test_completed_modify_part_card_exposes_feature_undo_button(gui_application) -> None:
     application = _application()
     session, base, proposal, _port, bridge, _refreshes = (
         _accepted_feature_proposal()

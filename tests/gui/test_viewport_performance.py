@@ -202,7 +202,7 @@ class _VisibilityActor:
         self.visible = bool(visible)
 
 
-def test_resize_repaint_uses_pending_qt_paint_without_explicit_render():
+def test_resize_repaint_uses_pending_qt_paint_without_explicit_render(gui_application):
     _application()
     viewport = FEMViewport()
     plotter = _Plotter()
@@ -221,7 +221,7 @@ def test_resize_repaint_uses_pending_qt_paint_without_explicit_render():
     viewport.close()
 
 
-def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
+def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(gui_application, monkeypatch):
     _application()
     model = make_static_pull_truss_model()
     geometry = build_model_geometry(model)
@@ -259,7 +259,7 @@ def test_boundary_cache_reuses_step_and_is_cleared_by_new_model(monkeypatch):
     assert viewport._beam_frame_cache == {}
 
 
-def test_runnable_step_previews_constraints_from_previous_step(monkeypatch):
+def test_runnable_step_previews_constraints_from_previous_step(gui_application, monkeypatch):
     _application()
     monkeypatch.setattr(
         viewport_module,
@@ -304,7 +304,7 @@ def test_runnable_step_previews_constraints_from_previous_step(monkeypatch):
     assert constraint_calls[0][0].n_points > 0
 
 
-def test_gravity_uses_one_centered_yellow_direction_arrow(monkeypatch):
+def test_gravity_uses_one_centered_yellow_direction_arrow(gui_application, monkeypatch):
     _application()
     model = make_static_pull_truss_model()
     model.steps[0].gravity_loads = (GravityLoad((0.0, -9.81, 0.0)),)
@@ -343,7 +343,7 @@ def test_gravity_uses_one_centered_yellow_direction_arrow(monkeypatch):
     assert plotter.gravity_actor.pickable is False
 
 
-def test_2d_inward_edge_traction_is_lifted_above_mesh_for_visibility(monkeypatch):
+def test_2d_inward_edge_traction_is_lifted_above_mesh_for_visibility(gui_application, monkeypatch):
     _application()
     model = FEMModel(make_selection_quad_mesh())
     model.edges["RIGHT"] = Edge(
@@ -388,7 +388,7 @@ def test_2d_inward_edge_traction_is_lifted_above_mesh_for_visibility(monkeypatch
     assert calls_by_name["loads"].bounds[4] > 0.0
 
 
-def test_connected_beam_line_load_is_sampled_once_as_one_region(monkeypatch):
+def test_connected_beam_line_load_is_sampled_once_as_one_region(gui_application, monkeypatch):
     _application()
     mesh = Mesh3D(
         nodes=(
@@ -450,7 +450,7 @@ def test_connected_beam_line_load_is_sampled_once_as_one_region(monkeypatch):
     assert calls == [(2, 2, "low")]
 
 
-def test_symbol_sampling_density_override_is_explicit_and_reversible():
+def test_symbol_sampling_density_override_is_explicit_and_reversible(gui_application):
     _application()
     viewport = FEMViewport()
     viewport.set_symbol_settings(
@@ -468,7 +468,7 @@ def test_symbol_sampling_density_override_is_explicit_and_reversible():
     viewport.close()
 
 
-def test_world_per_pixel_supports_parallel_and_perspective_cameras():
+def test_world_per_pixel_supports_parallel_and_perspective_cameras(gui_application):
     _application()
     viewport = FEMViewport()
     viewport._plotter = _Plotter(_Camera(parallel=True, scale=4.0))
@@ -479,7 +479,7 @@ def test_world_per_pixel_supports_parallel_and_perspective_cameras():
     assert viewport._world_per_pixel() == pytest.approx(expected)
 
 
-def test_line_elements_are_drawn_thicker_than_continuum_edges():
+def test_line_elements_are_drawn_thicker_than_continuum_edges(gui_application):
     _application()
     viewport = FEMViewport()
     viewport._geometry = build_model_geometry(make_static_pull_truss_model())
@@ -506,7 +506,7 @@ def test_line_elements_are_drawn_thicker_than_continuum_edges():
     "mesh_factory",
     [make_selection_quad_mesh, make_selection_hex_mesh],
 )
-def test_2d_and_3d_meshes_use_the_supplied_layer_palette(mesh_factory):
+def test_2d_and_3d_meshes_use_the_supplied_layer_palette(gui_application, mesh_factory):
     _application()
     viewport = FEMViewport()
     viewport._geometry = build_model_geometry(FEMModel(mesh_factory()))
@@ -535,6 +535,7 @@ def test_2d_and_3d_meshes_use_the_supplied_layer_palette(mesh_factory):
     ],
 )
 def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
+    gui_application,
     view,
     up,
     direction,
@@ -569,7 +570,7 @@ def test_coordinate_view_keeps_axes_and_fits_off_origin_model(
     assert plotter.camera.orthogonalized
 
 
-def test_isometric_view_matches_abaqus_axis_projection():
+def test_isometric_view_matches_abaqus_axis_projection(gui_application):
     _application()
     viewport = FEMViewport()
     plotter = _ViewPlotter()
@@ -606,6 +607,7 @@ def test_isometric_view_matches_abaqus_axis_projection():
     ],
 )
 def test_coordinate_view_matches_abaqus_screen_axes(
+    gui_application,
     view,
     screen_right_axis,
     screen_up_axis,
@@ -631,6 +633,7 @@ def test_coordinate_view_matches_abaqus_screen_axes(
 
 
 def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -666,7 +669,7 @@ def test_base_model_layers_fit_stable_bounds_without_intermediate_render(
     ]
 
 
-def test_plotter_actor_mutations_render_only_at_explicit_boundary(monkeypatch):
+def test_plotter_actor_mutations_render_only_at_explicit_boundary(gui_application, monkeypatch):
     _application()
     viewport = FEMViewport()
     plotter = _ImplicitRenderPlotter()
@@ -689,7 +692,7 @@ def test_plotter_actor_mutations_render_only_at_explicit_boundary(monkeypatch):
     assert plotter.suppress_rendering
 
 
-def test_fit_bounds_reuses_dataset_bounds_until_vtk_mtime_changes():
+def test_fit_bounds_reuses_dataset_bounds_until_vtk_mtime_changes(gui_application):
     _application()
     viewport = FEMViewport()
     points = _CountedPoints(np.asarray(((1.0, 2.0, 3.0), (5.0, 7.0, 11.0))))
@@ -707,6 +710,7 @@ def test_fit_bounds_reuses_dataset_bounds_until_vtk_mtime_changes():
 
 
 def test_symbol_reference_length_is_scanned_once_across_camera_changes(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -731,7 +735,7 @@ def test_symbol_reference_length_is_scanned_once_across_camera_changes(
     assert second == pytest.approx(2.0 * first)
 
 
-def test_auto_deformation_scale_reuses_immutable_result_snapshot(monkeypatch):
+def test_auto_deformation_scale_reuses_immutable_result_snapshot(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     window._display = DisplayState("deformed", True)
@@ -764,7 +768,7 @@ def test_auto_deformation_scale_reuses_immutable_result_snapshot(monkeypatch):
     window.close()
 
 
-def test_large_model_base_layers_skip_hidden_element_edges(monkeypatch):
+def test_large_model_base_layers_skip_hidden_element_edges(gui_application, monkeypatch):
     _application()
     viewport = FEMViewport()
     plotter = _ViewPlotter()
@@ -791,7 +795,7 @@ def test_large_model_base_layers_skip_hidden_element_edges(monkeypatch):
     viewport.close()
 
 
-def test_element_edges_are_created_once_when_enabled_after_initial_load():
+def test_element_edges_are_created_once_when_enabled_after_initial_load(gui_application):
     _application()
     viewport = FEMViewport()
     plotter = _ViewPlotter()
@@ -807,7 +811,7 @@ def test_element_edges_are_created_once_when_enabled_after_initial_load():
     viewport.close()
 
 
-def test_model_load_batches_symbol_rebuild_and_final_render(monkeypatch):
+def test_model_load_batches_symbol_rebuild_and_final_render(gui_application, monkeypatch):
     _application()
     model = make_static_pull_truss_model()
     geometry = build_model_geometry(model)
@@ -852,6 +856,7 @@ def test_large_model_first_display_policy_has_explicit_thresholds():
 
 
 def test_large_model_load_uses_sparse_symbols_until_user_changes_settings(
+    gui_application,
     monkeypatch,
 ):
     _application()

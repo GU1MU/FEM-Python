@@ -489,6 +489,7 @@ def test_rechecks_source_and_generation_after_native_aggregation(
 
 
 def test_main_window_query_does_not_touch_viewport_state(
+    gui_application,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _application()

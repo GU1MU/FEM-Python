@@ -43,7 +43,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_bridge_applies_once_and_gui_card_undoes_once() -> None:
+def test_bridge_applies_once_and_gui_card_undoes_once(gui_application) -> None:
     application = _application()
     session = _session()
     full_refreshes: list[str] = []
@@ -92,6 +92,7 @@ def test_bridge_applies_once_and_gui_card_undoes_once() -> None:
 
 
 def test_direct_material_patch_uses_compact_inline_undo_notice(
+    gui_application,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _application()
@@ -170,7 +171,7 @@ def test_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
     assert session.snapshot().materials
 
 
-def test_revision_change_disables_old_undo_entry() -> None:
+def test_revision_change_disables_old_undo_entry(gui_application) -> None:
     _application()
     session = _session()
     port = SessionGeometryAuthoringPort(
@@ -201,7 +202,6 @@ def test_revision_change_disables_old_undo_entry() -> None:
 
 
 def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
-    _application()
     session = _session()
     snapshot = session.snapshot()
     artifact = snapshot.artifact
@@ -335,6 +335,7 @@ def test_inverse_id_is_bounded_for_maximum_forward_id() -> None:
 
 
 def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()

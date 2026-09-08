@@ -139,6 +139,7 @@ def _change_accepted_geometry(window: FEMMainWindow, width: float) -> None:
 
 
 def test_agent_gui_save_uses_save_as_then_reuses_existing_path(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -216,6 +217,7 @@ def test_agent_gui_save_uses_save_as_then_reuses_existing_path(
 
 
 def test_agent_gui_save_cancel_failure_and_reject_are_terminal(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:

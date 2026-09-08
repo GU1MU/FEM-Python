@@ -54,7 +54,7 @@ def _control(
     )
 
 
-def test_geometry_creation_dialog_selects_model_dimension() -> None:
+def test_geometry_creation_dialog_selects_model_dimension(gui_application) -> None:
     dialog = GeometryCreationDialog()
 
     assert dialog.windowTitle() == "新建部件"
@@ -72,7 +72,7 @@ def test_geometry_creation_dialog_selects_model_dimension() -> None:
     assert dialog.creation_kind() == "3d"
 
 
-def test_basic_solid_creation_is_a_separate_choice_dialog() -> None:
+def test_basic_solid_creation_is_a_separate_choice_dialog(gui_application) -> None:
     dialog = BasicSolidCreationDialog()
 
     assert dialog.windowTitle() == "创建 3D 基本实体"
@@ -82,7 +82,7 @@ def test_basic_solid_creation_is_a_separate_choice_dialog() -> None:
     assert dialog.solid_kind() == "cylinder"
 
 
-def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
+def test_sketch_contour_dialog_only_shows_shape_specific_dimensions(gui_application) -> None:
     rectangle = SketchContourDialog(
         SketchRectangle("material", 0.0, 0.0, 10.0, 5.0)
     )
@@ -103,7 +103,7 @@ def test_sketch_contour_dialog_only_shows_shape_specific_dimensions() -> None:
     assert circle.height_spin.isHidden()
 
 
-def test_mesh_settings_exposes_supported_element_shapes() -> None:
+def test_mesh_settings_exposes_supported_element_shapes(gui_application) -> None:
     dialog = MeshSettingsDialog(
         MeshSettings(5.0, cell_shape="quadrilateral"),
         mesh_dimension=2,
@@ -122,7 +122,7 @@ def test_mesh_settings_exposes_supported_element_shapes() -> None:
     assert volume.settings().cell_shape == "tetrahedron"
 
 
-def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
+def test_local_mesh_dialog_records_the_viewport_selected_edge(gui_application) -> None:
     dialog = LocalMeshControlDialog(
         LogicalEntityRef("edge:right"),
         5.0,
@@ -135,7 +135,7 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge() -> None:
     assert "边 2" not in labels
 
 
-def test_global_and_local_mesh_sizes_share_adaptive_precision() -> None:
+def test_global_and_local_mesh_sizes_share_adaptive_precision(gui_application) -> None:
     global_dialog = MeshSettingsDialog(MeshSettings(5.123456))
     local_dialog = LocalMeshControlDialog(
         LogicalEntityRef("edge:right"),
@@ -169,7 +169,7 @@ def test_global_and_local_mesh_sizes_share_adaptive_precision() -> None:
     assert local_dialog.control().size == 0.125
 
 
-def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
+def test_named_region_dialog_and_manager_support_multiple_entities(gui_application) -> None:
     references = (
         MeshEntityRef.edge(1, 0, (1, 2)),
         MeshEntityRef.edge(2, 1, (2, 3)),
@@ -192,7 +192,7 @@ def test_named_region_dialog_and_manager_support_multiple_entities() -> None:
     assert set(manager.values()["Support"].references) == set(references)
 
 
-def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
+def test_mesh_control_manager_deletes_only_the_selected_local_control(gui_application) -> None:
     dialog = MeshControlsDialog(
         MeshSettings(
             1.0,
@@ -213,6 +213,7 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control() -> None:
 
 
 def test_mesh_control_manager_edit_preserves_target_radius_falloff(
+    gui_application,
     monkeypatch,
 ) -> None:
     falloff = _falloff("target_radius", 0.25, 2.0)
@@ -264,7 +265,7 @@ def test_mesh_control_manager_edit_preserves_target_radius_falloff(
     assert edited.falloff == falloff
 
 
-def test_feature_manager_only_edits_the_base_and_deletes_the_last_feature():
+def test_feature_manager_only_edits_the_base_and_deletes_the_last_feature(gui_application):
     recipe = ExtrudedGeometry(
         SketchGeometry(
             "Sketch-1",

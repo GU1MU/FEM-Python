@@ -35,7 +35,7 @@ def _dialog(
     return ViewportImageExportDialog(size)
 
 
-def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
+def test_export_dialog_defaults_to_two_times_current_viewport(gui_application) -> None:
     dialog = _dialog()
 
     assert dialog.quality_combo.currentData() == 2
@@ -63,6 +63,7 @@ def test_export_dialog_defaults_to_two_times_current_viewport() -> None:
     ),
 )
 def test_export_dialog_fixed_quality_updates_scale_and_preview(
+    gui_application,
     quality: int,
     expected_size: tuple[int, int],
 ) -> None:
@@ -79,7 +80,7 @@ def test_export_dialog_fixed_quality_updates_scale_and_preview(
     assert not dialog.height_spin.isEnabled()
 
 
-def test_export_dialog_custom_quality_returns_exact_window_size() -> None:
+def test_export_dialog_custom_quality_returns_exact_window_size(gui_application) -> None:
     dialog = _dialog()
     custom_index = dialog.quality_combo.findData("custom")
 
@@ -110,6 +111,7 @@ def test_export_dialog_custom_quality_returns_exact_window_size() -> None:
     ),
 )
 def test_export_dialog_clamps_initial_custom_dimensions(
+    gui_application,
     size: tuple[int, int],
     expected_custom_size: tuple[int, int],
 ) -> None:
@@ -120,7 +122,7 @@ def test_export_dialog_clamps_initial_custom_dimensions(
     assert dialog.output_size == expected_custom_size
 
 
-def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> None:
+def test_export_dialog_selects_path_and_updates_format_controls(gui_application, monkeypatch) -> None:
     dialog = _dialog()
     ok_button = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
     browse_calls = []
@@ -160,7 +162,7 @@ def test_export_dialog_selects_path_and_updates_format_controls(monkeypatch) -> 
     assert not dialog.options.transparent_background
 
 
-def test_export_dialog_keeps_path_when_browse_is_cancelled(monkeypatch) -> None:
+def test_export_dialog_keeps_path_when_browse_is_cancelled(gui_application, monkeypatch) -> None:
     dialog = _dialog()
     existing = Path("exports") / "existing.png"
     dialog.path_edit.setText(str(existing))
@@ -176,7 +178,7 @@ def test_export_dialog_keeps_path_when_browse_is_cancelled(monkeypatch) -> None:
     assert dialog.target_path == str(existing)
 
 
-def test_viewport_screenshot_forwards_all_export_parameters() -> None:
+def test_viewport_screenshot_forwards_all_export_parameters(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
@@ -233,7 +235,7 @@ def test_viewport_screenshot_forwards_all_export_parameters() -> None:
     viewport.close()
 
 
-def test_viewport_screenshot_size_falls_back_to_qt_widget() -> None:
+def test_viewport_screenshot_size_falls_back_to_qt_widget(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport.resize(640, 360)
@@ -391,7 +393,7 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
     assert harness.successes == []
 
 
-def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:
+def test_custom_screenshot_restores_pyvista_size_and_camera(gui_application, tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
     plotter = pv.Plotter(off_screen=True, window_size=(320, 240))
@@ -428,7 +430,7 @@ def test_custom_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> N
     viewport.close()
 
 
-def test_scaled_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> None:
+def test_scaled_screenshot_restores_pyvista_size_and_camera(gui_application, tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
     plotter = pv.Plotter(off_screen=True, window_size=(320, 240))
@@ -466,7 +468,7 @@ def test_scaled_screenshot_restores_pyvista_size_and_camera(tmp_path: Path) -> N
     viewport.close()
 
 
-def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
+def test_scaled_screenshot_does_not_resize_live_render_window(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     screenshot_calls = []
@@ -506,7 +508,7 @@ def test_scaled_screenshot_does_not_resize_live_render_window() -> None:
     viewport.close()
 
 
-def test_scaled_screenshot_preserves_overlay_layout(tmp_path: Path) -> None:
+def test_scaled_screenshot_preserves_overlay_layout(gui_application, tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
     plotter = pv.Plotter(off_screen=True, window_size=(400, 300))
@@ -553,7 +555,7 @@ def test_scaled_screenshot_preserves_overlay_layout(tmp_path: Path) -> None:
     viewport.close()
 
 
-def test_transparent_screenshot_handles_gradient_background(tmp_path: Path) -> None:
+def test_transparent_screenshot_handles_gradient_background(gui_application, tmp_path: Path) -> None:
     _application()
     viewport = FEMViewport()
     plotter = pv.Plotter(off_screen=True, window_size=(320, 240))

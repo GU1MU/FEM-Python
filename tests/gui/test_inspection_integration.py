@@ -70,7 +70,7 @@ def _seed_current_result(window: FEMMainWindow, step_name: str) -> None:
     assert window.session.current_result() is not None
 
 
-def test_tree_double_click_opens_mesh_browser_and_entity_dialog(gui_inp_path):
+def test_tree_double_click_opens_mesh_browser_and_entity_dialog(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
@@ -87,6 +87,7 @@ def test_tree_double_click_opens_mesh_browser_and_entity_dialog(gui_inp_path):
 
 
 def test_native_tree_keeps_model_name_and_supports_info_and_renames(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -144,6 +145,7 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
 
 
 def test_native_feature_information_uses_tree_labels_without_summary(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -187,6 +189,7 @@ def test_native_feature_information_uses_tree_labels_without_summary(
 
 
 def test_tree_double_click_edits_imported_material_and_invalidates_model(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
@@ -233,6 +236,7 @@ def test_tree_double_click_edits_imported_material_and_invalidates_model(
 
 
 def test_tree_double_click_edits_imported_boundary_and_load(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ):
@@ -302,7 +306,7 @@ def test_tree_double_click_edits_imported_boundary_and_load(
     window.close()
 
 
-def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) -> None:
+def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(gui_application, monkeypatch) -> None:
     _application()
     model = FEMModel(
         make_selection_hex_mesh(),
@@ -435,7 +439,7 @@ def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(monkeypatch) 
     window.close()
 
 
-def test_selected_information_action_and_window_lifecycle(gui_inp_path):
+def test_selected_information_action_and_window_lifecycle(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)

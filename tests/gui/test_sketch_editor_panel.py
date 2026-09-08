@@ -100,7 +100,7 @@ def test_panel_exposes_grid_and_constraint_controls(gui_application) -> None:
         assert button.isVisible()
 
 
-def test_new_controller_discards_reference_points_from_previous_sketch() -> None:
+def test_new_controller_discards_reference_points_from_previous_sketch(gui_application) -> None:
     panel = SketchEditorPanel(SketchDraftController("previous-sketch"))
     panel.set_reference_points((_reference_point(1.0, 2.0),))
 
@@ -111,6 +111,7 @@ def test_new_controller_discards_reference_points_from_previous_sketch() -> None
 
 
 def test_new_sketch_after_part_deletion_has_no_stale_reference_points(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = FEMMainWindow()
@@ -146,7 +147,7 @@ def test_new_sketch_after_part_deletion_has_no_stale_reference_points(
     window.close()
 
 
-def test_constraint_type_click_starts_choice_without_extra_confirmation() -> None:
+def test_constraint_type_click_starts_choice_without_extra_confirmation(gui_application) -> None:
     dialog = sketch_editor_panel_module._ConstraintTypeDialog()
     item = next(
         dialog.type_list.item(index)
@@ -209,7 +210,7 @@ def test_constraint_actions_share_one_row_without_diagnostics_for_valid_geometry
     panel.close()
 
 
-def test_constraint_command_bar_uses_staged_prompts_and_target_highlights() -> None:
+def test_constraint_command_bar_uses_staged_prompts_and_target_highlights(gui_application) -> None:
     controller = SketchDraftController("staged-command")
     controller.add_point("P1", 0.0, 0.0)
     controller.add_point("P2", 1.0, 0.0)
@@ -239,7 +240,7 @@ def test_constraint_command_bar_uses_staged_prompts_and_target_highlights() -> N
     viewport.close()
 
 
-def test_entity_delete_is_available_by_keyboard_and_context_menu() -> None:
+def test_entity_delete_is_available_by_keyboard_and_context_menu(gui_application) -> None:
     controller = SketchDraftController("context-actions")
     point = controller.add_point(
         0.0,
@@ -306,7 +307,7 @@ def test_rectangle_and_circle_second_click_previews_follow_cursor() -> None:
     assert max(point[1] for point in arc) == pytest.approx(1.0, abs=0.01)
 
 
-def test_sketch_preview_cancel_clears_pending_shape_and_redraws() -> None:
+def test_sketch_preview_cancel_clears_pending_shape_and_redraws(gui_application) -> None:
     viewport = FEMViewport()
     redraws: list[bool] = []
     viewport._sketch_authoring_active = True
@@ -321,7 +322,7 @@ def test_sketch_preview_cancel_clears_pending_shape_and_redraws() -> None:
     viewport.close()
 
 
-def test_empty_sketch_camera_fit_uses_compact_default_work_area() -> None:
+def test_empty_sketch_camera_fit_uses_compact_default_work_area(gui_application) -> None:
     bounds = _sketch_camera_bounds((), 0.1)
 
     assert bounds[:4] == pytest.approx((-2.0, 2.0, -2.0, 2.0))
@@ -340,7 +341,7 @@ def test_empty_sketch_camera_fit_uses_compact_default_work_area() -> None:
     viewport.close()
 
 
-def test_sketch_display_size_does_not_change_camera_fit() -> None:
+def test_sketch_display_size_does_not_change_camera_fit(gui_application) -> None:
     expected = _sketch_camera_bounds((), 0.1)
     viewport = FEMViewport()
     viewport._sketch_authoring_active = True
@@ -357,7 +358,7 @@ def test_sketch_display_size_does_not_change_camera_fit() -> None:
     viewport.close()
 
 
-def test_selected_drawing_face_expands_sketch_space_outward() -> None:
+def test_selected_drawing_face_expands_sketch_space_outward(gui_application) -> None:
     viewport = FEMViewport()
     viewport._sketch_authoring_active = True
     viewport._sketch_grid_spacing = 0.1
@@ -391,7 +392,7 @@ def test_selected_drawing_face_expands_sketch_space_outward() -> None:
     viewport.close()
 
 
-def test_sketch_uv_overlay_displays_coordinates_with_two_decimals() -> None:
+def test_sketch_uv_overlay_displays_coordinates_with_two_decimals(gui_application) -> None:
     viewport = FEMViewport()
     viewport._sketch_authoring_active = True
     viewport._sketch_draft_render_data = SketchDraftRenderData(
@@ -412,7 +413,7 @@ def test_sketch_uv_overlay_displays_coordinates_with_two_decimals() -> None:
     viewport.close()
 
 
-def test_sketch_axes_remain_anchored_when_rectangle_is_away_from_origin() -> None:
+def test_sketch_axes_remain_anchored_when_rectangle_is_away_from_origin(gui_application) -> None:
     class GridLayout:
         center = (1.2, -1.0, 0.0)
         plane_size = 4.0
@@ -444,7 +445,7 @@ def test_sketch_axes_remain_anchored_when_rectangle_is_away_from_origin() -> Non
     assert sum(point.v for point in points) / len(points) == pytest.approx(-0.6)
 
 
-def test_panel_polyline_closes_a_profile_and_emits_finish() -> None:
+def test_panel_polyline_closes_a_profile_and_emits_finish(gui_application) -> None:
     controller = SketchDraftController("panel-sketch")
     panel = SketchEditorPanel(controller)
     panel.set_mode("polyline")
@@ -479,7 +480,7 @@ def test_panel_polyline_closes_a_profile_and_emits_finish() -> None:
     assert finished == [True]
 
 
-def test_panel_three_point_arcs_reuse_endpoints_and_close_profile() -> None:
+def test_panel_three_point_arcs_reuse_endpoints_and_close_profile(gui_application) -> None:
     controller = SketchDraftController("two-arc-profile")
     panel = SketchEditorPanel(controller)
     panel.set_mode("arc")
@@ -508,7 +509,7 @@ def test_panel_three_point_arcs_reuse_endpoints_and_close_profile() -> None:
     assert panel.finish_button.isEnabled()
 
 
-def test_panel_keeps_invalid_open_draft_detached() -> None:
+def test_panel_keeps_invalid_open_draft_detached(gui_application) -> None:
     controller = SketchDraftController("open-sketch")
     panel = SketchEditorPanel(controller)
     panel._point_from_viewport((0.0, 0.0, 0.0))
@@ -605,7 +606,7 @@ def test_dimension_dialog_accepts_precise_input_and_blocks_wheel(gui_application
     dialog.close()
 
 
-def test_sketch_numeric_editors_default_to_two_display_decimals() -> None:
+def test_sketch_numeric_editors_default_to_two_display_decimals(gui_application) -> None:
     panel = SketchEditorPanel(SketchDraftController("precise-inputs"))
     fixed_dialog = sketch_editor_panel_module._FixedConstraintEditorDialog(
         0.123456789012,
@@ -644,7 +645,7 @@ def test_sketch_numeric_editors_default_to_two_display_decimals() -> None:
     panel.close()
 
 
-def test_event_filter_tolerates_non_wheel_event_during_panel_construction() -> None:
+def test_event_filter_tolerates_non_wheel_event_during_panel_construction(gui_application) -> None:
     panel = SketchEditorPanel(SketchDraftController("construction-event"))
     constraint_type_combo = panel.constraint_type_combo
     constraint_value_spin = panel.constraint_value_spin
@@ -696,6 +697,7 @@ def test_sketch_entry_refits_after_splitter_layout_settles(gui_application, monk
 
 
 def test_invalid_dirty_sketch_can_be_cancelled_from_panel(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = FEMMainWindow()
@@ -725,7 +727,7 @@ def test_invalid_dirty_sketch_can_be_cancelled_from_panel(
     window.close()
 
 
-def test_trim_click_uses_unsnapped_work_plane_position() -> None:
+def test_trim_click_uses_unsnapped_work_plane_position(gui_application) -> None:
     viewport = FEMViewport()
     viewport._sketch_authoring_mode = "trim"
     viewport._sketch_grid_snap = True
@@ -745,7 +747,7 @@ def test_trim_click_uses_unsnapped_work_plane_position() -> None:
     viewport.close()
 
 
-def test_panel_keeps_valid_profile_fill_with_blocking_open_curve() -> None:
+def test_panel_keeps_valid_profile_fill_with_blocking_open_curve(gui_application) -> None:
     controller = SketchDraftController("partial-profile")
     controller.add_rectangle((0.0, 0.0), (4.0, 2.0))
     first = controller.add_point(6.0, 0.0)
@@ -764,7 +766,7 @@ def test_panel_keeps_valid_profile_fill_with_blocking_open_curve() -> None:
     assert len(render_data.curve_ids) == 5
 
 
-def test_panel_edits_line_endpoints_and_exact_length() -> None:
+def test_panel_edits_line_endpoints_and_exact_length(gui_application) -> None:
     controller = SketchDraftController("line-parameters")
     start = controller.add_point(0.0, 0.0)
     end = controller.add_point(3.0, 4.0)
@@ -794,7 +796,7 @@ def test_panel_edits_line_endpoints_and_exact_length() -> None:
     assert panel.line_length_spin.value() == 2.0
 
 
-def test_panel_edits_circle_and_arc_parameters() -> None:
+def test_panel_edits_circle_and_arc_parameters(gui_application) -> None:
     controller = SketchDraftController("curve-parameters")
     circle = controller.add_circle((0.0, 0.0), 2.0)
     arc = controller.add_arc((3.0, 0.0), (4.0, 1.0), (3.0, 2.0))
@@ -847,7 +849,7 @@ def test_panel_edits_circle_and_arc_parameters() -> None:
     assert start.v == pytest.approx(center.v)
 
 
-def test_point_table_edits_by_stable_id_after_sorting() -> None:
+def test_point_table_edits_by_stable_id_after_sorting(gui_application) -> None:
     controller = SketchDraftController("stable-rows")
     controller.add_point(1.0, 0.0, point_id="P10")
     controller.add_point(2.0, 0.0, point_id="P2")
@@ -867,7 +869,7 @@ def test_point_table_edits_by_stable_id_after_sorting() -> None:
     assert points["P2"].u == 2.0
 
 
-def test_point_search_filter_sort_edit_and_delete_stay_id_based() -> None:
+def test_point_search_filter_sort_edit_and_delete_stay_id_based(gui_application) -> None:
     controller = SketchDraftController("list")
     controller.add_point(10.0, 0.0, point_id="P10")
     controller.add_point(2.0, 0.0, point_id="P2")
@@ -909,7 +911,7 @@ def test_point_search_filter_sort_edit_and_delete_stay_id_based() -> None:
     assert panel._visible_point_ids() == ("P1",)
 
 
-def test_viewport_and_table_multi_selection_and_clear_are_symmetric() -> None:
+def test_viewport_and_table_multi_selection_and_clear_are_symmetric(gui_application) -> None:
     controller = SketchDraftController("selection")
     for point_id in ("P10", "P2", "P1"):
         controller.add_point(float(len(controller.snapshot().points)), 0.0, point_id=point_id)
@@ -948,6 +950,7 @@ def test_viewport_and_table_multi_selection_and_clear_are_symmetric() -> None:
 
 
 def test_selection_is_lightweight_and_does_not_analyze_or_rebuild(
+    gui_application,
     monkeypatch,
 ) -> None:
     controller = SketchDraftController("lightweight")
@@ -1013,7 +1016,7 @@ def test_refresh_preserves_selection_scroll_and_edit_cell(gui_application) -> No
     panel.close()
 
 
-def test_double_click_requests_point_focus() -> None:
+def test_double_click_requests_point_focus(gui_application) -> None:
     controller = SketchDraftController("focus")
     controller.add_point(0.0, 0.0, point_id="P7")
     panel = SketchEditorPanel(controller)
@@ -1025,7 +1028,7 @@ def test_double_click_requests_point_focus() -> None:
     assert focused == [("point", "P7")]
 
 
-def test_viewport_selection_update_only_rebuilds_highlight(monkeypatch) -> None:
+def test_viewport_selection_update_only_rebuilds_highlight(gui_application, monkeypatch) -> None:
     viewport = FEMViewport()
     viewport._sketch_authoring_active = True
     viewport._sketch_draft_render_data = SketchDraftRenderData(
@@ -1103,7 +1106,7 @@ def test_point_editor_enter_commits_escape_cancels_and_idle_keys_are_safe(gui_ap
     panel.close()
 
 
-def test_associated_point_status_is_read_only_until_released() -> None:
+def test_associated_point_status_is_read_only_until_released(gui_application) -> None:
     controller = SketchDraftController("associations")
     point = controller.add_point(
         1.0,
@@ -1128,6 +1131,7 @@ def test_associated_point_status_is_read_only_until_released() -> None:
 
 
 def test_point_delete_prompt_lists_cascade_and_undo_restores_entities(
+    gui_application,
     monkeypatch,
 ) -> None:
     controller = SketchDraftController("delete-cascade")
@@ -1163,7 +1167,7 @@ def test_point_delete_prompt_lists_cascade_and_undo_restores_entities(
     }
 
 
-def test_only_grid_preferences_are_user_configurable(tmp_path) -> None:
+def test_only_grid_preferences_are_user_configurable(gui_application, tmp_path) -> None:
     path = tmp_path / "sketch.ini"
     store = QSettings(str(path), QSettings.Format.IniFormat)
     store.setValue("sketch/grid_visible", False)
@@ -1231,7 +1235,7 @@ def test_only_grid_preferences_are_user_configurable(tmp_path) -> None:
     assert reopened.controller.selected_ids == ()
 
 
-def test_grid_display_and_snap_are_independent() -> None:
+def test_grid_display_and_snap_are_independent(gui_application) -> None:
     viewport = FEMViewport()
     viewport._display_to_world = (
         lambda _x, _y, depth: (0.24, 0.24, float(depth))
@@ -1257,7 +1261,7 @@ def test_grid_display_and_snap_are_independent() -> None:
     viewport.close()
 
 
-def test_snap_categories_tolerance_priority_intersections_and_feedback() -> None:
+def test_snap_categories_tolerance_priority_intersections_and_feedback(gui_application) -> None:
     viewport = FEMViewport()
     viewport._display_to_world = (
         lambda x, y, depth: (float(x), float(y), float(depth))
@@ -1442,7 +1446,7 @@ def test_curved_display_sampling_tracks_screen_chord_error() -> None:
         assert chord_error_pixels <= 0.75
 
 
-def test_fixed_auto_merge_and_drawing_behaviors() -> None:
+def test_fixed_auto_merge_and_drawing_behaviors(gui_application) -> None:
     controller = SketchDraftController("behaviors")
     panel = SketchEditorPanel(controller)
     existing = controller.add_point(0.0, 0.0)
@@ -1552,6 +1556,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(gui_application, monke
 
 
 def test_new_sketch_appends_part_without_replacing_existing(
+    gui_application,
     monkeypatch,
 ) -> None:
     committed = SketchDraftController("committed")
@@ -1584,7 +1589,7 @@ def test_new_sketch_appends_part_without_replacing_existing(
     window.close()
 
 
-def test_edit_root_commits_to_active_part() -> None:
+def test_edit_root_commits_to_active_part(gui_application) -> None:
     committed = SketchDraftController("editable")
     committed.add_rectangle((0.0, 0.0), (4.0, 2.0))
     original = committed.to_sketch_geometry()
@@ -1607,6 +1612,7 @@ def test_edit_root_commits_to_active_part() -> None:
 
 
 def test_unified_create_command_routes_2d_to_sketch_editor(
+    gui_application,
     monkeypatch,
 ) -> None:
 
@@ -1646,6 +1652,7 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
 
 
 def test_unified_create_command_routes_size_to_wire_editor(
+    gui_application,
     monkeypatch,
 ) -> None:
 
@@ -1685,6 +1692,7 @@ def test_unified_create_command_routes_size_to_wire_editor(
 
 
 def test_new_sketch_name_dialog_cancel_keeps_part_and_editor_unchanged(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = FEMMainWindow()
@@ -1706,6 +1714,7 @@ def test_new_sketch_name_dialog_cancel_keeps_part_and_editor_unchanged(
 
 
 def test_unified_create_command_opens_separate_3d_solid_chooser(
+    gui_application,
     monkeypatch,
 ) -> None:
     events: list[str] = []
@@ -1761,7 +1770,7 @@ def test_unified_create_command_opens_separate_3d_solid_chooser(
     window.close()
 
 
-def test_strict_sketch_cut_enters_detached_planar_boolean_workflow() -> None:
+def test_strict_sketch_cut_enters_detached_planar_boolean_workflow(gui_application) -> None:
     draft = SketchDraftController("cut-sketch")
     draft.add_rectangle((0.0, 0.0), (4.0, 2.0))
     recipe = draft.to_sketch_geometry()

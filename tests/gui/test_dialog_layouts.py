@@ -104,7 +104,7 @@ def test_manager_dialogs_use_compact_initial_sizes_and_content_columns(gui_appli
         dialog.close()
 
 
-def test_parameter_form_labels_share_right_aligned_compact_style():
+def test_parameter_form_labels_share_right_aligned_compact_style(gui_application):
     material = MaterialDefinition(
         "Steel",
         {"E": 210000.0, "nu": 0.3},
@@ -122,7 +122,7 @@ def test_parameter_form_labels_share_right_aligned_compact_style():
     assert dialog.form.verticalSpacing() > 0
 
 
-def test_ribbon_command_labels_are_not_clipped_by_button_width():
+def test_ribbon_command_labels_are_not_clipped_by_button_width(gui_application):
     window = FEMMainWindow()
 
     clipped = [

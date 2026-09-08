@@ -30,7 +30,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
+def test_new_material_starts_empty_and_uses_modal_parameter_fields_only(gui_application):
     _application()
     material_dialog = MaterialEditDialog()
     assert material_dialog.findChildren(QDoubleSpinBox) == []
@@ -74,7 +74,7 @@ def test_new_material_starts_empty_and_uses_modal_parameter_fields_only():
     assert existing_elastic.values() == {"E": 210000.0, "nu": 0.3}
 
 
-def test_material_inputs_use_adaptive_precision_consistently():
+def test_material_inputs_use_adaptive_precision_consistently(gui_application):
     _application()
     elastic = ElasticBehaviorDialog({"E": 210000.123456, "nu": 0.333333})
     density = DensityBehaviorDialog({"rho": 7850.123456})
@@ -101,7 +101,7 @@ def test_material_inputs_use_adaptive_precision_consistently():
     assert elastic.values()["nu"] == 0.333333
 
 
-def test_section_dialog_uses_dimension_specific_supported_parameters():
+def test_section_dialog_uses_dimension_specific_supported_parameters(gui_application):
     _application()
     material = MaterialDefinition(
         "Steel",
@@ -170,7 +170,7 @@ def test_section_dialog_uses_dimension_specific_supported_parameters():
     assert shell.section() == imported_shell
 
 
-def test_material_editor_preserves_unknown_inp_behaviors_read_only():
+def test_material_editor_preserves_unknown_inp_behaviors_read_only(gui_application):
     _application()
     original = MaterialDefinition(
         "Imported",
@@ -191,7 +191,7 @@ def test_material_editor_preserves_unknown_inp_behaviors_read_only():
     assert dialog.material().properties == original.properties
 
 
-def test_definition_managers_edit_copies_and_use_read_only_tables():
+def test_definition_managers_edit_copies_and_use_read_only_tables(gui_application):
     _application()
     materials = [
         MaterialDefinition(
@@ -218,7 +218,7 @@ def test_definition_managers_edit_copies_and_use_read_only_tables():
     assert section_dialog.values() == []
 
 
-def test_material_manager_creates_mutable_copy_from_snapshot_tuple():
+def test_material_manager_creates_mutable_copy_from_snapshot_tuple(gui_application):
     _application()
     original = (
         MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),
@@ -236,7 +236,7 @@ def test_material_manager_creates_mutable_copy_from_snapshot_tuple():
     assert [material.name for material in original] == ["Steel"]
 
 
-def test_section_manager_creates_mutable_copy_from_snapshot_tuple():
+def test_section_manager_creates_mutable_copy_from_snapshot_tuple(gui_application):
     _application()
     materials = (MaterialDefinition("Steel", {"E": 210000.0, "nu": 0.3}),)
     original = (SectionDefinition("Solid", "Steel"),)

@@ -49,7 +49,7 @@ def _full_catalog_bundle(task, result) -> SolveResultBundle:
 
 
 @pytest.fixture
-def solved_window() -> FEMMainWindow:
+def solved_window(gui_application) -> FEMMainWindow:
     window = FEMMainWindow()
     model = make_static_pull_truss_model()
     imported = window.session.prepare_import(Path("typed-result-ribbon.inp"))

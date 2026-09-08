@@ -140,7 +140,7 @@ def test_circle_sections_keep_numbered_section_point_names() -> None:
     ) == "截面点 1"
 
 
-def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations() -> None:
+def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_application) -> None:
     _application()
     _result, provider = _provider()
     catalog = provider.catalog()
@@ -297,7 +297,7 @@ def test_beam_section_selection_batches_all_four_lazy_ip_fields() -> None:
     assert tuple(field.key for field in patch.fields) == keys
 
 
-def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
+def test_csv_dialog_keeps_section_point_field_identity_and_components(gui_application) -> None:
     _application()
     _result, provider = _provider()
     selected_field = _point_field(provider, 3)
@@ -324,7 +324,7 @@ def test_csv_dialog_keeps_section_point_field_identity_and_components() -> None:
     dialog.close()
 
 
-def test_probe_and_inspection_expose_section_point_location_identity() -> None:
+def test_probe_and_inspection_expose_section_point_location_identity(gui_application) -> None:
     _application()
     result, provider = _provider()
     selected_field = _point_field(provider, 2)
@@ -375,7 +375,7 @@ def test_probe_and_inspection_expose_section_point_location_identity() -> None:
     dialog.close()
 
 
-def test_viewport_payload_and_legend_keep_selected_point_identity() -> None:
+def test_viewport_payload_and_legend_keep_selected_point_identity(gui_application) -> None:
     _application()
     _result, provider = _provider()
     point_two = _point_field(provider, 2)

@@ -100,6 +100,7 @@ def _specs(
 
 
 def test_public_result_exports_use_compact_snapshot_bound_tables(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -186,6 +187,7 @@ def test_public_result_exports_use_compact_snapshot_bound_tables(
 
 
 def test_result_export_commands_reject_untyped_stale_and_wrong_suffix(
+    gui_application,
     tmp_path: Path,
 ) -> None:
     window = _solved_window()
@@ -231,6 +233,7 @@ def test_result_export_commands_reject_untyped_stale_and_wrong_suffix(
 
 
 def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:

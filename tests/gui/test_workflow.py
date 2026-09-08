@@ -64,7 +64,7 @@ def _current_ready_selection(
     return provider, selection
 
 
-def test_background_import_solve_and_result_state(gui_inp_path):
+def test_background_import_solve_and_result_state(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
 
@@ -129,7 +129,7 @@ def test_background_import_solve_and_result_state(gui_inp_path):
     window.close()
 
 
-def test_reload_clears_selection_and_old_result(gui_inp_path):
+def test_reload_clears_selection_and_old_result(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     await_succeeded(window.open_inp_path(gui_inp_path))
@@ -152,6 +152,7 @@ def test_reload_clears_selection_and_old_result(gui_inp_path):
 
 
 def test_gui_exports_the_current_result_field_as_csv_and_vtk(
+    gui_application,
     monkeypatch,
     gui_inp_path,
     tmp_path,

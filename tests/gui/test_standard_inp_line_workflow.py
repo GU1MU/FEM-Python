@@ -198,6 +198,7 @@ def _open_check_solve(
 
 
 def test_literal_standard_t3d2_main_window_open_check_solve_result(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -234,6 +235,7 @@ def test_literal_standard_t3d2_main_window_open_check_solve_result(
 
 
 def test_literal_standard_b31_main_window_open_check_solve_result(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -355,6 +357,7 @@ def test_unpack_model_load_keeps_legacy_shapes_and_adds_notices() -> None:
 
 
 def test_background_import_uses_report_and_installs_notice_after_accept(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -401,6 +404,7 @@ def test_background_import_uses_report_and_installs_notice_after_accept(
 
 
 def test_notices_survive_edit_check_solve_stale_and_failed_import(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -515,6 +519,7 @@ def test_notices_survive_edit_check_solve_stale_and_failed_import(
 
 
 def test_successful_document_replacements_clear_import_notices(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:

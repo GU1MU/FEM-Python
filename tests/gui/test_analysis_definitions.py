@@ -38,7 +38,7 @@ import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 
 
-def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
+def test_new_static_step_uses_a_chinese_default_name(gui_application, monkeypatch):
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("plate", 2.0, 1.0), "矩形")
     names: list[str] = []
@@ -57,7 +57,7 @@ def test_new_static_step_uses_a_chinese_default_name(monkeypatch):
     window.close()
 
 
-def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
+def test_analysis_manager_reuses_one_authoring_projection(gui_application, monkeypatch):
     window = FEMMainWindow()
     window._set_native_geometry(
         RectangleGeometry("cached-authoring", 2.0, 1.0),
@@ -89,7 +89,7 @@ def test_analysis_manager_reuses_one_authoring_projection(monkeypatch):
     window.close()
 
 
-def test_boundary_scope_highlight_reuses_entity_highlighter(monkeypatch):
+def test_boundary_scope_highlight_reuses_entity_highlighter(gui_application, monkeypatch):
     window = FEMMainWindow()
     highlighted = []
     cleared = []
@@ -124,6 +124,7 @@ def test_boundary_scope_highlight_reuses_entity_highlighter(monkeypatch):
 
 @pytest.mark.parametrize("result", (0, 1))
 def test_analysis_scope_dialog_always_clears_highlight(
+    gui_application,
     monkeypatch,
     result,
 ):
@@ -226,7 +227,7 @@ def test_native_linear_static_definition_reuses_the_existing_solver():
     assert result.U.size == compiled_model.mesh.num_dofs
 
 
-def test_analysis_dialogs_define_only_supported_kernel_objects():
+def test_analysis_dialogs_define_only_supported_kernel_objects(gui_application):
     step_dialog = StaticStepDialog("Load")
     assert step_dialog.step().procedure == "static"
     boundary_dialog = DisplacementDialog(
@@ -255,7 +256,7 @@ def test_analysis_dialogs_define_only_supported_kernel_objects():
     assert load_dialog.component_combo.itemText(0) == "Fx"
 
 
-def test_analysis_dialog_region_catalogs_reject_untyped_strings():
+def test_analysis_dialog_region_catalogs_reject_untyped_strings(gui_application):
 
     with pytest.raises(TypeError, match="RegionRef"):
         DisplacementDialog(["Load"], ["Fixed"], 2)
@@ -264,7 +265,7 @@ def test_analysis_dialog_region_catalogs_reject_untyped_strings():
         LoadDialog(["Load"], ["Loaded"], [], [], 2)
 
 
-def test_displacement_dialog_creates_independent_checked_dofs():
+def test_displacement_dialog_creates_independent_checked_dofs(gui_application):
     dialog = DisplacementDialog(
         ["Load"],
         _regions("node_set", "Fixed"),
@@ -289,7 +290,7 @@ def test_displacement_dialog_creates_independent_checked_dofs():
     ]
 
 
-def test_displacement_dialog_reports_selected_scope_changes():
+def test_displacement_dialog_reports_selected_scope_changes(gui_application):
     dialog = DisplacementDialog(
         ["Load"],
         [
@@ -312,7 +313,7 @@ def test_displacement_dialog_reports_selected_scope_changes():
     ]
 
 
-def test_boundary_and_load_inputs_share_adaptive_precision():
+def test_boundary_and_load_inputs_share_adaptive_precision(gui_application):
     boundary = DisplacementDialog(
         ["Load"],
         _regions("node_set", "Fixed"),
@@ -354,7 +355,7 @@ def test_boundary_and_load_inputs_share_adaptive_precision():
     assert load.definition()[1].value == 3.456789
 
 
-def test_displacement_dialog_merges_adjacent_equal_dofs():
+def test_displacement_dialog_merges_adjacent_equal_dofs(gui_application):
     dialog = DisplacementDialog(
         ["Load"],
         _regions("surface", "FixedFace"),
@@ -378,7 +379,7 @@ def test_displacement_dialog_merges_adjacent_equal_dofs():
     )
 
 
-def test_displacement_dialog_restores_form_after_scope_creation():
+def test_displacement_dialog_restores_form_after_scope_creation(gui_application):
     original = DisplacementDialog(
         ["Step-1", "Step-2"],
         _regions("surface", "OldFace"),
@@ -422,7 +423,7 @@ def test_displacement_dialog_restores_form_after_scope_creation():
     )
 
 
-def test_load_dialog_restores_surface_load_after_scope_creation():
+def test_load_dialog_restores_surface_load_after_scope_creation(gui_application):
     original = LoadDialog(
         ["Step-1", "Step-2"],
         _regions("node_set", "Nodes"),
@@ -470,7 +471,7 @@ def test_load_dialog_restores_surface_load_after_scope_creation():
     ("kind", "name"),
     (("edge", "FixedEdge"), ("surface", "FixedSurface")),
 )
-def test_displacement_dialog_accepts_edge_and_surface_regions(kind, name):
+def test_displacement_dialog_accepts_edge_and_surface_regions(gui_application, kind, name):
     dialog = DisplacementDialog(
         ["Load"],
         [
@@ -490,7 +491,7 @@ def test_displacement_dialog_accepts_edge_and_surface_regions(kind, name):
     assert not hasattr(boundaries[0], "node_ids")
 
 
-def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
+def test_analysis_manager_uses_a_copy_and_deletes_selected_definition(gui_application):
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 2, 0.0),)
     step.cloads = (NodalLoad("Loaded", 1, 10.0),)
@@ -511,7 +512,7 @@ def test_analysis_manager_uses_a_copy_and_deletes_selected_definition():
     assert manager.values()[0].cloads[0].target == "Loaded"
 
 
-def test_load_dialog_can_edit_an_existing_distributed_load():
+def test_load_dialog_can_edit_an_existing_distributed_load(gui_application):
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -539,7 +540,7 @@ def test_load_dialog_can_edit_an_existing_distributed_load():
     "kind",
     ("node", "edge", "surface", "line", "body", "gravity"),
 )
-def test_load_dialog_saves_names_for_every_load_kind(kind):
+def test_load_dialog_saves_names_for_every_load_kind(gui_application, kind):
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -560,7 +561,7 @@ def test_load_dialog_saves_names_for_every_load_kind(kind):
     assert load.name == "工况载荷"
 
 
-def test_load_dialog_reports_every_supported_scope_change():
+def test_load_dialog_reports_every_supported_scope_change(gui_application):
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -599,6 +600,7 @@ def test_load_dialog_reports_every_supported_scope_change():
     ),
 )
 def test_load_dialog_reports_targeted_and_global_gravity_scopes(
+    gui_application,
     target,
     scope,
 ):
@@ -614,7 +616,7 @@ def test_load_dialog_reports_targeted_and_global_gravity_scopes(
     assert dialog.selected_scope() == scope
 
 
-def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
+def test_analysis_manager_can_rename_boundary_and_load(gui_application, monkeypatch):
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint(
@@ -658,7 +660,7 @@ def test_analysis_manager_can_rename_boundary_and_load(monkeypatch):
     assert updated.edge_loads[0].name == "加载边牵引"
 
 
-def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
+def test_analysis_manager_forwards_boundary_scope_changes(gui_application, monkeypatch):
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint("Fixed", 1, 2),
@@ -689,6 +691,7 @@ def test_analysis_manager_forwards_boundary_scope_changes(monkeypatch):
 
 
 def test_analysis_manager_forwards_and_clears_load_scope_changes(
+    gui_application,
     monkeypatch,
 ):
     step = static("Load")
@@ -719,6 +722,7 @@ def test_analysis_manager_forwards_and_clears_load_scope_changes(
 
 
 def test_edge_load_editor_refreshes_only_after_dialog_construction(
+    gui_application,
     monkeypatch,
 ):
     refresh_states = []
@@ -754,7 +758,7 @@ def test_edge_load_editor_refreshes_only_after_dialog_construction(
     dialog.close()
 
 
-def test_load_dialog_creates_global_gravity_without_a_named_region():
+def test_load_dialog_creates_global_gravity_without_a_named_region(gui_application):
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -775,7 +779,7 @@ def test_load_dialog_creates_global_gravity_without_a_named_region():
     assert load == GravityLoad((0.0, 0.0, -9.81))
 
 
-def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
+def test_load_dialog_keeps_gravity_and_distributed_vectors_separate(gui_application):
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -797,7 +801,7 @@ def test_load_dialog_keeps_gravity_and_distributed_vectors_separate():
     assert dialog.y_spin.value() == 0.0
 
 
-def test_load_dialog_exposes_five_physical_categories_and_builds_body_force():
+def test_load_dialog_exposes_five_physical_categories_and_builds_body_force(gui_application):
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "Nodes"),
@@ -827,7 +831,7 @@ def test_load_dialog_exposes_five_physical_categories_and_builds_body_force():
     assert not dialog.form.isRowVisible(dialog.load_type_combo)
 
 
-def test_analysis_manager_lists_and_deletes_gravity_loads():
+def test_analysis_manager_lists_and_deletes_gravity_loads(gui_application):
     step = static("Load")
     step.gravity_loads = (GravityLoad((0.0, -9.81)),)
     manager = AnalysisDefinitionManagerDialog(
@@ -848,7 +852,7 @@ def test_analysis_manager_lists_and_deletes_gravity_loads():
     assert manager.values()[0].gravity_loads == ()
 
 
-def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
+def test_load_dialog_only_shows_parameters_for_the_selected_load_kind(gui_application):
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "NodeSet"),
@@ -881,7 +885,7 @@ def test_load_dialog_only_shows_parameters_for_the_selected_load_kind():
     assert not dialog.form.isRowVisible(dialog.x_spin)
 
 
-def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
+def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension(gui_application):
     dialog = LoadDialog(
         ["Load"],
         _regions("node_set", "NodeSet"),
@@ -910,7 +914,7 @@ def test_load_dialog_separates_nodal_dofs_from_spatial_vector_dimension():
     assert len(load.vector) == 3
 
 
-def test_main_window_filters_distributed_load_regions_by_model_dimension():
+def test_main_window_filters_distributed_load_regions_by_model_dimension(gui_application):
     window = FEMMainWindow()
     rectangle = RectangleGeometry("plate", 2.0, 1.0)
     planar_regions = (
@@ -1006,7 +1010,7 @@ def test_main_window_filters_distributed_load_regions_by_model_dimension():
     window.close()
 
 
-def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
+def test_unmeshed_rectangle_publishes_exact_catalog_region_choices(gui_application):
     window = FEMMainWindow()
     window._set_native_geometry(
         RectangleGeometry("catalog-plate", 2.0, 1.0),
@@ -1019,7 +1023,7 @@ def test_unmeshed_rectangle_publishes_exact_catalog_region_choices():
     window.close()
 
 
-def test_load_dialog_validates_region_and_builds_pressure():
+def test_load_dialog_validates_region_and_builds_pressure(gui_application):
     edge_regions = _regions("edge", "Loaded")
     missing_region = LoadDialog(["Load"], [], edge_regions, [], 2)
     missing_region.region_combo.clear()
@@ -1040,7 +1044,7 @@ def test_load_dialog_validates_region_and_builds_pressure():
     assert load.magnitude == 12.5
 
 
-def test_load_dialog_rejects_zero_distributed_loads():
+def test_load_dialog_rejects_zero_distributed_loads(gui_application):
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -1059,7 +1063,7 @@ def test_load_dialog_rejects_zero_distributed_loads():
         dialog.definition()
 
 
-def test_scope_pick_buttons_request_node_edge_and_surface_selection():
+def test_scope_pick_buttons_request_node_edge_and_surface_selection(gui_application):
     displacement = DisplacementDialog(
         ["Load"],
         [],
@@ -1115,7 +1119,7 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection():
         assert load.requested_scope_kind() == kind
 
 
-def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
+def test_analysis_manager_edit_requests_a_new_load_scope(gui_application, monkeypatch):
     step = static("Load")
     step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
     manager = AnalysisDefinitionManagerDialog(
@@ -1141,7 +1145,7 @@ def test_analysis_manager_edit_requests_a_new_load_scope(monkeypatch):
     )
 
 
-def test_analysis_manager_restores_unsaved_load_editor_state(monkeypatch):
+def test_analysis_manager_restores_unsaved_load_editor_state(gui_application, monkeypatch):
     first_step = static("Step-1")
     first_step.edge_loads = (EdgeLoad("EdgeSet-1", (-10.0, 0.0)),)
     second_step = static("Step-2")
@@ -1203,7 +1207,7 @@ def test_analysis_manager_restores_unsaved_load_editor_state(monkeypatch):
     assert restored_steps[1].surface_loads[0].magnitude == 8.5
 
 
-def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):
+def test_analysis_manager_edit_requests_a_new_boundary_scope(gui_application, monkeypatch):
     step = static("Load")
     step.boundaries = (
         DisplacementConstraint(
@@ -1237,7 +1241,7 @@ def test_analysis_manager_edit_requests_a_new_boundary_scope(monkeypatch):
     )
 
 
-def test_edit_load_dialog_prefers_a_new_explicit_scope():
+def test_edit_load_dialog_prefers_a_new_explicit_scope(gui_application):
     dialog = LoadDialog(
         ["Load"],
         [],
@@ -1255,7 +1259,7 @@ def test_edit_load_dialog_prefers_a_new_explicit_scope():
     assert dialog.x_spin.value() == -10.0
 
 
-def test_analysis_manager_uses_readable_definition_summaries():
+def test_analysis_manager_uses_readable_definition_summaries(gui_application):
     step = static("Load")
     step.boundaries = (DisplacementConstraint("Fixed", 1, 1, 0.0),)
     step.outputs = (OutputRequest("field", "node", ("U", "RF")),)

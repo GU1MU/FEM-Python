@@ -170,6 +170,7 @@ def _assert_result_entries_disabled(window: FEMMainWindow) -> None:
 
 
 def test_delete_and_recreate_geometry_remove_all_topology_references(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _new_window()
@@ -256,7 +257,7 @@ def test_delete_and_recreate_geometry_remove_all_topology_references(
     window.close()
 
 
-def test_named_region_change_retains_completed_result_history() -> None:
+def test_named_region_change_retains_completed_result_history(gui_application) -> None:
     window = _new_window()
     window._create_native_model("Model-1")
     window._set_native_geometry(
@@ -342,7 +343,7 @@ def test_named_region_change_retains_completed_result_history() -> None:
     window.close()
 
 
-def test_native_geometry_module_restores_pre_mesh_geometry() -> None:
+def test_native_geometry_module_restores_pre_mesh_geometry(gui_application) -> None:
     window = _new_window()
     window._create_native_model("Model-1")
     window._set_native_geometry(
@@ -377,6 +378,7 @@ def test_native_geometry_module_restores_pre_mesh_geometry() -> None:
 
 
 def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _new_window()
@@ -415,7 +417,7 @@ def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
     window.close()
 
 
-def test_step_switch_uses_independent_validation_stamp_for_action_gate() -> None:
+def test_step_switch_uses_independent_validation_stamp_for_action_gate(gui_application) -> None:
     window = _new_window()
     _install_imported(window, make_two_step_static_pull_truss_model())
     window._set_current_step("pull1")
@@ -454,6 +456,7 @@ def test_step_switch_uses_independent_validation_stamp_for_action_gate() -> None
     ],
 )
 def test_failed_or_cancelled_job_preserves_previous_displayed_result(
+    gui_application,
     terminal: str,
     expected_status: RunStatus,
 ) -> None:
@@ -493,7 +496,7 @@ def test_failed_or_cancelled_job_preserves_previous_displayed_result(
     window.close()
 
 
-def test_stale_import_callback_cannot_change_projection() -> None:
+def test_stale_import_callback_cannot_change_projection(gui_application) -> None:
     window = _new_window()
     _install_imported(window)
     stale = window.session.prepare_import("late.inp")
@@ -517,7 +520,7 @@ def test_stale_import_callback_cannot_change_projection() -> None:
     window.close()
 
 
-def test_stale_mesh_callback_cannot_change_projection() -> None:
+def test_stale_mesh_callback_cannot_change_projection(gui_application) -> None:
     window = _new_window()
     window._create_native_model("Model-1")
     window._set_native_geometry(
@@ -540,7 +543,7 @@ def test_stale_mesh_callback_cannot_change_projection() -> None:
     window.close()
 
 
-def test_stale_validation_callback_cannot_change_projection() -> None:
+def test_stale_validation_callback_cannot_change_projection(gui_application) -> None:
     window = _new_window()
     _install_imported(window)
     stale = window.session.prepare_validation("pull")
@@ -564,7 +567,7 @@ def test_stale_validation_callback_cannot_change_projection() -> None:
     window.close()
 
 
-def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
+def test_stale_solve_callback_cannot_restore_invalidated_result(gui_application) -> None:
     window = _new_window()
     _install_imported(window)
     _validate_step(window, "pull")
@@ -596,7 +599,7 @@ def test_stale_solve_callback_cannot_restore_invalidated_result() -> None:
     window.close()
 
 
-def test_revision_neutral_projection_receipt_preserves_current_cache() -> None:
+def test_revision_neutral_projection_receipt_preserves_current_cache(gui_application) -> None:
     window = _new_window()
     _install_imported(window)
     run_id = _succeed_run(window)
@@ -613,7 +616,7 @@ def test_revision_neutral_projection_receipt_preserves_current_cache() -> None:
     window.close()
 
 
-def test_hidden_run_projection_receipt_cannot_replace_current_cache() -> None:
+def test_hidden_run_projection_receipt_cannot_replace_current_cache(gui_application) -> None:
     window = _new_window()
     _install_imported(window)
     run_a = _succeed_run(window, run_name="Job-A")
@@ -634,6 +637,7 @@ def test_hidden_run_projection_receipt_cannot_replace_current_cache() -> None:
 
 
 def test_projection_failure_and_cancel_receipts_are_revision_neutral(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _new_window()
@@ -678,6 +682,7 @@ def test_projection_failure_and_cancel_receipts_are_revision_neutral(
     ),
 )
 def test_failed_project_open_preserves_session_tree_and_viewport(
+    gui_application,
     failure_case,
     tmp_path,
     monkeypatch,

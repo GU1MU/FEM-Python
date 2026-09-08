@@ -71,7 +71,7 @@ def _items(root):
         stack.extend(item.child(index) for index in range(item.childCount()))
 
 
-def test_model_tree_appends_roots_and_routes_same_named_children():
+def test_model_tree_appends_roots_and_routes_same_named_children(gui_application):
     _application()
     tree = ModelTree()
     first = tree.insert_document(11, _model(), source_path="A.fempy")
@@ -106,6 +106,7 @@ def test_model_tree_appends_roots_and_routes_same_named_children():
 
 
 def test_model_tree_incremental_update_and_remove_never_clear_other_roots(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -126,7 +127,7 @@ def test_model_tree_incremental_update_and_remove_never_clear_other_roots(
     assert tree.topLevelItemCount() == 1
 
 
-def test_model_tree_definition_update_preserves_expanded_target_subtree():
+def test_model_tree_definition_update_preserves_expanded_target_subtree(gui_application):
     _application()
     tree = ModelTree()
     model = make_static_pull_truss_model()
@@ -194,7 +195,7 @@ def test_model_tree_definition_update_preserves_expanded_target_subtree():
     assert tree.currentItem().data(0, ROLE_DOCUMENT_ID) == 1
 
 
-def test_model_tree_fifty_roots_use_one_indexed_tree():
+def test_model_tree_fifty_roots_use_one_indexed_tree(gui_application):
     _application()
     tree = ModelTree()
     for document_id in range(1, 51):
@@ -703,7 +704,7 @@ def test_close_inactive_context_preserves_active_display_state(
         dispose_gui_widget(window)
 
 
-def test_set_active_document_only_touches_old_and_new_roots(monkeypatch):
+def test_set_active_document_only_touches_old_and_new_roots(gui_application, monkeypatch):
     _application()
     tree = ModelTree()
 
@@ -733,7 +734,7 @@ def test_set_active_document_only_touches_old_and_new_roots(monkeypatch):
     assert current == [roots[50]]
 
 
-def test_active_document_uses_text_weight_without_persistent_selection():
+def test_active_document_uses_text_weight_without_persistent_selection(gui_application):
     _application()
     tree = ModelTree()
     first = tree.insert_document(1, _model("Model-1"))
@@ -749,7 +750,7 @@ def test_active_document_uses_text_weight_without_persistent_selection():
     assert "QTreeWidget#modelTree::item:hover" in tree.styleSheet()
 
 
-def test_only_active_document_marks_its_current_part_bold():
+def test_only_active_document_marks_its_current_part_bold(gui_application):
     _application()
     tree = ModelTree()
     first = tree.set_geometry_preview(
@@ -782,7 +783,7 @@ def test_only_active_document_marks_its_current_part_bold():
     assert second.child(0).font(0).bold()
 
 
-def test_double_clicking_model_root_requests_activation_without_information():
+def test_double_clicking_model_root_requests_activation_without_information(gui_application):
     _application()
     tree = ModelTree()
     root = tree.insert_document(7, _model("Model-7"))
@@ -801,7 +802,7 @@ def test_double_clicking_model_root_requests_activation_without_information():
     assert informed == []
 
 
-def test_set_active_document_preserves_root_order():
+def test_set_active_document_preserves_root_order(gui_application):
     _application()
     tree = ModelTree()
     for document_id in range(1, 4):
@@ -814,7 +815,7 @@ def test_set_active_document_preserves_root_order():
     assert [tree.topLevelItem(index) for index in range(3)] == original
 
 
-def test_remove_last_root_adds_placeholder_without_clear(monkeypatch):
+def test_remove_last_root_adds_placeholder_without_clear(gui_application, monkeypatch):
     _application()
     tree = ModelTree()
     tree.insert_document(1, _model("A"))
@@ -828,7 +829,7 @@ def test_remove_last_root_adds_placeholder_without_clear(monkeypatch):
     assert tree.topLevelItem(0).data(0, ROLE_KIND) == "empty"
 
 
-def test_empty_projection_update_keeps_document_root():
+def test_empty_projection_update_keeps_document_root(gui_application):
     _application()
     tree = ModelTree()
     session = ModelSession()

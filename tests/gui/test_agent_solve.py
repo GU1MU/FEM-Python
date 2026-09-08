@@ -173,6 +173,7 @@ def _proposal(
 
 
 def test_agent_automatically_preflights_then_gui_click_solves_in_background(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -428,6 +429,7 @@ def test_port_rejects_legacy_solve_proposal_shape() -> None:
 
 
 def test_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
+    gui_application,
     monkeypatch,
     dispose_gui_widget,
 ) -> None:
@@ -481,6 +483,7 @@ def test_busy_rejects_before_run_and_start_failure_terminalizes_created_run(
     ],
 )
 def test_existing_job_terminal_states_map_to_proposal(
+    gui_application,
     monkeypatch,
     background_state: BackgroundTaskState,
     proposal_state: ProposalState,

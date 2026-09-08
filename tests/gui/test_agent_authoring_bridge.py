@@ -546,7 +546,7 @@ def test_proposal_events_are_strict_and_replay_all_lifecycle_paths() -> None:
         events.make(EventType.PROPOSAL_REQUESTED, unknown)
 
 
-def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
+def test_minimal_gui_card_binds_and_only_buttons_authorize(gui_application) -> None:
     application = _application()
     bridge = AgentAuthoringBridge(FakeAuthoringPort())
     bridge.bind_context(_context())
@@ -612,6 +612,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize() -> None:
 
 
 def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
+    gui_application,
     tmp_path,
 ) -> None:
     application = _application()
@@ -697,7 +698,7 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
     runtime.shutdown()
 
 
-def test_runtime_flushes_whitespace_only_stream_delta(tmp_path) -> None:
+def test_runtime_flushes_whitespace_only_stream_delta(gui_application, tmp_path) -> None:
     runtime = QtAgentRuntime(tmp_path / "agent-private-whitespace")
     try:
         context, _reset = runtime._start_turn(1, "agent-session-whitespace")
@@ -724,7 +725,7 @@ def test_runtime_flushes_whitespace_only_stream_delta(tmp_path) -> None:
         runtime.shutdown()
 
 
-def test_runtime_finalizes_streamed_message_presentation_kind(tmp_path) -> None:
+def test_runtime_finalizes_streamed_message_presentation_kind(gui_application, tmp_path) -> None:
     runtime = QtAgentRuntime(tmp_path / "agent-private-presentation")
     try:
         context, _reset = runtime._start_turn(1, "agent-session-presentation")
@@ -774,6 +775,7 @@ def test_runtime_finalizes_streamed_message_presentation_kind(tmp_path) -> None:
 
 
 def test_runtime_marks_text_before_automatic_patch_as_full_preview(
+    gui_application,
     tmp_path,
 ) -> None:
     runtime = QtAgentRuntime(tmp_path / "agent-private-patch-preview")
@@ -836,7 +838,7 @@ def test_runtime_marks_text_before_automatic_patch_as_full_preview(
         runtime.shutdown()
 
 
-def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
+def test_pending_proposal_is_only_rendered_in_the_composer(gui_application) -> None:
     _application()
     events = _Events()
     proposal_hash = "b" * 64
@@ -903,6 +905,7 @@ def test_pending_proposal_is_only_rendered_in_the_composer() -> None:
 
 
 def test_succeeded_proposal_hides_terminal_detail_and_empty_continuation_user(
+    gui_application,
 ) -> None:
     _application()
     events = _Events()

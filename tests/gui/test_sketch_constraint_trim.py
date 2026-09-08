@@ -119,7 +119,7 @@ def test_trim_cascades_constraint_on_orphaned_endpoint_and_undo_restores_it() ->
     assert tuple(item.point_id for item in restored.external_coincidences) == ("LS",)
 
 
-def test_panel_creates_displays_and_deletes_advanced_relation_and_angle() -> None:
+def test_panel_creates_displays_and_deletes_advanced_relation_and_angle(gui_application) -> None:
     controller = _line_controller()
     panel = SketchEditorPanel(controller)
 

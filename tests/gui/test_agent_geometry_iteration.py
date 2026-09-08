@@ -214,7 +214,7 @@ def test_batch_preparation_registers_one_proposal_and_commits_one_revision() -> 
     assert len(_circle_ids(session.snapshot().parts[0].geometry_recipe)) == 5
 
 
-def test_main_window_geometry_edit_uses_in_place_then_automatic_branch() -> None:
+def test_main_window_geometry_edit_uses_in_place_then_automatic_branch(gui_application) -> None:
     QApplication.instance() or QApplication([])
     window = FEMMainWindow()
     units = UnitContext("mm", "N", "MPa")
@@ -309,7 +309,7 @@ def test_main_window_geometry_edit_uses_in_place_then_automatic_branch() -> None
     window.close()
 
 
-def test_branch_preserves_source_result_without_result_loss_confirmation() -> None:
+def test_branch_preserves_source_result_without_result_loss_confirmation(gui_application) -> None:
     QApplication.instance() or QApplication([])
     window = FEMMainWindow()
     solved = make_solved_session()
@@ -371,6 +371,7 @@ def test_branch_preserves_source_result_without_result_loss_confirmation() -> No
 
 
 def test_branch_activation_failure_restores_workspace_window_and_agent(
+    gui_application,
     monkeypatch,
 ) -> None:
     QApplication.instance() or QApplication([])
@@ -474,7 +475,7 @@ def test_latest_iteration_report_is_owned_and_document_bound() -> None:
     assert port.latest_geometry_iteration_report() is None
 
 
-def test_source_run_selection_prefers_selected_before_provider_and_latest() -> None:
+def test_source_run_selection_prefers_selected_before_provider_and_latest(gui_application) -> None:
     QApplication.instance() or QApplication([])
     window = FEMMainWindow()
     selected_source = SimpleNamespace(run_id="run-selected")
@@ -499,6 +500,7 @@ def test_source_run_selection_prefers_selected_before_provider_and_latest() -> N
 
 
 def test_partial_agent_port_bind_failure_restores_every_binding(
+    gui_application,
     monkeypatch,
 ) -> None:
     QApplication.instance() or QApplication([])

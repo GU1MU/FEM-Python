@@ -66,6 +66,7 @@ def _combo_index(combo, value: object) -> int:
 
 
 def test_dialog_requires_exact_provider_and_matching_catalog(
+    gui_application,
     result_provider,
 ) -> None:
     _result, provider = result_provider
@@ -92,6 +93,7 @@ def test_dialog_requires_exact_provider_and_matching_catalog(
 
 
 def test_catalog_order_typed_association_and_descriptor_components_are_exact(
+    gui_application,
     result_provider,
 ) -> None:
     _result, provider = result_provider
@@ -163,6 +165,7 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
 
 
 def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
+    gui_application,
     result_provider,
 ) -> None:
     _result, provider = result_provider
@@ -225,6 +228,7 @@ def test_ready_and_lazy_selections_emit_exact_typed_requests_without_recovery(
 
 
 def test_pending_query_freezes_intent_without_overwriting_latest_query(
+    gui_application,
     result_provider,
 ) -> None:
     _result, provider = result_provider
@@ -260,6 +264,7 @@ def test_pending_query_freezes_intent_without_overwriting_latest_query(
 
 
 def test_query_result_keeps_element_nodal_provenance_rows_in_order(
+    gui_application,
     result_provider,
 ) -> None:
     result, provider = result_provider

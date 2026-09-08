@@ -67,6 +67,7 @@ class _ViewportProbe(QWidget):
 
 
 def test_workspace_menu_and_slash_share_handler_and_cancel_is_stable(
+    gui_application,
     tmp_path,
 ):
     application = _application()
@@ -105,6 +106,7 @@ def test_workspace_menu_and_slash_share_handler_and_cancel_is_stable(
 
 
 def test_at_candidates_filter_all_extensions_and_insert_typed_reference(
+    gui_application,
     tmp_path,
 ):
     application = _application()
@@ -177,6 +179,7 @@ def test_at_candidates_filter_all_extensions_and_insert_typed_reference(
 
 
 def test_preview_preserves_reference_ranges_in_emitted_text(
+    gui_application,
     tmp_path,
     monkeypatch,
 ):
@@ -362,7 +365,7 @@ def test_selection_rejects_agent_data_directory_overlap(
     assert handler.workspace_index is None
 
 
-def test_bounded_index_reports_truncation_to_ui(tmp_path):
+def test_bounded_index_reports_truncation_to_ui(gui_application, tmp_path):
     application = _application()
     workspace = tmp_path / "bounded"
     workspace.mkdir()
@@ -392,6 +395,7 @@ def test_bounded_index_reports_truncation_to_ui(tmp_path):
 
 
 def test_workspace_and_reference_controls_preserve_viewport_geometry(
+    gui_application,
     tmp_path,
 ):
     application = _application()

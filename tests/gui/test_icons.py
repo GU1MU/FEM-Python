@@ -23,7 +23,7 @@ ACTION_ICONS = (
 )
 
 
-def test_action_icons_render_at_toolbar_and_ribbon_sizes():
+def test_action_icons_render_at_toolbar_and_ribbon_sizes(gui_application):
     for name in ACTION_ICONS:
         for size in (18, 20, 24, 32, 48):
             pixmap = icon(name).pixmap(QSize(size, size))
@@ -37,7 +37,7 @@ def test_action_icons_render_at_toolbar_and_ribbon_sizes():
             ), name
 
 
-def test_standard_view_icons_are_visually_distinct():
+def test_standard_view_icons_are_visually_distinct(gui_application):
     images = [
         icon(name).pixmap(QSize(32, 32)).toImage()
         for name in ("front", "back", "left", "right", "top", "bottom", "iso")
@@ -47,7 +47,7 @@ def test_standard_view_icons_are_visually_distinct():
         assert all(image != previous for previous in images[:index])
 
 
-def test_png_sources_have_real_transparent_corners():
+def test_png_sources_have_real_transparent_corners(gui_application):
     for png_name in _PNG_FILES.values():
         source = QPixmap(str(_ICON_DIR / png_name)).toImage()
         assert not source.isNull(), png_name

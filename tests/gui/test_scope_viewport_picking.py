@@ -46,7 +46,7 @@ def test_selection_rubber_band_is_a_border_only_vtk_overlay() -> None:
     assert all(not actor.GetVisibility() for actor in band._actors)
 
 
-def test_viewport_rubber_band_uses_vtk_display_coordinates() -> None:
+def test_viewport_rubber_band_uses_vtk_display_coordinates(gui_application) -> None:
     _application()
 
     class Plotter:
@@ -83,7 +83,7 @@ def test_viewport_rubber_band_uses_vtk_display_coordinates() -> None:
     viewport.close()
 
 
-def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:
+def test_mesh_scope_pick_signal_emits_typed_mesh_references(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     picked = []
@@ -121,6 +121,7 @@ def test_mesh_scope_pick_signal_emits_typed_mesh_references() -> None:
 
 
 def test_mesh_scope_boundary_topology_is_built_only_for_edge_or_face_mode(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -148,6 +149,7 @@ def test_mesh_scope_boundary_topology_is_built_only_for_edge_or_face_mode(
 
 
 def test_display_projection_is_cached_until_camera_or_dataset_changes(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -202,6 +204,7 @@ def test_display_projection_is_cached_until_camera_or_dataset_changes(
     ),
 )
 def test_geometry_box_selection_intersects_all_entity_kinds_in_both_directions(
+    gui_application,
     monkeypatch,
     mode,
     expected,
@@ -265,6 +268,7 @@ def test_geometry_box_selection_intersects_all_entity_kinds_in_both_directions(
 
 
 def test_mesh_node_box_selection_uses_aligned_point_node_ids(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -304,6 +308,7 @@ def test_mesh_node_box_selection_uses_aligned_point_node_ids(
 
 @pytest.mark.parametrize("mode", ("mesh_edge", "mesh_face", "mesh_body"))
 def test_mesh_box_selection_intersects_edge_face_and_body_without_cell_loops(
+    gui_application,
     monkeypatch,
     mode,
 ) -> None:

@@ -40,6 +40,7 @@ def test_state_field_is_wide_and_keeps_full_status_as_tooltip(gui_application) -
     ),
 )
 def test_selection_field_uses_semantic_entity_names(
+    gui_application,
     mode: str,
     label: str,
 ) -> None:

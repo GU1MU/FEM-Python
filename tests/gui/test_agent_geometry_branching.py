@@ -335,6 +335,7 @@ def test_policy_change_and_headless_branch_fail_closed() -> None:
 
 
 def test_profile_branch_activation_failure_rolls_back_workspace_and_binding(
+    gui_application,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     QApplication.instance() or QApplication([])

@@ -216,6 +216,7 @@ def test_port_success_calls_atomic_session_accept() -> None:
 
 
 def test_main_window_success_projects_exactly_once(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application = QApplication.instance() or QApplication([])

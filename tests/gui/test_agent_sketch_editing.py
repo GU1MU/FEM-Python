@@ -993,7 +993,7 @@ def test_gui_proposal_acceptance_retains_constraint_payload_round_trip() -> None
     assert accepted.constraints == (SketchHorizontalConstraint("K1", "L1"),)
 
 
-def test_new_constraint_edit_uses_phase7_branch_migration_semantics() -> None:
+def test_new_constraint_edit_uses_phase7_branch_migration_semantics(gui_application) -> None:
     QApplication.instance() or QApplication([])
     window = FEMMainWindow()
     window.session.create_native_project_with_first_part(

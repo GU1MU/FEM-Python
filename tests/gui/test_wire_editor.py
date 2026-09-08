@@ -93,7 +93,7 @@ def test_work_plane_intersection_and_snap_preserve_fixed_coordinate() -> None:
     ) == (0.0, 0.0, 0.0)
 
 
-def test_wire_editor_panel_exposes_localized_editing_actions() -> None:
+def test_wire_editor_panel_exposes_localized_editing_actions(gui_application) -> None:
     _application()
     panel = WireEditorPanel(WireDraftController())
 
@@ -119,7 +119,7 @@ def test_wire_editor_panel_exposes_localized_editing_actions() -> None:
     assert panel.members_table.horizontalHeaderItem(2).text() == "终点"
 
 
-def test_viewport_point_is_snapped_again_before_entering_the_draft() -> None:
+def test_viewport_point_is_snapped_again_before_entering_the_draft(gui_application) -> None:
     _application()
     controller = WireDraftController()
     panel = WireEditorPanel(controller)
@@ -174,7 +174,7 @@ def test_single_wire_point_builds_a_snap_aligned_grid_without_an_exception() -> 
     assert expanded_layout.plane_size > sized_layout.plane_size
 
 
-def test_wire_display_size_does_not_change_origin_camera_fit() -> None:
+def test_wire_display_size_does_not_change_origin_camera_fit(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._wire_authoring_active = True
@@ -189,7 +189,7 @@ def test_wire_display_size_does_not_change_origin_camera_fit() -> None:
     viewport.close()
 
 
-def test_wire_viewport_click_applies_enabled_grid_snapping() -> None:
+def test_wire_viewport_click_applies_enabled_grid_snapping(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._wire_authoring_mode = "point"
@@ -211,7 +211,7 @@ def test_wire_viewport_click_applies_enabled_grid_snapping() -> None:
     assert selected == [(0.25, 0.5, 0.0)]
 
 
-def test_point_hover_preview_and_click_share_the_same_snapped_coordinate() -> None:
+def test_point_hover_preview_and_click_share_the_same_snapped_coordinate(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._wire_authoring_mode = "point"
@@ -238,7 +238,7 @@ def test_point_hover_preview_and_click_share_the_same_snapped_coordinate() -> No
     assert selected == [preview]
 
 
-def test_clicking_an_existing_wire_point_immediately_redraws_its_highlight() -> None:
+def test_clicking_an_existing_wire_point_immediately_redraws_its_highlight(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     viewport._wire_authoring_mode = "point"
@@ -257,7 +257,7 @@ def test_clicking_an_existing_wire_point_immediately_redraws_its_highlight() -> 
     assert redraws == [{"render": True}]
 
 
-def test_new_and_table_selected_points_request_viewport_highlighting() -> None:
+def test_new_and_table_selected_points_request_viewport_highlighting(gui_application) -> None:
     _application()
     panel = WireEditorPanel(WireDraftController())
     viewport = FEMViewport()
@@ -277,7 +277,7 @@ def test_new_and_table_selected_points_request_viewport_highlighting() -> None:
     panel.end()
 
 
-def test_coincident_named_points_no_longer_require_a_panel_confirmation() -> None:
+def test_coincident_named_points_no_longer_require_a_panel_confirmation(gui_application) -> None:
     _application()
     controller = WireDraftController()
     controller.add_point("P1", 0.0, 0.0)
@@ -367,7 +367,7 @@ def test_wire_draft_redraw_restores_camera_framing_and_zoom() -> None:
     assert plotter.clipping_resets == 1
 
 
-def test_wire_draft_data_updates_explicitly_preserve_the_current_camera() -> None:
+def test_wire_draft_data_updates_explicitly_preserve_the_current_camera(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     redraws: list[dict[str, bool]] = []
@@ -398,7 +398,7 @@ def test_wire_preview_uses_declared_order_and_face_free_dimension_one_topology()
     assert preview.body_logical_id == "body:domain"
 
 
-def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it() -> None:
+def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it(gui_application) -> None:
     _application()
     fresh = MeshSettingsDialog(None, mesh_dimension=1, suggested_size=0.25)
     assert fresh.formulation_combo.currentData() is None
@@ -419,7 +419,7 @@ def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it
     assert "单元形式" in dialog.control_list.item(3).text()
 
 
-def test_line_mesh_dialog_exposes_localized_element_choices() -> None:
+def test_line_mesh_dialog_exposes_localized_element_choices(gui_application) -> None:
     _application()
     settings = MeshSettings(
         0.25,
@@ -445,7 +445,7 @@ def test_line_mesh_dialog_exposes_localized_element_choices() -> None:
     assert dialog.formulation_combo.currentText() == "Beam2"
 
 
-def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
+def test_truss_mesh_dialog_rejects_legacy_local_controls(gui_application) -> None:
     _application()
     settings = MeshSettings(
         0.25,
@@ -466,7 +466,7 @@ def test_truss_mesh_dialog_rejects_legacy_local_controls() -> None:
     ).isEnabled()
 
 
-def test_main_window_can_commit_a_wire_after_detached_edit(monkeypatch) -> None:
+def test_main_window_can_commit_a_wire_after_detached_edit(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     monkeypatch.setattr(

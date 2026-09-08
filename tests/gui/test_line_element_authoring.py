@@ -92,7 +92,7 @@ def _tree_items(tree: ModelTree) -> list[object]:
     return items
 
 
-def test_line_load_dialog_uses_capability_regions_and_three_components() -> None:
+def test_line_load_dialog_uses_capability_regions_and_three_components(gui_application) -> None:
     _application()
     dialog = LoadDialog(
         ["Step-A"],
@@ -136,7 +136,7 @@ def test_line_load_dialog_uses_capability_regions_and_three_components() -> None
     )
 
 
-def test_line_load_dialog_edits_local_load_and_explains_local_axes() -> None:
+def test_line_load_dialog_edits_local_load_and_explains_local_axes(gui_application) -> None:
     _application()
     current = LineLoad("IMPORTED-BEAM", (2.0, 3.0, 4.0), "local")
     dialog = LoadDialog(
@@ -168,7 +168,7 @@ def test_line_load_dialog_edits_local_load_and_explains_local_axes() -> None:
     assert dialog.definition() == ("Step-A", current)
 
 
-def test_local_line_load_requires_an_enabled_nonblocking_candidate() -> None:
+def test_local_line_load_requires_an_enabled_nonblocking_candidate(gui_application) -> None:
     _application()
     decisions = []
 
@@ -212,7 +212,7 @@ def test_local_line_load_requires_an_enabled_nonblocking_candidate() -> None:
     ).isEnabled()
 
 
-def test_enabled_candidate_with_blocking_diagnostic_is_not_writable() -> None:
+def test_enabled_candidate_with_blocking_diagnostic_is_not_writable(gui_application) -> None:
     _application()
     dialog = LoadDialog(
         ["Step-A"],
@@ -238,7 +238,7 @@ def test_enabled_candidate_with_blocking_diagnostic_is_not_writable() -> None:
     ).isEnabled()
 
 
-def test_boolean_candidate_result_disables_local_line_load_submission() -> None:
+def test_boolean_candidate_result_disables_local_line_load_submission(gui_application) -> None:
     _application()
     dialog = LoadDialog(
         ["Step-A"],
@@ -261,7 +261,7 @@ def test_boolean_candidate_result_disables_local_line_load_submission() -> None:
     assert "AuthoringCapability" in dialog.candidate_diagnostic_label.text()
 
 
-def test_beam_component_labels_support_capability_overrides() -> None:
+def test_beam_component_labels_support_capability_overrides(gui_application) -> None:
     _application()
     displacement = DisplacementDialog(
         ["Step-A"],
@@ -308,7 +308,7 @@ def test_beam_component_labels_support_capability_overrides() -> None:
     ] == ["Mx", "My", "Mz"]
 
 
-def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
+def test_manager_lists_moves_and_deletes_line_loads(gui_application, monkeypatch) -> None:
     _application()
     step_a = static("Step-A")
     step_a.boundaries = (
@@ -373,6 +373,7 @@ def test_manager_lists_moves_and_deletes_line_loads(monkeypatch) -> None:
 
 
 def test_manager_does_not_resave_a_limited_legacy_local_load(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -414,6 +415,7 @@ def test_manager_does_not_resave_a_limited_legacy_local_load(
 
 
 def test_limited_legacy_local_load_can_be_changed_to_global(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -447,7 +449,7 @@ def test_limited_legacy_local_load_can_be_changed_to_global(
     )
 
 
-def test_existing_displacement_output_is_read_only_and_not_deletable() -> None:
+def test_existing_displacement_output_is_read_only_and_not_deletable(gui_application) -> None:
     _application()
     output = OutputRequest("field", "node", ("U", "RF"))
     dialog = OutputRequestDialog(["Step-A"], current=output)
@@ -473,7 +475,7 @@ def test_existing_displacement_output_is_read_only_and_not_deletable() -> None:
     assert manager.values()[0].outputs == (output,)
 
 
-def test_line_load_tree_item_routes_double_click_to_edit() -> None:
+def test_line_load_tree_item_routes_double_click_to_edit(gui_application) -> None:
     _application()
     step = static("Step-A")
     step.line_loads = (

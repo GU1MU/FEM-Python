@@ -219,6 +219,7 @@ def test_stale_review_projects_the_new_typed_binding() -> None:
 
 
 def test_runtime_publish_failures_atomically_drop_provider_cache(
+    gui_application,
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -263,6 +264,7 @@ def test_runtime_publish_failures_atomically_drop_provider_cache(
 
 
 def test_new_agent_session_rebinds_the_active_authoring_context(
+    gui_application,
     tmp_path,
 ) -> None:
     context = AuthoringContext(
@@ -327,6 +329,7 @@ def test_new_agent_session_rebinds_the_active_authoring_context(
 
 
 def test_runtime_binding_invalidation_hides_old_tools_until_rebind(
+    gui_application,
     tmp_path,
 ) -> None:
     current = _context()

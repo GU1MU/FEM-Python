@@ -53,7 +53,7 @@ def test_sweep_preview_is_three_dimensional_and_body_pickable() -> None:
     }
 
 
-def test_sweep_dialog_builds_axis_angle_recipe() -> None:
+def test_sweep_dialog_builds_axis_angle_recipe(gui_application) -> None:
     _application()
     dialog = SweepGeometryDialog(
         _rectangle(),
@@ -75,7 +75,7 @@ def test_sweep_dialog_builds_axis_angle_recipe() -> None:
     dialog.close()
 
 
-def test_sweep_action_commits_beside_extrusion(monkeypatch) -> None:
+def test_sweep_action_commits_beside_extrusion(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     base = _rectangle()
@@ -104,7 +104,7 @@ def test_sweep_action_commits_beside_extrusion(monkeypatch) -> None:
     window.close()
 
 
-def test_rotating_swept_part_passes_occ_single_solid_authentication() -> None:
+def test_rotating_swept_part_passes_occ_single_solid_authentication(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     sweep = RevolvedGeometry(
@@ -129,7 +129,7 @@ def test_rotating_swept_part_passes_occ_single_solid_authentication() -> None:
     window.close()
 
 
-def test_sweep_cancel_preserves_recipe(monkeypatch) -> None:
+def test_sweep_cancel_preserves_recipe(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     base = _rectangle()
@@ -142,7 +142,7 @@ def test_sweep_cancel_preserves_recipe(monkeypatch) -> None:
     window.close()
 
 
-def test_multi_profile_sweep_creates_independent_parts(monkeypatch) -> None:
+def test_multi_profile_sweep_creates_independent_parts(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     sketch = two_profile_sketch()

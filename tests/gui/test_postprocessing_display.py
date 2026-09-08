@@ -104,7 +104,7 @@ def _assert_current_ribbon_selection(
     return selection
 
 
-def test_shape_and_contour_are_independent_for_all_four_states(gui_inp_path):
+def test_shape_and_contour_are_independent_for_all_four_states(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
@@ -128,7 +128,7 @@ def test_shape_and_contour_are_independent_for_all_four_states(gui_inp_path):
     window.close()
 
 
-def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path):
+def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     model = read(gui_inp_path)
@@ -180,6 +180,7 @@ def test_analysis_uses_clean_deformed_displacement_contour_defaults(gui_inp_path
 
 
 def test_ribbon_modules_switch_between_result_contour_and_mesh(
+    gui_application,
     gui_inp_path,
 ) -> None:
     _application()
@@ -238,7 +239,7 @@ def test_ribbon_modules_switch_between_result_contour_and_mesh(
     window.close()
 
 
-def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
+def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
@@ -317,7 +318,7 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_inp_path):
     window.close()
 
 
-def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
+def test_display_settings_dialog_applies_viewport_options(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
     opened: list[DisplaySettingsDialog] = []
@@ -343,7 +344,7 @@ def test_display_settings_dialog_applies_viewport_options(gui_inp_path):
     window.close()
 
 
-def test_contour_dialog_auto_range_uses_current_result_extrema(gui_inp_path):
+def test_contour_dialog_auto_range_uses_current_result_extrema(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
     expected = window.viewport.current_contour_range()
@@ -363,7 +364,7 @@ def test_contour_dialog_auto_range_uses_current_result_extrema(gui_inp_path):
     window.close()
 
 
-def test_overlay_and_contour_style_update_existing_scene_state(gui_inp_path):
+def test_overlay_and_contour_style_update_existing_scene_state(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
     window.set_shape_mode("deformed")
@@ -389,7 +390,7 @@ def test_overlay_and_contour_style_update_existing_scene_state(gui_inp_path):
     window.close()
 
 
-def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
+def test_stress_exposes_no_discarded_position_controls(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 
@@ -426,7 +427,7 @@ def test_stress_exposes_no_discarded_position_controls(gui_inp_path):
     window.close()
 
 
-def test_stress_averaging_threshold_rebuilds_only_visual_field(gui_inp_path):
+def test_stress_averaging_threshold_rebuilds_only_visual_field(gui_application, gui_inp_path):
     _application()
     window = _solved_window(gui_inp_path)
 

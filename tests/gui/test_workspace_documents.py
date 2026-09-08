@@ -9,7 +9,6 @@ from fem_gui.workspace import FEMWorkspace, canonical_path
 
 def test_workspace_allocates_monotonic_ids_and_keeps_path_indexes(
     tmp_path,
-    gui_application,
 ):
     workspace = FEMWorkspace()
     model_path = tmp_path / "models" / "beam.femproj"
@@ -34,7 +33,6 @@ def test_workspace_allocates_monotonic_ids_and_keeps_path_indexes(
 
 def test_workspace_add_activate_remove_and_result_indexes(
     tmp_path,
-    gui_application,
 ):
     workspace = FEMWorkspace()
     model = workspace.add_model(display_name="Model-A")
@@ -60,9 +58,7 @@ def test_workspace_add_activate_remove_and_result_indexes(
     assert workspace.active_document_id is None
 
 
-def test_workspace_projection_update_preserves_identity_and_revision(
-    gui_application,
-):
+def test_workspace_projection_update_preserves_identity_and_revision():
     session = ModelSession()
     initial = session.projection_snapshot()
     workspace = FEMWorkspace()
@@ -82,7 +78,6 @@ def test_workspace_projection_update_preserves_identity_and_revision(
 
 def test_projection_path_changes_keep_duplicate_lookup_and_remove_consistent(
     tmp_path,
-    gui_application,
 ):
     session = ModelSession()
     workspace = FEMWorkspace()
@@ -109,7 +104,7 @@ def test_projection_path_changes_keep_duplicate_lookup_and_remove_consistent(
     assert canonical_path(second_path) not in workspace.model_paths
 
 
-def test_unnamed_result_context_uses_result_identity(gui_application):
+def test_unnamed_result_context_uses_result_identity():
     workspace = FEMWorkspace()
     result = workspace.add_result()
     model = workspace.add_model()
@@ -118,7 +113,7 @@ def test_unnamed_result_context_uses_result_identity(gui_application):
     assert model.display_name == "模型-1"
 
 
-def test_model_default_names_use_model_sequence_across_result_ids(gui_application):
+def test_model_default_names_use_model_sequence_across_result_ids():
     workspace = FEMWorkspace()
     first = workspace.add_model()
     workspace.add_result()
@@ -130,7 +125,6 @@ def test_model_default_names_use_model_sequence_across_result_ids(gui_applicatio
 
 def test_model_default_number_skips_imported_model_names(
     tmp_path,
-    gui_application,
 ):
     workspace = FEMWorkspace()
     workspace.add_model(display_name="模型-1")
@@ -143,7 +137,7 @@ def test_model_default_number_skips_imported_model_names(
     assert workspace.next_model_number == 3
 
 
-def test_model_default_number_reuses_a_deleted_gap(gui_application):
+def test_model_default_number_reuses_a_deleted_gap():
     workspace = FEMWorkspace()
     workspace.add_model(display_name="模型-1")
     removed = workspace.add_model(display_name="模型-2")
@@ -157,7 +151,7 @@ def test_model_default_number_reuses_a_deleted_gap(gui_application):
     assert workspace.next_model_number == 3
 
 
-def test_workspace_disambiguates_real_model_and_result_names(gui_application, tmp_path):
+def test_workspace_disambiguates_real_model_and_result_names(tmp_path):
     workspace = FEMWorkspace()
 
     first_model = workspace.add_model(display_name="模型-1")
@@ -177,7 +171,7 @@ def test_workspace_disambiguates_real_model_and_result_names(gui_application, tm
     assert second_result.display_name == "plate(1)"
 
 
-def test_workspace_job_numbers_are_global_and_never_reused(gui_application):
+def test_workspace_job_numbers_are_global_and_never_reused():
     workspace = FEMWorkspace()
 
     assert workspace.next_job_name() == "作业-1"
@@ -188,7 +182,7 @@ def test_workspace_job_numbers_are_global_and_never_reused(gui_application):
     assert workspace.next_job_name() == "作业-8"
 
 
-def test_idle_contexts_do_not_create_threads(gui_application):
+def test_idle_contexts_do_not_create_threads():
     workspace = FEMWorkspace()
     model = workspace.add_model()
     result = workspace.add_result()

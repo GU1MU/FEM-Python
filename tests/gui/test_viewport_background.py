@@ -62,7 +62,7 @@ def test_background_contrast_follows_average_luminance():
     assert light.foreground_color == "#20262d"
 
 
-def test_background_refresh_reuses_rendered_typed_payload(monkeypatch):
+def test_background_refresh_reuses_rendered_typed_payload(gui_application, monkeypatch):
     _application()
     viewport = FEMViewport()
     rendered_grid = object()
@@ -84,7 +84,7 @@ def test_background_refresh_reuses_rendered_typed_payload(monkeypatch):
     viewport.close()
 
 
-def test_viewport_shutdown_releases_native_backend_once() -> None:
+def test_viewport_shutdown_releases_native_backend_once(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     closed: list[bool] = []

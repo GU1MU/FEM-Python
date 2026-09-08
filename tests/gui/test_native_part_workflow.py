@@ -28,7 +28,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_new_part_dialog_collects_name_and_dimension() -> None:
+def test_new_part_dialog_collects_name_and_dimension(gui_application) -> None:
     _application()
     dialog = GeometryCreationDialog(default_part_name="部件-2")
 
@@ -49,7 +49,7 @@ def test_add_body_action_is_absent_from_production_catalog() -> None:
     )
 
 
-def test_model_tree_uses_color_for_current_part_without_showing_ids() -> None:
+def test_model_tree_uses_color_for_current_part_without_showing_ids(gui_application) -> None:
     _application()
     tree = ModelTree()
     parts = (
@@ -110,7 +110,7 @@ def test_multi_part_preview_carries_namespaced_refs_and_part_ids() -> None:
     }
 
 
-def test_switching_current_part_hides_other_geometry_previews() -> None:
+def test_switching_current_part_hides_other_geometry_previews(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     window._create_native_model("模型-1")
@@ -147,6 +147,7 @@ def test_switching_current_part_hides_other_geometry_previews() -> None:
 
 
 def test_rotating_extruded_strict_part_commits_without_stale_occ_refs(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -203,7 +204,7 @@ def test_rotating_extruded_strict_part_commits_without_stale_occ_refs(
     window.close()
 
 
-def test_finishing_basic_solids_appends_parts(monkeypatch) -> None:
+def test_finishing_basic_solids_appends_parts(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     window._create_native_model("模型-1")
@@ -229,7 +230,7 @@ def test_finishing_basic_solids_appends_parts(monkeypatch) -> None:
     window.close()
 
 
-def test_detached_sketch_and_wire_finish_append_while_cancel_adds_nothing() -> None:
+def test_detached_sketch_and_wire_finish_append_while_cancel_adds_nothing(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     window._create_native_model("模型-1")
@@ -275,6 +276,7 @@ def test_detached_sketch_and_wire_finish_append_while_cancel_adds_nothing() -> N
 
 
 def test_suppressed_tree_part_never_edits_or_deletes_active_part(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -312,7 +314,7 @@ def test_suppressed_tree_part_never_edits_or_deletes_active_part(
     window.close()
 
 
-def test_suppressed_source_parts_can_be_shown_as_unpickable_ghosts() -> None:
+def test_suppressed_source_parts_can_be_shown_as_unpickable_ghosts(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     window._create_native_model("模型-1")

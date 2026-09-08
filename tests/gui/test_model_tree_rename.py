@@ -51,7 +51,7 @@ def _part_reference(logical_id: str) -> LogicalEntityRef:
     return LogicalEntityRef(namespace_part_logical_id("P1", logical_id))
 
 
-def test_native_engineering_rows_offer_routed_rename_action(monkeypatch):
+def test_native_engineering_rows_offer_routed_rename_action(gui_application, monkeypatch):
     _application()
     step = static("Load")
     step.boundaries = (
@@ -147,7 +147,7 @@ def test_native_engineering_rows_offer_routed_rename_action(monkeypatch):
     ]
 
 
-def test_tree_renames_cascade_engineering_name_references(monkeypatch):
+def test_tree_renames_cascade_engineering_name_references(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(

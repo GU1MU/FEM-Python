@@ -80,7 +80,7 @@ def _global_local_control(
     )
 
 
-def test_actions_follow_document_and_result_context(gui_inp_path):
+def test_actions_follow_document_and_result_context(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     assert window.actions["new_native"].text() == "新建模型"
@@ -202,6 +202,7 @@ def test_actions_follow_document_and_result_context(gui_inp_path):
 
 
 def test_startup_new_part_command_initializes_model_before_dialog(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -232,7 +233,7 @@ def test_startup_new_part_command_initializes_model_before_dialog(
     window.close()
 
 
-def test_new_model_unlocks_new_part_commands_until_first_part_exists():
+def test_new_model_unlocks_new_part_commands_until_first_part_exists(gui_application):
     _application()
     window = FEMMainWindow()
 
@@ -256,6 +257,7 @@ def test_new_model_unlocks_new_part_commands_until_first_part_exists():
 
 
 def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -294,6 +296,7 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
 
 
 def test_delete_model_requires_confirmation_and_removes_active_model(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -368,6 +371,7 @@ def test_delete_model_requires_confirmation_and_removes_active_model(
 
 
 def test_delete_model_preserves_successful_results_as_result_documents(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ):
@@ -416,6 +420,7 @@ def test_delete_model_preserves_successful_results_as_result_documents(
 
 
 def test_project_save_ui_follows_can_save_in_all_session_states(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ) -> None:
@@ -504,7 +509,7 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
     window.close()
 
 
-def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
+def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog(gui_application):
     _application()
     window = FEMMainWindow()
     model = SimpleNamespace(
@@ -541,6 +546,7 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog():
     ),
 )
 def test_analysis_create_actions_do_not_forward_qt_checked(
+    gui_application,
     monkeypatch,
     gui_inp_path,
     action_name,
@@ -577,6 +583,7 @@ def test_analysis_create_actions_do_not_forward_qt_checked(
 
 
 def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
+    gui_application,
     gui_inp_path,
 ):
     _application()
@@ -609,7 +616,7 @@ def test_generated_model_uses_the_shared_install_path_without_enabling_reload(
     window.close()
 
 
-def test_native_scope_dependent_actions_require_meshing():
+def test_native_scope_dependent_actions_require_meshing(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("Plate", 2.0, 1.0), "矩形")
@@ -640,7 +647,7 @@ def test_native_scope_dependent_actions_require_meshing():
     window.close()
 
 
-def test_truss_member_policy_disables_only_local_mesh_control():
+def test_truss_member_policy_disables_only_local_mesh_control(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -687,7 +694,7 @@ def test_truss_member_policy_disables_only_local_mesh_control():
     window.close()
 
 
-def test_window_title_shows_source_and_unsaved_state(gui_inp_path):
+def test_window_title_shows_source_and_unsaved_state(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
     assert window.windowTitle() == "有限元分析"
@@ -714,6 +721,7 @@ def test_window_title_shows_source_and_unsaved_state(gui_inp_path):
 
 
 def test_boundary_action_does_not_open_scope_dialog_before_meshing(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -784,7 +792,7 @@ def test_boundary_action_does_not_open_scope_dialog_before_meshing(
     ),
     ids=("move-parameters", "rotate-parameters"),
 )
-def test_geometry_parameter_edits_preserve_topology_references(before, after):
+def test_geometry_parameter_edits_preserve_topology_references(gui_application, before, after):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(before, "变换后的")
@@ -830,7 +838,7 @@ def test_geometry_parameter_edits_preserve_topology_references(before, after):
     window.close()
 
 
-def test_geometry_topology_change_clears_invalid_references():
+def test_geometry_topology_change_clears_invalid_references(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -866,7 +874,7 @@ def test_geometry_topology_change_clears_invalid_references():
     window.close()
 
 
-def test_geometry_topology_change_preserves_topology_independent_steps():
+def test_geometry_topology_change_preserves_topology_independent_steps(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -900,7 +908,7 @@ def test_geometry_topology_change_preserves_topology_independent_steps():
     window.close()
 
 
-def test_geometry_topology_change_invalidates_region_target_step():
+def test_geometry_topology_change_invalidates_region_target_step(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -941,7 +949,7 @@ def test_geometry_topology_change_invalidates_region_target_step():
     window.close()
 
 
-def test_cancelled_discard_confirmation_keeps_the_native_project(monkeypatch):
+def test_cancelled_discard_confirmation_keeps_the_native_project(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     window._apply_session_delta(window.session.new_native_project())
@@ -962,7 +970,7 @@ def test_cancelled_discard_confirmation_keeps_the_native_project(monkeypatch):
     window.close()
 
 
-def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
+def test_geometry_ctrl_selection_accumulates_same_kind_entities(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -988,6 +996,7 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(monkeypatch):
 
 
 def test_switching_geometry_selection_kind_clears_incompatible_selection(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -1011,6 +1020,7 @@ def test_switching_geometry_selection_kind_clears_incompatible_selection(
 
 
 def test_switching_from_fem_to_geometry_selection_clears_stale_highlight(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -1034,6 +1044,7 @@ def test_switching_from_fem_to_geometry_selection_clears_stale_highlight(
 
 
 def test_switching_mesh_selection_filter_invalidates_previous_scope(
+    gui_application,
     gui_inp_path,
 ):
     _application()
@@ -1054,7 +1065,7 @@ def test_switching_mesh_selection_filter_invalidates_previous_scope(
     window.close()
 
 
-def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
+def test_local_mesh_control_applies_once_to_all_selected_edges(gui_application, monkeypatch):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -1097,7 +1108,7 @@ def test_local_mesh_control_applies_once_to_all_selected_edges(monkeypatch):
     window.close()
 
 
-def test_named_region_default_names_do_not_expose_topology_ids():
+def test_named_region_default_names_do_not_expose_topology_ids(gui_application):
     _application()
     window = FEMMainWindow()
     window._set_native_geometry(
@@ -1115,7 +1126,7 @@ def test_named_region_default_names_do_not_expose_topology_ids():
     window.close()
 
 
-def test_mesh_scope_ctrl_pick_toggles_selected_entity(monkeypatch) -> None:
+def test_mesh_scope_ctrl_pick_toggles_selected_entity(gui_application, monkeypatch) -> None:
     _application()
     window = FEMMainWindow()
     first = MeshEntityRef.node(1)
@@ -1134,6 +1145,7 @@ def test_mesh_scope_ctrl_pick_toggles_selected_entity(monkeypatch) -> None:
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -1207,6 +1219,7 @@ def test_former_builtin_region_name_can_be_created_as_a_mesh_scope(
 
 
 def test_named_region_rename_updates_analysis_and_section_references(
+    gui_application,
     monkeypatch,
 ):
     _application()

@@ -69,6 +69,7 @@ class _Plotter(QWidget):
 
 
 def test_hover_reuses_preselection_for_the_same_semantic_target(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -116,7 +117,7 @@ def test_hover_reuses_preselection_for_the_same_semantic_target(
     viewport.close()
 
 
-def test_mesh_body_hover_groups_elements_by_part_owner(monkeypatch) -> None:
+def test_mesh_body_hover_groups_elements_by_part_owner(gui_application, monkeypatch) -> None:
     _application()
     viewport = FEMViewport()
     viewport._plotter = SimpleNamespace(
@@ -214,7 +215,7 @@ def _viewport() -> tuple[FEMViewport, _Plotter]:
     return viewport, plotter
 
 
-def test_trackball_projects_center_and_outer_ring() -> None:
+def test_trackball_projects_center_and_outer_ring(gui_application) -> None:
     viewport, _plotter = _viewport()
 
     assert viewport._trackball_point(400.0, 300.0) == pytest.approx((0.0, 0.0, 1.0))
@@ -224,7 +225,7 @@ def test_trackball_projects_center_and_outer_ring() -> None:
     assert outer[2] == pytest.approx(0.0)
 
 
-def test_ctrl_alt_left_drag_rotates_freely_around_focal_point() -> None:
+def test_ctrl_alt_left_drag_rotates_freely_around_focal_point(gui_application) -> None:
     viewport, plotter = _viewport()
     modifiers = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
     press = _MouseEvent(
@@ -252,7 +253,7 @@ def test_ctrl_alt_left_drag_rotates_freely_around_focal_point() -> None:
     assert plotter.render_count == 1
 
 
-def test_trackball_outer_ring_rolls_camera_without_moving_focal_distance() -> None:
+def test_trackball_outer_ring_rolls_camera_without_moving_focal_distance(gui_application) -> None:
     viewport, plotter = _viewport()
     viewport._trackball_vector = viewport._trackball_point(800.0, 300.0)
     original_position = plotter.camera.position.copy()
@@ -263,7 +264,7 @@ def test_trackball_outer_ring_rolls_camera_without_moving_focal_distance() -> No
     assert not np.allclose(plotter.camera.up, (0.0, 1.0, 0.0))
 
 
-def test_model_clear_resets_partial_mouse_gesture() -> None:
+def test_model_clear_resets_partial_mouse_gesture(gui_application) -> None:
     viewport, _plotter = _viewport()
     viewport._selection_press_position = (10.0, 20.0)
     viewport._selection_dragged = True
@@ -278,7 +279,7 @@ def test_model_clear_resets_partial_mouse_gesture() -> None:
     assert viewport._trackball_vector is None
 
 
-def test_fit_uses_stable_model_bounds_and_renders_once() -> None:
+def test_fit_uses_stable_model_bounds_and_renders_once(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     plotter = _FitPlotter()
@@ -301,7 +302,7 @@ def test_fit_uses_stable_model_bounds_and_renders_once() -> None:
     assert plotter.render_count == 2
 
 
-def test_fit_prefers_deformed_result_bounds_over_base_grid() -> None:
+def test_fit_prefers_deformed_result_bounds_over_base_grid(gui_application) -> None:
     _application()
     viewport = FEMViewport()
     plotter = _FitPlotter()
@@ -321,7 +322,7 @@ def test_fit_prefers_deformed_result_bounds_over_base_grid() -> None:
     ]
 
 
-def test_child_widget_mouse_move_uses_plotter_coordinates() -> None:
+def test_child_widget_mouse_move_uses_plotter_coordinates(gui_application) -> None:
     viewport, plotter = _viewport()
     child = QWidget(plotter)
     child.move(100, 50)
@@ -401,7 +402,7 @@ def _many_beam_model(count: int) -> FEMModel:
     )
 
 
-def test_selected_beam_frame_preview_is_cached_and_glyph_bounded() -> None:
+def test_selected_beam_frame_preview_is_cached_and_glyph_bounded(gui_application) -> None:
     _application()
     model = _many_beam_model(BEAM_FRAME_GLYPH_LIMIT + 11)
     geometry = build_model_geometry(model)

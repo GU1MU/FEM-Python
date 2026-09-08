@@ -56,7 +56,7 @@ def _application() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_public_command_catalog_is_complete() -> None:
+def test_public_command_catalog_is_complete(gui_application) -> None:
     _application()
     window = FEMMainWindow()
 
@@ -70,7 +70,7 @@ def test_public_command_catalog_is_complete() -> None:
     window.close()
 
 
-def test_synchronous_public_edit_rejects_stale_revision_without_mutation() -> None:
+def test_synchronous_public_edit_rejects_stale_revision_without_mutation(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     require_accepted(window.new_native_project(NewNativeProjectCommand()))
@@ -107,7 +107,7 @@ def test_synchronous_public_edit_rejects_stale_revision_without_mutation() -> No
     window.close()
 
 
-def test_pending_public_command_is_the_busy_gate_and_completion_handle() -> None:
+def test_pending_public_command_is_the_busy_gate_and_completion_handle(gui_application) -> None:
     _application()
     window = FEMMainWindow()
     receipt = window.open_inp_path(FIXTURES / "truss2_tension.inp")
@@ -131,7 +131,7 @@ def test_pending_public_command_is_the_busy_gate_and_completion_handle() -> None
     window.close()
 
 
-def test_public_inp_import_accepts_gb18030_comments(tmp_path) -> None:
+def test_public_inp_import_accepts_gb18030_comments(gui_application, tmp_path) -> None:
     _application()
     source = FIXTURES / "truss2_tension.inp"
     path = tmp_path / "gb18030_truss.inp"

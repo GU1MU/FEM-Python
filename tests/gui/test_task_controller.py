@@ -132,7 +132,7 @@ def _start(
     return task_id
 
 
-def test_real_worker_boundary_runs_off_controller_thread() -> None:
+def test_real_worker_boundary_runs_off_controller_thread(gui_application) -> None:
     application = QApplication.instance() or QApplication([])
     controller = BackgroundTaskController()
     workload_threads: list[bool] = []

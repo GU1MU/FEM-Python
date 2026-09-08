@@ -66,6 +66,7 @@ def _window_with_imported_model(
 
 
 def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _window_with_imported_model()
@@ -119,6 +120,7 @@ def test_definition_edit_rebinds_existing_viewport_without_rebuilding_actors(
 
 
 def test_model_analysis_module_switches_reuse_the_current_viewport_scene(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _window_with_imported_model()
@@ -191,6 +193,7 @@ def _materialize_task(task):
 
 
 def test_async_import_acceptance_and_projection_do_not_copy_on_gui_thread(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -238,6 +241,7 @@ def test_async_import_acceptance_and_projection_do_not_copy_on_gui_thread(
 
 
 def test_result_and_run_status_deltas_reuse_trusted_gui_projection(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _window_with_imported_model()
@@ -300,7 +304,7 @@ def test_result_and_run_status_deltas_reuse_trusted_gui_projection(
     window.close()
 
 
-def test_one_delta_projects_result_to_every_gui_consumer() -> None:
+def test_one_delta_projects_result_to_every_gui_consumer(gui_application) -> None:
     window = _window_with_imported_model()
 
     run_id = _install_successful_result(window)
@@ -340,7 +344,7 @@ def test_one_delta_projects_result_to_every_gui_consumer() -> None:
     window.close()
 
 
-def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() -> None:
+def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields(gui_application) -> None:
     window = _window_with_imported_model(with_displacement_output=True)
     run_id = _install_successful_result(window)
     provider_before = window.result_provider
@@ -403,6 +407,7 @@ def test_same_run_generation_rebuilds_projection_and_preserves_ready_fields() ->
 
 
 def test_hidden_run_materialization_does_not_replace_displayed_actor(
+    gui_application,
     monkeypatch,
 ) -> None:
     window = _window_with_imported_model(with_displacement_output=True)
@@ -465,7 +470,7 @@ def test_hidden_run_materialization_does_not_replace_displayed_actor(
     window.close()
 
 
-def test_artifact_change_clears_display_but_retains_historical_result() -> None:
+def test_artifact_change_clears_display_but_retains_historical_result(gui_application) -> None:
     window = _window_with_imported_model()
     old_run_id = _install_successful_result(window)
     old_artifact_id = window.document.artifact.artifact_id
@@ -498,7 +503,7 @@ def test_artifact_change_clears_display_but_retains_historical_result() -> None:
     window.close()
 
 
-def test_boundary_edit_keeps_old_result_and_allows_new_job(monkeypatch) -> None:
+def test_boundary_edit_keeps_old_result_and_allows_new_job(gui_application, monkeypatch) -> None:
     window = _window_with_imported_model(with_displacement_output=True)
     old_run_id = _install_successful_result(window, run_name="Job-1")
     old_artifact_id = window.document.artifact.artifact_id
@@ -596,6 +601,7 @@ def test_boundary_edit_keeps_old_result_and_allows_new_job(monkeypatch) -> None:
 
 
 def test_assignment_edit_replaces_the_selected_index_through_session(
+    gui_application,
     monkeypatch,
     gui_inp_path,
 ) -> None:

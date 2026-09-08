@@ -82,7 +82,7 @@ def _first_leaf(item, selection=None):
     return None
 
 
-def test_result_tree_appends_model_and_archive_roots_incrementally(monkeypatch) -> None:
+def test_result_tree_appends_model_and_archive_roots_incrementally(gui_application, monkeypatch) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     projection = _projection(catalog, "A")
@@ -111,7 +111,7 @@ def test_result_tree_appends_model_and_archive_roots_incrementally(monkeypatch) 
     assert tree.roots[model_key] is unchanged
 
 
-def test_result_field_items_carry_document_run_source_and_typed_selection() -> None:
+def test_result_field_items_carry_document_run_source_and_typed_selection(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     tree.upsert_model_runs(7, _projection(catalog), catalog=catalog)
@@ -137,7 +137,7 @@ def test_result_field_items_carry_document_run_source_and_typed_selection() -> N
     ]
 
 
-def test_result_root_removal_is_indexed_and_preserves_other_documents() -> None:
+def test_result_root_removal_is_indexed_and_preserves_other_documents(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     projection = _projection(catalog)
@@ -149,7 +149,7 @@ def test_result_root_removal_is_indexed_and_preserves_other_documents() -> None:
     assert not tree.remove_archive(2)
 
 
-def test_result_run_item_emits_routed_activation() -> None:
+def test_result_run_item_emits_routed_activation(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     tree.upsert_model_runs(19, _projection(catalog), catalog=catalog)
@@ -163,7 +163,7 @@ def test_result_run_item_emits_routed_activation() -> None:
     assert activated == [(19, catalog.source.run_id)]
 
 
-def test_one_model_projects_each_successful_job_as_a_top_level_root() -> None:
+def test_one_model_projects_each_successful_job_as_a_top_level_root(gui_application) -> None:
     tree = ResultTree()
     catalog = make_result_catalog()
     first = _projection(catalog, "Model-1").runs[0]
@@ -184,7 +184,7 @@ def test_one_model_projects_each_successful_job_as_a_top_level_root() -> None:
     )
 
 
-def test_model_without_successful_jobs_has_no_result_root() -> None:
+def test_model_without_successful_jobs_has_no_result_root(gui_application) -> None:
     tree = ResultTree()
     projection = SimpleNamespace(model_name="Model-1", runs=())
 
@@ -193,7 +193,7 @@ def test_model_without_successful_jobs_has_no_result_root() -> None:
     assert tree.topLevelItem(0).text(0) == "尚无分析结果"
 
 
-def test_same_selection_is_scoped_to_document_and_source() -> None:
+def test_same_selection_is_scoped_to_document_and_source(gui_application) -> None:
     tree = ResultTree()
     first = make_result_catalog()
     second = replace(
@@ -224,6 +224,7 @@ def test_same_selection_is_scoped_to_document_and_source() -> None:
 
 
 def test_main_window_appends_three_results_and_duplicate_is_index_hit(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -293,7 +294,7 @@ def test_main_window_appends_three_results_and_duplicate_is_index_hit(
         window.close()
 
 
-def test_main_window_failed_archive_open_is_atomic(tmp_path: Path, monkeypatch) -> None:
+def test_main_window_failed_archive_open_is_atomic(gui_application, tmp_path: Path, monkeypatch) -> None:
     window = FEMMainWindow()
     try:
         before_context = window.workspace.active_document_id
@@ -320,6 +321,7 @@ def test_main_window_failed_archive_open_is_atomic(tmp_path: Path, monkeypatch) 
 
 
 def test_result_presentation_state_isolated_across_warm_a_b_a_switch(
+    gui_application,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -395,6 +397,7 @@ def test_result_presentation_state_isolated_across_warm_a_b_a_switch(
 
 
 def test_closing_external_result_releases_cache_and_preserves_other_root(
+    gui_application,
     tmp_path: Path,
 ) -> None:
     window = FEMMainWindow()
@@ -421,7 +424,7 @@ def test_closing_external_result_releases_cache_and_preserves_other_root(
         window.close()
 
 
-def test_main_window_run_route_is_owned_by_document(monkeypatch) -> None:
+def test_main_window_run_route_is_owned_by_document(gui_application, monkeypatch) -> None:
     window = FEMMainWindow()
     try:
         context = window.workspace.add_model(display_name="Model-B")

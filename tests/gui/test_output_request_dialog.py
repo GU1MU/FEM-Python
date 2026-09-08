@@ -71,6 +71,7 @@ def _output_capability(
     ),
 )
 def test_output_request_uses_only_published_candidate_order_and_dto(
+    gui_application,
     family,
 ):
     candidates = _output_candidates(family)
@@ -116,7 +117,7 @@ def test_output_request_uses_only_published_candidate_order_and_dto(
     )
 
 
-def test_output_request_discards_parsed_inp_details():
+def test_output_request_discards_parsed_inp_details(gui_application):
     current = OutputRequest(
         "history",
         "preselect",
@@ -158,7 +159,7 @@ def test_output_request_discards_parsed_inp_details():
     )
 
 
-def test_output_request_dialog_shows_existing_imported_requests_by_step():
+def test_output_request_dialog_shows_existing_imported_requests_by_step(gui_application):
     candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
     dialog = OutputRequestDialog(
         ["Load", "Empty"],
@@ -192,7 +193,7 @@ def test_output_request_dialog_shows_existing_imported_requests_by_step():
     )
 
 
-def test_output_request_dialog_does_not_select_history_variables_as_fields():
+def test_output_request_dialog_does_not_select_history_variables_as_fields(gui_application):
     candidates = _output_candidates(ResultModelFamily.PLANE_CONTINUUM)
     dialog = OutputRequestDialog(
         ["Load"],
@@ -216,6 +217,7 @@ def test_output_request_dialog_does_not_select_history_variables_as_fields():
 
 
 def test_output_view_is_read_only_and_preserves_unsupported_request(
+    gui_application,
     monkeypatch,
 ) -> None:
     output = OutputRequest(
@@ -262,7 +264,7 @@ def test_output_view_is_read_only_and_preserves_unsupported_request(
     assert manager.values()[0].outputs[0] == output
 
 
-def test_output_delete_uses_independent_capability_and_protects_initial() -> None:
+def test_output_delete_uses_independent_capability_and_protects_initial(gui_application) -> None:
     output = OutputRequest("history", "preselect", ("Future",))
     load = static("Load")
     load.outputs = (output,)
@@ -351,7 +353,7 @@ def test_output_delete_uses_independent_capability_and_protects_initial() -> Non
     assert protected.values()[0].outputs == (output,)
 
 
-def test_output_dialog_returns_selected_candidate_definition():
+def test_output_dialog_returns_selected_candidate_definition(gui_application):
     candidates = _output_candidates()
     output_dialog = OutputRequestDialog(
         ["Load"],

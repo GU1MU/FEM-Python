@@ -47,7 +47,7 @@ def _items(tree: ModelTree):
     return values
 
 
-def test_model_tree_uses_agent_chat_scrollbar_style():
+def test_model_tree_uses_agent_chat_scrollbar_style(gui_application):
     _application()
     tree = ModelTree()
 
@@ -60,7 +60,7 @@ def test_model_tree_uses_agent_chat_scrollbar_style():
     assert "agent_chat_scroll_down.svg" in stylesheet
 
 
-def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_inp_path):
+def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_application, gui_inp_path):
     _application()
     model = read(gui_inp_path)
     tree = ModelTree()
@@ -92,7 +92,7 @@ def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_inp_path):
     assert section.text(0) == "截面 1（平面应力）"
 
 
-def test_model_tree_rebuild_preserves_navigation_state(gui_inp_path):
+def test_model_tree_rebuild_preserves_navigation_state(gui_application, gui_inp_path):
     _application()
     model = read(gui_inp_path)
     tree = ModelTree()
@@ -150,7 +150,7 @@ def test_model_tree_rebuild_preserves_navigation_state(gui_inp_path):
     assert tree.currentItem().data(0, ROLE_KEY) == material_key
 
 
-def test_node_and_element_selection_safely_selects_mesh_summary(gui_inp_path):
+def test_node_and_element_selection_safely_selects_mesh_summary(gui_application, gui_inp_path):
     _application()
     tree = ModelTree()
     tree.set_model(read(gui_inp_path))
@@ -161,7 +161,7 @@ def test_node_and_element_selection_safely_selects_mesh_summary(gui_inp_path):
     assert tree.currentItem().data(0, ROLE_KIND) == "mesh"
 
 
-def test_tree_item_count_does_not_scale_with_node_or_element_count():
+def test_tree_item_count_does_not_scale_with_node_or_element_count(gui_application):
     _application()
     model = SimpleNamespace(
         name="大型模型",
@@ -176,7 +176,7 @@ def test_tree_item_count_does_not_scale_with_node_or_element_count():
     assert tree.topLevelItem(0).text(0) == "大型模型"
 
 
-def test_tree_click_and_double_click_keep_object_signals(gui_inp_path):
+def test_tree_click_and_double_click_keep_object_signals(gui_application, gui_inp_path):
     _application()
     tree = ModelTree()
     tree.set_model(read(gui_inp_path))
@@ -198,6 +198,7 @@ def test_tree_click_and_double_click_keep_object_signals(gui_inp_path):
 
 
 def test_boundary_and_load_context_menus_emit_delete_request(
+    gui_application,
     gui_inp_path,
     monkeypatch,
 ):
@@ -255,7 +256,7 @@ def test_boundary_and_load_context_menus_emit_delete_request(
     assert deleted[-1] == ("cload", load.data(0, ROLE_KEY))
 
 
-def test_runnable_steps_show_boundaries_inherited_from_every_previous_step():
+def test_runnable_steps_show_boundaries_inherited_from_every_previous_step(gui_application):
     _application()
     model = make_two_step_static_pull_truss_model()
     model.steps[1].boundaries = (
@@ -308,7 +309,7 @@ def test_runnable_steps_show_boundaries_inherited_from_every_previous_step():
     assert informed == [("boundary", (0, 0))]
 
 
-def test_line_load_is_a_regular_load_tree_item():
+def test_line_load_is_a_regular_load_tree_item(gui_application):
     _application()
     step = SimpleNamespace(
         name="Load",
@@ -336,7 +337,7 @@ def test_line_load_is_a_regular_load_tree_item():
     assert not line_load.icon(0).isNull()
 
 
-def test_output_request_tree_items_show_only_variables():
+def test_output_request_tree_items_show_only_variables(gui_application):
     _application()
     step = AnalysisStep(
         "Load",
@@ -381,6 +382,7 @@ def test_output_request_tree_items_show_only_variables():
 
 
 def test_model_tree_hides_output_requests_without_executable_projection(
+    gui_application,
     gui_inp_path,
 ):
     _application()
@@ -412,7 +414,7 @@ def test_model_tree_hides_output_requests_without_executable_projection(
     )
 
 
-def test_section_tree_uses_cae_labels_instead_of_backend_identifiers():
+def test_section_tree_uses_cae_labels_instead_of_backend_identifiers(gui_application):
     _application()
     model = SimpleNamespace(
         name="Section labels",
@@ -441,7 +443,7 @@ def test_section_tree_uses_cae_labels_instead_of_backend_identifiers():
     assert "截面 2（梁截面）" in sections
 
 
-def test_native_geometry_tree_is_shallow_model_part_feature_history():
+def test_native_geometry_tree_is_shallow_model_part_feature_history(gui_application):
     _application()
     tree = ModelTree()
 
@@ -462,6 +464,7 @@ def test_native_geometry_tree_is_shallow_model_part_feature_history():
 
 
 def test_native_model_part_and_feature_menus_omit_highlight_and_route_actions(
+    gui_application,
     monkeypatch,
 ):
     _application()
@@ -530,7 +533,7 @@ def test_native_model_part_and_feature_menus_omit_highlight_and_route_actions(
     assert highlighted == []
 
 
-def test_gravity_is_a_regular_load_tree_item(gui_inp_path):
+def test_gravity_is_a_regular_load_tree_item(gui_application, gui_inp_path):
     _application()
     model = read(gui_inp_path)
     step_index = next(
@@ -553,7 +556,7 @@ def test_gravity_is_a_regular_load_tree_item(gui_inp_path):
     assert not gravity.icon(0).isNull()
 
 
-def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):
+def test_native_meshed_tree_keeps_the_part_feature_history(gui_application, gui_inp_path):
     _application()
     tree = ModelTree()
     tree.set_model(
@@ -574,7 +577,7 @@ def test_native_meshed_tree_keeps_the_part_feature_history(gui_inp_path):
     assert not mesh.isExpanded()
 
 
-def test_assignment_nodes_show_orientation_and_route_edit_by_index():
+def test_assignment_nodes_show_orientation_and_route_edit_by_index(gui_application):
     _application()
     model = SimpleNamespace(
         name="Beam assignments",

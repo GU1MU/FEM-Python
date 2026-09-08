@@ -123,7 +123,7 @@ def test_settings_dto_enforces_exact_types_and_display_modes() -> None:
         )
 
 
-def test_dialog_requires_catalog_selection_membership_and_component() -> None:
+def test_dialog_requires_catalog_selection_membership_and_component(gui_application) -> None:
     catalog = _catalog()
 
     with pytest.raises(TypeError, match="ResultCatalog"):
@@ -166,7 +166,7 @@ def test_dialog_requires_catalog_selection_membership_and_component() -> None:
     dialog.close()
 
 
-def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
+def test_catalog_and_descriptor_order_keep_complete_typed_identity(gui_application) -> None:
     catalog = _catalog()
     dialog = _dialog(catalog)
 
@@ -211,7 +211,7 @@ def test_catalog_and_descriptor_order_keep_complete_typed_identity() -> None:
     dialog.close()
 
 
-def test_ready_and_lazy_apply_emit_complete_typed_settings() -> None:
+def test_ready_and_lazy_apply_emit_complete_typed_settings(gui_application) -> None:
     catalog = _catalog()
     dialog = _dialog(catalog)
     emitted: list[TypedResultDisplaySettings] = []
@@ -246,7 +246,7 @@ def test_ready_and_lazy_apply_emit_complete_typed_settings() -> None:
     dialog.close()
 
 
-def test_unavailable_field_shows_diagnostic_and_cannot_submit() -> None:
+def test_unavailable_field_shows_diagnostic_and_cannot_submit(gui_application) -> None:
     catalog = _catalog()
     dialog = _dialog(catalog)
     emitted: list[TypedResultDisplaySettings] = []

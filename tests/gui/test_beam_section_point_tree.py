@@ -19,7 +19,7 @@ from tests.helpers.beam_section_builders import (
     ("section_type", "dimensions"), _SECTION_CASES,
     ids=["rectangle", "solid-circle", "hollow-circle"],
 )
-def test_archived_section_points_and_resultants_have_chinese_tree_labels(section_type, dimensions, tmp_path: Path):
+def test_archived_section_points_and_resultants_have_chinese_tree_labels(gui_application, section_type, dimensions, tmp_path: Path):
     application = QApplication.instance() or QApplication([])
     _, provider, outcome = _solve_and_request_stress(section_type, dimensions)
     archive_path = tmp_path / "beam.femres"

@@ -82,6 +82,7 @@ def test_imported_mesh_topology_has_stable_parts_and_whole_edges() -> None:
 
 
 def test_mesh_modules_defer_and_share_imported_topology_inference(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -124,6 +125,7 @@ def test_mesh_modules_defer_and_share_imported_topology_inference(
 
 
 def test_large_mesh_topology_is_prepared_before_enabling_edge_picks(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -180,7 +182,7 @@ def test_large_mesh_topology_is_prepared_before_enabling_edge_picks(
     window.close()
 
 
-def test_analysis_node_selection_does_not_materialize_scope_topology() -> None:
+def test_analysis_node_selection_does_not_materialize_scope_topology(gui_application) -> None:
     _application()
     model = _two_imported_parts_model()
     window = FEMMainWindow()
@@ -266,6 +268,7 @@ def test_native_mesh_topology_uses_exact_catalog_and_numeric_part_order() -> Non
 
 
 def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
+    gui_application,
     monkeypatch,
 ) -> None:
     _application()
@@ -357,7 +360,7 @@ def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
     window.close()
 
 
-def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(monkeypatch) -> None:
+def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(gui_application, monkeypatch) -> None:
     _application()
     model = _two_imported_parts_model()
     window = FEMMainWindow()
@@ -390,7 +393,7 @@ def test_mesh_box_ctrl_toggles_each_whole_topology_group_once(monkeypatch) -> No
     window.close()
 
 
-def test_mesh_body_box_expands_shared_group_once(monkeypatch) -> None:
+def test_mesh_body_box_expands_shared_group_once(gui_application, monkeypatch) -> None:
     _application()
     model = _two_imported_parts_model()
     window = FEMMainWindow()
@@ -453,7 +456,7 @@ def test_large_body_box_groups_by_owner_without_per_element_expansion() -> None:
     assert groups == (group,)
 
 
-def test_result_model_view_expands_face_and_body_selection(monkeypatch) -> None:
+def test_result_model_view_expands_face_and_body_selection(gui_application, monkeypatch) -> None:
     _application()
     model = _two_imported_parts_model()
     topology = build_mesh_selection_topology(model)
@@ -477,7 +480,7 @@ def test_result_model_view_expands_face_and_body_selection(monkeypatch) -> None:
     window.close()
 
 
-def test_guided_scope_cancel_restores_module_selection_context() -> None:
+def test_guided_scope_cancel_restores_module_selection_context(gui_application) -> None:
     _application()
     model = _two_imported_parts_model()
     window = FEMMainWindow()
@@ -513,7 +516,7 @@ def test_guided_scope_cancel_restores_module_selection_context() -> None:
     window.close()
 
 
-def test_close_model_clears_contextual_selection_and_viewport_pick_state() -> None:
+def test_close_model_clears_contextual_selection_and_viewport_pick_state(gui_application) -> None:
     _application()
     model = _two_imported_parts_model()
     window = FEMMainWindow()

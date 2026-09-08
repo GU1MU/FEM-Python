@@ -512,6 +512,7 @@ def test_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
 
 
 def test_main_window_projects_one_accepted_geometry_refresh(
+    gui_application,
     monkeypatch,
 ) -> None:
     QApplication.instance() or QApplication([])
