@@ -85,7 +85,7 @@ class GeometryPreview:
                 logical_ids = (None,) * len(cells)
                 object.__setattr__(self, logical_name, logical_ids)
             if len(logical_ids) != len(cells):
-                raise ValueError(f"{logical_name} 必须与对应显示实体数量一致")
+                raise ValueError(f"{logical_name} count must match the display entities")
             for logical_id in logical_ids:
                 if logical_id is not None:
                     LogicalEntityRef(logical_id)
@@ -99,18 +99,18 @@ class GeometryPreview:
                 logical_ids = (self.body_logical_id,) * len(cells)
                 object.__setattr__(self, logical_name, logical_ids)
             if len(logical_ids) != len(cells):
-                raise ValueError(f"{logical_name} 必须与对应显示实体数量一致")
+                raise ValueError(f"{logical_name} count must match the display entities")
             for logical_id in logical_ids:
                 if logical_id is not None:
                     reference = LogicalEntityRef(logical_id)
                     if reference.kind != "body":
                         raise ValueError(
-                            f"{logical_name} 只能包含 body logical IDs"
+                            f"{logical_name} must contain only body logical IDs"
                         )
         if self.body_logical_id is not None:
             reference = LogicalEntityRef(self.body_logical_id)
             if reference.kind != "body":
-                raise ValueError("body_logical_id 必须引用 body")
+                raise ValueError("body_logical_id must reference a body")
         for part_name, cells in (
             ("face_part_ids", self.faces),
             ("edge_part_ids", self.edges),
@@ -121,7 +121,7 @@ class GeometryPreview:
                 part_ids = (None,) * len(cells)
                 object.__setattr__(self, part_name, part_ids)
             if len(part_ids) != len(cells):
-                raise ValueError(f"{part_name} 必须与对应显示实体数量一致")
+                raise ValueError(f"{part_name} count must match the display entities")
             for part_id in part_ids:
                 if part_id is not None:
                     normalize_part_id(part_id)
@@ -155,12 +155,12 @@ def _validate_preview_logical_ids(
             entity = topology.entity(logical_id)
         except KeyError as exc:
             raise RuntimeError(
-                f"{recipe_type} 预览引用了 catalog 中不存在的 "
+                f"{recipe_type} preview references a missing catalog "
                 f"{kind} logical_id: {logical_id}"
             ) from exc
         if entity.kind != kind or not entity.selectable:
             raise RuntimeError(
-                f"{recipe_type} 预览引用了不可选的 {kind} "
+                f"{recipe_type} preview references an unselectable {kind} "
                 f"logical_id: {logical_id}"
             )
 
@@ -434,13 +434,13 @@ def build_face_sketch_boolean_display(
     analysis = analyze_sketch_profiles(sketch)
     material_ids = {profile.id for profile in analysis.profiles if profile.is_material}
     if not selected_ids or not selected_ids.issubset(material_ids):
-        raise ValueError("参与轮廓必须引用当前草图材料轮廓")
+        raise ValueError("Included profiles must reference material profiles in the current sketch")
     vector = tuple(float(value) for value in direction)
     if len(vector) != 3 or not all(math.isfinite(value) for value in vector):
-        raise ValueError("拉伸方向必须是有限三维向量")
+        raise ValueError("Extrude direction must be a finite 3D vector")
     distance_value = float(distance)
     if not math.isfinite(distance_value) or distance_value <= 0.0:
-        raise ValueError("拉伸距离必须为有限正值")
+        raise ValueError("Extrude distance must be finite and positive")
 
     draft = build_strict_sketch_draft_preview(sketch, segments=segments)
     selected_face_ids = {
@@ -838,7 +838,7 @@ def _strict_sketch_preview(
         message = (
             analysis.blocking_diagnostics[0].message
             if analysis.blocking_diagnostics
-            else "严格草图没有可显示的 Profile"
+            else "Strict sketch has no displayable profile"
         )
         raise ValueError(message)
 
@@ -1009,7 +1009,7 @@ def _strict_profile_ring(
     if len(ring) > 1 and ring[0] == ring[-1]:
         ring.pop()
     if len(ring) < 3:
-        raise ValueError("严格草图 Profile 至少需要三个显示顶点")
+        raise ValueError("Strict sketch profile requires at least three display vertices")
     return tuple(ring)
 
 
@@ -1031,7 +1031,7 @@ def _triangulate_strict_profile(
     )
     coordinates = tuple(local_points[index] for index in candidate_indices)
     if len(candidate_indices) < 3:
-        raise ValueError("严格草图 Profile 无法形成显示面")
+        raise ValueError("Strict sketch profile cannot form a display face")
     if len(candidate_indices) == 3 and not holes:
         return (tuple(candidate_indices),)
     triangulation = Delaunay(coordinates)
@@ -1087,7 +1087,7 @@ def _triangulate_strict_profile(
             continue
         accepted.append(triangle)
     if not accepted:
-        raise ValueError("严格草图 Profile 无法生成有效显示三角形")
+        raise ValueError("Strict sketch profile cannot generate valid display triangles")
     return tuple(sorted(set(accepted)))
 
 
@@ -1394,7 +1394,7 @@ def _derived_logical_id(
                 candidates.append(entity.logical_id)
     if len(candidates) != 1:
         raise RuntimeError(
-            f"ExtrudedGeometry catalog 无法为 {source_logical_id} 唯一解析 "
+            f"ExtrudedGeometry catalog cannot uniquely resolve {source_logical_id} to "
             f"{kind}({semantic_prefix})"
         )
     return candidates[0]
@@ -2118,7 +2118,7 @@ def _validate_preview_topology(
     topology = describe_recipe_topology(recipe)
     if preview.topological_dimension != topology.dimension:
         raise RuntimeError(
-            f"{type(recipe).__name__} 预览 dimension 与 recipe topology 不一致: "
+            f"{type(recipe).__name__} preview dimension differs from recipe topology: "
             f"{preview.topological_dimension} != {topology.dimension}"
         )
     for kind, cells, logical_ids in (
@@ -2128,7 +2128,7 @@ def _validate_preview_topology(
     ):
         if len(logical_ids) != len(cells):
             raise RuntimeError(
-                f"{type(recipe).__name__} 预览的 {kind} cell 缺少 logical_id 绑定"
+                f"{type(recipe).__name__} preview {kind} cells lack logical_id bindings"
             )
         _validate_preview_logical_ids(
             topology,
@@ -2153,8 +2153,8 @@ def _validate_preview_topology(
             incomplete_allowed and actual.issubset(expected)
         ):
             raise RuntimeError(
-                f"{type(recipe).__name__} 预览的 {kind} logical ID"
-                f"与 recipe topology 不一致: {sorted(actual)} != "
+                f"{type(recipe).__name__} preview {kind} logical IDs "
+                f"differ from recipe topology: {sorted(actual)} != "
                 f"{sorted(expected)}"
             )
     actual_body = {
@@ -2179,8 +2179,8 @@ def _validate_preview_topology(
         and actual_body.issubset(expected_body)
     ):
         raise RuntimeError(
-            f"{type(recipe).__name__} 预览的 body logical ID"
-            f"与 recipe topology 不一致: {sorted(actual_body)} != "
+            f"{type(recipe).__name__} preview body logical IDs "
+            f"differ from recipe topology: {sorted(actual_body)} != "
             f"{sorted(expected_body)}"
         )
 

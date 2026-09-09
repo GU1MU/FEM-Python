@@ -48,7 +48,7 @@ class FaceSketchBooleanDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("faceSketchBooleanDialog")
-        self.setWindowTitle("拉伸布尔")
+        self.setWindowTitle("Extrude Boolean")
         self.setModal(False)
         self.setMinimumWidth(390)
         self._preview_generation = 0
@@ -60,36 +60,36 @@ class FaceSketchBooleanDialog(QDialog):
     def _build_ui(self) -> None:
         self.operation_combo = QComboBox(self)
         for value in FaceSketchBooleanOperation:
-            self.operation_combo.addItem(value.chinese_name, value.value)
+            self.operation_combo.addItem(value.display_name, value.value)
         self.direction_combo = QComboBox(self)
         for value in FaceSketchBooleanDirection:
-            self.direction_combo.addItem(value.chinese_name, value.value)
+            self.direction_combo.addItem(value.display_name, value.value)
         self.distance_edit = QLineEdit("10", self)
         validator = QDoubleValidator(0.0, 1.0e100, 12, self)
         validator.setNotation(QDoubleValidator.Notation.StandardNotation)
         self.distance_edit.setValidator(validator)
-        self.distance_edit.setAccessibleName("拉伸距离")
-        self.distance_label = QLabel("距离：", self)
+        self.distance_edit.setAccessibleName("Extrude distance")
+        self.distance_label = QLabel("Distance:", self)
 
         form = QFormLayout()
-        form.addRow("操作：", self.operation_combo)
-        form.addRow("方向：", self.direction_combo)
+        form.addRow("Operation:", self.operation_combo)
+        form.addRow("Direction:", self.direction_combo)
         form.addRow(self.distance_label, self.distance_edit)
 
         self.profile_tree = QTreeWidget(self)
         self.profile_tree.setObjectName("faceSketchBooleanProfiles")
-        self.profile_tree.setHeaderLabels(("参与轮廓", "状态"))
+        self.profile_tree.setHeaderLabels(("Included profiles", "Status"))
         self.profile_tree.setRootIsDecorated(False)
         self.profile_tree.setMinimumHeight(135)
 
-        self.preview_status = QLabel("等待精确预览", self)
+        self.preview_status = QLabel("Awaiting exact preview", self)
         self.preview_status.setObjectName("faceSketchBooleanPreviewStatus")
         self.preview_status.setWordWrap(True)
 
-        self.create_button = QPushButton("创建特征", self)
+        self.create_button = QPushButton("Create Feature", self)
         self.create_button.setEnabled(False)
-        self.return_button = QPushButton("返回草图", self)
-        self.cancel_button = QPushButton("取消", self)
+        self.return_button = QPushButton("Back to Sketch", self)
+        self.cancel_button = QPushButton("Cancel", self)
         buttons = QDialogButtonBox(self)
         buttons.addButton(
             self.create_button,
@@ -106,10 +106,10 @@ class FaceSketchBooleanDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(QLabel("材料轮廓", self))
+        layout.addWidget(QLabel("Material profiles", self))
         layout.addWidget(self.profile_tree)
         status_row = QHBoxLayout()
-        status_row.addWidget(QLabel("预览状态：", self))
+        status_row.addWidget(QLabel("Preview status:", self))
         status_row.addWidget(self.preview_status, 1)
         layout.addLayout(status_row)
         layout.addWidget(buttons)
@@ -142,7 +142,7 @@ class FaceSketchBooleanDialog(QDialog):
         self.profile_tree.clear()
         self._profile_items.clear()
         for index, profile_id in enumerate(profile_ids, start=1):
-            item = QTreeWidgetItem((f"材料轮廓 {index}", "参与"))
+            item = QTreeWidgetItem((f"Material profile {index}", "Included"))
             item.setData(0, Qt.ItemDataRole.UserRole, profile_id)
             item.setCheckState(
                 0,
@@ -184,23 +184,23 @@ class FaceSketchBooleanDialog(QDialog):
             raise TypeError("operation must be a FaceSketchBooleanOperation")
         index = self.operation_combo.findData(operation.value)
         if index < 0:
-            raise ValueError("拉伸布尔操作不可用")
+            raise ValueError("Extrude Boolean operation is unavailable")
         self.operation_combo.setCurrentIndex(index)
         self.operation_combo.setEnabled(False)
         self.distance_label.setText(
-            "合并高度："
+            "Fuse height:"
             if operation is FaceSketchBooleanOperation.FUSE
-            else "切除深度："
+            else "Cut depth:"
         )
         self.distance_edit.setAccessibleName(
-            "合并高度"
+            "Fuse height"
             if operation is FaceSketchBooleanOperation.FUSE
-            else "切除深度"
+            else "Cut depth"
         )
         self.setWindowTitle(
-            "拉伸合并"
+            "Extrude Fuse"
             if operation is FaceSketchBooleanOperation.FUSE
-            else "拉伸切除"
+            else "Extrude Cut"
         )
 
     def parameters(self) -> FaceSketchBooleanParameters | None:
@@ -238,34 +238,34 @@ class FaceSketchBooleanDialog(QDialog):
             for item in self._profile_items.values()
         )
         if not selected:
-            return "至少选择一个参与轮廓"
+            return "Select at least one profile"
         try:
             distance = float(self.distance_edit.text().strip())
         except ValueError:
-            return "距离必须为有限正值"
+            return "Distance must be finite and positive"
         if not math.isfinite(distance) or distance <= 0.0:
-            return "距离必须为有限正值"
-        return "参数无效"
+            return "Distance must be finite and positive"
+        return "Invalid parameters"
 
     def set_preview_running(self, generation: int) -> None:
         self._preview_generation = int(generation)
         self._valid_generation = None
         self.create_button.setEnabled(False)
-        self.preview_status.setText("正在计算精确预览…")
+        self.preview_status.setText("Computing exact preview...")
 
     def set_preview_valid(self, generation: int) -> None:
         if int(generation) != self._preview_generation:
             return
         self._valid_generation = int(generation)
         self.create_button.setEnabled(True)
-        self.preview_status.setText("精确预览有效，可以创建特征")
+        self.preview_status.setText("Exact preview valid; ready to create")
 
     def set_preview_invalid(self, generation: int, reason: str) -> None:
         if int(generation) != self._preview_generation:
             return
         self._valid_generation = None
         self.create_button.setEnabled(False)
-        self.preview_status.setText(str(reason).strip() or "精确预览无效")
+        self.preview_status.setText(str(reason).strip() or "Exact preview invalid")
 
     def close_for_workflow(self) -> None:
         self._closing_workflow = True
@@ -278,14 +278,14 @@ class FaceSketchBooleanDialog(QDialog):
         for item in self._profile_items.values():
             item.setText(
                 1,
-                "参与"
+                "Included"
                 if item.checkState(0) is Qt.CheckState.Checked
-                else "未参与",
+                else "Excluded",
             )
         if parameters is None:
             self.preview_status.setText(self.validation_reason())
         else:
-            self.preview_status.setText("参数已变化，等待精确预览")
+            self.preview_status.setText("Parameters changed; awaiting exact preview")
         self.parametersChanged.emit(parameters)
 
     def _request_create(self) -> None:

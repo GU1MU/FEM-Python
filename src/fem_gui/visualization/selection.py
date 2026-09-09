@@ -1,4 +1,4 @@
-"""视口与模型树共享的选择状态。"""
+"""Selection state shared by the viewport and model tree."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class SelectionContextState:
 
 @dataclass(slots=True)
 class SelectionState:
-    """保存单一节点或单元选择。"""
+    """Store a single node or element selection."""
 
     mode: SelectionMode = "node"
     node_id: int | None = None

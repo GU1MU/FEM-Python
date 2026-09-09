@@ -101,7 +101,7 @@ def derive_feature_history(recipe: NativeGeometry) -> tuple[FeatureRecord, ...]:
                         "summary": derive_geometry_feature_rows(item)[-1],
                         "feature_id": item.feature_id,
                         "support_face_id": item.support_face_id,
-                        "direction": item.direction.chinese_name,
+                        "direction": item.direction.display_name,
                         "distance": item.distance,
                         "profile_count": len(item.participating_profile_ids),
                         "association_count": len(item.external_references),

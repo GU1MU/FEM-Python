@@ -6477,7 +6477,7 @@ class FEMMainWindow(QMainWindow):
                 origin=launch.workplane.origin,
                 direction=launch.workplane.direction_vector(parameters.direction),
                 distance=parameters.distance,
-                operation_name=parameters.operation.chinese_name,
+                operation_name=parameters.operation.display_name,
             )
             dialog.set_preview_valid(generation)
 

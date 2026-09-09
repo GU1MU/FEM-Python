@@ -41,20 +41,20 @@ class BooleanFeaturePanel(QWidget):
         return self._controller
 
     def _build_ui(self) -> None:
-        title = QLabel("实体布尔", self)
+        title = QLabel("Solid Boolean", self)
         title.setObjectName("booleanFeatureTitle")
 
         self.operation_combo = QComboBox(self)
         self.operation_combo.setObjectName("booleanOperationCombo")
-        self.operation_combo.addItem("合并", "fuse")
-        self.operation_combo.addItem("切除", "cut")
+        self.operation_combo.addItem("Fuse", "fuse")
+        self.operation_combo.addItem("Cut", "cut")
         self.operation_combo.currentIndexChanged.connect(
             self._operation_changed
         )
 
-        self.target_label = QLabel("未选择", self)
+        self.target_label = QLabel("Not selected", self)
         self.target_label.setObjectName("booleanTargetLabel")
-        self.target_button = QPushButton("选择", self)
+        self.target_button = QPushButton("Select", self)
         self.target_button.setObjectName("booleanSelectTarget")
         self.target_button.clicked.connect(
             lambda: self.selectionRequested.emit("target")
@@ -65,9 +65,9 @@ class BooleanFeaturePanel(QWidget):
         target_layout.addWidget(self.target_label, 1)
         target_layout.addWidget(self.target_button)
 
-        self.tool_label = QLabel("未选择", self)
+        self.tool_label = QLabel("Not selected", self)
         self.tool_label.setObjectName("booleanToolLabel")
-        self.tool_button = QPushButton("选择", self)
+        self.tool_button = QPushButton("Select", self)
         self.tool_button.setObjectName("booleanSelectTool")
         self.tool_button.clicked.connect(
             lambda: self.selectionRequested.emit("tool")
@@ -78,20 +78,20 @@ class BooleanFeaturePanel(QWidget):
         tool_layout.addWidget(self.tool_label, 1)
         tool_layout.addWidget(self.tool_button)
 
-        self.result_edit = QLineEdit("切除结果-1", self)
+        self.result_edit = QLineEdit("Cut-Result-1", self)
         self.result_edit.setObjectName("booleanResultName")
         self.result_edit.textChanged.connect(lambda _text: self.refresh())
-        tool_policy = QLabel("操作成功后自动抑制", self)
+        tool_policy = QLabel("Suppress after success", self)
 
-        self.status_label = QLabel("请选择目标部件和工具部件", self)
+        self.status_label = QLabel("Select the target and tool parts", self)
         self.status_label.setObjectName("booleanPreviewStatus")
         self.status_label.setWordWrap(True)
 
-        self.finish_button = QPushButton("完成", self)
+        self.finish_button = QPushButton("Finish", self)
         self.finish_button.setObjectName("booleanFinishButton")
         self.finish_button.setEnabled(False)
         self.finish_button.clicked.connect(self.finishRequested.emit)
-        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setObjectName("booleanCancelButton")
         self.cancel_button.clicked.connect(self.cancelRequested.emit)
         buttons = QHBoxLayout()
@@ -100,11 +100,11 @@ class BooleanFeaturePanel(QWidget):
         buttons.addWidget(self.cancel_button)
 
         form = QFormLayout()
-        form.addRow("操作", self.operation_combo)
-        form.addRow("目标部件", target_row)
-        form.addRow("工具部件", tool_row)
-        form.addRow("结果部件", self.result_edit)
-        form.addRow("源部件处理", tool_policy)
+        form.addRow("Operation", self.operation_combo)
+        form.addRow("Target part", target_row)
+        form.addRow("Tool part", tool_row)
+        form.addRow("Result part", self.result_edit)
+        form.addRow("Source parts", tool_policy)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
@@ -122,11 +122,11 @@ class BooleanFeaturePanel(QWidget):
         index = self.operation_combo.findData(controller.operation)
         self.operation_combo.setCurrentIndex(index)
         self.result_edit.setText(
-            "合并结果-1"
+            "Fuse-Result-1"
             if controller.operation == "fuse"
-            else "切除结果-1"
+            else "Cut-Result-1"
         )
-        self.show_status("请选择目标部件和工具部件")
+        self.show_status("Select the target and tool parts")
         self.refresh()
         self.show()
 

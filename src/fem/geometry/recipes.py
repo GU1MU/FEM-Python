@@ -517,10 +517,10 @@ class FaceSketchBooleanOperation(str, Enum):
     CUT = "cut"
 
     @property
-    def chinese_name(self) -> str:
+    def display_name(self) -> str:
         return {
-            type(self).FUSE: "合并材料",
-            type(self).CUT: "切除材料",
+            type(self).FUSE: "Fuse Material",
+            type(self).CUT: "Cut Material",
         }[self]
 
 
@@ -531,10 +531,10 @@ class FaceSketchBooleanDirection(str, Enum):
     INWARD = "inward"
 
     @property
-    def chinese_name(self) -> str:
+    def display_name(self) -> str:
         return {
-            type(self).OUTWARD: "沿外法向",
-            type(self).INWARD: "沿内法向",
+            type(self).OUTWARD: "Outward Normal",
+            type(self).INWARD: "Inward Normal",
         }[self]
 
     def vector(

@@ -96,8 +96,8 @@ def test_point_usage_and_multi_delete_are_one_stable_edit() -> None:
     controller.add_line(start.id, end.id, curve_id="L1")
     controller.add_circle((center.u, center.v), 0.5, point_id="P4", curve_id="C1")
 
-    assert controller.point_usage(start.id) == ("端点",)
-    assert controller.point_usage("P4") == ("圆心",)
+    assert controller.point_usage(start.id) == ("Endpoint",)
+    assert controller.point_usage("P4") == ("Circle center",)
     before = controller.snapshot()
     controller.select_many([start.id, end.id])
     controller.delete_many([start.id, end.id])
@@ -192,7 +192,7 @@ def test_point_cascade_delete_lists_dependencies_and_undo_restores_all() -> None
 def test_id_generation_is_case_insensitive_and_redo_branch_clears() -> None:
     controller = SketchDraftController()
     controller.add_point(0.0, 0.0, point_id="p1")
-    with pytest.raises(ValueError, match="已被占用"):
+    with pytest.raises(ValueError, match="already in use"):
         controller.add_point(1.0, 0.0, point_id="P1")
     controller.add_point(1.0, 0.0)
     controller.undo()

@@ -1,4 +1,4 @@
-"""延迟加载 PyVistaQt 的分层有限元视口。"""
+"""Layered FEM viewport with lazy PyVistaQt loading."""
 
 from __future__ import annotations
 
@@ -288,18 +288,18 @@ def _effective_line_load_vector(
 
 
 def _binding_error(interactor: type[object]) -> RuntimeError | None:
-    """拒绝与主程序不同的 Qt 绑定。"""
+    """Reject Qt bindings that differ from the main application."""
     for base in interactor.mro():
         module = getattr(base, "__module__", "")
         if module.startswith("PySide6.QtWidgets"):
             return None
         if module.startswith(("PyQt5.QtWidgets", "PyQt6.QtWidgets", "PySide2.QtWidgets")):
-            return RuntimeError(f"PyVistaQt 使用了不兼容的 Qt 绑定：{module}")
-    return RuntimeError("无法确认 PyVistaQt 的 Qt 绑定来源")
+            return RuntimeError(f"PyVistaQt uses an incompatible Qt binding: {module}")
+    return RuntimeError("Cannot identify the PyVistaQt Qt binding")
 
 
 def load_backend() -> tuple[object | None, type[object] | None, Exception | None]:
-    """仅在需要显示网格时导入 VTK 相关包。"""
+    """Import VTK packages only when a mesh must be displayed."""
     global _pyvista, _QtInteractor, _backend_error, _backend_attempted
     if _backend_attempted:
         return _pyvista, _QtInteractor, _backend_error
@@ -318,7 +318,7 @@ def load_backend() -> tuple[object | None, type[object] | None, Exception | None
 
 
 def is_offscreen_environment() -> bool:
-    """判断是否应避免自动创建原生 OpenGL 控件。"""
+    """Check whether to avoid automatically creating a native OpenGL widget."""
     platform = os.environ.get("QT_QPA_PLATFORM", "").strip().lower()
     return platform in {"offscreen", "minimal", "minimalegl"} or os.environ.get(
         "FEM_GUI_OFFSCREEN", ""
@@ -334,7 +334,7 @@ def _geometry_edge_polydata(
 ):
     """Build line-only PolyData so logical edge ids match VTK cells exactly."""
     if len(pick_ids) != len(preview.edges):
-        raise ValueError("edge pick tokens 必须与 display cells 数量一致")
+        raise ValueError("Edge pick token count must match display cells")
     line_cells = np.hstack(
         [np.asarray((len(edge), *edge), dtype=np.int64) for edge in preview.edges]
     )
@@ -366,7 +366,7 @@ def _geometry_point_polydata(
 ):
     """Build pickable points from logical vertices, excluding display samples."""
     if len(pick_ids) != len(points):
-        raise ValueError("point pick tokens 必须与 display points 数量一致")
+        raise ValueError("Point pick token count must match display points")
     point_ids = np.asarray(pick_ids, dtype=np.int64)
     selectable = point_ids > 0
     point_mesh = pyvista.PolyData(points[selectable])
@@ -387,7 +387,7 @@ def _geometry_surface_polydata(
 ):
     """Triangulate display faces while preserving their logical geometry ids."""
     if len(pick_ids) != len(preview.faces):
-        raise ValueError("face pick tokens 必须与 display cells 数量一致")
+        raise ValueError("Face pick token count must match display cells")
     face_cells = np.hstack(
         [np.asarray((len(face), *face), dtype=np.int64) for face in preview.faces]
     )
@@ -1016,14 +1016,14 @@ def _sketch_coordinate_label(
 
 def _sketch_snap_label(kind: str | None) -> str | None:
     return {
-        "sketch_point": "草图点",
-        "topology_vertex": "外部参考点",
-        "face_center": "外部参考点",
-        "line_midpoint": "中点",
-        "circle_center": "圆心",
-        "arc_center": "圆心",
-        "intersection": "交点",
-        "grid": "网格点",
+        "sketch_point": "Sketch point",
+        "topology_vertex": "External reference point",
+        "face_center": "External reference point",
+        "line_midpoint": "Midpoint",
+        "circle_center": "Circle center",
+        "arc_center": "Circle center",
+        "intersection": "Intersection",
+        "grid": "Grid point",
     }.get(kind)
 
 
@@ -1438,7 +1438,7 @@ def _display_point_in_polygon(
 
 
 class FEMViewport(QWidget):
-    """维护网格、标注、选择、载荷与结果等独立 Actor。"""
+    """Maintain separate actors for meshes, annotations, selection, loads, and results."""
 
     nativeSurfaceUpdated = Signal()
     entityPicked = Signal(str, int)
@@ -2346,7 +2346,7 @@ class FEMViewport(QWidget):
         self._last_symbol_camera_position = None
         self._clear_geometry_scan_caches()
         if is_offscreen_environment():
-            self._message.setText("模型已加载（当前环境未启用三维渲染）")
+            self._message.setText("Model loaded (3D rendering is disabled)")
             return
         if not self._ensure_plotter():
             return
@@ -2705,7 +2705,7 @@ class FEMViewport(QWidget):
             self._remove_actor(name)
         if is_offscreen_environment():
             self._message.setText(
-                f"拉伸布尔精确预览有效（{operation_name}，距离 {distance:g}）"
+                f"Exact Extrude Boolean preview valid ({operation_name}, distance {distance:g})"
             )
             self._stack.setCurrentWidget(self._message)
             return
@@ -2783,7 +2783,7 @@ class FEMViewport(QWidget):
         surface(
             "face_boolean_tool",
             display.tool,
-            "#36a269" if operation_name == "合并材料" else "#d9544d",
+            "#36a269" if operation_name == "Fuse Material" else "#d9544d",
             0.28,
             show_edges=True,
         )
@@ -2810,7 +2810,7 @@ class FEMViewport(QWidget):
         )
         self._actors["face_boolean_distance"] = self._plotter.add_point_labels(
             np.asarray((endpoint,), dtype=float),
-            (f"距离：{distance:g}",),
+            (f"Distance: {distance:g}",),
             point_size=0,
             font_size=12,
             shape=None,
@@ -3230,7 +3230,7 @@ class FEMViewport(QWidget):
         ):
             self._remove_actor(name)
         if is_offscreen_environment():
-            self._message.setText("二维草图编辑中（当前环境未启用三维渲染）")
+            self._message.setText("Editing 2D sketch (3D rendering is disabled)")
             self._stack.setCurrentWidget(self._message)
             return
         if not self._ensure_plotter() or _pyvista is None:
@@ -3384,11 +3384,11 @@ class FEMViewport(QWidget):
                 pickable=False,
             )
             labels = {
-                "topology_vertex": "顶点",
-                "line_midpoint": "中点",
-                "circle_center": "圆心",
-                "arc_center": "弧心",
-                "face_center": "面中心",
+                "topology_vertex": "Vertex",
+                "line_midpoint": "Midpoint",
+                "circle_center": "Circle center",
+                "arc_center": "Arc center",
+                "face_center": "Face center",
             }
             if self._sketch_show_external_labels:
                 self._actors["sketch_reference_labels"] = (
@@ -3843,7 +3843,7 @@ class FEMViewport(QWidget):
         ):
             self._remove_actor(name)
         if is_offscreen_environment():
-            self._message.setText("线体编辑中（当前环境未启用三维渲染）")
+            self._message.setText("Editing wire (3D rendering is disabled)")
             self._stack.setCurrentWidget(self._message)
             return
         if not self._ensure_plotter():
@@ -4087,7 +4087,7 @@ class FEMViewport(QWidget):
         if self._sketch_authoring_mode == "arc" and self._sketch_pending_points:
             pending = np.asarray(self._sketch_pending_points, dtype=float)
             labels = tuple(
-                ("1  起点", "2  经过点")[index]
+                ("1  Start", "2  Through point")[index]
                 for index in range(min(len(pending), 2))
             )
             self._actors["sketch_authoring_pending_outline"] = (
@@ -4186,12 +4186,12 @@ class FEMViewport(QWidget):
         )
         snap_label = _sketch_snap_label(self._sketch_authoring_snap_kind)
         inference_labels = {
-            "coincident": "重合",
-            "point_on_curve": "点在曲线上",
-            "horizontal": "水平",
-            "vertical": "垂直",
+            "coincident": "Coincident",
+            "point_on_curve": "Point on Curve",
+            "horizontal": "Horizontal",
+            "vertical": "Vertical",
         }
-        inference = "、".join(
+        inference = ", ".join(
             inference_labels.get(kind, kind)
             for kind in (
                 self._sketch_draft_render_data.inference_preview
@@ -4202,13 +4202,13 @@ class FEMViewport(QWidget):
         hover_text = f"{snap_label} {coordinate_label}" if snap_label else coordinate_label
         if self._sketch_authoring_mode == "arc":
             prompts = (
-                "单击确定起点",
-                "单击确定圆弧经过点",
-                "单击确定终点",
+                "Click to set the start",
+                "Click to set the arc through point",
+                "Click to set the end",
             )
             hover_text = f"{prompts[min(len(self._sketch_pending_points), 2)]}  {hover_text}"
         if inference:
-            hover_text += f"  推断：{inference}"
+            hover_text += f"  Inference: {inference}"
         self._actors["sketch_authoring_hover_label"] = (
             self._plotter.add_point_labels(
                 label_point,
@@ -4820,7 +4820,7 @@ class FEMViewport(QWidget):
         self._geometry_preview = preview
         self._install_geometry_pick_bindings(preview)
         if is_offscreen_environment():
-            self._message.setText("几何预览已更新（当前环境未启用三维渲染）")
+            self._message.setText("Geometry preview updated (3D rendering is disabled)")
             if not preserve_model:
                 self._stack.setCurrentWidget(self._message)
             return
@@ -6119,7 +6119,7 @@ class FEMViewport(QWidget):
             for reference in raw_references
         ):
             raise TypeError(
-                "geometry highlight 只接受 LogicalEntityRef"
+                "Geometry highlight requires LogicalEntityRef"
             )
         canonical_refs = tuple(
             sorted(
@@ -6135,7 +6135,7 @@ class FEMViewport(QWidget):
             return
         kinds = {reference.kind for reference in canonical_refs}
         if len(kinds) != 1:
-            raise ValueError("geometry highlight 只能包含同一种实体类型")
+            raise ValueError("Geometry highlight must contain a single entity type")
         kind = f"geometry_{canonical_refs[0].kind}"
         pick_ids = tuple(
             sorted(
@@ -6595,7 +6595,7 @@ class FEMViewport(QWidget):
         *,
         render: bool = True,
     ) -> None:
-        """独立设置已投影结果的几何形状和云图开关。"""
+        """Set projected result geometry and contour visibility independently."""
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
         self._display = DisplayState(
             shape_mode=shape,
@@ -6664,7 +6664,7 @@ class FEMViewport(QWidget):
         density: str | None,
     ) -> None:
         if density not in {None, "low", "medium", "high"}:
-            raise ValueError("符号采样密度必须是 low、medium、high 或 None")
+            raise ValueError("Symbol sampling density must be low, medium, high, or None")
         self._symbol_sampling_density_override = density
 
     def _effective_symbol_sampling_density(self) -> str:
@@ -6676,7 +6676,7 @@ class FEMViewport(QWidget):
     def set_symbols_visible(
         self, visible: bool, *, refresh: bool = True, render: bool = True
     ) -> None:
-        """统一显示或隐藏当前分析步的约束与载荷符号。"""
+        """Show or hide constraint and load symbols for the current Step."""
         self._symbols_visible = bool(visible)
         symbol_names = self._symbol_actor_names()
         existing = [self._actors[name] for name in symbol_names if name in self._actors]
@@ -6689,7 +6689,7 @@ class FEMViewport(QWidget):
             self.show_boundary_and_loads(self._symbol_settings.step_name, render=render)
 
     def screenshot_size(self) -> tuple[int, int]:
-        """返回截图使用的当前 VTK 视口像素尺寸。"""
+        """Return the current VTK viewport pixel size for screenshots."""
         if self._plotter is not None:
             window_size = getattr(self._plotter, "window_size", None)
             if window_size is not None and len(window_size) >= 2:
@@ -6706,9 +6706,9 @@ class FEMViewport(QWidget):
         window_size: tuple[int, int] | None = None,
         transparent_background: bool = False,
     ) -> None:
-        """通过 VTK 帧缓冲保存当前视口。"""
+        """Save the current viewport through the VTK framebuffer."""
         if self._plotter is None:
-            raise RuntimeError("三维视口尚未初始化")
+            raise RuntimeError("3D viewport is not initialized")
         plotter = self._plotter
         current_size = self.screenshot_size()
         target_size = window_size
@@ -6781,7 +6781,7 @@ class FEMViewport(QWidget):
         *,
         transparent_background: bool,
     ) -> None:
-        """将现有渲染层临时放入独立窗口，不改变屏幕上的 Qt 视口。"""
+        """Temporarily render existing layers in a separate window without changing the onscreen Qt viewport."""
         import vtk
 
         plotter = self._plotter
@@ -6824,7 +6824,7 @@ class FEMViewport(QWidget):
                 writer = vtk.vtkJPEGWriter()
                 writer.SetQuality(95)
             else:
-                raise ValueError("仅支持导出 PNG 或 JPEG 图片")
+                raise ValueError("Only PNG or JPEG export is supported")
             writer.SetFileName(path)
             writer.SetInputConnection(capture.GetOutputPort())
             writer.Write()
@@ -6904,7 +6904,7 @@ class FEMViewport(QWidget):
             scalar_bar.SetVerticalTitleSeparation(title_separation)
 
     def set_background_settings(self, settings: ViewportBackgroundSettings) -> None:
-        """更新视口背景和依赖背景对比度的显示层。"""
+        """Update the viewport background and layers that depend on background contrast."""
         self._background_settings = settings.normalized()
         self._update_background_stylesheet()
         if self._plotter is None:
@@ -7245,7 +7245,7 @@ class FEMViewport(QWidget):
             self._updating_symbol_scale = False
 
     def locate_nodes(self, node_ids: tuple[int, ...]) -> None:
-        """仅调整相机以包含指定节点，不改变选择状态。"""
+        """Fit the camera to the specified nodes without changing selection."""
         if self._geometry is None:
             return
         indices = [
@@ -7257,7 +7257,7 @@ class FEMViewport(QWidget):
             self._focus_points(self._current_points()[indices])
 
     def locate_elements(self, element_ids: tuple[int, ...]) -> None:
-        """仅调整相机以包含指定单元，不改变选择状态。"""
+        """Fit the camera to the specified elements without changing selection."""
         if self._geometry is None:
             return
         point_indices: set[int] = set()
@@ -7515,7 +7515,7 @@ class FEMViewport(QWidget):
         if settings.show_values and constraint_labels_by_node:
             node_ids = sorted(constraint_labels_by_node)
             label_points = [constraint_label_points[node_id] for node_id in node_ids]
-            labels = ["，".join(constraint_labels_by_node[node_id]) for node_id in node_ids]
+            labels = [", ".join(constraint_labels_by_node[node_id]) for node_id in node_ids]
             self._actors["constraint_labels"] = self._plotter.add_point_labels(
                 np.asarray(label_points), labels, point_size=0, font_size=9,
                 shape_color=self._visual_palette()["label_background"],
@@ -7961,7 +7961,7 @@ class FEMViewport(QWidget):
             return True
         pv, interactor, error = load_backend()
         if pv is None or interactor is None:
-            self._message.setText(f"三维视口无法加载：{error}")
+            self._message.setText(f"Cannot load 3D viewport: {error}")
             return False
         kwargs: dict[str, object] = {}
         try:
@@ -7982,7 +7982,7 @@ class FEMViewport(QWidget):
             self.nativeSurfaceUpdated.emit()
         except Exception as error:
             self._plotter = None
-            self._message.setText(f"三维视口初始化失败：{error}")
+            self._message.setText(f"3D viewport initialization failed: {error}")
             self._stack.setCurrentWidget(self._message)
             return False
         return True
@@ -8521,7 +8521,7 @@ class FEMViewport(QWidget):
         return self._payload_data_range(payload)
 
     def current_contour_range(self) -> tuple[float, float] | None:
-        """返回当前结果字段的实际数值范围。"""
+        """Return the actual numeric range of the current result field."""
 
         payload = self._result_render_payload
         if payload is None:
@@ -8573,7 +8573,7 @@ class FEMViewport(QWidget):
                     locations
                 ),
             )
-            title += f"（{position}）"
+            title += f" ({position})"
         options: dict[str, Any] = {
             "title": title,
             "vertical": vertical,
@@ -8704,8 +8704,8 @@ class FEMViewport(QWidget):
         maximum_index = int(finite[np.argmax(values[finite])])
         entries: list[tuple[int, str]] = []
         for enabled, index, title in (
-            (self._contour["show_minimum"], minimum_index, "最小值"),
-            (self._contour["show_maximum"], maximum_index, "最大值"),
+            (self._contour["show_minimum"], minimum_index, "Minimum"),
+            (self._contour["show_maximum"], maximum_index, "Maximum"),
         ):
             if not enabled:
                 continue
@@ -8713,7 +8713,7 @@ class FEMViewport(QWidget):
             if self._contour["show_ids"]:
                 identity = self._result_location_identity(locations[index])
                 if identity:
-                    label += f"（{identity}）"
+                    label += f" ({identity})"
             entries.append((index, label))
         if not entries:
             return
@@ -8739,28 +8739,28 @@ class FEMViewport(QWidget):
             return ""
         values = []
         if location.node_id is not None:
-            values.append(f"节点 {int(location.node_id)}")
+            values.append(f"Node {int(location.node_id)}")
         if location.element_id is not None:
-            values.append(f"单元 {int(location.element_id)}")
+            values.append(f"Element {int(location.element_id)}")
         if location.integration_point is not None:
-            values.append(f"积分点 {int(location.integration_point)}")
+            values.append(f"Integration point {int(location.integration_point)}")
         if location.local_node is not None:
-            values.append(f"局部节点 {int(location.local_node)}")
+            values.append(f"Local node {int(location.local_node)}")
         if location.section_point is not None:
             position = section_point_relative_position_label(
                 location.section_point
             )
             values.append(
                 position
-                if position.startswith("截面点 ")
-                else f"截面位置 {position}"
+                if position.startswith("Section point ")
+                else f"Section position {position}"
             )
             values.append(
-                "截面坐标 "
+                "Section coordinates "
                 f"({location.section_point.local_y:.6g}, "
                 f"{location.section_point.local_z:.6g})"
             )
-        return "，".join(values)
+        return ", ".join(values)
 
     def _refresh_geometry_dependent_layers(self, *, render: bool = True) -> None:
         self._remove_actor("element_edges")
@@ -8974,7 +8974,7 @@ class FEMViewport(QWidget):
                 return
             if hit.kind != f"geometry_{reference.kind}":
                 raise ValueError(
-                    "geometry pick kind 与 logical reference 不一致"
+                    "Geometry pick kind does not match the logical reference"
                 )
             self.geometryEntityPicked.emit(reference)
             return
@@ -9000,13 +9000,13 @@ class FEMViewport(QWidget):
             return
         if hit.kind not in {"node", "element"}:
             raise ValueError(
-                "entityPicked 只接受 FEM node 或 element"
+                "entityPicked accepts only FEM nodes or elements"
             )
         if isinstance(hit.pick_id, bool) or not isinstance(
             hit.pick_id,
             int,
         ):
-            raise TypeError("FEM entity pick id 必须是整数")
+            raise TypeError("FEM entity pick ID must be an integer")
         self.entityPicked.emit(hit.kind, hit.pick_id)
 
     def _device_pixel_ratio(self) -> float:

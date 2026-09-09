@@ -976,10 +976,10 @@ def test_typed_extrema_labels_use_point_and_cell_location_provenance(gui_applica
     viewport._add_result_render_payload_extrema_labels(point_payload)
     point_labels = plotter.label_calls[-1][1]
     assert any(
-        "节点 20" in label and "单元 201" in label and "局部节点 2" in label
+        "Node 20" in label and "Element 201" in label and "Local node 2" in label
         for label in point_labels
     )
-    assert any("节点 30" in label for label in point_labels)
+    assert any("Node 30" in label for label in point_labels)
     point_label_options = plotter.label_option_calls[-1]
     assert point_label_options["point_color"] == "#d69a3a"
     assert point_label_options["point_size"] == 14
@@ -992,8 +992,8 @@ def test_typed_extrema_labels_use_point_and_cell_location_provenance(gui_applica
     cell_payload = _cell_payload()
     viewport._add_result_render_payload_extrema_labels(cell_payload)
     cell_labels = plotter.label_calls[-1][1]
-    assert any("单元 402" in label for label in cell_labels)
-    assert any("单元 401" in label for label in cell_labels)
+    assert any("Element 402" in label for label in cell_labels)
+    assert any("Element 401" in label for label in cell_labels)
     viewport.close()
 
 

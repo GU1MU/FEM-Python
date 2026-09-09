@@ -131,7 +131,7 @@ class SketchDraftValidationError(ValueError):
     def __init__(self, diagnostics: tuple[SketchDiagnostic, ...]):
         self.diagnostics = tuple(diagnostics)
         message = "; ".join(item.message for item in self.diagnostics)
-        super().__init__(message or "草图无法完成")
+        super().__init__(message or "Cannot finish sketch")
 
 
 class SketchDraftController:
@@ -198,11 +198,11 @@ class SketchDraftController:
         if len({item.id for item in initial.external_references}) != len(
             initial.external_references
         ):
-            raise ValueError("外部参考 ID 不能重复")
+            raise ValueError("External reference IDs must be unique")
         if len({item.point_id for item in initial.external_coincidences}) != len(
             initial.external_coincidences
         ):
-            raise ValueError("每个草图点最多只能绑定一个外部参考")
+            raise ValueError("Each sketch point can bind to at most one external reference")
         self._external_references: dict[str, SketchExternalReference] = {
             reference.id: reference for reference in initial.external_references
         }
@@ -336,7 +336,7 @@ class SketchDraftController:
                 item.casefold() == constraint.id.casefold()
                 for item in self._constraints
             ):
-                raise ValueError(f"草图约束 ID 已被占用：{constraint.id}")
+                raise ValueError(f"Sketch constraint ID already in use: {constraint.id}")
             candidate = (*self._constraints.values(), constraint)
             validate_sketch_constraints(
                 tuple(candidate), self._points, tuple(self._curves.values())
@@ -367,7 +367,7 @@ class SketchDraftController:
         for point_id, coordinate in coordinates.items():
             point = self._require_point(point_id)
             if point_id in self._external_coincidences:
-                raise ValueError("关联点不能直接移动，请先执行“解除关联”")
+                raise ValueError("Release the association before moving an associated point")
             u, v = _coordinate_pair(coordinate, "point_coordinates")
             candidate_points[point_id] = SketchPoint(point.id, u, v)
         candidate_constraints = (
@@ -697,7 +697,7 @@ class SketchDraftController:
     ) -> SketchPoint:
         point = self._require_point(point_id)
         if point_id in self._external_coincidences:
-            raise ValueError("关联点不能直接移动，请先执行“解除关联”")
+            raise ValueError("Release the association before moving an associated point")
         replacement = SketchPoint(
             point.id,
             point.u if u is None and x is None else (u if u is not None else x),
@@ -725,7 +725,7 @@ class SketchDraftController:
         for point_id, coordinate in coordinates.items():
             point = self._require_point(point_id)
             if point_id in self._external_coincidences:
-                raise ValueError("关联点不能直接移动，请先执行“解除关联”")
+                raise ValueError("Release the association before moving an associated point")
             u, v = _coordinate_pair(coordinate, "coordinates")
             replacements.append(SketchPoint(point.id, u, v))
 
@@ -752,10 +752,10 @@ class SketchDraftController:
     def association_status(self, point_id: str) -> str:
         reference = self.external_reference_for_point(point_id)
         if reference is None:
-            return "自由"
+            return "Free"
         if reference.id in self._unresolved_reference_ids:
-            return "未解析"
-        return "已关联"
+            return "Unresolved"
+        return "Associated"
 
     def associate_point(
         self,
@@ -858,9 +858,9 @@ class SketchDraftController:
         return tuple(
             label
             for active, label in (
-                (endpoint, "端点"),
-                (circle_center, "圆心"),
-                (arc_center, "弧心"),
+                (endpoint, "Endpoint"),
+                (circle_center, "Circle center"),
+                (arc_center, "Arc center"),
             )
             if active
         )
@@ -985,7 +985,7 @@ class SketchDraftController:
         x1, y1 = _coordinate_pair(first, "first")
         x2, y2 = _coordinate_pair(second, "second")
         if math.isclose(x1, x2) or math.isclose(y1, y2):
-            raise ValueError("矩形宽度和高度必须大于零")
+            raise ValueError("Rectangle width and height must be positive")
         left, right = sorted((x1, x2))
         bottom, top = sorted((y1, y2))
         ids = point_ids or tuple(self._next_id("P", self._points, offset=index) for index in range(4))
@@ -1369,7 +1369,7 @@ class SketchDraftController:
                 target_point,
             )
             if target_parameter is None:
-                raise ValueError("无法确定修剪位置")
+                raise ValueError("Cannot determine the trim position")
             lower_index = min(
                 range(len(parameters) - 1),
                 key=lambda index: (
@@ -1499,12 +1499,12 @@ class SketchDraftController:
             first, second, self._points, tolerance=_TRIM_TOLERANCE
         ).intersections
         if not intersections:
-            raise ValueError("两条曲线没有可分割的解析交点")
+            raise ValueError("The curves have no analytic intersection to split")
         selected = next(
             (item for item in intersections if item.branch_hint == branch_hint), None
         )
         if selected is None:
-            raise ValueError("解析交点分支不存在")
+            raise ValueError("Analytic intersection branch does not exist")
         first_parameters = _intersection_split_parameters(
             first, intersections, left=True
         )
@@ -1546,7 +1546,7 @@ class SketchDraftController:
             (item for item in intersections if item.branch_hint == branch_hint), None
         )
         if selected is None:
-            raise ValueError("解析交点分支不存在")
+            raise ValueError("Analytic intersection branch does not exist")
         first_parameters = _intersection_split_parameters(
             target, intersections, left=True
         )
@@ -1653,7 +1653,7 @@ class SketchDraftController:
             return self.clear_selection()
         kinds = {self._kind_for_id(item) for item in ids}
         if len(kinds) != 1:
-            raise ValueError("同一种实体类型才能多选")
+            raise ValueError("Multiple selection requires the same entity type")
         for item in ids:
             self._assert_selectable(item)
         self._selected_ids = ids
@@ -1759,7 +1759,7 @@ class SketchDraftController:
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.blank-name",
-                    "草图名称不能为空",
+                    "Sketch name cannot be empty",
                     blocking=False,
                     severity="warning",
                 )
@@ -1781,7 +1781,7 @@ class SketchDraftController:
     def finish_diagnostics(self) -> tuple[SketchDiagnostic, ...]:
         diagnostics: list[SketchDiagnostic] = []
         if not self._name:
-            diagnostics.append(SketchDiagnostic("sketch.blank-name", "草图名称不能为空"))
+            diagnostics.append(SketchDiagnostic("sketch.blank-name", "Sketch name cannot be empty"))
         try:
             self._to_strict_unchecked()
         except (TypeError, ValueError) as error:
@@ -1791,7 +1791,7 @@ class SketchDraftController:
         diagnostics.extend(analysis.diagnostics)
         if not analysis.profiles:
             diagnostics.append(
-                SketchDiagnostic("sketch.no-profile", "草图至少需要一个闭合轮廓")
+                SketchDiagnostic("sketch.no-profile", "Sketch requires at least one closed profile")
             )
         return _DiagnosticTuple(_unique_diagnostics(diagnostics))
 
@@ -1917,11 +1917,11 @@ class SketchDraftController:
         if len({item.id for item in snapshot.external_references}) != len(
             snapshot.external_references
         ):
-            raise ValueError("外部参考 ID 不能重复")
+            raise ValueError("External reference IDs must be unique")
         if len({item.point_id for item in snapshot.external_coincidences}) != len(
             snapshot.external_coincidences
         ):
-            raise ValueError("每个草图点最多只能绑定一个外部参考")
+            raise ValueError("Each sketch point can bind to at most one external reference")
         self._name = snapshot.name
         self._plane = snapshot.plane
         self._points = {point.id: point for point in snapshot.points}
@@ -1982,11 +1982,11 @@ class SketchDraftController:
     def _validate_associations(self) -> None:
         for point_id, coincidence in self._external_coincidences.items():
             if point_id not in self._points:
-                raise ValueError("外部重合关系引用了不存在的草图点")
+                raise ValueError("External coincidence references a missing sketch point")
             if coincidence.reference_id not in self._external_references:
-                raise ValueError("外部重合关系引用了不存在的外部参考")
+                raise ValueError("External coincidence references a missing external reference")
         if not self._unresolved_reference_ids.issubset(self._external_references):
-            raise ValueError("未解析状态引用了不存在的外部参考")
+            raise ValueError("Unresolved state references a missing external reference")
 
     def _validate_constraints(self) -> None:
         validate_sketch_constraints(
@@ -2004,7 +2004,7 @@ class SketchDraftController:
     def _assert_new_id(self, entity_id: str) -> None:
         folded = entity_id.casefold()
         if any(existing.casefold() == folded for existing in (*self._points, *self._curves)):
-            raise ValueError(f"草图实体 ID 已被占用：{entity_id}")
+            raise ValueError(f"Sketch entity ID already in use: {entity_id}")
 
     def _next_id(
         self,
@@ -2159,7 +2159,7 @@ def _intersection_split_parameters(
         if _TRIM_TOLERANCE < value < 1.0 - _TRIM_TOLERANCE
     )
     if not internal:
-        raise ValueError(f"曲线 {curve.id} 的交点位于端点，无需分割")
+        raise ValueError(f"Curve {curve.id} intersects at an endpoint; no split needed")
     return internal
 
 
@@ -2246,7 +2246,7 @@ def _circumcenter(
         + last[0] * (first[1] - through[1])
     )
     if abs(denominator) <= 1.0e-12:
-        raise ValueError("三点圆弧的三个点不能共线")
+        raise ValueError("Three-point arc points must not be collinear")
     first_square = first[0] * first[0] + first[1] * first[1]
     through_square = through[0] * through[0] + through[1] * through[1]
     last_square = last[0] * last[0] + last[1] * last[1]

@@ -151,20 +151,20 @@ QGroupBox::title {
 """
 
 _CONSTRAINT_TYPES = (
-    ("重合", "coincident"),
-    ("点在曲线上", "point_on_curve"),
-    ("水平", "horizontal"),
-    ("垂直", "vertical"),
-    ("固定", "fixed"),
-    ("平行", "parallel"),
-    ("互相垂直", "perpendicular"),
-    ("相切", "tangent"),
-    ("等长", "equal_length"),
-    ("等半径", "equal_radius"),
-    ("同心", "concentric"),
-    ("直线长度 / 两点距离", "distance"),
-    ("圆 / 圆弧半径", "radius"),
-    ("两直线角度", "angle"),
+    ("Coincident", "coincident"),
+    ("Point on Curve", "point_on_curve"),
+    ("Horizontal", "horizontal"),
+    ("Vertical", "vertical"),
+    ("Fixed", "fixed"),
+    ("Parallel", "parallel"),
+    ("Perpendicular", "perpendicular"),
+    ("Tangent", "tangent"),
+    ("Equal Length", "equal_length"),
+    ("Equal Radius", "equal_radius"),
+    ("Concentric", "concentric"),
+    ("Line Length / Point Distance", "distance"),
+    ("Circle / Arc Radius", "radius"),
+    ("Line Angle", "angle"),
 )
 _CONSTRAINT_LABELS = {kind: label for label, kind in _CONSTRAINT_TYPES}
 _SKETCH_NUMERIC_DECIMALS = 12
@@ -199,7 +199,7 @@ class _ConstraintTypeDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("sketchConstraintTypeDialog")
-        self.setWindowTitle("添加约束")
+        self.setWindowTitle("Add Constraint")
         self.selected_kind: str | None = None
         self.type_list = _SmoothScrollListWidget(self)
         self.type_list.setObjectName("sketchConstraintTypeList")
@@ -220,10 +220,10 @@ class _ConstraintTypeDialog(QDialog):
                 kind,
             )
         self.type_list.itemClicked.connect(self._type_chosen)
-        cancel_button = QPushButton("取消", self)
+        cancel_button = QPushButton("Cancel", self)
         cancel_button.clicked.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("选择要添加的约束", self))
+        layout.addWidget(QLabel("Select a constraint to add", self))
         layout.addWidget(self.type_list)
         layout.addWidget(cancel_button)
         self.resize(320, 430)
@@ -245,7 +245,7 @@ class _DimensionEditorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("sketchDimensionEditorDialog")
-        self.setWindowTitle("编辑约束")
+        self.setWindowTitle("Edit Constraint")
         self.value_spin = AdaptivePrecisionDoubleSpinBox(self)
         self.value_spin.setObjectName("sketchDimensionEditorValue")
         self.value_spin.setDecimals(_SKETCH_NUMERIC_DECIMALS)
@@ -286,11 +286,11 @@ class _FixedConstraintEditorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("sketchFixedConstraintEditorDialog")
-        self.setWindowTitle("编辑约束")
+        self.setWindowTitle("Edit Constraint")
         self.u_spin = self._coordinate_spin("sketchFixedConstraintU", u)
         self.v_spin = self._coordinate_spin("sketchFixedConstraintV", v)
         first_label, second_label = (
-            ("X 坐标", "Y 坐标") if use_xy_labels else ("U 坐标", "V 坐标")
+            ("X coordinate", "Y coordinate") if use_xy_labels else ("U coordinate", "V coordinate")
         )
         form = QFormLayout()
         form.addRow(first_label, self.u_spin)
@@ -462,12 +462,12 @@ class SketchEditorPanel(QWidget):
         self.name_edit.editingFinished.connect(self._name_changed)
 
         modes = (
-            ("select", "选择"),
-            ("polyline", "折线"),
-            ("rectangle", "矩形"),
-            ("circle", "圆"),
-            ("arc", "三点圆弧"),
-            ("trim", "修剪"),
+            ("select", "Select"),
+            ("polyline", "Polyline"),
+            ("rectangle", "Rectangle"),
+            ("circle", "Circle"),
+            ("arc", "Three-Point Arc"),
+            ("trim", "Trim"),
         )
         self._mode_buttons: dict[str, QPushButton] = {}
         first_modes = QHBoxLayout()
@@ -483,11 +483,11 @@ class SketchEditorPanel(QWidget):
             (first_modes if index < 3 else second_modes).addWidget(button)
         self._mode_buttons["polyline"].setChecked(True)
         self._mode_buttons["trim"].setToolTip(
-            "单击曲线：有交点时删除点击段；无可用交点时删除整条曲线"
+            "Click a curve to remove the segment between intersections, or the entire curve if none exist"
         )
 
         preferences = self._preferences
-        self.grid_visible_check = QCheckBox("显示网格", self)
+        self.grid_visible_check = QCheckBox("Show grid", self)
         self.grid_visible_check.setObjectName("sketchGridVisible")
         self.grid_visible_check.setChecked(preferences.grid_visible)
         self.grid_visible_check.toggled.connect(
@@ -503,15 +503,15 @@ class SketchEditorPanel(QWidget):
 
         self.point_search_edit = QLineEdit(self)
         self.point_search_edit.setObjectName("sketchPointSearch")
-        self.point_search_edit.setPlaceholderText("按点 ID 搜索")
+        self.point_search_edit.setPlaceholderText("Search point ID")
         self.point_search_edit.setClearButtonEnabled(True)
         self.point_filter_combo = QComboBox(self)
         self.point_filter_combo.setObjectName("sketchPointFilter")
         for label, value in (
-            ("全部", "all"),
-            ("自由", "free"),
-            ("已关联", "associated"),
-            ("未解析", "unresolved"),
+            ("All", "all"),
+            ("Free", "free"),
+            ("Associated", "associated"),
+            ("Unresolved", "unresolved"),
         ):
             self.point_filter_combo.addItem(label, value)
         self.point_search_edit.textChanged.connect(self._point_filter_changed)
@@ -522,7 +522,7 @@ class SketchEditorPanel(QWidget):
         self.points_table = QTableWidget(0, 6, self)
         self.points_table.setObjectName("sketchPointsTable")
         self.points_table.setHorizontalHeaderLabels(
-            ("ID", "U", "V", "关联", "类型/用途", "依赖曲线")
+            ("ID", "U", "V", "Association", "Type / Use", "Dependent curves")
         )
         self.points_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -556,7 +556,7 @@ class SketchEditorPanel(QWidget):
             )
             return editor
 
-        self.line_parameter_group = QGroupBox("直线参数", self)
+        self.line_parameter_group = QGroupBox("Line", self)
         self.line_parameter_group.setObjectName("sketchLineParameters")
         self.line_start_combo = QComboBox(self.line_parameter_group)
         self.line_start_combo.setObjectName("sketchLineStartPoint")
@@ -565,26 +565,26 @@ class SketchEditorPanel(QWidget):
         self.line_length_spin = parameter_spin("sketchLineLength")
         self.line_length_spin.setMinimum(1.0e-9)
         line_form = QFormLayout(self.line_parameter_group)
-        line_form.addRow("起点", self.line_start_combo)
-        line_form.addRow("终点", self.line_end_combo)
-        line_form.addRow("长度", self.line_length_spin)
+        line_form.addRow("Start", self.line_start_combo)
+        line_form.addRow("End", self.line_end_combo)
+        line_form.addRow("Length", self.line_length_spin)
         self.line_start_combo.activated.connect(self._line_endpoints_changed)
         self.line_end_combo.activated.connect(self._line_endpoints_changed)
         self.line_length_spin.editingFinished.connect(
             self._line_length_changed
         )
 
-        self.circle_parameter_group = QGroupBox("圆参数", self)
+        self.circle_parameter_group = QGroupBox("Circle", self)
         self.circle_parameter_group.setObjectName("sketchCircleParameters")
         self.circle_radius_spin = parameter_spin("sketchCircleRadius")
         self.circle_radius_spin.setMinimum(1.0e-9)
         circle_form = QFormLayout(self.circle_parameter_group)
-        circle_form.addRow("半径", self.circle_radius_spin)
+        circle_form.addRow("Radius", self.circle_radius_spin)
         self.circle_radius_spin.editingFinished.connect(
             self._circle_radius_changed
         )
 
-        self.arc_parameter_group = QGroupBox("圆弧参数", self)
+        self.arc_parameter_group = QGroupBox("Arc", self)
         self.arc_parameter_group.setObjectName("sketchArcParameters")
         self.arc_radius_spin = parameter_spin("sketchArcRadius")
         self.arc_radius_spin.setMinimum(1.0e-9)
@@ -594,13 +594,13 @@ class SketchEditorPanel(QWidget):
         self.arc_end_angle_spin.setRange(-360.0, 360.0)
         self.arc_orientation_combo = QComboBox(self.arc_parameter_group)
         self.arc_orientation_combo.setObjectName("sketchArcOrientation")
-        self.arc_orientation_combo.addItem("逆时针", "ccw")
-        self.arc_orientation_combo.addItem("顺时针", "cw")
+        self.arc_orientation_combo.addItem("Counterclockwise", "ccw")
+        self.arc_orientation_combo.addItem("Clockwise", "cw")
         arc_form = QFormLayout(self.arc_parameter_group)
-        arc_form.addRow("半径", self.arc_radius_spin)
-        arc_form.addRow("起始角 (°)", self.arc_start_angle_spin)
-        arc_form.addRow("终止角 (°)", self.arc_end_angle_spin)
-        arc_form.addRow("方向", self.arc_orientation_combo)
+        arc_form.addRow("Radius", self.arc_radius_spin)
+        arc_form.addRow("Start angle (°)", self.arc_start_angle_spin)
+        arc_form.addRow("End angle (°)", self.arc_end_angle_spin)
+        arc_form.addRow("Direction", self.arc_orientation_combo)
         self.arc_radius_spin.editingFinished.connect(
             self._arc_radius_changed
         )
@@ -620,8 +620,8 @@ class SketchEditorPanel(QWidget):
         ):
             group.hide()
 
-        self.undo_button = QPushButton("撤销", self)
-        self.redo_button = QPushButton("重做", self)
+        self.undo_button = QPushButton("Undo", self)
+        self.redo_button = QPushButton("Redo", self)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
 
@@ -633,10 +633,10 @@ class SketchEditorPanel(QWidget):
         self.constraint_targets_edit = QLineEdit(self)
         self.constraint_targets_edit.setObjectName("sketchConstraintTargets")
         self.constraint_targets_edit.setPlaceholderText(
-            "目标稳定 ID（逗号分隔；留空使用当前选择）"
+            "Target IDs (comma-separated; blank for current selection)"
         )
         self.constraint_targets_edit.hide()
-        self.constraint_driving_check = QCheckBox("驱动尺寸", self)
+        self.constraint_driving_check = QCheckBox("Driving dimension", self)
         self.constraint_driving_check.setChecked(False)
         self.constraint_driving_check.hide()
         self.constraint_value_spin = AdaptivePrecisionDoubleSpinBox(self)
@@ -649,11 +649,11 @@ class SketchEditorPanel(QWidget):
             QSizePolicy.Policy.Fixed,
         )
         self.constraint_value_spin.hide()
-        self.add_constraint_button = QPushButton("添加约束", self)
+        self.add_constraint_button = QPushButton("Add", self)
         self.add_constraint_button.clicked.connect(self._choose_constraint_type)
         self.constraints_table = QTableWidget(0, 2, self)
         self.constraints_table.setObjectName("sketchConstraintsTable")
-        self.constraints_table.setHorizontalHeaderLabels(("类型", "值"))
+        self.constraints_table.setHorizontalHeaderLabels(("Type", "Value"))
         self.constraints_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -678,9 +678,9 @@ class SketchEditorPanel(QWidget):
         self.constraints_table.itemSelectionChanged.connect(
             self._constraint_row_changed
         )
-        self.delete_constraint_button = QPushButton("删除约束", self)
+        self.delete_constraint_button = QPushButton("Delete", self)
         self.delete_constraint_button.clicked.connect(self.delete_selected_constraint)
-        self.edit_constraint_button = QPushButton("编辑约束", self)
+        self.edit_constraint_button = QPushButton("Edit", self)
         self.edit_constraint_button.setObjectName("sketchEditDimensionButton")
         self.edit_constraint_button.clicked.connect(self._edit_selected_constraint)
         self.delete_constraint_button.setEnabled(False)
@@ -710,25 +710,25 @@ class SketchEditorPanel(QWidget):
         self.diagnostic_scroll.setWidget(self.diagnostic_label)
         self.diagnostic_scroll.hide()
 
-        self.finish_button = QPushButton("完成草图", self)
+        self.finish_button = QPushButton("Finish Sketch", self)
         self.finish_button.setObjectName("sketchFinishButton")
-        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setObjectName("sketchCancelButton")
         self.finish_button.clicked.connect(self.try_finish)
         self.cancel_button.clicked.connect(self.cancelRequested.emit)
 
         form = QFormLayout()
-        form.addRow("草图名称", self.name_edit)
-        self.work_plane_label = QLabel("全局 XY", self)
+        form.addRow("Sketch name", self.name_edit)
+        self.work_plane_label = QLabel("Global XY", self)
         self.work_plane_label.setObjectName("sketchWorkPlaneLabel")
-        form.addRow("工作平面", self.work_plane_label)
+        form.addRow("Work plane", self.work_plane_label)
 
-        grid_group = QGroupBox("网格", self)
+        grid_group = QGroupBox("Grid", self)
         grid_group.setObjectName("sketchGridGroup")
         grid_group.setStyleSheet(_SKETCH_SECTION_GROUP_STYLESHEET)
         grid_layout = QFormLayout(grid_group)
         grid_layout.addRow(self.grid_visible_check)
-        grid_layout.addRow("间距", self.spacing_spin)
+        grid_layout.addRow("Spacing", self.spacing_spin)
         history_row = QHBoxLayout()
         history_row.addWidget(self.undo_button)
         history_row.addWidget(self.redo_button)
@@ -741,13 +741,13 @@ class SketchEditorPanel(QWidget):
         content_layout = QVBoxLayout(scroll_content)
         content_layout.addLayout(form)
         content_layout.addWidget(grid_group)
-        content_layout.addWidget(QLabel("绘图工具", scroll_content))
+        content_layout.addWidget(QLabel("Drawing tools", scroll_content))
         content_layout.addLayout(first_modes)
         content_layout.addLayout(second_modes)
         content_layout.addWidget(self.line_parameter_group)
         content_layout.addWidget(self.circle_parameter_group)
         content_layout.addWidget(self.arc_parameter_group)
-        constraint_group = QGroupBox("约束", self)
+        constraint_group = QGroupBox("Constraints", self)
         constraint_group.setObjectName("sketchConstraintGroup")
         constraint_group.setStyleSheet(_SKETCH_SECTION_GROUP_STYLESHEET)
         constraint_layout = QVBoxLayout(constraint_group)
@@ -802,10 +802,10 @@ class SketchEditorPanel(QWidget):
             "sketchConstraintCommandPrompt"
         )
         self.cancel_constraint_command_button = QPushButton(
-            "取消", self.constraint_command_bar
+            "Cancel", self.constraint_command_bar
         )
         self.confirm_constraint_command_button = QPushButton(
-            "确定", self.constraint_command_bar
+            "OK", self.constraint_command_bar
         )
         self.cancel_constraint_command_button.clicked.connect(
             self._cancel_constraint_command
@@ -949,9 +949,9 @@ class SketchEditorPanel(QWidget):
         self._authoring_purpose = normalized
         self.finish_button.setText(
             {
-                "geometry": "完成草图",
-                "planar_boolean_tool": "完成工具草图",
-                "face_sketch": "创建",
+                "geometry": "Finish Sketch",
+                "planar_boolean_tool": "Finish Tool Sketch",
+                "face_sketch": "Create",
             }[normalized]
         )
         self.attach_viewport(viewport)
@@ -973,7 +973,7 @@ class SketchEditorPanel(QWidget):
         self.hide()
         self._clear_pending()
         self._authoring_purpose = "geometry"
-        self.finish_button.setText("完成草图")
+        self.finish_button.setText("Finish Sketch")
 
     def set_mode(self, mode: str) -> None:
         normalized = str(mode).strip().casefold()
@@ -988,7 +988,7 @@ class SketchEditorPanel(QWidget):
         self._clear_pending()
         if self._viewport is not None:
             self._viewport.set_sketch_authoring_mode(normalized)
-        self._set_status(f"草图工具：{self._mode_buttons[normalized].text()}")
+        self._set_status(f"Sketch tool: {self._mode_buttons[normalized].text()}")
 
     @property
     def mode(self) -> str:
@@ -1019,7 +1019,7 @@ class SketchEditorPanel(QWidget):
         if profile_analysis.profiles:
             preview = build_strict_sketch_draft_preview(
                 SketchGeometry(
-                    snapshot.name or "草图预览",
+                    snapshot.name or "Sketch preview",
                     snapshot.plane,
                     snapshot.points,
                     snapshot.curves,
@@ -1355,9 +1355,9 @@ class SketchEditorPanel(QWidget):
                 self._pending_points.append((u, v))
                 self._pending_references.append(reference_point)
                 if len(self._pending_points) == 1:
-                    self._set_status("三点圆弧：已选起点，请选择圆弧经过点")
+                    self._set_status("Three-point arc: start selected; select the through point")
                 elif len(self._pending_points) == 2:
-                    self._set_status("三点圆弧：已选经过点，请选择终点")
+                    self._set_status("Three-point arc: through point selected; select the end")
                 elif len(self._pending_points) == 3:
                     start, through, end = self._pending_points
                     start_id = self._point_id_at(*start)
@@ -1463,14 +1463,14 @@ class SketchEditorPanel(QWidget):
     ) -> QMenu:
         menu = QMenu(self._viewport or self)
         menu.setObjectName("sketchEntityContextMenu")
-        delete_action = menu.addAction("删除")
+        delete_action = menu.addAction("Delete")
         delete_action.triggered.connect(self.delete_selected)
         if (
             kind == "point"
             and self._require_controller().external_reference_for_point(entity_id)
             is not None
         ):
-            release_action = menu.addAction("解除关联")
+            release_action = menu.addAction("Release Association")
             release_action.triggered.connect(self.release_selected_association)
         return menu
 
@@ -1506,16 +1506,16 @@ class SketchEditorPanel(QWidget):
             self._set_status(str(error))
         else:
             self._set_status(
-                "没有可用的分割交点，已删除整条曲线"
+                "No split intersections; entire curve deleted"
                 if not replacements
-                else "已修剪鼠标所在的曲线段"
+                else "Curve segment under the pointer trimmed"
             )
         self._refresh()
 
     def delete_selected(self) -> None:
         controller = self._require_controller()
         if not controller.selected_ids:
-            self._set_status("请先用“选择”工具选中要删除的点或曲线")
+            self._set_status("Use Select to choose points or curves to delete")
             return
         entity_ids = controller.selected_ids
         if controller.snapshot().selected_kind == "point":
@@ -1529,25 +1529,25 @@ class SketchEditorPanel(QWidget):
             if dependent_ids and self._preferences.confirm_cascade_delete:
                 answer = QMessageBox.question(
                     self,
-                    "删除草图点" if len(entity_ids) == 1 else "删除多个草图点",
+                    "Delete Sketch Point" if len(entity_ids) == 1 else "Delete Sketch Points",
                     (
-                        f"删除点 {', '.join(entity_ids)} 将同时删除依赖曲线：\n"
+                        f"Deleting points {', '.join(entity_ids)} also deletes dependent curves:\n"
                         + "\n".join(dependent_ids)
-                        + "\n\n是否继续？"
+                        + "\n\nContinue?"
                     ),
                     QMessageBox.StandardButton.Yes
                     | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
                 )
                 if answer != QMessageBox.StandardButton.Yes:
-                    self._set_status("已取消删除")
+                    self._set_status("Deletion cancelled")
                     return
         try:
             controller.delete_many(list(entity_ids))
         except (KeyError, TypeError, ValueError) as error:
             self._set_status(str(error))
         else:
-            self._set_status(f"已删除草图实体 {', '.join(entity_ids)}")
+            self._set_status(f"Deleted sketch entities {', '.join(entity_ids)}")
         self._refresh()
 
     def _choose_constraint_type(self) -> None:
@@ -1558,7 +1558,7 @@ class SketchEditorPanel(QWidget):
     def _start_constraint_command(self, kind: str) -> None:
         normalized = str(kind).strip().casefold()
         if normalized not in _CONSTRAINT_LABELS:
-            raise ValueError("不支持的草图约束类型")
+            raise ValueError("Unsupported sketch constraint type")
         self.set_mode("select")
         self._constraint_command_kind = normalized
         self._constraint_command_targets.clear()
@@ -1593,43 +1593,43 @@ class SketchEditorPanel(QWidget):
             return ""
         if kind in {"fixed", "horizontal", "vertical", "radius"} and targets:
             entity_text = {
-                "fixed": "个点",
-                "horizontal": "条直线",
-                "vertical": "条直线",
-                "radius": "个圆或圆弧",
+                "fixed": "points",
+                "horizontal": "lines",
+                "vertical": "lines",
+                "radius": "circles or arcs",
             }[kind]
-            return f"已选择 {len(targets)} {entity_text}；可继续选择，或点击确定"
+            return f"Selected {entity_text}: {len(targets)}; select more or click OK"
         if kind == "distance" and targets and targets[0][0] == "curve":
-            return f"已选择 {len(targets)} 条直线；可继续选择，或点击确定"
+            return f"Selected lines: {len(targets)}; select more or click OK"
         if self._constraint_command_complete():
-            return f"{_CONSTRAINT_LABELS[kind]}：点击确定添加约束"
+            return f"{_CONSTRAINT_LABELS[kind]}: click OK to add the constraint"
         if kind == "coincident":
-            return "请选择第一个点" if not targets else "请选择第二个点"
+            return "Select the first point" if not targets else "Select the second point"
         if kind == "point_on_curve":
-            return "请选择点" if not targets else "请选择曲线"
+            return "Select a point" if not targets else "Select a curve"
         if kind in {"horizontal", "vertical"}:
-            return "请选择一条或多条直线"
+            return "Select one or more lines"
         if kind == "fixed":
-            return "请选择一个或多个点"
+            return "Select one or more points"
         if kind in {"parallel", "perpendicular", "equal_length", "angle"}:
-            return "请选择第一条直线" if not targets else "请选择第二条直线"
+            return "Select the first line" if not targets else "Select the second line"
         if kind == "tangent":
-            return "请选择第一条曲线" if not targets else "请选择第二条曲线"
+            return "Select the first curve" if not targets else "Select the second curve"
         if kind in {"equal_radius", "concentric"}:
             return (
-                "请选择第一个圆或圆弧"
+                "Select the first circle or arc"
                 if not targets
-                else "请选择第二个圆或圆弧"
+                else "Select the second circle or arc"
             )
         if kind == "distance":
             return (
-                "请选择一条或多条直线，或选择第一个点"
+                "Select lines or the first point"
                 if not targets
-                else "请选择第二个点"
+                else "Select the second point"
             )
         if kind == "radius":
-            return "请选择一个或多个圆或圆弧"
-        return "请选择约束对象"
+            return "Select one or more circles or arcs"
+        return "Select constraint targets"
 
     def _constraint_command_complete(self) -> bool:
         kind = self._constraint_command_kind
@@ -1786,24 +1786,24 @@ class SketchEditorPanel(QWidget):
         point_map = {point.id: point for point in snapshot.points}
         curve_map = {curve.id: curve for curve in snapshot.curves}
         if any(not item for item in targets):
-            raise ValueError("约束目标无效：实体 ID 不能为空")
+            raise ValueError("Invalid constraint target: entity ID cannot be empty")
         if len(set(targets)) != len(targets):
-            raise ValueError("约束目标无效：不能重复选择同一个实体")
+            raise ValueError("Invalid constraint target: duplicate entity")
 
         if normalized == "fixed":
             if not targets or any(item not in point_map for item in targets):
-                raise ValueError("约束目标无效：固定约束需要一个或多个草图点")
+                raise ValueError("Invalid constraint target: Fixed requires one or more sketch points")
         elif normalized in {"horizontal", "vertical"}:
             if not targets or any(
                 not isinstance(curve_map.get(item), SketchLine) for item in targets
             ):
-                raise ValueError("约束目标无效：该约束需要一条或多条直线")
+                raise ValueError("Invalid constraint target: one or more lines required")
         elif normalized == "radius":
             if not targets or any(
                 not isinstance(curve_map.get(item), (SketchCircle, SketchArc))
                 for item in targets
             ):
-                raise ValueError("约束目标无效：半径尺寸需要一个或多个圆或圆弧")
+                raise ValueError("Invalid constraint target: Radius requires one or more circles or arcs")
         elif not targets or not all(
             isinstance(curve_map.get(item), SketchLine) for item in targets
         ):
@@ -1887,7 +1887,7 @@ class SketchEditorPanel(QWidget):
         curve_map = {curve.id: curve for curve in snapshot.curves}
         targets = tuple(str(item).strip() for item in entity_ids)
         if any(not item for item in targets):
-            raise ValueError("约束目标无效：实体 ID 不能为空")
+            raise ValueError("Invalid constraint target: entity ID cannot be empty")
         used = {item.id.casefold() for item in snapshot.constraints}
         index = 1
         while f"C{index}".casefold() in used:
@@ -1896,7 +1896,7 @@ class SketchEditorPanel(QWidget):
         normalized = str(kind).strip().casefold()
         if normalized == "coincident":
             if len(targets) != 2 or any(item not in point_map for item in targets):
-                raise ValueError("约束目标无效：重合约束需要两个草图点")
+                raise ValueError("Invalid constraint target: Coincident requires two sketch points")
             constraint = SketchCoincidentConstraint(constraint_id, *targets)
         elif normalized == "point_on_curve":
             if (
@@ -1904,21 +1904,21 @@ class SketchEditorPanel(QWidget):
                 or targets[0] not in point_map
                 or targets[1] not in curve_map
             ):
-                raise ValueError("约束目标无效：点在曲线上需要一个点 ID 和一个曲线 ID")
+                raise ValueError("Invalid constraint target: Point on Curve requires a point ID and a curve ID")
             constraint = SketchPointOnCurveConstraint(constraint_id, *targets)
         elif normalized == "horizontal":
             if len(targets) != 1 or not isinstance(curve_map.get(targets[0]), SketchLine):
-                raise ValueError("约束目标无效：水平约束需要一条直线")
+                raise ValueError("Invalid constraint target: Horizontal requires a line")
             constraint = SketchHorizontalConstraint(constraint_id, targets[0])
         elif normalized == "vertical":
             if len(targets) != 1 or not isinstance(curve_map.get(targets[0]), SketchLine):
-                raise ValueError("约束目标无效：垂直约束需要一条直线")
+                raise ValueError("Invalid constraint target: Vertical requires a line")
             constraint = SketchVerticalConstraint(constraint_id, targets[0])
         elif normalized in {"parallel", "perpendicular", "equal_length", "angle"}:
             if len(targets) != 2 or any(
                 not isinstance(curve_map.get(item), SketchLine) for item in targets
             ):
-                raise ValueError("约束目标无效：该约束需要两条直线")
+                raise ValueError("Invalid constraint target: two lines required")
             relation_types = {
                 "parallel": SketchParallelConstraint,
                 "perpendicular": SketchPerpendicularConstraint,
@@ -1953,18 +1953,18 @@ class SketchEditorPanel(QWidget):
                 constraint = relation_types[normalized](constraint_id, *targets)
         elif normalized in {"tangent", "equal_radius", "concentric"}:
             if len(targets) != 2 or any(item not in curve_map for item in targets):
-                raise ValueError("约束目标无效：该约束需要两条曲线")
+                raise ValueError("Invalid constraint target: two curves required")
             first, second = (curve_map[item] for item in targets)
             if normalized == "tangent":
                 if isinstance(first, SketchLine) and isinstance(second, SketchLine):
-                    raise ValueError("约束目标无效：两条直线不能创建相切约束")
+                    raise ValueError("Invalid constraint target: two lines cannot be tangent")
                 branch_hint = _tangent_branch_hint(first, second, point_map)
                 constraint = SketchTangentConstraint(
                     constraint_id, *targets, branch_hint=branch_hint
                 )
             else:
                 if not all(isinstance(item, (SketchCircle, SketchArc)) for item in (first, second)):
-                    raise ValueError("约束目标无效：该约束需要两个圆或圆弧")
+                    raise ValueError("Invalid constraint target: two circles or arcs required")
                 relation_type = (
                     SketchEqualRadiusConstraint
                     if normalized == "equal_radius"
@@ -1973,7 +1973,7 @@ class SketchEditorPanel(QWidget):
                 constraint = relation_type(constraint_id, *targets)
         elif normalized == "fixed":
             if len(targets) != 1 or targets[0] not in point_map:
-                raise ValueError("约束目标无效：固定约束需要一个草图点")
+                raise ValueError("Invalid constraint target: Fixed requires a sketch point")
             point = point_map[targets[0]]
             constraint = SketchFixedConstraint(
                 constraint_id, point.id, point.u, point.v
@@ -1984,7 +1984,7 @@ class SketchEditorPanel(QWidget):
                 line = curve_map[ids[0]]
                 ids = (line.start_point_id, line.end_point_id)
             if len(ids) != 2 or any(item not in point_map for item in ids):
-                raise ValueError("约束目标无效：距离尺寸需要两个点或一条直线")
+                raise ValueError("Invalid constraint target: Distance requires two points or a line")
             measured = math.hypot(
                 point_map[ids[1]].u - point_map[ids[0]].u,
                 point_map[ids[1]].v - point_map[ids[0]].v,
@@ -1995,7 +1995,7 @@ class SketchEditorPanel(QWidget):
             )
         elif normalized == "radius":
             if len(targets) != 1:
-                raise ValueError("约束目标无效：半径尺寸需要一个圆或圆弧")
+                raise ValueError("Invalid constraint target: Radius requires a circle or arc")
             curve = curve_map.get(targets[0])
             if isinstance(curve, SketchCircle):
                 measured = curve.radius
@@ -2004,14 +2004,14 @@ class SketchEditorPanel(QWidget):
                 start = point_map[curve.start_point_id]
                 measured = math.hypot(start.u - center.u, start.v - center.v)
             else:
-                raise ValueError("约束目标无效：半径尺寸只适用于圆或圆弧")
+                raise ValueError("Invalid constraint target: Radius applies only to circles or arcs")
             constraint = SketchRadiusDimension(
                 constraint_id, curve.id,
                 measured if value is None or not driving else value,
                 driving=driving,
             )
         else:
-            raise ValueError("不支持的草图约束类型")
+            raise ValueError("Unsupported sketch constraint type")
         result = controller.add_constraint_and_solve(constraint)
         self._set_status(solve_status_text(result))
         if result.succeeded:
@@ -2027,7 +2027,7 @@ class SketchEditorPanel(QWidget):
             item for item in controller.constraints if item.id == constraint_id
         )
         if not isinstance(constraint, SketchFixedConstraint):
-            raise ValueError("所选约束不是固定约束")
+            raise ValueError("Selected constraint is not Fixed")
         replacement = SketchFixedConstraint(
             constraint.id,
             constraint.point_id,
@@ -2053,7 +2053,7 @@ class SketchEditorPanel(QWidget):
             constraint,
             (SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension),
         ):
-            raise ValueError("所选约束不是尺寸")
+            raise ValueError("Selected constraint is not a dimension")
         snapshot = controller.snapshot()
         measured = measured_dimension_value(
             constraint,
@@ -2088,7 +2088,7 @@ class SketchEditorPanel(QWidget):
 
     def delete_constraint(self, constraint_id: str) -> None:
         self._require_controller().delete_constraint(constraint_id)
-        self._set_status(f"已删除草图约束 {constraint_id}")
+        self._set_status(f"Deleted sketch constraint {constraint_id}")
         self._refresh()
 
     def preview_constrained_drag(
@@ -2129,7 +2129,7 @@ class SketchEditorPanel(QWidget):
     def delete_selected_constraint(self) -> None:
         constraint_id = self._selected_constraint_id()
         if constraint_id is None:
-            self._set_status("请先选择要删除的草图约束")
+            self._set_status("Select a sketch constraint to delete")
             return
         self.delete_constraint(constraint_id)
 
@@ -2225,7 +2225,7 @@ class SketchEditorPanel(QWidget):
     def _edit_selected_constraint(self) -> None:
         constraint_id = self._selected_constraint_id()
         if constraint_id is None:
-            self._set_status("请先选择要编辑的草图约束")
+            self._set_status("Select a sketch constraint to edit")
             return
         constraint = next(
             value for value in self._require_controller().constraints
@@ -2261,9 +2261,9 @@ class SketchEditorPanel(QWidget):
             {curve.id: curve for curve in snapshot.curves},
         )
         label = {
-            SketchDistanceDimension: "长度",
-            SketchRadiusDimension: "半径",
-            SketchAngleDimension: "角度 (rad)",
+            SketchDistanceDimension: "Length",
+            SketchRadiusDimension: "Radius",
+            SketchAngleDimension: "Angle (rad)",
         }[type(constraint)]
         dialog = _DimensionEditorDialog(
             label,
@@ -2339,13 +2339,13 @@ class SketchEditorPanel(QWidget):
             else None
         )
         if point_id is None:
-            self._set_status("请先选择一个关联草图点")
+            self._set_status("Select an associated sketch point")
             return
         if controller.external_reference_for_point(point_id) is None:
-            self._set_status("所选草图点没有外部关联")
+            self._set_status("Selected sketch point has no external association")
             return
         controller.release_point_association(point_id)
-        self._set_status(f"已解除草图点 {point_id} 的关联，当前位置保持不变")
+        self._set_status(f"Released association for sketch point {point_id}; position unchanged")
         self._refresh(selected_id=point_id)
 
     def undo(self) -> None:
@@ -2545,7 +2545,7 @@ class SketchEditorPanel(QWidget):
         delta_v = end.v - start.v
         current_length = math.hypot(delta_u, delta_v)
         if math.isclose(current_length, 0.0):
-            self._set_status("重合端点无法定义直线长度")
+            self._set_status("Coincident endpoints cannot define line length")
             self._refresh(selected_id=curve.id)
             return
         target = self.line_length_spin.value()
@@ -2780,9 +2780,9 @@ class SketchEditorPanel(QWidget):
         query = self.point_search_edit.text().strip().casefold()
         status_filter = self.point_filter_combo.currentData()
         expected_status = {
-            "free": "自由",
-            "associated": "已关联",
-            "unresolved": "未解析",
+            "free": "Free",
+            "associated": "Associated",
+            "unresolved": "Unresolved",
         }.get(status_filter)
         return tuple(
             point
@@ -2823,7 +2823,7 @@ class SketchEditorPanel(QWidget):
                 f"{point.u:.6g}",
                 f"{point.v:.6g}",
                 association_status,
-                "、".join(usage) if usage else "普通点",
+                ", ".join(usage) if usage else "Point",
                 str(dependency_count),
             )
             for column, value in enumerate(values):
@@ -2842,11 +2842,11 @@ class SketchEditorPanel(QWidget):
                 )
                 item.setData(Qt.ItemDataRole.UserRole, point.id)
                 if column in {0, 3, 4, 5} or (
-                    column in {1, 2} and association_status != "自由"
+                    column in {1, 2} and association_status != "Free"
                 ):
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                if column in {1, 2} and association_status != "自由":
-                    item.setToolTip("关联点坐标只读；解除关联后可编辑")
+                if column in {1, 2} and association_status != "Free":
+                    item.setToolTip("Associated point coordinates are read-only; release the association to edit")
                 self.points_table.setItem(row, column, item)
         self.points_table.setSortingEnabled(sorting_enabled)
         if sorting_enabled and sort_column >= 0:
@@ -3035,9 +3035,9 @@ class SketchEditorPanel(QWidget):
         try:
             self.name_edit.setText(snapshot.name)
             self.work_plane_label.setText(
-                "全局 XY"
+                "Global XY"
                 if snapshot.plane == SketchPlane.xy()
-                else "实体平面面（U/V）"
+                else "Planar body face (U/V)"
             )
             self._refresh_point_table(snapshot, selected_id=selected_id)
             diagnostics = controller.finish_diagnostics
@@ -3051,9 +3051,9 @@ class SketchEditorPanel(QWidget):
                 can_finish = self._can_close_planar_boolean_arcs(controller)
             self.finish_button.setEnabled(can_finish)
             self.finish_button.setToolTip(
-                "完成草图"
+                "Finish Sketch"
                 if can_finish
-                else "请先处理草图诊断"
+                else "Resolve sketch diagnostics first"
             )
             self.undo_button.setEnabled(controller.can_undo)
             self.redo_button.setEnabled(controller.can_redo)
@@ -3165,7 +3165,7 @@ class SketchEditorPanel(QWidget):
 
     def _pending_cancelled(self) -> None:
         self._clear_pending()
-        self._set_status("已取消当前草图操作")
+        self._set_status("Sketch operation cancelled")
 
     def _authoring_missed(self, reason: str) -> None:
         if self._constraint_command_kind is not None:
@@ -3176,12 +3176,12 @@ class SketchEditorPanel(QWidget):
             self._sync_point_table_selection()
             self._selection_changed_lightweight()
         messages = {
-            "select": "当前位置没有可选择的草图实体",
-            "trim": "请单击需要修剪的曲线",
-            "point.ray": "无法将单击位置投影到当前工作平面",
-            "point.parallel": "当前视线与工作平面平行",
+            "select": "No sketch entity to select here",
+            "trim": "Click a curve to trim",
+            "point.ray": "Cannot project the click onto the current work plane",
+            "point.parallel": "View direction is parallel to the work plane",
         }
-        self._set_status(messages.get(reason, f"草图操作未完成：{reason}"))
+        self._set_status(messages.get(reason, f"Sketch operation incomplete: {reason}"))
 
     def _set_status(self, message: str) -> None:
         self.statusChanged.emit(str(message))

@@ -1,1 +1,1 @@
-"""GUI 可视化数据适配层。"""
+"""GUI visualization data adapters."""

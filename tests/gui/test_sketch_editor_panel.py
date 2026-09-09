@@ -86,7 +86,7 @@ def test_panel_exposes_grid_and_constraint_controls(gui_application) -> None:
     assert panel.spacing_spin.value() == 0.1
     assert panel.spacing_spin.text() == "0.1"
     assert panel.grid_visible_check.isVisible()
-    for title in ("网格", "约束"):
+    for title in ("Grid", "Constraints"):
         group = next(
             group for group in panel.findChildren(QGroupBox)
             if group.title() == title
@@ -220,19 +220,19 @@ def test_constraint_command_bar_uses_staged_prompts_and_target_highlights(gui_ap
 
     panel._start_constraint_command("coincident")
     assert panel.constraint_command_bar.parentWidget() is viewport
-    assert panel.constraint_command_prompt.text() == "请选择第一个点"
+    assert panel.constraint_command_prompt.text() == "Select the first point"
     panel._select_point("P1")
-    assert panel.constraint_command_prompt.text() == "请选择第二个点"
+    assert panel.constraint_command_prompt.text() == "Select the second point"
     assert viewport._sketch_constraint_selection == (("point", "P1"),)
 
     panel._select_point("P1")
-    assert panel.constraint_command_prompt.text() == "请选择第一个点"
+    assert panel.constraint_command_prompt.text() == "Select the first point"
     assert viewport._sketch_constraint_selection == ()
 
     panel._select_point("P1")
     panel._select_point("P2")
-    assert panel.constraint_command_prompt.text() == "重合：点击确定添加约束"
-    assert "已选择" not in panel.constraint_command_prompt.text()
+    assert panel.constraint_command_prompt.text() == "Coincident: click OK to add the constraint"
+    assert "Selected" not in panel.constraint_command_prompt.text()
     panel.cancel_constraint_command_button.click()
     assert panel._constraint_command_kind is None
     assert not viewport._sketch_constraint_selection_active
@@ -254,7 +254,7 @@ def test_entity_delete_is_available_by_keyboard_and_context_menu(gui_application
 
     menu = panel._create_sketch_context_menu("point", point.id)
 
-    assert [action.text() for action in menu.actions()] == ["删除", "解除关联"]
+    assert [action.text() for action in menu.actions()] == ["Delete", "Release Association"]
     viewport.sketchDeleteRequested.emit()
     assert controller.snapshot().points == ()
     menu.close()
@@ -1116,17 +1116,17 @@ def test_associated_point_status_is_read_only_until_released(gui_application) ->
     controller.select_point(point.id)
     panel = SketchEditorPanel(controller)
 
-    assert panel.points_table.item(0, 3).text() == "已关联"
+    assert panel.points_table.item(0, 3).text() == "Associated"
     assert not (
         panel.points_table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
     )
     controller.refresh_external_references(())
     panel._refresh()
-    assert panel.points_table.item(0, 3).text() == "未解析"
+    assert panel.points_table.item(0, 3).text() == "Unresolved"
 
     panel.release_selected_association()
 
-    assert panel.points_table.item(0, 3).text() == "自由"
+    assert panel.points_table.item(0, 3).text() == "Free"
     assert panel.points_table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
 
 
@@ -1395,12 +1395,12 @@ def test_snap_categories_tolerance_priority_intersections_and_feedback(gui_appli
     assert point == (0.0, 0.0, 0.0)
     assert viewport._sketch_authoring_snap_kind == "intersection"
 
-    assert _sketch_snap_label("sketch_point") == "草图点"
-    assert _sketch_snap_label("topology_vertex") == "外部参考点"
-    assert _sketch_snap_label("grid") == "网格点"
-    assert _sketch_snap_label("line_midpoint") == "中点"
-    assert _sketch_snap_label("circle_center") == "圆心"
-    assert _sketch_snap_label("intersection") == "交点"
+    assert _sketch_snap_label("sketch_point") == "Sketch point"
+    assert _sketch_snap_label("topology_vertex") == "External reference point"
+    assert _sketch_snap_label("grid") == "Grid point"
+    assert _sketch_snap_label("line_midpoint") == "Midpoint"
+    assert _sketch_snap_label("circle_center") == "Circle center"
+    assert _sketch_snap_label("intersection") == "Intersection"
     viewport.close()
 
 

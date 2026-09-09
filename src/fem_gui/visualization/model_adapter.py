@@ -1,4 +1,4 @@
-"""有限元网格到 VTK 拓扑的无界面适配。"""
+"""Headless FEM mesh to VTK topology adapters."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from fem.post.vtk import cells as vtk_cells
 
 @dataclass(frozen=True, slots=True)
 class ModelGeometry:
-    """PyVista 可直接消费的拓扑与真实编号映射。"""
+    """Topology and original ID mappings for direct PyVista use."""
 
     points: np.ndarray
     cells: tuple[tuple[int, ...], ...]
@@ -109,13 +109,13 @@ def _profile_spatial_dimension(profile: ElementResultProfile) -> int:
 
 
 def build_model_geometry(model: Any) -> ModelGeometry:
-    """使用正式 VTK 单元映射构造 GUI 几何。"""
+    """Build GUI geometry using the standard VTK cell mapping."""
     mesh = model.mesh
     node_id_to_point_index = {
         int(node.id): index for index, node in enumerate(mesh.nodes)
     }
     if len(node_id_to_point_index) != len(mesh.nodes):
-        raise ValueError("节点编号必须唯一")
+        raise ValueError("Node IDs must be unique")
     points = np.fromiter(
         (
             coordinate
@@ -135,7 +135,7 @@ def build_model_geometry(model: Any) -> ModelGeometry:
         int(element.id): index for index, element in enumerate(elements)
     }
     if len(element_id_to_cell_index) != len(elements):
-        raise ValueError("单元编号必须唯一")
+        raise ValueError("Element IDs must be unique")
 
     flat_cells: list[int] = []
     cell_types = np.empty(len(elements), dtype=np.uint8)
@@ -164,7 +164,7 @@ def build_model_geometry(model: Any) -> ModelGeometry:
         flat_cells.extend((expected_nodes, *point_ids))
         cell_types[index] = cell_type
     if missing:
-        raise ValueError(f"以下单元无法转换为 VTK：{missing}")
+        raise ValueError(f"Cannot convert these elements to VTK: {missing}")
     return ModelGeometry(
         points=points,
         cells=tuple(connectivity),
@@ -192,7 +192,7 @@ def build_model_geometry(model: Any) -> ModelGeometry:
 
 
 def pyvista_cell_array(geometry: ModelGeometry) -> np.ndarray:
-    """返回 PyVista legacy 单元数组。"""
+    """Return the PyVista legacy cell array."""
     return geometry.cell_array
 
 
@@ -253,7 +253,7 @@ def build_result_archive_model_view(
     projection: ResultArchiveModelProjection,
     profile: ElementResultProfile,
     *,
-    name: str = "结果",
+    name: str = "Results",
 ) -> ArchiveModelView:
     """Create an immutable structural view consumed by GUI widgets."""
 
@@ -299,7 +299,7 @@ def build_result_archive_model_view(
     }
     return ArchiveModelView(
         mesh=mesh,
-        name=str(name or "结果"),
+        name=str(name or "Results"),
         node_sets=MappingProxyType(node_sets),
         element_sets=MappingProxyType(element_sets),
         surfaces=MappingProxyType({}),

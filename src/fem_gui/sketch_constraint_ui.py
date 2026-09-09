@@ -53,20 +53,20 @@ class SketchInferencePreview:
 
 
 _KIND_TEXT = {
-    SketchCoincidentConstraint: ("coincident", "重合"),
-    SketchPointOnCurveConstraint: ("point_on_curve", "点在曲线上"),
-    SketchHorizontalConstraint: ("horizontal", "水平"),
-    SketchVerticalConstraint: ("vertical", "垂直"),
-    SketchParallelConstraint: ("parallel", "平行"),
-    SketchPerpendicularConstraint: ("perpendicular", "互相垂直"),
-    SketchTangentConstraint: ("tangent", "相切"),
-    SketchEqualLengthConstraint: ("equal_length", "等长"),
-    SketchEqualRadiusConstraint: ("equal_radius", "等半径"),
-    SketchConcentricConstraint: ("concentric", "同心"),
-    SketchFixedConstraint: ("fixed", "固定"),
-    SketchDistanceDimension: ("distance", "距离"),
-    SketchRadiusDimension: ("radius", "半径"),
-    SketchAngleDimension: ("angle", "角度"),
+    SketchCoincidentConstraint: ("coincident", "Coincident"),
+    SketchPointOnCurveConstraint: ("point_on_curve", "Point on Curve"),
+    SketchHorizontalConstraint: ("horizontal", "Horizontal"),
+    SketchVerticalConstraint: ("vertical", "Vertical"),
+    SketchParallelConstraint: ("parallel", "Parallel"),
+    SketchPerpendicularConstraint: ("perpendicular", "Perpendicular"),
+    SketchTangentConstraint: ("tangent", "Tangent"),
+    SketchEqualLengthConstraint: ("equal_length", "Equal Length"),
+    SketchEqualRadiusConstraint: ("equal_radius", "Equal Radius"),
+    SketchConcentricConstraint: ("concentric", "Concentric"),
+    SketchFixedConstraint: ("fixed", "Fixed"),
+    SketchDistanceDimension: ("distance", "Distance"),
+    SketchRadiusDimension: ("radius", "Radius"),
+    SketchAngleDimension: ("angle", "Angle"),
 }
 
 
@@ -257,17 +257,17 @@ def infer_line_preview(
 
 def solve_status_text(result: SketchSolveResult) -> str:
     labels = {
-        "under_constrained": "欠约束",
-        "fully_constrained": "完全约束",
-        "redundant": "冗余约束",
-        "conflicting": "约束冲突",
-        "failed": "约束求解失败",
+        "under_constrained": "Under-constrained",
+        "fully_constrained": "Fully constrained",
+        "redundant": "Redundant constraints",
+        "conflicting": "Conflicting constraints",
+        "failed": "Constraint solve failed",
     }
     text = labels[result.status]
     if result.redundant_constraint_ids:
-        text += "；冗余：" + "、".join(result.redundant_constraint_ids)
+        text += "; redundant: " + ", ".join(result.redundant_constraint_ids)
     if result.conflicting_constraint_ids:
-        text += "；冲突候选：" + "、".join(result.conflicting_constraint_ids)
+        text += "; conflict candidates: " + ", ".join(result.conflicting_constraint_ids)
     return text
 
 

@@ -1,4 +1,4 @@
-"""约束与载荷符号的状态和采样辅助。"""
+"""State and sampling helpers for constraint and load symbols."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ _DISTRIBUTED_SYMBOL_LIMITS = {"low": 6, "medium": 12, "high": 24}
 
 @dataclass(frozen=True, slots=True)
 class SymbolSettings:
-    """约束与载荷符号的完整显示状态。"""
+    """Complete display state for constraint and load symbols."""
 
     step_name: str | None = None
     show_constraints: bool = True
@@ -29,7 +29,7 @@ class SymbolSettings:
 
 
 def sample_polyline(points: np.ndarray, density: str) -> np.ndarray:
-    """沿折线按弧长生成载荷符号采样点。"""
+    """Sample load symbols along a polyline by arc length."""
     points = np.asarray(points, dtype=float)
     count = _DISTRIBUTED_SYMBOL_LIMITS.get(
         density,
@@ -263,7 +263,7 @@ def sample_distributed_faces(
 
 
 def sample_face(points: np.ndarray, density: str) -> np.ndarray:
-    """在面中心附近生成稳定的可视化采样点。"""
+    """Generate stable visualization samples near the face center."""
     points = np.asarray(points, dtype=float)
     if len(points) == 0:
         return np.empty((0, 3), dtype=float)

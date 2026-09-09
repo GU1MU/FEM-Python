@@ -34,7 +34,7 @@ def test_archived_section_points_and_resultants_have_chinese_tree_labels(gui_app
         variables = {step.child(index).text(0): step.child(index) for index in range(step.childCount())}
         stress = variables["应力 S"]
         expected = ("右上", "左上", "左下", "右下") if section_type == "rectangle" else (
-            "截面点 1", "截面点 2", "截面点 3", "截面点 4",
+            "Section point 1", "Section point 2", "Section point 3", "Section point 4",
         )
         assert tuple(stress.child(index).text(0) for index in range(stress.childCount())) == expected
         for label, components in [

@@ -86,7 +86,7 @@ class WireDraftValidationError(ValueError):
     def __init__(self, diagnostics: Sequence[WireDraftDiagnostic]):
         self.diagnostics = tuple(diagnostics)
         message = "; ".join(item.message for item in self.diagnostics)
-        super().__init__(message or "线体草图尚未完成")
+        super().__init__(message or "Wire sketch is incomplete")
 
 
 def _plane_name(plane: str) -> str:
@@ -186,7 +186,7 @@ class WireDraftController:
         snapshot: WireDraftSnapshot | None = None,
         *,
         root: WireGeometry | None = None,
-        name: str = "线体-1",
+        name: str = "Wire-1",
     ) -> None:
         if snapshot is not None and root is not None:
             raise ValueError("provide either snapshot or root, not both")
@@ -328,7 +328,7 @@ class WireDraftController:
         )
         if references:
             raise ValueError(
-                f"无法删除点 {name!r}，以下杆件仍在使用该点："
+                f"Cannot delete point {name!r}; it is used by these members: "
                 + ", ".join(references)
             )
         del self._points[index]
@@ -417,7 +417,7 @@ class WireDraftController:
         diagnostics: list[WireDraftDiagnostic] = []
         if not self._name.strip():
             diagnostics.append(
-                WireDraftDiagnostic("wire.name.empty", "线体名称不能为空", False)
+                WireDraftDiagnostic("wire.name.empty", "Wire name cannot be empty", False)
             )
         point_names = [point.name for point in self._points]
         member_names = [member.name for member in self._members]
@@ -426,7 +426,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "point.name.empty",
-                        "点名称不能为空",
+                        "Point name cannot be empty",
                     )
                 )
         for name in member_names:
@@ -434,16 +434,16 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.name.empty",
-                        "杆件名称不能为空",
+                        "Member name cannot be empty",
                     )
                 )
         if len({name.casefold() for name in point_names}) != len(point_names):
             diagnostics.append(
-                WireDraftDiagnostic("point.name.duplicate", "点名称不能重复")
+                WireDraftDiagnostic("point.name.duplicate", "Point names must be unique")
             )
         if len({name.casefold() for name in member_names}) != len(member_names):
             diagnostics.append(
-                WireDraftDiagnostic("member.name.duplicate", "杆件名称不能重复")
+                WireDraftDiagnostic("member.name.duplicate", "Member names must be unique")
             )
         return tuple(diagnostics)
 
@@ -451,11 +451,11 @@ class WireDraftController:
         diagnostics = list(self.editing_diagnostics())
         if len(self._points) < 2:
             diagnostics.append(
-                WireDraftDiagnostic("wire.points.minimum", "线体至少需要两个点")
+                WireDraftDiagnostic("wire.points.minimum", "Wire requires at least two points")
             )
         if not self._members:
             diagnostics.append(
-                WireDraftDiagnostic("wire.members.minimum", "线体至少需要一根杆件")
+                WireDraftDiagnostic("wire.members.minimum", "Wire requires at least one member")
             )
         point_names = {point.name for point in self._points}
         used_points: set[str] = set()
@@ -466,7 +466,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "point.coordinate.nonfinite",
-                        f"点 {point.name!r} 的坐标必须是有限数值",
+                        f"Point {point.name!r} coordinates must be finite",
                     )
                 )
         for member in self._members:
@@ -474,7 +474,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.unknown",
-                        f"杆件 {member.name!r} 引用了不存在的点",
+                        f"Member {member.name!r} references a missing point",
                     )
                 )
                 continue
@@ -483,7 +483,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.same",
-                        f"杆件 {member.name!r} 的起点和终点必须不同",
+                        f"Member {member.name!r} endpoints must be distinct",
                     )
                 )
                 continue
@@ -493,7 +493,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.length.zero",
-                        f"杆件 {member.name!r} 的长度为零",
+                        f"Member {member.name!r} has zero length",
                     )
                 )
             pair = frozenset((member.start, member.end))
@@ -501,7 +501,7 @@ class WireDraftController:
                 diagnostics.append(
                     WireDraftDiagnostic(
                         "member.endpoint.duplicate",
-                        f"杆件 {member.name!r} 与已有杆件连接了同一对端点",
+                        f"Member {member.name!r} duplicates an existing member's endpoints",
                     )
                 )
             endpoint_pairs.add(pair)
@@ -510,7 +510,7 @@ class WireDraftController:
             diagnostics.append(
                 WireDraftDiagnostic(
                     "point.unused",
-                    "以下点尚未连接到任何杆件："
+                    "These points are not connected to any member: "
                     + ", ".join(unused),
                 )
             )

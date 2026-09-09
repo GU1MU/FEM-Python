@@ -72,7 +72,7 @@ class FaceSupportedSketchController:
         workplane: ResolvedFaceWorkplane,
         *,
         root: SketchGeometry | None = None,
-        name: str = "面草图-1",
+        name: str = "Face-Sketch-1",
         reference_points: tuple[SketchReferencePoint, ...] = (),
         external_references: tuple[SketchExternalReference, ...] = (),
         external_coincidences: tuple[SketchExternalCoincidence, ...] = (),
@@ -83,10 +83,10 @@ class FaceSupportedSketchController:
         if type(workplane) is not ResolvedFaceWorkplane:
             raise TypeError("workplane must be a ResolvedFaceWorkplane")
         if session.source_kind != "native":
-            raise ValueError("面支撑草图只能从自主模型启动")
+            raise ValueError("Face-supported sketches require a Native model")
         part = session.part(part_id)
         if part.suppressed or part.geometry_recipe is None:
-            raise ValueError("目标 Part 不可编辑")
+            raise ValueError("Target part is not editable")
         body = _body_snapshot(part, workplane.target_body_id)
         draft = (
             SketchDraftController(root=root)
@@ -104,7 +104,7 @@ class FaceSupportedSketchController:
             )
         draft.refresh_external_references(tuple(reference_points))
         if draft.plane != workplane.plane:
-            raise ValueError("草图工作平面与所选支撑面不一致")
+            raise ValueError("Sketch work plane does not match the support face")
         sketch_snapshot = draft.snapshot()
         self._draft = draft
         self._launch = FaceSketchLaunchSnapshot(
@@ -167,19 +167,19 @@ def _body_snapshot(
     recipe = part.geometry_recipe
     if isinstance(recipe, MultiBodyGeometry):
         if not target_body_id.startswith("body:"):
-            raise ValueError("工作面目标 Body ID 无效")
+            raise ValueError("Work plane target body ID is invalid")
         body_id = target_body_id.removeprefix("body:")
         try:
             body = recipe.body(body_id)
         except (KeyError, ValueError) as error:
-            raise ValueError("工作面目标 Body 已失效") from error
+            raise ValueError("Work plane target body no longer exists") from error
         return FaceSketchBodySnapshot(
             target_body_id,
             body.name,
             body.recipe,
         )
     if target_body_id != "body:domain":
-        raise ValueError("工作面目标 Body 与 Part 几何不一致")
+        raise ValueError("Work plane target body does not match the part geometry")
     return FaceSketchBodySnapshot(
         target_body_id,
         part.body_name,

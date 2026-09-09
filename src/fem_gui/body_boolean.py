@@ -75,7 +75,7 @@ class BodyBooleanController:
 
     def body_label(self, body_id: str | None) -> str:
         if body_id is None:
-            return "未选择"
+            return "Not selected"
         body = self.geometry.body(body_id)
         return f"{body.name} ({body.id})"
 

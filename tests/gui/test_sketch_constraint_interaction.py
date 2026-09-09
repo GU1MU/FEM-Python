@@ -67,10 +67,10 @@ def test_overlay_and_chinese_solver_status_are_renderer_independent() -> None:
     )
 
     assert [(item.kind, item.text, item.entity_ids) for item in overlays] == [
-        ("horizontal", "水平", ("L1",))
+        ("horizontal", "Horizontal", ("L1",))
     ]
-    assert "剩余自由度" not in solve_status_text(result)
-    assert solve_status_text(result) == "欠约束"
+    assert "Remaining DOFs" not in solve_status_text(result)
+    assert solve_status_text(result) == "Under-constrained"
 
 
 def test_radius_overlay_shows_value_away_from_circle_center() -> None:
@@ -113,15 +113,15 @@ def test_panel_constraint_crud_filters_selection_and_driving_dimension(gui_appli
     assert [
         panel.constraints_table.horizontalHeaderItem(column).text()
         for column in range(2)
-    ] == ["类型", "值"]
+    ] == ["Type", "Value"]
     assert panel.constraints_table.verticalHeader().isHidden()
     assert (
         panel.constraints_table.verticalScrollMode()
         == QAbstractItemView.ScrollMode.ScrollPerPixel
     )
-    assert panel.constraints_table.item(0, 0).text() == "水平"
+    assert panel.constraints_table.item(0, 0).text() == "Horizontal"
     assert panel.constraints_table.item(0, 1).text() == ""
-    assert panel.constraints_table.item(1, 0).text() == "距离"
+    assert panel.constraints_table.item(1, 0).text() == "Distance"
     assert panel.constraints_table.item(1, 1).text() == "3"
     assert all(
         panel.constraints_table.item(row, column).textAlignment()
@@ -157,12 +157,12 @@ def test_staged_selection_creates_point_on_curve_without_stable_ids(gui_applicat
     panel = SketchEditorPanel(controller)
     panel._start_constraint_command("point_on_curve")
 
-    assert panel.constraint_command_prompt.text() == "请选择点"
+    assert panel.constraint_command_prompt.text() == "Select a point"
     assert not panel.confirm_constraint_command_button.isEnabled()
     panel._select_point("P3")
-    assert panel.constraint_command_prompt.text() == "请选择曲线"
+    assert panel.constraint_command_prompt.text() == "Select a curve"
     panel._select_curve("L1")
-    assert "已选择" not in panel.constraint_command_prompt.text()
+    assert "Selected" not in panel.constraint_command_prompt.text()
     assert "1/" not in panel.constraint_command_prompt.text()
     assert panel.confirm_constraint_command_button.isEnabled()
     panel.confirm_constraint_command_button.click()
@@ -341,7 +341,7 @@ def test_fixed_constraint_overlay_is_offset_from_the_constrained_point() -> None
     )[0]
 
     assert overlay.kind == "fixed"
-    assert overlay.text == "固定"
+    assert overlay.text == "Fixed"
     assert overlay.position[:2] == pytest.approx((0.07, 0.07))
 
 
@@ -357,7 +357,7 @@ def test_staged_fixed_selection_creates_one_constraint_per_point_atomically(gui_
     panel._select_point("P1")
     panel._select_point("P2")
     assert panel.confirm_constraint_command_button.isEnabled()
-    assert "2 个点" in panel.constraint_command_prompt.text()
+    assert "points: 2" in panel.constraint_command_prompt.text()
     panel._confirm_constraint_command()
 
     assert len(controller.constraints) == 2
@@ -397,7 +397,7 @@ def test_staged_multi_line_selection_creates_independent_constraints_atomically(
     panel._select_curve("L1")
     panel._select_curve("L2")
     assert panel.confirm_constraint_command_button.isEnabled()
-    assert "2 条直线" in panel.constraint_command_prompt.text()
+    assert "lines: 2" in panel.constraint_command_prompt.text()
     panel._confirm_constraint_command()
 
     assert len(controller.constraints) == 2
@@ -433,7 +433,7 @@ def test_staged_multi_radius_selection_creates_dimensions_atomically(gui_applica
     panel._select_curve("C1")
     panel._select_curve("A1")
     assert panel.confirm_constraint_command_button.isEnabled()
-    assert "2 个圆或圆弧" in panel.constraint_command_prompt.text()
+    assert "circles or arcs: 2" in panel.constraint_command_prompt.text()
     panel._confirm_constraint_command()
 
     dimensions = controller.constraints
@@ -514,7 +514,7 @@ def test_all_seven_create_api_entries_validate_targets(
 )
 def test_invalid_constraint_targets_raise_chinese_value_error(gui_application, kind, targets) -> None:
     panel = SketchEditorPanel(_constraint_controller())
-    with pytest.raises(ValueError, match="约束目标无效"):
+    with pytest.raises(ValueError, match="Invalid constraint target"):
         panel.create_constraint(kind, targets, value=1.0)
 
 
@@ -525,7 +525,7 @@ def test_staged_selection_ignores_wrong_entity_kind_without_crashing(gui_applica
 
     assert panel.controller.constraints == ()
     assert panel._constraint_command_targets == []
-    assert panel.constraint_command_prompt.text() == "请选择点"
+    assert panel.constraint_command_prompt.text() == "Select a point"
     assert not panel.confirm_constraint_command_button.isEnabled()
 
 
@@ -593,8 +593,8 @@ def test_conflict_preview_has_chinese_reason_and_writes_no_history() -> None:
         add_constraints=(SketchDistanceDimension("D1", "P1", "P2", 3.0),)
     )
     assert result.status == "conflicting"
-    assert "约束冲突" in solve_status_text(result)
-    assert "冲突候选" in solve_status_text(result)
+    assert "Conflicting constraints" in solve_status_text(result)
+    assert "conflict candidates" in solve_status_text(result)
     assert controller.snapshot() == before
 
 

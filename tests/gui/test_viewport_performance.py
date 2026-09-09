@@ -463,7 +463,7 @@ def test_symbol_sampling_density_override_is_explicit_and_reversible(gui_applica
     assert viewport._effective_symbol_sampling_density() == "low"
     viewport.set_symbol_sampling_density_override(None)
     assert viewport._effective_symbol_sampling_density() == "high"
-    with pytest.raises(ValueError, match="符号采样密度"):
+    with pytest.raises(ValueError, match="Symbol sampling density"):
         viewport.set_symbol_sampling_density_override("invalid")
     viewport.close()
 

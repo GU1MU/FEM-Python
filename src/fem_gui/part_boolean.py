@@ -35,7 +35,7 @@ class PartBooleanController:
             if not part.suppressed and part.dimension == 3
         )
         if len(candidates) < 2:
-            raise ValueError("实体布尔需要至少两个未抑制三维部件")
+            raise ValueError("Solid Boolean requires at least two unsuppressed 3D parts")
         if self.target_part_id is not None:
             self._require_operand(self.target_part_id)
 
@@ -49,12 +49,12 @@ class PartBooleanController:
 
     def set_operation(self, operation: str) -> None:
         if operation not in {"fuse", "cut"}:
-            raise ValueError("实体布尔操作必须是合并或切除")
+            raise ValueError("Solid Boolean operation must be Fuse or Cut")
         self.operation = operation
 
     def request_selection(self, slot: BooleanSelectionSlot) -> None:
         if slot not in {"target", "tool"}:
-            raise ValueError("选择槽必须是目标部件或工具部件")
+            raise ValueError("Selection slot must be the target or tool part")
         self.pending_slot = slot
 
     def assign_reference(
@@ -62,11 +62,11 @@ class PartBooleanController:
         reference: LogicalEntityRef,
     ) -> BooleanSelectionSlot:
         if self.pending_slot is None:
-            raise ValueError("当前没有待选择的布尔操作对象")
+            raise ValueError("No Boolean object is awaiting selection")
         if type(reference) is not LogicalEntityRef:
-            raise TypeError("实体布尔选择需要逻辑引用")
+            raise TypeError("Solid Boolean selection requires a logical reference")
         if reference.kind != "part":
-            raise ValueError("请选择一个稳定部件")
+            raise ValueError("Select a stable part")
         part_id = reference.logical_id.split(":", 1)[1]
         self._require_operand(part_id)
         slot = self.pending_slot
@@ -74,7 +74,7 @@ class PartBooleanController:
             self.tool_part_id if slot == "target" else self.target_part_id
         )
         if part_id == other:
-            raise ValueError("目标部件和工具部件必须不同")
+            raise ValueError("Target and tool parts must differ")
         if slot == "target":
             self.target_part_id = part_id
         else:
@@ -87,7 +87,7 @@ class PartBooleanController:
 
     def part_label(self, part_id: str | None) -> str:
         if part_id is None:
-            return "未选择"
+            return "Not selected"
         part = self._require_operand(part_id)
         return f"{part.name} [{part.id}]"
 
@@ -98,7 +98,7 @@ class PartBooleanController:
             if part.suppressed or part.dimension != 3:
                 break
             return part
-        raise ValueError(f"{part_id} 不是可用的三维部件")
+        raise ValueError(f"{part_id} is not an available 3D part")
 
 
 __all__ = [

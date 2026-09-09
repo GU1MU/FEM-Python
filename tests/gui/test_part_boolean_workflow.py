@@ -62,7 +62,7 @@ def test_controller_rejects_face_as_part_operand() -> None:
     controller = PartBooleanController(_parts(), 4, "cut")
     controller.request_selection("target")
 
-    with pytest.raises(ValueError, match="稳定部件"):
+    with pytest.raises(ValueError, match="stable part"):
         controller.assign_reference(LogicalEntityRef("face:P1/top"))
 
 
@@ -77,13 +77,13 @@ def test_panel_uses_part_terminology_and_result_name(gui_application) -> None:
     )
     panel.begin(controller)
 
-    assert panel.result_name() == "合并结果-1"
+    assert panel.result_name() == "Fuse-Result-1"
     texts = {
         widget.text()
         for widget in panel.findChildren(type(panel.status_label))
     }
-    assert any("目标部件" in text for text in texts)
-    assert any("工具部件" in text for text in texts)
+    assert any("Target part" in text for text in texts)
+    assert any("Tool part" in text for text in texts)
     panel.close()
 
 
@@ -146,8 +146,8 @@ def test_3d_boolean_parameter_dialog_locks_requested_operation(gui_application) 
 
     assert dialog.operation_combo.currentData() == "cut"
     assert not dialog.operation_combo.isEnabled()
-    assert dialog.windowTitle() == "拉伸切除"
-    assert dialog.distance_label.text() == "切除深度："
+    assert dialog.windowTitle() == "Extrude Cut"
+    assert dialog.distance_label.text() == "Cut depth:"
     dialog.close()
 
 

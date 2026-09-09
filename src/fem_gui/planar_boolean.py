@@ -70,7 +70,7 @@ class PlanarBooleanController:
 
     def confirm_target_selection(self) -> None:
         if self.target_face_id is None:
-            raise ValueError("请先选择目标面")
+            raise ValueError("Select the target face first")
         self.selecting_target = False
 
     def clear_target(self) -> None:
@@ -138,13 +138,13 @@ class PlanarBooleanController:
         relations = tuple(coincidences)
         unresolved = tuple(sorted(set(unresolved_reference_ids)))
         if any(type(item) is not SketchExternalReference for item in values):
-            raise TypeError("二维布尔外部参考类型无效")
+            raise TypeError("Invalid 2D Boolean external reference type")
         if any(type(item) is not SketchExternalCoincidence for item in relations):
-            raise TypeError("二维布尔外部重合关系类型无效")
+            raise TypeError("Invalid 2D Boolean external coincidence type")
         if len({item.id for item in values}) != len(values):
-            raise ValueError("二维布尔外部参考 ID 不能重复")
+            raise ValueError("2D Boolean external reference IDs must be unique")
         if len({item.point_id for item in relations}) != len(relations):
-            raise ValueError("每个二维布尔草图点最多只能绑定一个外部参考")
+            raise ValueError("Each 2D Boolean sketch point can bind to at most one external reference")
         reference_ids = {item.id for item in values}
         point_ids = (
             set()
@@ -155,9 +155,9 @@ class PlanarBooleanController:
             item.reference_id not in reference_ids or item.point_id not in point_ids
             for item in relations
         ):
-            raise ValueError("二维布尔外部关联引用了不存在的点或参考")
+            raise ValueError("2D Boolean external association references a missing point or reference")
         if not set(unresolved).issubset(reference_ids):
-            raise ValueError("二维布尔未解析状态引用了不存在的外部参考")
+            raise ValueError("2D Boolean unresolved state references a missing external reference")
         self.external_references = values
         self.external_coincidences = relations
         self.unresolved_reference_ids = unresolved
@@ -175,12 +175,12 @@ class PlanarBooleanController:
         self.tool_face_ids = selection.tool_face_ids
 
     def target_label(self) -> str:
-        return "已选择" if self.target_face_id is not None else "未选择"
+        return "Selected" if self.target_face_id is not None else "Not selected"
 
     def tool_label(self) -> str:
         if self.tool_geometry is None:
-            return "未绘制"
-        return f"{len(self.tool_face_ids)} 个闭合轮廓"
+            return "Not drawn"
+        return f"Closed profiles: {len(self.tool_face_ids)}"
 
 
 def planar_reference_points(
@@ -361,7 +361,7 @@ def _face_area_center(
             weighted_v += area * (first[1] + second[1] + third[1]) / 3.0
             total_area += area
     if total_area <= 0.0:
-        raise ValueError("目标面无法计算几何中心")
+        raise ValueError("Cannot compute the target face centroid")
     return weighted_u / total_area, weighted_v / total_area
 
 

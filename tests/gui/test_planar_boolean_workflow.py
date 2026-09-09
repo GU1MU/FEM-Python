@@ -67,8 +67,8 @@ def test_controller_keeps_target_and_tool_state_detached() -> None:
     assert controller.target_face_id == "face:domain"
     assert len(controller.tool_face_ids) == 1
     assert controller.geometry == source
-    assert controller.target_label() == "已选择"
-    assert controller.tool_label() == "1 个闭合轮廓"
+    assert controller.target_label() == "Selected"
+    assert controller.tool_label() == "Closed profiles: 1"
 
 
 def test_controller_clears_target_and_tool_independently() -> None:
@@ -123,8 +123,8 @@ def test_panel_reenables_inputs_after_running_preview_is_cancelled(gui_applicati
     controller.set_tool_recipe(_tool_sketch())
     panel = PlanarBooleanPanel()
     panel.begin(controller)
-    assert panel.target_label.text() == "已选择"
-    assert panel.tool_label.text() == "1 个闭合轮廓"
+    assert panel.target_label.text() == "Selected"
+    assert panel.tool_label.text() == "Closed profiles: 1"
     assert panel.clear_target_button.isEnabled()
     assert panel.delete_tool_button.isEnabled()
     assert all(
@@ -192,7 +192,7 @@ def test_planar_boolean_target_pick_is_persistently_highlighted(
     window.cut_geometry()
     bar = window.viewport_panel.planar_boolean_face_bar
     assert window.viewport_panel._active_bottom_overlay is bar
-    assert bar.prompt_label.text() == "请选择目标面"
+    assert bar.prompt_label.text() == "Select the target face"
     assert not bar.confirm_button.isEnabled()
     target = LogicalEntityRef("face:domain")
 

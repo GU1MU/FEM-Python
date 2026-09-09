@@ -97,26 +97,26 @@ def test_wire_editor_panel_exposes_localized_editing_actions(gui_application) ->
     _application()
     panel = WireEditorPanel(WireDraftController())
 
-    assert panel.name_edit.text() == "线体-1"
-    assert panel.point_mode_button.text() == "添加点"
-    assert panel.member_mode_button.text() == "连接杆件"
-    assert panel.select_mode_button.text() == "选择对象"
-    assert panel.add_point_button.text() == "新增"
-    assert panel.delete_point_button.text() == "删除"
-    assert panel.add_member_button.text() == "新增"
-    assert panel.delete_member_button.text() == "删除"
+    assert panel.name_edit.text() == "Wire-1"
+    assert panel.point_mode_button.text() == "Add Point"
+    assert panel.member_mode_button.text() == "Connect Member"
+    assert panel.select_mode_button.text() == "Select"
+    assert panel.add_point_button.text() == "Add"
+    assert panel.delete_point_button.text() == "Delete"
+    assert panel.add_member_button.text() == "Add"
+    assert panel.delete_member_button.text() == "Delete"
     assert panel.offset_spin.decimals() == 2
     assert panel.spacing_spin.decimals() == 2
     assert panel.spacing_spin.minimum() == 0.01
     assert panel.spacing_spin.value() == 0.1
     form = panel.layout().itemAt(0).layout()
-    assert form.labelForField(panel.spacing_spin).text() == "吸附间距"
-    assert "工作平面" in panel.point_mode_button.toolTip()
-    assert "两个已有点" in panel.member_mode_button.toolTip()
-    assert "点或杆件" in panel.select_mode_button.toolTip()
-    assert panel.points_table.horizontalHeaderItem(0).text() == "名称"
-    assert panel.members_table.horizontalHeaderItem(1).text() == "起点"
-    assert panel.members_table.horizontalHeaderItem(2).text() == "终点"
+    assert form.labelForField(panel.spacing_spin).text() == "Snap spacing"
+    assert "work plane" in panel.point_mode_button.toolTip()
+    assert "two existing points" in panel.member_mode_button.toolTip()
+    assert "point or member" in panel.select_mode_button.toolTip()
+    assert panel.points_table.horizontalHeaderItem(0).text() == "Name"
+    assert panel.members_table.horizontalHeaderItem(1).text() == "Start"
+    assert panel.members_table.horizontalHeaderItem(2).text() == "End"
 
 
 def test_viewport_point_is_snapped_again_before_entering_the_draft(gui_application) -> None:
@@ -415,8 +415,8 @@ def test_line_mesh_dialog_requires_explicit_formulation_and_controls_preserve_it
     )
     dialog = MeshControlsDialog(settings)
     assert dialog.settings().line_element_type == "Truss2"
-    assert "线网格" in dialog.control_list.item(2).text()
-    assert "单元形式" in dialog.control_list.item(3).text()
+    assert "Line Mesh" in dialog.control_list.item(2).text()
+    assert "Element Formulation" in dialog.control_list.item(3).text()
 
 
 def test_line_mesh_dialog_exposes_localized_element_choices(gui_application) -> None:
@@ -433,7 +433,7 @@ def test_line_mesh_dialog_exposes_localized_element_choices(gui_application) -> 
     )
 
     assert not dialog.size_spin.isEnabled()
-    assert dialog.shape_combo.currentText() == "线网格"
+    assert dialog.shape_combo.currentText() == "Line Mesh"
     assert dialog.formulation_combo.currentText() == "Truss2"
     assert dialog._buttons.button(
         QDialogButtonBox.StandardButton.Ok
@@ -476,7 +476,7 @@ def test_main_window_can_commit_a_wire_after_detached_edit(gui_application, monk
     )
     window._create_native_model("Model-1")
     assert window.actions["geometry_wire"].isEnabled()
-    assert window.actions["geometry_wire"].text() == "新建线体"
+    assert window.actions["geometry_wire"].text() == "New Wire"
     window.start_wire_geometry()
     controller = window._wire_editor_controller
     assert controller is not None

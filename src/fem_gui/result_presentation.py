@@ -99,7 +99,7 @@ def result_field_position_label(
             label = section_point_labels.get(field_id.section_point_number)
             if label:
                 return str(label)
-        return f"截面点 {field_id.section_point_number}"
+        return f"Section point {field_id.section_point_number}"
     return result_position_label(field_id.position)
 
 
@@ -110,7 +110,7 @@ def section_point_relative_position_label(point: _SectionPointView) -> str:
         horizontal = "右" if point.local_y > 0.0 else "左"
         vertical = "上" if point.local_z > 0.0 else "下"
         return f"{horizontal}{vertical}"
-    return f"截面点 {point.number}"
+    return f"Section point {point.number}"
 
 
 def section_point_labels_from_locations(

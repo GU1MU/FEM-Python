@@ -137,7 +137,7 @@ def test_circle_sections_keep_numbered_section_point_names() -> None:
 
     assert section_point_relative_position_label(
         BeamSectionPoint(1, 1.0, 0.0)
-    ) == "截面点 1"
+    ) == "Section point 1"
 
 
 def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_application) -> None:
@@ -420,6 +420,6 @@ def test_viewport_payload_and_legend_keep_selected_point_identity(gui_applicatio
         if location is not None and location.section_point is not None
     )
     identity = viewport._result_location_identity(location)
-    assert "截面位置 左上" in identity
-    assert "截面坐标" in identity
+    assert "Section position 左上" in identity
+    assert "Section coordinates" in identity
     viewport.close()

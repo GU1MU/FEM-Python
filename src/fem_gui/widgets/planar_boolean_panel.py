@@ -44,20 +44,20 @@ class PlanarBooleanPanel(QWidget):
         return self._controller
 
     def _build_ui(self) -> None:
-        title = QLabel("二维布尔", self)
+        title = QLabel("2D Boolean", self)
         title.setObjectName("planarBooleanTitle")
         self.operation_combo = QComboBox(self)
         self.operation_combo.setObjectName("planarBooleanOperation")
-        self.operation_combo.addItem("合并", "fuse")
-        self.operation_combo.addItem("切除", "cut")
+        self.operation_combo.addItem("Fuse", "fuse")
+        self.operation_combo.addItem("Cut", "cut")
         self.operation_combo.currentIndexChanged.connect(self._operation_changed)
 
-        self.target_label = QLabel("未选择", self)
+        self.target_label = QLabel("Not selected", self)
         self.target_label.setObjectName("planarBooleanTargetLabel")
-        self.target_button = QPushButton("选择", self)
+        self.target_button = QPushButton("Select", self)
         self.target_button.setObjectName("planarBooleanSelectTarget")
         self.target_button.clicked.connect(self.targetSelectionRequested.emit)
-        self.clear_target_button = QPushButton("取消选择", self)
+        self.clear_target_button = QPushButton("Clear", self)
         self.clear_target_button.setObjectName("planarBooleanClearTarget")
         self.clear_target_button.clicked.connect(
             self.targetSelectionCleared.emit
@@ -69,12 +69,12 @@ class PlanarBooleanPanel(QWidget):
         target_layout.addWidget(self.target_button)
         target_layout.addWidget(self.clear_target_button)
 
-        self.tool_label = QLabel("未绘制", self)
+        self.tool_label = QLabel("Not drawn", self)
         self.tool_label.setObjectName("planarBooleanToolLabel")
-        self.tool_button = QPushButton("绘制", self)
+        self.tool_button = QPushButton("Draw", self)
         self.tool_button.setObjectName("planarBooleanDrawTool")
         self.tool_button.clicked.connect(self.toolSketchRequested.emit)
-        self.delete_tool_button = QPushButton("删除绘制", self)
+        self.delete_tool_button = QPushButton("Delete sketch", self)
         self.delete_tool_button.setObjectName("planarBooleanDeleteTool")
         self.delete_tool_button.clicked.connect(self.toolSketchDeleted.emit)
         tool_row = QWidget(self)
@@ -83,11 +83,11 @@ class PlanarBooleanPanel(QWidget):
         tool_layout.addWidget(self.tool_label, 1)
         tool_layout.addWidget(self.tool_button)
         tool_layout.addWidget(self.delete_tool_button)
-        self.finish_button = QPushButton("完成", self)
+        self.finish_button = QPushButton("Finish", self)
         self.finish_button.setObjectName("planarBooleanFinish")
         self.finish_button.setEnabled(False)
         self.finish_button.clicked.connect(self.finishRequested.emit)
-        cancel = QPushButton("取消", self)
+        cancel = QPushButton("Cancel", self)
         cancel.setObjectName("planarBooleanCancel")
         cancel.clicked.connect(self.cancelRequested.emit)
         buttons = QHBoxLayout()
@@ -96,9 +96,9 @@ class PlanarBooleanPanel(QWidget):
         buttons.addWidget(cancel)
 
         form = QFormLayout()
-        form.addRow("操作", self.operation_combo)
-        form.addRow("目标面", target_row)
-        form.addRow("工具轮廓", tool_row)
+        form.addRow("Operation", self.operation_combo)
+        form.addRow("Target face", target_row)
+        form.addRow("Tool profiles", tool_row)
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addLayout(form)
@@ -132,7 +132,7 @@ class PlanarBooleanPanel(QWidget):
         self.target_label.setText(controller.target_label())
         self.tool_label.setText(controller.tool_label())
         self.tool_button.setText(
-            "编辑" if controller.tool_geometry is not None else "绘制"
+            "Edit" if controller.tool_geometry is not None else "Draw"
         )
         self.finish_button.setEnabled(
             controller.ready and self._preview_valid and not self._preview_running
