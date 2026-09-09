@@ -542,7 +542,7 @@ def test_proposal_events_are_strict_and_replay_all_lifecycle_paths() -> None:
 
     unknown = _proposal_payload("proposal-unknown", "a" * 64)
     unknown["raw_patch"] = {"operations": []}
-    with pytest.raises(AgentEventError, match="未知 payload"):
+    with pytest.raises(AgentEventError, match="unknown payload"):
         events.make(EventType.PROPOSAL_REQUESTED, unknown)
 
 
@@ -586,7 +586,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize(gui_application) -> N
     assert accept is not None and accept.isEnabled()
     assert reject is not None and reject.isEnabled()
     assert accept.text() == "加入模型"
-    assert reject.text() == "拒绝"
+    assert reject.text() == "Reject"
     assert accept.palette().color(accept.foregroundRole()).name() == "#ffffff"
     assert drawer.findChild(QLabel, "agentChatProposalImpact") is None
     assert drawer.findChild(QLabel, "agentChatProposalRevision") is None
@@ -649,7 +649,7 @@ def test_runtime_emits_ordered_unique_lifecycle_and_stales_bad_identity(
         EventType.PROPOSAL_STARTED,
         EventType.PROPOSAL_SUCCEEDED,
     ]
-    assert collector[-1].payload["summary"] == "已完成"
+    assert collector[-1].payload["summary"] == "Completed"
     assert not runtime.record_proposal_lifecycle_from_gui(
         "proposal-success",
         proposal_hash,

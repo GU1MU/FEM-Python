@@ -1,7 +1,7 @@
-"""FEM Agent GUI 的本地工作区边界。
+"""Local workspace boundary for the FEM Agent GUI.
 
-本模块只管理用户工作区路径、有限文件元数据索引和本地 ``/workspace`` 命令。
-它不读取文件内容、不创建 Agent 会话目录，也不依赖 ``fem_agent``。
+Manage user workspace paths, a bounded file metadata index, and the local ``/workspace`` command.
+This module does not read file contents, create Agent session directories, or depend on ``fem_agent``.
 """
 
 from __future__ import annotations
@@ -27,12 +27,12 @@ _WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x0400
 
 
 class WorkspacePathError(ValueError):
-    """工作区或候选文件不满足本地路径边界。"""
+    """The workspace or candidate file violates the local path boundary."""
 
 
 @dataclass(frozen=True, slots=True)
 class UserWorkspace:
-    """已规范化的用户工作区身份。"""
+    """Normalized user workspace identity."""
 
     workspace_id: str
     root: Path
@@ -40,7 +40,7 @@ class UserWorkspace:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceFileReference:
-    """一项工作区文件元数据及其在输入文本中的引用位置。"""
+    """Workspace file metadata and its reference position in the input text."""
 
     workspace_id: str
     workspace_root: str
@@ -71,7 +71,7 @@ class WorkspaceFileReference:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceIndexSnapshot:
-    """一次有界扫描得到的不可变索引。"""
+    """Immutable index from a bounded scan."""
 
     workspace: UserWorkspace
     files: tuple[WorkspaceFileReference, ...]
@@ -98,7 +98,7 @@ class WorkspaceIndexSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSelectionResult:
-    """本地工作区命令的结果；取消时保留原有状态。"""
+    """Local workspace command result; cancellation preserves the previous state."""
 
     cancelled: bool
     workspace: UserWorkspace | None
@@ -121,13 +121,13 @@ DirectoryChooser = Callable[[QWidget | None, str], str | Path | None]
 def resolve_agent_data_root(
     explicit_root: str | os.PathLike[str] | None = None,
 ) -> Path:
-    """返回应用私有 Agent 数据根；本函数不会创建目录。"""
+    """Return the private Agent data root without creating directories."""
     if explicit_root is None:
         local_data = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppLocalDataLocation
         )
         if not local_data:
-            raise WorkspacePathError("Qt 未提供应用私有数据目录")
+            raise WorkspacePathError("Qt did not provide a private application data directory")
         explicit_root = Path(local_data) / "fem-agent"
     return Path(explicit_root).expanduser().resolve(strict=False)
 
@@ -135,13 +135,13 @@ def resolve_agent_data_root(
 def normalize_user_workspace(
     selected_path: str | os.PathLike[str],
 ) -> UserWorkspace:
-    """验证并规范化一个已存在的用户目录。"""
+    """Validate and normalize an existing user directory."""
     try:
         root = Path(selected_path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise WorkspacePathError("所选工作区不存在或无法访问") from exc
+        raise WorkspacePathError("Selected workspace does not exist or is inaccessible") from exc
     if not root.is_dir():
-        raise WorkspacePathError("所选工作区不是目录")
+        raise WorkspacePathError("Selected workspace is not a directory")
 
     identity_source = os.path.normcase(str(root)).replace("\\", "/")
     workspace_id = hashlib.sha256(
@@ -167,20 +167,20 @@ def _relative_path_inside(
     try:
         return absolute.relative_to(workspace_root)
     except ValueError as exc:
-        raise WorkspacePathError("文件路径超出用户工作区") from exc
+        raise WorkspacePathError("File path is outside the user workspace") from exc
 
 
 def build_workspace_file_reference(
     workspace: UserWorkspace,
     candidate: str | os.PathLike[str],
 ) -> WorkspaceFileReference:
-    """从普通文件的状态元数据构造引用，不读取文件内容。"""
+    """Build a reference from regular file metadata without reading its contents."""
     candidate_path = Path(candidate)
     if not candidate_path.is_absolute():
         candidate_path = workspace.root / candidate_path
     relative = _relative_path_inside(workspace.root, candidate_path)
     if not relative.parts:
-        raise WorkspacePathError("工作区根目录不是可引用文件")
+        raise WorkspacePathError("Workspace root is not a referenceable file")
 
     current = workspace.root
     final_stat: os.stat_result | None = None
@@ -189,17 +189,17 @@ def build_workspace_file_reference(
         try:
             final_stat = os.lstat(current)
         except OSError as exc:
-            raise WorkspacePathError("文件不存在或无法访问") from exc
+            raise WorkspacePathError("File does not exist or is inaccessible") from exc
         if _is_unsafe_link(final_stat):
-            raise WorkspacePathError("不能引用符号链接或 reparse point")
+            raise WorkspacePathError("Cannot reference symbolic links or reparse points")
 
     try:
         resolved = current.resolve(strict=True)
         resolved.relative_to(workspace.root)
     except (OSError, RuntimeError, ValueError) as exc:
-        raise WorkspacePathError("文件解析后超出用户工作区") from exc
+        raise WorkspacePathError("Resolved file is outside the user workspace") from exc
     if final_stat is None or not stat.S_ISREG(final_stat.st_mode):
-        raise WorkspacePathError("只能引用普通文件")
+        raise WorkspacePathError("Only regular files can be referenced")
 
     relative_text = relative.as_posix()
     file_type = current.suffix.casefold().lstrip(".") or "file"
@@ -234,7 +234,7 @@ def _path_is_within(path: Path, root: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 导出台账
+# Export ledger
 # ---------------------------------------------------------------------------
 
 EXPORT_LEDGER_DIRECTORY_NAME = "export_ledgers"
@@ -244,24 +244,24 @@ _EXPORT_LEDGER_KINDS = {"csv", "png"}
 
 
 class ExportLedgerRecordError(ValueError):
-    """导出台账记录不满足有界契约。"""
+    """The export ledger record violates the bounded contract."""
 
 
 def _bounded_ledger_text(value: object, name: str, maximum: int) -> str:
     if not isinstance(value, str) or len(value) > maximum:
-        raise ExportLedgerRecordError(f"{name} 必须是不超过 {maximum} 字符的字符串")
+        raise ExportLedgerRecordError(f"{name} must be a string of at most {maximum} characters")
     return value
 
 
 def _bounded_ledger_integer(value: object, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ExportLedgerRecordError(f"{name} 必须是非负整数")
+        raise ExportLedgerRecordError(f"{name} must be a non-negative integer")
     return value
 
 
 @dataclass(frozen=True, slots=True)
 class ExportLedgerRecord:
-    """一次 Agent 导出落盘后的台账记录。"""
+    """Ledger record for an Agent export written to disk."""
 
     display_path: str
     kind: str
@@ -278,14 +278,14 @@ class ExportLedgerRecord:
     def __post_init__(self) -> None:
         _bounded_ledger_text(self.display_path, "display_path", 512)
         if self.kind not in _EXPORT_LEDGER_KINDS:
-            raise ExportLedgerRecordError("kind 只接受 csv 或 png")
+            raise ExportLedgerRecordError("kind must be csv or png")
         digest = self.sha256
         if (
             not isinstance(digest, str)
             or len(digest) != 64
             or any(character not in "0123456789abcdef" for character in digest)
         ):
-            raise ExportLedgerRecordError("sha256 必须是 64 位小写十六进制")
+            raise ExportLedgerRecordError("sha256 must be 64 lowercase hexadecimal characters")
         _bounded_ledger_integer(self.size_bytes, "size_bytes")
         _bounded_ledger_text(self.document_id, "document_id", 128)
         _bounded_ledger_text(self.session_id, "session_id", 128)
@@ -316,7 +316,7 @@ class ExportLedgerRecord:
     @classmethod
     def from_dict(cls, payload: object) -> ExportLedgerRecord:
         if not isinstance(payload, dict):
-            raise ExportLedgerRecordError("台账记录必须是对象")
+            raise ExportLedgerRecordError("Ledger record must be an object")
         return cls(
             display_path=payload.get("display_path", ""),
             kind=payload.get("kind", ""),
@@ -344,7 +344,7 @@ def _validate_workspace_identity(workspace_id: str) -> str:
             for character in workspace_id
         )
     ):
-        raise WorkspacePathError("workspace_id 不是合法台账键")
+        raise WorkspacePathError("workspace_id is not a valid ledger key")
     return workspace_id
 
 
@@ -352,7 +352,7 @@ def export_ledger_path(
     agent_data_root: str | os.PathLike[str],
     workspace_id: str,
 ) -> Path:
-    """返回一个工作区对应的台账文件路径；不创建任何目录。"""
+    """Return the workspace ledger path without creating directories."""
     identity = _validate_workspace_identity(workspace_id)
     return (
         Path(agent_data_root)
@@ -365,7 +365,7 @@ def read_export_ledger(
     agent_data_root: str | os.PathLike[str],
     workspace_id: str,
 ) -> tuple[ExportLedgerRecord, ...]:
-    """读入一个工作区的台账；缺失或损坏时按空台账处理。"""
+    """Read a workspace ledger; treat missing or corrupt data as empty."""
     path = export_ledger_path(agent_data_root, workspace_id)
     try:
         text = path.read_text(encoding="utf-8")
@@ -391,7 +391,7 @@ def append_export_ledger_record(
     workspace_id: str,
     record: ExportLedgerRecord,
 ) -> Path:
-    """读入-合并-写回追加一条台账记录，落盘使用临时文件加 rename。"""
+    """Append a ledger record by reading, merging, and writing via a temporary file and rename."""
     path = export_ledger_path(agent_data_root, workspace_id)
     existing = read_export_ledger(agent_data_root, workspace_id)
     records = (*existing, record)[-_EXPORT_LEDGER_MAX_RECORDS:]
@@ -419,7 +419,7 @@ def append_export_ledger_record(
 
 
 class WorkspaceIndexer:
-    """只遍历有限数量目录项的普通文件元数据索引器。"""
+    """Regular file metadata indexer that scans a bounded number of entries."""
 
     def __init__(
         self,
@@ -518,17 +518,17 @@ def choose_workspace_directory(
     parent: QWidget | None,
     initial_directory: str,
 ) -> str:
-    """Qt 目录选择边界，便于测试时注入无界面实现。"""
+    """Qt directory picker boundary for injecting a headless implementation in tests."""
     return QFileDialog.getExistingDirectory(
         parent,
-        "选择工作区",
+        "Select workspace",
         initial_directory,
         QFileDialog.Option.ShowDirsOnly,
     )
 
 
 class WorkspaceCommandHandler:
-    """``/workspace`` 与加号菜单共享的唯一工作区命令处理器。"""
+    """Single workspace command handler shared by ``/workspace`` and the add menu."""
 
     def __init__(
         self,
@@ -552,9 +552,9 @@ class WorkspaceCommandHandler:
         *,
         parent: QWidget | None = None,
     ) -> WorkspaceSelectionResult:
-        """执行一个本地命令；当前只接受 ``/workspace``。"""
+        """Execute a local command; currently only ``/workspace`` is supported."""
         if command.strip().casefold() != "/workspace":
-            raise ValueError(f"未知本地命令: {command}")
+            raise ValueError(f"Unknown local command: {command}")
         self.execution_count += 1
         initial_directory = (
             str(self.user_workspace.root)
@@ -576,7 +576,7 @@ class WorkspaceCommandHandler:
                 or _path_is_within(self.agent_data_root, workspace.root)
             ):
                 raise WorkspacePathError(
-                    "用户工作区不能与 Agent 私有数据目录重叠"
+                    "User workspace cannot overlap the private Agent data directory"
                 )
             snapshot = self.indexer.scan(
                 workspace,

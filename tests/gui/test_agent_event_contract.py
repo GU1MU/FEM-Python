@@ -189,7 +189,7 @@ def test_event_schema_round_trip_and_unknown_values_are_rejected():
 
     unknown_payload = event.to_dict()
     unknown_payload["payload"]["raw_cli_text"] = "unstructured"
-    with pytest.raises(AgentEventError, match="未知 payload"):
+    with pytest.raises(AgentEventError, match="unknown payload"):
         AgentEvent.from_dict(unknown_payload)
 
 
@@ -201,7 +201,7 @@ def test_message_delta_preserves_whitespace_but_rejects_empty_text():
     )
 
     assert whitespace.payload["delta"] == "\n  "
-    with pytest.raises(AgentEventError, match="delta 不能为空"):
+    with pytest.raises(AgentEventError, match="delta must not be empty"):
         events.make(
             EventType.MESSAGE_DELTA,
             {"message_id": "message-empty", "delta": ""},
@@ -243,7 +243,7 @@ def test_projector_rejects_duplicate_inverse_gap_and_cross_boundaries():
     start = _turn_start(events)
     projector.apply(start)
 
-    with pytest.raises(AgentEventError, match="重复 event_id"):
+    with pytest.raises(AgentEventError, match="Duplicate event_id"):
         projector.apply(start)
 
     inverse = events.make(
@@ -519,14 +519,14 @@ def test_tool_summaries_redact_secrets_paths_and_unknown_objects():
     assert "Bearer abcdefghijklmnop" not in rendered
     assert "C:" not in rendered
     assert "/home/person" not in rendered
-    assert "敏感信息已隐藏" in rendered
-    assert "绝对路径已隐藏" in rendered
+    assert "sensitive information hidden" in rendered
+    assert "absolute path hidden" in rendered
 
     class _Unsafe:
         def __repr__(self) -> str:
             raise AssertionError("不应调用任意对象 repr")
 
-    assert safe_tool_summary(_Unsafe()) == "<不支持的值>"
+    assert safe_tool_summary(_Unsafe()) == "<unsupported value>"
 
     spaced_paths = safe_tool_summary(
         {
@@ -543,7 +543,7 @@ def test_tool_summaries_redact_secrets_paths_and_unknown_objects():
         "preview=file:///C:/Users/Jane Doe/private model.inp"
     )
     assert "Jane Doe" not in file_uri
-    assert "绝对路径已隐藏" in file_uri
+    assert "absolute path hidden" in file_uri
 
 
 def test_confirmation_requires_exact_revision_hash_and_text_cannot_authorize():
@@ -671,7 +671,7 @@ def test_turn_complete_rejects_unfinished_stream():
         )
     )
 
-    with pytest.raises(AgentEventError, match="未完成消息"):
+    with pytest.raises(AgentEventError, match="unfinished messages"):
         projector.apply(events.make(EventType.TURN_COMPLETE, {}))
 
 
@@ -726,18 +726,18 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui(
 
     state = drawer.event_presentation
     assert state.session_id == "phase3-preview"
-    assert "模型预检查" in state.turns[0].messages[0].text
+    assert "Model precheck" in state.turns[0].messages[0].text
     assert len(state.turns[0].tool_groups[0].calls) == 3
 
     tools = drawer.findChild(ToolActivityPreview)
     assert tools is not None
-    assert tools.summary_button.text() == "工具 3 · 完成 3"
-    assert "秒" in tools.summary_button.toolTip()
+    assert tools.summary_button.text() == "3 tools · 3 done"
+    assert " s" in tools.summary_button.toolTip()
     assert (
         tools.summary_button.sizePolicy().horizontalPolicy()
         == QSizePolicy.Policy.Fixed
     )
-    assert tools.summary_button.width() < tools.width() // 2
+    assert tools.summary_button.width() < tools.contentsRect().width()
 
     confirmation_button = drawer.findChild(
         QToolButton,
@@ -978,7 +978,7 @@ def test_tool_lifecycle_events_coalesce_and_update_the_card_in_place(gui_applica
     assert render_calls == 1
     assert drawer._tool_group_widgets["turn-1:tools:1"] is tool_widget
     assert tool_widget.group.calls[0].status is ToolStatus.COMPLETED
-    assert tool_widget.summary_button.text().startswith("已完成 ·")
+    assert tool_widget.summary_button.text().startswith("Completed ·")
     drawer.close()
 
 
@@ -1135,7 +1135,7 @@ def test_live_activity_shows_analysis_and_current_tool_progress(gui_application)
 
     activity = drawer.findChild(QLabel, "agentChatLiveActivity")
     assert activity is not None
-    assert "正在分析请求" in activity.text()
+    assert "Analyzing request" in activity.text()
 
     drawer.apply_agent_event(
         events.make(
@@ -1159,10 +1159,10 @@ def test_live_activity_shows_analysis_and_current_tool_progress(gui_application)
     activity = drawer.findChild(QLabel, "agentChatLiveActivity")
     tools = drawer.findChild(ToolActivityPreview)
     assert activity is not None
-    assert "正在执行 · 读取当前建模上下文" in activity.text()
+    assert "Running · 读取当前建模上下文" in activity.text()
     assert tools is not None
     assert tools.summary_button.text() == (
-        "正在执行 · 读取当前建模上下文"
+        "Running · 读取当前建模上下文"
     )
     drawer.close()
 

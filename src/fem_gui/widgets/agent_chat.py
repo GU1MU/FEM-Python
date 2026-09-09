@@ -1,7 +1,7 @@
-"""FEM Agent 的覆盖式聊天界面与结构化事件展示。
+"""FEM Agent overlay chat and structured event display.
 
-工作区文件候选使用有界元数据索引；文件内容只由后台 Agent 适配器按限制
-读取。对话展示只消费结构化事件投影状态。
+Workspace file candidates use a bounded metadata index; only the background Agent adapter
+reads bounded file contents. Chat display consumes only projected structured event state.
 """
 
 from __future__ import annotations
@@ -710,7 +710,7 @@ class _BoundaryListWidget(_EventBoundaryMixin, QListWidget):
 
 
 class _CurrentPageStack(QStackedWidget):
-    """只用当前页面计算堆叠区的布局尺寸。"""
+    """Compute stacked layout size from the current page only."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -732,12 +732,12 @@ class _CurrentPageStack(QStackedWidget):
 
 
 class _ConversationSurface(QWidget):
-    """对话内容宽度始终跟随滚动视口。
+    """Keep chat content width aligned with the scroll viewport.
 
-    富文本消息（表格、长路径等）的最小尺寸会抬升容器的
-    ``minimumSizeHint``，导致 ``QScrollArea`` 按最小宽度保留超宽内容，
-    展开折叠区并调整抽屉宽度后右侧内容被裁掉。这里把最小宽度归零，
-    让内容始终收窄到视口宽度并自动换行。
+    Rich text messages (tables, long paths, etc.) can increase the container's
+    ``minimumSizeHint``, causing ``QScrollArea`` to retain excessively wide content
+    and clip the right edge after expanding sections or resizing the drawer. Set minimum width to zero
+    so content always shrinks to the viewport width and wraps.
     """
 
     def minimumSizeHint(self) -> QSize:
@@ -745,7 +745,7 @@ class _ConversationSurface(QWidget):
 
 
 class _ChatInput(QPlainTextEdit):
-    """在输入框内路由发送与候选键盘操作。"""
+    """Route send and suggestion keyboard actions within the input box."""
 
     COLLAPSED_HEIGHT = 44
     MAXIMUM_VISIBLE_LINES = 5
@@ -895,12 +895,12 @@ class _DrawerResizeHandle(_BoundaryFrame):
 
 
 _TOOL_STATUS_LABELS = {
-    ToolStatus.REQUESTED: "等待",
-    ToolStatus.RUNNING: "执行中",
-    ToolStatus.COMPLETED: "完成",
-    ToolStatus.WARNING: "警告",
-    ToolStatus.FAILED: "失败",
-    ToolStatus.CANCELLED: "已取消",
+    ToolStatus.REQUESTED: "Waiting",
+    ToolStatus.RUNNING: "Running",
+    ToolStatus.COMPLETED: "Complete",
+    ToolStatus.WARNING: "Warning",
+    ToolStatus.FAILED: "Failed",
+    ToolStatus.CANCELLED: "Cancelled",
 }
 
 
@@ -1025,7 +1025,7 @@ def _restricted_table_html(
 
 
 def _restricted_markdown_html(markdown: str) -> str:
-    """把受限 Markdown 转成不含链接、图片或原始 HTML 的 Qt 富文本。"""
+    """Convert restricted Markdown to Qt rich text without links, images, or raw HTML."""
     rendered: list[str] = []
     active_list: str | None = None
     paragraph_lines: list[str] = []
@@ -1182,7 +1182,7 @@ def _visible_markdown_text(markdown: str) -> str:
 def _process_message_summary(markdown: str) -> str:
     visible = _visible_markdown_text(markdown)
     if not visible:
-        return "处理中…"
+        return "Processing…"
 
     limit = _PROCESS_MESSAGE_SUMMARY_CHARACTERS
     if len(visible) <= limit:
@@ -1250,7 +1250,7 @@ class AgentNarrativeSection(QWidget):
         self.toggle_button = QToolButton(self.summary_row)
         self.toggle_button.setObjectName("agentChatNarrativeToggle")
         self.toggle_button.setCheckable(True)
-        self.toggle_button.setToolTip("展开完整过程")
+        self.toggle_button.setToolTip("Expand full activity")
         self.toggle_button.clicked.connect(self._toggle_expansion)
         summary_layout.addWidget(self.toggle_button, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.summary_row)
@@ -1285,7 +1285,7 @@ class AgentNarrativeSection(QWidget):
             Qt.ArrowType.UpArrow if checked else Qt.ArrowType.DownArrow
         )
         self.toggle_button.setToolTip(
-            "收起完整过程" if checked else "展开完整过程"
+            "Collapse full activity" if checked else "Expand full activity"
         )
         self.details.setVisible(self._collapsible and checked)
         if emit:
@@ -1328,54 +1328,54 @@ def _tool_summary_text(group: ToolGroupView) -> str:
     if len(group.calls) == 1:
         call = group.calls[0]
         prefix = {
-            ToolStatus.REQUESTED: "准备调用",
-            ToolStatus.RUNNING: "正在执行",
-            ToolStatus.COMPLETED: "已完成",
-            ToolStatus.WARNING: "已完成，有警告",
-            ToolStatus.FAILED: "调用失败",
-            ToolStatus.CANCELLED: "已取消",
+            ToolStatus.REQUESTED: "Preparing call",
+            ToolStatus.RUNNING: "Running",
+            ToolStatus.COMPLETED: "Completed",
+            ToolStatus.WARNING: "Completed with warnings",
+            ToolStatus.FAILED: "Call failed",
+            ToolStatus.CANCELLED: "Cancelled",
         }[call.status]
         return f"{prefix} · {call.display_name}"
-    parts = [f"工具 {len(group.calls)}"]
+    parts = [f"{len(group.calls)} tools"]
     if group.completed_count:
-        parts.append(f"完成 {group.completed_count}")
+        parts.append(f"{group.completed_count} done")
     if group.warning_count:
-        parts.append(f"警告 {group.warning_count}")
+        parts.append(f"Warnings {group.warning_count}")
     if group.failed_count:
-        parts.append(f"失败 {group.failed_count}")
+        parts.append(f"Failed {group.failed_count}")
     if group.cancelled_count:
-        parts.append(f"取消 {group.cancelled_count}")
+        parts.append(f"Cancelled {group.cancelled_count}")
     running = sum(
         call.status in {ToolStatus.REQUESTED, ToolStatus.RUNNING}
         for call in group.calls
     )
     if running:
-        parts.append(f"进行中 {running}")
+        parts.append(f"Running {running}")
     return " · ".join(parts)
 
 
 def _tool_summary_tooltip(group: ToolGroupView) -> str:
-    parts = [f"已调用 {len(group.calls)} 个工具"]
+    parts = [f"{len(group.calls)} tools called"]
     if group.completed_count:
-        parts.append(f"{group.completed_count} 项完成")
+        parts.append(f"{group.completed_count} completed")
     if group.warning_count:
-        parts.append(f"{group.warning_count} 项警告")
+        parts.append(f"{group.warning_count} warnings")
     if group.failed_count:
-        parts.append(f"{group.failed_count} 项失败")
+        parts.append(f"{group.failed_count} failed")
     if group.cancelled_count:
-        parts.append(f"{group.cancelled_count} 项取消")
+        parts.append(f"{group.cancelled_count} cancelled")
     running = sum(
         call.status in {ToolStatus.REQUESTED, ToolStatus.RUNNING}
         for call in group.calls
     )
     if running:
-        parts.append(f"{running} 项进行中")
-    parts.append(f"{group.total_duration_ms / 1000:.1f} 秒")
+        parts.append(f"{running} running")
+    parts.append(f"{group.total_duration_ms / 1000:.1f} s")
     return " · ".join(parts)
 
 
 class ToolActivityPreview(_BoundaryFrame):
-    """由结构化 ``ToolGroupView`` 驱动的可折叠工具活动。"""
+    """Collapsible tool activity driven by structured ``ToolGroupView`` data."""
 
     def __init__(
         self,
@@ -1466,7 +1466,7 @@ class ToolActivityPreview(_BoundaryFrame):
             row_layout.setColumnStretch(0, 1)
 
             request = _plain_label(
-                f"请求 · {call.request_summary}",
+                f"Request · {call.request_summary}",
                 row,
             )
             request.setObjectName("agentChatToolDetail")
@@ -1474,7 +1474,7 @@ class ToolActivityPreview(_BoundaryFrame):
             row_layout.addWidget(request, 1, 0, 1, 3)
             if call.result_summary:
                 result = _plain_label(
-                    f"返回 · {call.result_summary}",
+                    f"Result · {call.result_summary}",
                     row,
                 )
                 result.setObjectName("agentChatToolDetail")
@@ -1485,7 +1485,7 @@ class ToolActivityPreview(_BoundaryFrame):
                 start=3,
             ):
                 diagnostic = _plain_label(
-                    f"诊断 · {diagnostic_text}",
+                    f"Diagnostic · {diagnostic_text}",
                     row,
                 )
                 diagnostic.setObjectName(
@@ -1511,7 +1511,7 @@ class ToolActivityPreview(_BoundaryFrame):
 
 
 class AgentChatDrawer(_BoundaryFrame):
-    """覆盖在模型画布之上的 FEM Agent 聊天面板。"""
+    """FEM Agent chat panel overlaid on the model canvas."""
 
     closeRequested = Signal()
     messagePreviewRequested = Signal(str, object)
@@ -1715,7 +1715,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.close_button = _BoundaryToolButton(header)
         self.close_button.setObjectName("agentChatHeaderButton")
         self.close_button.setText("×")
-        self.close_button.setToolTip("关闭聊天框")
+        self.close_button.setToolTip("Close chat")
         self.close_button.clicked.connect(self.closeRequested)
         layout.addWidget(self.close_button)
         return header
@@ -1868,14 +1868,14 @@ class AgentChatDrawer(_BoundaryFrame):
 
     @property
     def event_presentation(self) -> SessionPresentation:
-        """返回与 Qt 控件分离的结构化展示快照。"""
+        """Return a structured display snapshot independent of Qt widgets."""
         return self.event_projector.presentation
 
     def replay_agent_events(
         self,
         events: Iterable[AgentEvent],
     ) -> None:
-        """用完整事件日志替换当前展示并一次性重绘。"""
+        """Replace the display with a complete event log and redraw once."""
         self._stream_refresh_timer.stop()
         self._conversation_scroll_timer.stop()
         self._conversation_scroll_update_pending = False
@@ -1902,7 +1902,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self._render_event_presentation(preserve_tool_expansion=False)
 
     def apply_agent_event(self, event: AgentEvent) -> None:
-        """消费一个已验证事件；不解析 CLI 文本。"""
+        """Consume a validated event without parsing CLI text."""
         self.event_projector.apply_in_place(event)
         if event.event_type is EventType.CONTINUATION_STARTED:
             self._continuation_active = True
@@ -2100,7 +2100,7 @@ class AgentChatDrawer(_BoundaryFrame):
                     deferred_proposal_ids.append(timeline_item.item_id)
             if turn.status is TurnStatus.CANCELLED:
                 status = _plain_label(
-                    "本轮已取消 · " + turn.failure_reason,
+                    "Turn cancelled · " + turn.failure_reason,
                     self.event_feed,
                 )
                 status.setObjectName("agentChatTurnStatus")
@@ -2138,16 +2138,16 @@ class AgentChatDrawer(_BoundaryFrame):
         messages = tuple(getattr(turn, "messages", ()))
         tool_groups = tuple(getattr(turn, "tool_groups", ()))
         if running_calls:
-            base = f"正在执行 · {running_calls[-1].display_name}"
+            base = f"Running · {running_calls[-1].display_name}"
         elif any(
             message.status is MessageStatus.STREAMING
             for message in messages
         ):
-            base = "正在生成回复"
+            base = "Generating reply"
         elif tool_groups:
-            base = "正在整理工具结果"
+            base = "Organizing tool results"
         else:
-            base = "正在分析请求"
+            base = "Analyzing request"
         label = _plain_label("", self.event_feed)
         label.setObjectName("agentChatLiveActivity")
         self._live_activity_label = label
@@ -2210,9 +2210,10 @@ class AgentChatDrawer(_BoundaryFrame):
         layout.setContentsMargins(8, 5, 8, 5)
         layout.setSpacing(10)
         raw_title = str(
-            summary.get("title", "Agent 已应用模型修改")
+            summary.get("title", "Agent applied model changes")
         )
         raw_detail = str(summary.get("summary", "")).strip()
+        # Recognize the built-in title stored in legacy conversation history.
         visible_title = (
             f"Agent {raw_detail}"
             if raw_title == "Agent 修改已同步" and raw_detail
@@ -2222,9 +2223,9 @@ class AgentChatDrawer(_BoundaryFrame):
             getattr(getattr(record, "state", None), "value", "")
         )
         if state_value == "undone":
-            visible_title = "Agent 已撤销修改"
+            visible_title = "Agent changes undone"
         elif state_value == "stale":
-            visible_title = "Agent 修改已无法撤销"
+            visible_title = "Agent changes cannot be undone"
         title = _plain_label(
             visible_title,
             card,
@@ -2241,9 +2242,9 @@ class AgentChatDrawer(_BoundaryFrame):
         undo = _BoundaryToolButton(card)
         undo.setObjectName("agentChatPatchUndoButton")
         undo.setProperty("patchId", patch_id)
-        undo.setText("撤销修改")
+        undo.setText("Undo")
         undo.setToolTip(
-            str(summary.get("undo_label", "撤销本次 Agent 修改"))
+            str(summary.get("undo_label", "Undo these Agent changes"))
         )
         undo.setSizePolicy(
             QSizePolicy.Policy.Fixed,
@@ -2280,11 +2281,11 @@ class AgentChatDrawer(_BoundaryFrame):
             self._show_runtime_notice(str(error))
         else:
             self._applied_patch_records[patch_id] = record
-            self._show_preview_notice("已撤销 Agent 修改")
+            self._show_preview_notice("Agent changes undone")
         self._render_event_presentation()
 
     def _show_export_receipt(self, receipt: Mapping[str, object]) -> None:
-        """展示一次导出成功后由工具回执投影出的文件卡片。"""
+        """Display a file card projected from a successful export receipt."""
 
         if not isinstance(receipt, Mapping):
             return
@@ -2362,8 +2363,8 @@ class AgentChatDrawer(_BoundaryFrame):
         open_button = _BoundaryToolButton(card)
         open_button.setObjectName("agentChatExportOpenButton")
         open_button.setProperty("exportPath", relative_path)
-        open_button.setText("打开")
-        open_button.setToolTip("打开导出的文件")
+        open_button.setText("Open")
+        open_button.setToolTip("Open exported file")
         open_button.setSizePolicy(
             QSizePolicy.Policy.Fixed,
             QSizePolicy.Policy.Fixed,
@@ -2387,17 +2388,17 @@ class AgentChatDrawer(_BoundaryFrame):
     def _open_export_receipt(self, relative_path: str) -> None:
         path = self._resolve_export_receipt_path(relative_path)
         if path is None:
-            self._show_runtime_notice("尚未选择工作区，无法打开导出文件")
+            self._show_runtime_notice("Select a workspace to open exported files")
             return
         if path.is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
             return
-        # 文件已缺失时降级为打开所在目录。
+        # Open the containing directory if the file is missing.
         parent = path.parent
         if parent.is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
         else:
-            self._show_runtime_notice("导出文件不存在")
+            self._show_runtime_notice("Exported file does not exist")
 
     def _add_user_message(self, text: str, turn_id: str) -> None:
         user_row = QWidget(self.event_feed)
@@ -2414,8 +2415,8 @@ class AgentChatDrawer(_BoundaryFrame):
         user_text = _plain_label(text, user_bubble)
         user_text.setObjectName("agentChatUserLabel")
         user_text.setWordWrap(True)
-        # 气泡宽度随内容自适应：以最宽行的文本宽度加内边距作为上限，
-        # 短消息收窄为内容宽度，长消息仍占满可用宽度并自动换行。
+        # Fit bubble width to content, capped at the widest line plus padding;
+        # short messages shrink to content while long messages fill the available width and wrap.
         user_text.ensurePolished()
         metrics = user_text.fontMetrics()
         natural_width = max(
@@ -2451,9 +2452,9 @@ class AgentChatDrawer(_BoundaryFrame):
         }:
             suffix = QLabel(
                 (
-                    "回复已取消"
+                    "Reply cancelled"
                     if message.status is MessageStatus.CANCELLED
-                    else "回复因失败中断"
+                    else "Reply interrupted by failure"
                 ),
                 self.event_feed,
             )
@@ -2538,13 +2539,13 @@ class AgentChatDrawer(_BoundaryFrame):
         button = _BoundaryToolButton(card)
         button.setObjectName("agentChatConfirmationButton")
         if key in self._completed_solve_confirmations:
-            button.setText("求解已完成")
+            button.setText("Solve complete")
             button.setEnabled(False)
         elif key in self._pending_solve_confirmations:
-            button.setText("正在求解…")
+            button.setText("Solving…")
             button.setEnabled(False)
         else:
-            button.setText("开始求解")
+            button.setText("Start solve")
             button.setEnabled(
                 not self._runtime_busy
                 and self._confirmation_targets_live_session()
@@ -2603,20 +2604,20 @@ class AgentChatDrawer(_BoundaryFrame):
             getattr(getattr(undo_record, "state", None), "value", "")
         )
         status_labels = {
-            ProposalViewStatus.PENDING_CONFIRMATION: "等待 GUI 确认",
-            ProposalViewStatus.ACCEPTED: "已接受",
-            ProposalViewStatus.REJECTED: "已拒绝",
-            ProposalViewStatus.STALE: "提案已陈旧",
-            ProposalViewStatus.RUNNING: "正在执行",
-            ProposalViewStatus.SUCCEEDED: "已完成",
-            ProposalViewStatus.FAILED: "执行失败",
-            ProposalViewStatus.CANCELLED: "已取消",
+            ProposalViewStatus.PENDING_CONFIRMATION: "Awaiting GUI confirmation",
+            ProposalViewStatus.ACCEPTED: "Accepted",
+            ProposalViewStatus.REJECTED: "Rejected",
+            ProposalViewStatus.STALE: "Proposal stale",
+            ProposalViewStatus.RUNNING: "Running",
+            ProposalViewStatus.SUCCEEDED: "Completed",
+            ProposalViewStatus.FAILED: "Execution failed",
+            ProposalViewStatus.CANCELLED: "Cancelled",
         }
         status_text = status_labels[status]
         if undo_state == "undone":
-            status_text = "已撤销"
+            status_text = "Undone"
         elif undo_state == "stale":
-            status_text = "已无法撤销"
+            status_text = "Cannot undo"
         if (
             status is not ProposalViewStatus.SUCCEEDED
             and proposal.status_message
@@ -2632,7 +2633,7 @@ class AgentChatDrawer(_BoundaryFrame):
         actions_layout.setSpacing(6)
         accept = _BoundaryToolButton(actions)
         accept.setObjectName("agentChatProposalHistoryAcceptButton")
-        accept.setText("确认")
+        accept.setText("Confirm")
         accept.setToolTip(proposal.confirm_label)
         accept.setProperty("proposalId", proposal.proposal_id)
         accept.setProperty("proposalHash", proposal.proposal_hash)
@@ -2655,7 +2656,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
         reject = _BoundaryToolButton(actions)
         reject.setObjectName("agentChatProposalHistoryRejectButton")
-        reject.setText("拒绝")
+        reject.setText("Reject")
         reject.setProperty("proposalId", proposal.proposal_id)
         reject.setProperty("proposalHash", proposal.proposal_hash)
         reject.setProperty("proposalKind", proposal.proposal_kind)
@@ -2685,11 +2686,11 @@ class AgentChatDrawer(_BoundaryFrame):
             undo = _BoundaryToolButton(actions)
             undo.setObjectName("agentChatProposalUndoButton")
             undo.setProperty("proposalId", proposal.proposal_id)
-            undo.setText("已撤销" if undo_state == "undone" else "撤销")
+            undo.setText("Undone" if undo_state == "undone" else "Undo")
             undo.setToolTip(
-                "删除本次方案创建的末端特征"
+                "Delete the terminal feature created by this proposal"
                 if undo_enabled
-                else "已有后续修改，或本次创建的特征已经撤销"
+                else "Later changes exist, or the created feature has already been undone"
             )
             undo.setEnabled(undo_enabled)
             undo.clicked.connect(
@@ -2712,7 +2713,7 @@ class AgentChatDrawer(_BoundaryFrame):
         except Exception as error:
             self._show_runtime_notice(str(error))
         else:
-            self._show_preview_notice(f"已删除特征 {record.feature_name}")
+            self._show_preview_notice(f"Deleted feature {record.feature_name}")
         self._render_event_presentation()
 
     def _build_composer(self, parent: QWidget) -> QWidget:
@@ -2754,7 +2755,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.input = _ChatInput(self.composer_surface)
         self.input.setObjectName("agentChatInput")
         self.input.setPlaceholderText(
-            "询问 FEM Agent；使用 @ 引用工作区文件…"
+            "Ask FEM Agent; @ for workspace files…"
         )
         self.input.setTabChangesFocus(True)
         self.input.textChanged.connect(self._input_changed)
@@ -2782,10 +2783,10 @@ class AgentChatDrawer(_BoundaryFrame):
         self.add_button.setObjectName("agentChatAddButton")
         self.add_button.setText("＋")
         self.add_button.setFixedSize(24, 24)
-        self.add_button.setToolTip("添加上下文")
+        self.add_button.setToolTip("Add context")
         self.add_menu = QMenu(self.add_button)
         self.add_menu.setObjectName("agentChatAddMenu")
-        self.workspace_action = self.add_menu.addAction("选择工作区…")
+        self.workspace_action = self.add_menu.addAction("Select workspace…")
         self.workspace_action.setObjectName("agentChatWorkspaceAction")
         self.workspace_action.triggered.connect(
             self._run_workspace_command
@@ -2794,7 +2795,7 @@ class AgentChatDrawer(_BoundaryFrame):
         footer.addWidget(self.add_button)
 
         self.workspace_state = QLabel(
-            "工作区  尚未选择",
+            "Workspace  Not selected",
             self.composer_surface,
         )
         self.workspace_state.setObjectName("agentChatWorkspaceState")
@@ -2821,13 +2822,13 @@ class AgentChatDrawer(_BoundaryFrame):
             )
         )
         self.send_button.setIconSize(QSize(16, 16))
-        self.send_button.setToolTip("发送到配置的 FEM Agent Provider")
+        self.send_button.setToolTip("Send to the configured FEM Agent Provider")
         self.send_button.setEnabled(False)
         self.send_button.clicked.connect(self._submit_current_input)
         self.stop_button = _BoundaryToolButton(self.send_state)
         self.stop_button.setObjectName("agentChatStopButton")
         self.stop_button.setText("■")
-        self.stop_button.setToolTip("取消当前 Agent 操作")
+        self.stop_button.setToolTip("Cancel current Agent operation")
         self.stop_button.clicked.connect(self._cancel_runtime_operation)
         self.send_state.addWidget(self.send_button)
         self.send_state.addWidget(self.stop_button)
@@ -2881,7 +2882,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.composer_reject_button.setObjectName(
             "agentChatProposalRejectButton"
         )
-        self.composer_reject_button.setText("拒绝")
+        self.composer_reject_button.setText("Reject")
         self.composer_reject_button.clicked.connect(
             self._reject_composer_proposal
         )
@@ -2890,7 +2891,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self.composer_task_surface
         )
         self.composer_stop_button.setObjectName("agentChatComposerStopButton")
-        self.composer_stop_button.setText("停止")
+        self.composer_stop_button.setText("Stop")
         self.composer_stop_button.clicked.connect(
             self._cancel_runtime_operation
         )
@@ -3024,14 +3025,14 @@ class AgentChatDrawer(_BoundaryFrame):
                 self.composer_progress.setValue(progress)
             self.composer_task_status.setText(
                 (
-                    "正在启动本地任务…"
+                    "Starting local task…"
                     if proposal.proposal_id == self._composer_accepting_id
-                    else proposal.status_message or "正在执行本地任务…"
+                    else proposal.status_message or "Running local task…"
                 )
             )
             return
 
-        self.composer_task_title.setText("正在处理…")
+        self.composer_task_title.setText("Processing…")
         self.composer_task_summary.clear()
         self.composer_task_summary.hide()
         self.composer_progress.setRange(0, 0)
@@ -3096,7 +3097,7 @@ class AgentChatDrawer(_BoundaryFrame):
     def workspace_file_references(
         self,
     ) -> tuple[WorkspaceFileReference, ...]:
-        """返回输入框当前保存的结构化工作区引用。"""
+        """Return structured workspace references currently stored in the input box."""
         return tuple(self._workspace_references)
 
     def _active_token(self) -> tuple[int, int, str] | None:
@@ -3131,10 +3132,10 @@ class AgentChatDrawer(_BoundaryFrame):
         self._show_workspace_suggestions(token[1:])
 
     def _show_slash_suggestion(self) -> None:
-        self.suggestion_title.setText("斜杠命令")
+        self.suggestion_title.setText("Slash commands")
         self.suggestion_title.show()
         self.suggestion_list.clear()
-        item = QListWidgetItem("/workspace  选择工作区")
+        item = QListWidgetItem("/workspace  Select workspace")
         item.setData(Qt.ItemDataRole.UserRole, "/workspace")
         self.suggestion_list.addItem(item)
         self.suggestion_item = item
@@ -3148,7 +3149,7 @@ class AgentChatDrawer(_BoundaryFrame):
         snapshot = self._workspace_index
         if snapshot is None:
             item = QListWidgetItem(
-                "请先选择工作区，再引用各种类型的普通文件"
+                "Select a workspace before referencing regular files of any type"
             )
             self.suggestion_list.addItem(item)
             self.suggestion_item = item
@@ -3163,7 +3164,7 @@ class AgentChatDrawer(_BoundaryFrame):
         visible = matches[:MAX_VISIBLE_WORKSPACE_CANDIDATES]
 
         if not visible:
-            item = QListWidgetItem("没有匹配的工作区文件")
+            item = QListWidgetItem("No matching workspace files")
             self.suggestion_list.addItem(item)
             self.suggestion_item = item
         else:
@@ -3172,7 +3173,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 item.setData(Qt.ItemDataRole.UserRole, reference)
                 item.setToolTip(
                     f"{reference.file_type} · "
-                    f"{reference.size_bytes} 字节"
+                    f"{reference.size_bytes} bytes"
                 )
                 self.suggestion_list.addItem(item)
             self.suggestion_item = self.suggestion_list.item(0)
@@ -3299,29 +3300,29 @@ class AgentChatDrawer(_BoundaryFrame):
             self._update_workspace_state()
             self._show_preview_notice("")
         elif result.cancelled:
-            self._show_preview_notice("已取消选择，工作区保持不变")
+            self._show_preview_notice("Selection cancelled; workspace unchanged")
         else:
             self._show_preview_notice(
-                f"无法选择工作区：{result.error or '未知错误'}"
+                f"Cannot select workspace: {result.error or 'Unknown error'}"
             )
         return result
 
     def _update_workspace_state(self) -> None:
         snapshot = self._workspace_index
         if snapshot is None:
-            self.workspace_state.setText("工作区  尚未选择")
+            self.workspace_state.setText("Workspace  Not selected")
             self.workspace_state.setToolTip(
-                "Agent 私有会话目录尚未创建；其位置不会在界面中披露"
+                "Private Agent session directory has not been created; its location is hidden from the UI"
             )
             return
         workspace = snapshot.workspace
         self.workspace_state.setText(
-            f"工作区  {workspace.root.name or workspace.root}"
+            f"Workspace  {workspace.root.name or workspace.root}"
         )
         self.workspace_state.setToolTip(
-            f"用户工作区：{workspace.root}\n"
-            "Agent 私有数据与用户工作区相互独立；"
-            "选择工作区不会写入文件"
+            f"User workspace: {workspace.root}\n"
+            "Private Agent data is separate from the user workspace; "
+            "selecting a workspace does not write files"
         )
 
     def _send_to_runtime(self) -> None:
@@ -3365,7 +3366,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self.authoring_bridge.cancel_pending_proposals_from_gui(
                 "Agent operation was cancelled by the user"
             )
-            self._show_preview_notice("正在取消当前操作…")
+            self._show_preview_notice("Cancelling current operation…")
 
     def _confirm_runtime_solve(
         self,
@@ -3377,7 +3378,7 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         if self.agent_runtime.confirm_solve(*key):
             self._pending_solve_confirmations.add(key)
-            self._show_preview_notice("已确认当前 revision，正在开始求解…")
+            self._show_preview_notice("Current revision confirmed; starting solve…")
             self.set_runtime_busy(True)
             self._render_event_presentation(
                 preserve_tool_expansion=True,
@@ -3401,7 +3402,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 or handler is None
                 or not self._proposal_targets_live_binding(proposal, turn_id)
             ):
-                self._show_preview_notice("保存请求已陈旧，请重新生成")
+                self._show_preview_notice("Save request is stale; regenerate it")
                 return
             try:
                 controller.begin_project_save_from_gui(
@@ -3411,14 +3412,14 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             except Exception as exc:
                 self._show_preview_notice(
-                    str(exc).strip() or "保存请求无法接受"
+                    str(exc).strip() or "Cannot accept save request"
                 )
                 return
             self._record_projected_proposal_lifecycle(
                 proposal,
                 turn_id,
                 ProposalState.RUNNING,
-                "等待本地保存完成",
+                "Waiting for local save",
             )
             try:
                 started = handler(
@@ -3437,12 +3438,12 @@ class AgentChatDrawer(_BoundaryFrame):
                 self._finish_project_save(
                     proposal,
                     ProposalState.FAILED,
-                    "保存任务未能启动",
+                    "Save task could not start",
                 )
             return
         if proposal.proposal_kind == "requirement_review":
             if not self._proposal_targets_live_binding(proposal, turn_id):
-                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                self._show_preview_notice("Requirements review is stale; regenerate it")
                 return
             controller = self.agent_runtime.authoring_controller
             review = (
@@ -3454,7 +3455,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 proposal.proposal_id,
                 proposal.proposal_hash,
             ):
-                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                self._show_preview_notice("Requirements review is stale; regenerate it")
                 return
             try:
                 confirmed = bridge.confirm_requirement_review_from_gui(
@@ -3466,22 +3467,22 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             except Exception as exc:
                 self._show_preview_notice(
-                    str(exc).strip() or "需求确认失败"
+                    str(exc).strip() or "Requirements confirmation failed"
                 )
             else:
                 self._record_projected_proposal_lifecycle(
                     proposal,
                     turn_id,
                     ProposalState.SUCCEEDED,
-                    "需求审查已确认",
+                    "Requirements review confirmed",
                 )
-                self._show_preview_notice("需求审查已由 GUI 控件确认")
+                self._show_preview_notice("Requirements review confirmed through GUI controls")
             return
         try:
             receipt = bridge.accept_from_gui_control(proposal.proposal_id)
         except Exception as exc:
             self._show_preview_notice(
-                str(exc).strip() or "提案接受失败"
+                str(exc).strip() or "Proposal acceptance failed"
             )
         else:
             try:
@@ -3495,21 +3496,21 @@ class AgentChatDrawer(_BoundaryFrame):
             self._show_preview_notice(
                 receipt.message
                 or (
-                    "提案已由 GUI 控件接受；A1 Fake Port 未修改模型"
+                    "Proposal accepted through GUI controls; A1 Fake Port did not modify the model"
                     if receipt.state.value == "accepted"
                     else (
                         (
-                            "几何已加入模型"
+                            "Geometry added to model"
                             if proposal.proposal_kind == "geometry"
                             else (
-                                "模型修改已完成"
+                                "Model changes completed"
                                 if proposal.proposal_kind
                                 == "destructive_edit"
-                                else "提案已完成"
+                                else "Proposal completed"
                             )
                         )
                         if receipt.state.value == "succeeded"
-                        else "提案处理失败"
+                        else "Proposal processing failed"
                     )
                 )
             )
@@ -3534,25 +3535,25 @@ class AgentChatDrawer(_BoundaryFrame):
                     context,
                 )
             ):
-                self._show_preview_notice("保存请求已陈旧，请重新生成")
+                self._show_preview_notice("Save request is stale; regenerate it")
                 return
             controller.record_project_save_state(
                 proposal.proposal_id,
                 proposal.proposal_hash,
                 ProposalState.REJECTED,
-                "用户拒绝保存请求",
+                "User rejected save request",
             )
             self._record_projected_proposal_lifecycle(
                 proposal,
                 turn_id,
                 ProposalState.REJECTED,
-                "用户拒绝保存请求",
+                "User rejected save request",
             )
-            self._show_preview_notice("保存请求已拒绝，未写入文件")
+            self._show_preview_notice("Save request rejected; no files written")
             return
         if proposal.proposal_kind == "requirement_review":
             if not self._proposal_targets_live_binding(proposal, turn_id):
-                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                self._show_preview_notice("Requirements review is stale; regenerate it")
                 return
             controller = self.agent_runtime.authoring_controller
             review = (
@@ -3564,7 +3565,7 @@ class AgentChatDrawer(_BoundaryFrame):
                 proposal.proposal_id,
                 proposal.proposal_hash,
             ):
-                self._show_preview_notice("需求审查已陈旧，请重新生成")
+                self._show_preview_notice("Requirements review is stale; regenerate it")
                 return
             try:
                 rejected = bridge.reject_requirement_review_from_gui(
@@ -3576,22 +3577,22 @@ class AgentChatDrawer(_BoundaryFrame):
                 )
             except Exception as exc:
                 self._show_preview_notice(
-                    str(exc).strip() or "需求拒绝失败"
+                    str(exc).strip() or "Requirements rejection failed"
                 )
             else:
                 self._record_projected_proposal_lifecycle(
                     proposal,
                     turn_id,
                     ProposalState.REJECTED,
-                    "用户拒绝需求审查",
+                    "User rejected requirements review",
                 )
-                self._show_preview_notice("需求审查已拒绝，模型保持不变")
+                self._show_preview_notice("Requirements review rejected; model unchanged")
             return
         try:
             receipt = bridge.reject_from_gui_control(proposal.proposal_id)
         except Exception as exc:
             self._show_preview_notice(
-                str(exc).strip() or "提案拒绝失败"
+                str(exc).strip() or "Proposal rejection failed"
             )
         else:
             try:
@@ -3603,7 +3604,7 @@ class AgentChatDrawer(_BoundaryFrame):
             except (RuntimeError, ValueError):
                 pass
             self._show_preview_notice(
-                receipt.message or "提案已拒绝，当前模型保持不变"
+                receipt.message or "Proposal rejected; current model unchanged"
             )
 
     def _proposal_targets_live_binding(
@@ -3657,7 +3658,7 @@ class AgentChatDrawer(_BoundaryFrame):
                     proposal,
                     turn_id,
                     ProposalState.STALE,
-                    "绑定文档、session 或 revision 已改变",
+                    "Bound document, session, or revision changed",
                 )
             return False
         if proposal.proposal_kind == "requirement_review":
@@ -3670,7 +3671,7 @@ class AgentChatDrawer(_BoundaryFrame):
                     proposal,
                     turn_id,
                     ProposalState.STALE,
-                    "需求审查 identity 已改变",
+                    "Requirements review identity changed",
                 )
             return current
         if proposal.proposal_kind == "project_save":
@@ -3688,7 +3689,7 @@ class AgentChatDrawer(_BoundaryFrame):
                     proposal,
                     turn_id,
                     ProposalState.STALE,
-                    "保存请求 identity 已改变",
+                    "Save request identity changed",
                 )
             return current
         try:
@@ -3747,11 +3748,11 @@ class AgentChatDrawer(_BoundaryFrame):
                 message,
             )
         notices = {
-            ProposalState.SUCCEEDED: "自主项目保存完成",
-            ProposalState.FAILED: "自主项目保存失败",
-            ProposalState.CANCELLED: "已取消保存，未写入文件",
-            ProposalState.STALE: "保存快照已陈旧，当前修改仍未保存",
-            ProposalState.REJECTED: "保存请求已拒绝",
+            ProposalState.SUCCEEDED: "Native project saved",
+            ProposalState.FAILED: "Native project save failed",
+            ProposalState.CANCELLED: "Save cancelled; no files written",
+            ProposalState.STALE: "Save snapshot is stale; current changes remain unsaved",
+            ProposalState.REJECTED: "Save request rejected",
         }
         self._show_preview_notice(notices[normalized])
 
@@ -3881,7 +3882,7 @@ class AgentChatDrawer(_BoundaryFrame):
         )
 
     def set_runtime_busy(self, _busy: bool) -> None:
-        """投影后台 runtime 的串行操作状态。"""
+        """Project the background runtime's serial operation state."""
         if self._shutting_down:
             return
         self._runtime_busy = self.agent_runtime.busy
@@ -3894,7 +3895,7 @@ class AgentChatDrawer(_BoundaryFrame):
         )
         if self._runtime_busy:
             self._show_preview_notice(
-                "FEM Agent 正在后台运行 · 可点击停止"
+                "FEM Agent running in background · Click Stop to cancel"
             )
         else:
             self._show_preview_notice("")
@@ -3910,13 +3911,13 @@ class AgentChatDrawer(_BoundaryFrame):
             revision_hash = button.property("revisionHash")
             key = (revision, revision_hash)
             if key in self._completed_solve_confirmations:
-                button.setText("求解已完成")
+                button.setText("Solve complete")
                 button.setEnabled(False)
             elif key in self._pending_solve_confirmations:
-                button.setText("正在求解…")
+                button.setText("Solving…")
                 button.setEnabled(False)
             else:
-                button.setText("开始求解")
+                button.setText("Start solve")
                 button.setEnabled(
                     not self._runtime_busy
                     and self._confirmation_targets_live_session()
@@ -4022,7 +4023,7 @@ class AgentChatDrawer(_BoundaryFrame):
         self.shutdown_runtime(wait=False)
 
     def shutdown_runtime(self, *, wait: bool = False) -> None:
-        """安全关闭后台执行边界；收起聊天框不会调用本方法。"""
+        """Safely shut down background execution; collapsing chat does not call this method."""
         if not self._shutting_down:
             self._shutting_down = True
             self._project_save_handler = None
@@ -4046,7 +4047,7 @@ class AgentChatDrawer(_BoundaryFrame):
 
 
 class AgentChatLauncher(_BoundaryToolButton):
-    """聊天框关闭后留在模型画布上的可拖动覆盖式入口。"""
+    """Draggable launcher remaining on the model canvas when chat is closed."""
 
     dragDelta = Signal(QPoint)
 
@@ -4058,7 +4059,7 @@ class AgentChatLauncher(_BoundaryToolButton):
             True,
         )
         self.setText("FA")
-        self.setToolTip("点击打开 FEM Agent；拖动可移动")
+        self.setToolTip("Click to open FEM Agent; drag to move")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._press_global_position: QPoint | None = None
@@ -4125,7 +4126,7 @@ class AgentChatLauncher(_BoundaryToolButton):
 
 
 class ModelViewportOverlayHost(QWidget):
-    """叠放 Qt 控件，并为打开的聊天框预留模型视口宽度。"""
+    """Stack Qt widgets and reserve model viewport width for open chat."""
 
     drawerOpenChanged = Signal(bool)
     drawerWidthChanged = Signal(int)
@@ -4311,7 +4312,7 @@ class ModelViewportOverlayHost(QWidget):
 
     @property
     def drawer_width(self) -> int:
-        """返回当前宿主尺寸下聊天框实际可见的目标宽度。"""
+        """Return the visible target chat width for the current host size."""
         return self._effective_drawer_width()
 
     @property
@@ -4319,7 +4320,7 @@ class ModelViewportOverlayHost(QWidget):
         return self._agent_chat_enabled
 
     def set_agent_chat_enabled(self, enabled: bool) -> None:
-        """临时隐藏 Agent 覆盖层，同时保留聊天框原有开合状态。"""
+        """Temporarily hide the Agent overlay while preserving chat open state."""
 
         enabled = bool(enabled)
         if enabled == self._agent_chat_enabled:
@@ -4355,7 +4356,7 @@ class ModelViewportOverlayHost(QWidget):
         *,
         animated: bool = False,
     ) -> None:
-        """拉出或收起聊天框，并同步模型视口的可用宽度。"""
+        """Open or collapse chat and synchronize available model viewport width."""
         opened = bool(opened)
         target = (
             self._effective_drawer_width()
@@ -4404,7 +4405,7 @@ class ModelViewportOverlayHost(QWidget):
         self._sync_overlay_window_visibility()
 
     def set_drawer_width(self, width: int) -> None:
-        """设置用户偏好宽度；打开时同步提交模型视口宽度。"""
+        """Set preferred width; synchronize model viewport width when open."""
         width = max(self.MIN_DRAWER_WIDTH, int(width))
         if width == self._drawer_width:
             return
@@ -4419,7 +4420,7 @@ class ModelViewportOverlayHost(QWidget):
         self.drawerWidthChanged.emit(self.drawer_width)
 
     def set_bottom_overlay(self, overlay: QWidget) -> None:
-        """注册一个不占用模型视口布局的底部工具浮层。"""
+        """Register a bottom tool overlay outside the model viewport layout."""
         if overlay is self._bottom_overlay:
             return
         if self._bottom_overlay is not None:
@@ -4444,7 +4445,7 @@ class ModelViewportOverlayHost(QWidget):
         self._position_overlays()
 
     def set_bottom_overlay_visible(self, visible: bool) -> None:
-        """显示或隐藏底部工具浮层，同时保持模型视口几何不变。"""
+        """Show or hide the bottom tool overlay while preserving model viewport geometry."""
         visible = bool(visible)
         if visible == self._bottom_overlay_visible:
             return
@@ -4724,7 +4725,7 @@ class ModelViewportOverlayHost(QWidget):
             self.chat_launcher.raise_()
 
     def _schedule_overlay_window_sync(self) -> None:
-        """在宿主或 VTK 更新后同步独立覆盖窗口。"""
+        """Synchronize detached overlay windows after host or VTK updates."""
         if self._shutting_down or self._overlay_sync_timer.isActive():
             return
         self._overlay_sync_timer.start(0)

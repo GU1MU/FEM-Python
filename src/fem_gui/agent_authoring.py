@@ -533,17 +533,17 @@ def _planar_profile_design_summary(
 ) -> str:
     if kind == "rectangle":
         return (
-            f"矩形{index}(x={_display_number(values['x'])}, "
+            f"Rectangle {index}(x={_display_number(values['x'])}, "
             f"y={_display_number(values['y'])}, "
-            f"宽={_display_number(values['width'])}, "
-            f"高={_display_number(values['height'])})"
+            f"width={_display_number(values['width'])}, "
+            f"height={_display_number(values['height'])})"
         )
     if kind == "circle":
         return (
-            f"圆{index}(圆心="
+            f"Circle {index}(center="
             f"({_display_number(values['center_x'])}, "
             f"{_display_number(values['center_y'])}), "
-            f"半径={_display_number(values['radius'])})"
+            f"radius={_display_number(values['radius'])})"
         )
     vertices = tuple(values["vertices"])  # type: ignore[arg-type]
     shown = vertices[:8]
@@ -552,8 +552,8 @@ def _planar_profile_design_summary(
         for vertex in shown
     )
     if len(vertices) > len(shown):
-        coordinates += f", …共{len(vertices)}点"
-    return f"多边形{index}(顶点={coordinates})"
+        coordinates += f", …{len(vertices)} points total"
+    return f"Polygon {index}(vertices={coordinates})"
 
 
 def _bounded_geometry_design_summary(
@@ -562,15 +562,15 @@ def _bounded_geometry_design_summary(
 ) -> str:
     kept: list[str] = []
     for index, detail in enumerate(details):
-        candidate = f"{prefix}：" + "；".join((*kept, detail))
+        candidate = f"{prefix}: " + "; ".join((*kept, detail))
         if len(candidate) > 720:
             return (
-                f"{prefix}："
-                + "；".join(kept)
-                + f"；另有 {len(details) - index} 个轮廓"
+                f"{prefix}: "
+                + "; ".join(kept)
+                + f"; {len(details) - index} more profiles"
             )
         kept.append(detail)
-    return f"{prefix}：" + "；".join(kept)
+    return f"{prefix}: " + "; ".join(kept)
 
 
 class _GeometryIntentMismatchError(AuthoringContractError):
@@ -636,15 +636,15 @@ def _geometry_unit_summary(
         f"{requirements['stress_unit']}"
     )
     if len(defaulted_keys) == 3:
-        return f"{label}（默认）"
+        return f"{label} (default)"
     if defaulted_keys:
         names = {
-            "length_unit": "长度",
-            "force_unit": "力",
-            "stress_unit": "应力",
+            "length_unit": "length",
+            "force_unit": "force",
+            "stress_unit": "stress",
         }
-        defaulted = "、".join(names[key] for key in defaulted_keys)
-        return f"{label}（{defaulted}使用默认值）"
+        defaulted = ", ".join(names[key] for key in defaulted_keys)
+        return f"{label} ({defaulted} defaulted)"
     return label
 
 
@@ -969,7 +969,7 @@ def authoring_context_from_snapshot(
             str(getattr(runs[-1], "status", "completed")).split(".")[-1].casefold()
         )
 
-    blocked_reason = None if supported else "V1 只绑定空白或 native 文档"
+    blocked_reason = None if supported else "V1 only binds blank or native documents"
     deletable_objects_available = bool(deletable_object_catalog(snapshot))
     editable_objects_available = bool(editable_object_catalog(snapshot))
     editable_geometry_available = bool(
@@ -989,7 +989,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if editable_geometry_available
-                else "当前 native 项目没有可读取的部件几何"
+                else "No readable part geometry in the current native project"
             ),
         ),
         CapabilitySummary("review_requirements", supported, blocked_reason),
@@ -1003,7 +1003,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if editable_geometry_available
-                else "当前 native 项目没有可编辑的部件几何"
+                else "No editable part geometry in the current native project"
             ),
         ),
         CapabilitySummary(
@@ -1012,7 +1012,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if supported and source_kind == "native"
-                else "网格意图需要 native 项目"
+                else "Mesh intent requires a native project"
             ),
         ),
         CapabilitySummary(
@@ -1021,7 +1021,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if supported and source_kind == "native"
-                else "网格提案需要 native 项目"
+                else "Mesh proposals require a native project"
             ),
         ),
         CapabilitySummary(
@@ -1038,7 +1038,7 @@ def authoring_context_from_snapshot(
                     and source_kind == "native"
                     and bool(getattr(snapshot, "mesh_current", False))
                 )
-                else "模型预检需要当前 native 网格"
+                else "Model preflight requires a current native mesh"
             ),
         ),
         CapabilitySummary(
@@ -1057,7 +1057,7 @@ def authoring_context_from_snapshot(
                     and bool(getattr(snapshot, "mesh_current", False))
                     and validation_status == "passed"
                 )
-                else "求解提案需要当前 native 网格和通过的预检"
+                else "Solve proposals require a current native mesh and passed preflight"
             ),
         ),
         CapabilitySummary(
@@ -1066,13 +1066,13 @@ def authoring_context_from_snapshot(
             (
                 None
                 if bool(getattr(snapshot, "can_save", False))
-                else "项目保存需要当前已打开的 native 项目"
+                else "Saving requires an open native project"
             ),
         ),
         CapabilitySummary(
             "delete_model_objects",
             deletable_objects_available,
-            (None if deletable_objects_available else "当前 native 项目没有可删除对象"),
+            (None if deletable_objects_available else "No deletable objects in the current native project"),
         ),
         CapabilitySummary(
             "edit_model_objects",
@@ -1080,7 +1080,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if editable_objects_available
-                else "当前 native 项目没有可编辑的定义对象"
+                else "No editable definition objects in the current native project"
             ),
         ),
         CapabilitySummary(
@@ -1089,7 +1089,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if (supported and source_kind == "native" and result_count > 0)
-                else "结果查询需要当前已接受的 native 结果"
+                else "Result queries require current accepted native results"
             ),
         ),
         CapabilitySummary(
@@ -1098,7 +1098,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if supported and source_kind == "native" and result_count >= 2
-                else "结果比较需要当前会话中至少两个已接受的 native 结果"
+                else "Result comparison requires at least two accepted native results in the current session"
             ),
         ),
         CapabilitySummary(
@@ -1107,7 +1107,7 @@ def authoring_context_from_snapshot(
             (
                 None
                 if supported and source_kind == "native" and result_count > 0
-                else "结果展示上下文需要当前已接受的 native 结果"
+                else "Result display context requires current accepted native results"
             ),
         ),
         CapabilitySummary(
@@ -1127,8 +1127,8 @@ def authoring_context_from_snapshot(
                     and bool(workspace_selected)
                 )
                 else (
-                    "结果 CSV 导出需要先通过 /workspace 选择用户工作区，"
-                    "并有当前已接受的 native 结果"
+                    "CSV result export requires a user workspace selected through /workspace "
+                    "and current accepted native results"
                 )
             ),
         ),
@@ -1344,10 +1344,10 @@ class _WorkspaceResultResolutionError(ValueError):
 
 
 class SessionExportPort:
-    """Agent 导出端口：把 CSV 落盘到用户工作区并写入导出台账。
+    """Agent export port: write CSV to the user workspace and record it in the export ledger.
 
-    端口只依赖导出门面，便于测试注入 Fake。未选择工作区时统一返回
-    固定诊断文案；工作区中途失效时只诊断，不清理也不重试。
+    The port depends only on the export facade for fake injection in tests. Without a workspace, return
+    a fixed diagnostic; if the workspace becomes unavailable, report it without cleanup or retries.
     """
 
     def __init__(self, facade: object) -> None:
@@ -1369,7 +1369,7 @@ class SessionExportPort:
         except (RuntimeError, ValueError) as error:
             return ResultDisplayContextResponse.failure(
                 "export.context.unavailable",
-                f"当前没有可导出的 READY 结果：{str(error)[:256]}",
+                f"No READY results available for export: {str(error)[:256]}",
                 retryable=False,
                 clarification_required=True,
             )
@@ -1387,7 +1387,7 @@ class SessionExportPort:
         except (RuntimeError, ValueError) as error:
             return ExportCsvResponse.failure(
                 "export.result.unavailable",
-                f"当前没有可导出的 READY 结果：{str(error)[:256]}",
+                f"No READY results available for export: {str(error)[:256]}",
                 retryable=False,
                 clarification_required=True,
             )
@@ -1406,8 +1406,8 @@ class SessionExportPort:
             return ExportCsvResponse.failure(
                 "export.field.unknown",
                 (
-                    "field_ref 不在当前 READY 场目录中；"
-                    f"可用场：{ready_refs}"
+                    "field_ref is not in the current READY field catalog; "
+                    f"available fields: {ready_refs}"
                 ),
                 retryable=False,
                 clarification_required=True,
@@ -1416,8 +1416,8 @@ class SessionExportPort:
             return ExportCsvResponse.failure(
                 "export.component.unknown",
                 (
-                    "component 不属于所选场；"
-                    f"可用分量：{', '.join(field.components)}"
+                    "component does not belong to the selected field; "
+                    f"available components: {', '.join(field.components)}"
                 ),
                 retryable=False,
                 clarification_required=True,
@@ -1446,7 +1446,7 @@ class SessionExportPort:
         except ExportStorageError as error:
             return ExportCsvResponse.failure(
                 "export.storage.rejected",
-                str(error)[:512] or "导出目录不可用",
+                str(error)[:512] or "Export directory unavailable",
                 retryable=False,
                 clarification_required=True,
             )
@@ -1468,7 +1468,7 @@ class SessionExportPort:
         except OSError:
             return ExportCsvResponse.failure(
                 "export.workspace.unavailable",
-                "工作区目录不可用，导出未完成；请检查工作区后由用户重新发起",
+                "Workspace directory unavailable; export incomplete. Check the workspace and have the user retry",
                 retryable=False,
                 clarification_required=True,
             )
@@ -1517,7 +1517,7 @@ class SessionExportPort:
                 ),
             )
         except (OSError, ValueError):
-            # 台账是尽力而为的审计记录；落盘成功后不因台账失败而回滚。
+            # The ledger is a best-effort audit record; ledger failure does not roll back a successful write.
             pass
         return ExportCsvResponse.success(
             ExportFileReceipt(
@@ -3159,7 +3159,7 @@ class SessionGeometryAuthoringPort:
             step_name=clean_step,
             base_session_revision=snapshot.session_revision,
             state=AgentPreflightState.RUNNING,
-            message="正在后台执行确定性模型预检",
+            message="Running deterministic model preflight in the background",
         )
         self._preflight_records[request_id] = record
         request = AgentPreflightTaskRequest(
@@ -3176,14 +3176,14 @@ class SessionGeometryAuthoringPort:
             self._preflight_records[request_id] = replace(
                 record,
                 state=AgentPreflightState.FAILED,
-                message="GUI 预检任务启动失败",
+                message="GUI preflight task failed to start",
             )
             raise
         if not started:
             failed = replace(
                 record,
                 state=AgentPreflightState.FAILED,
-                message="GUI 后台任务控制器忙或拒绝启动",
+                message="GUI background task controller is busy or rejected startup",
             )
             self._preflight_records[request_id] = failed
             return failed
@@ -3327,7 +3327,7 @@ class SessionGeometryAuthoringPort:
                 "current_result_display_reset": True,
             },
             display_summary={
-                "title": "撤销本次 Agent 修改",
+                "title": "Undo these Agent changes",
                 "forward_patch_id": patch.patch_id,
             },
         )
@@ -3477,7 +3477,7 @@ class SessionGeometryAuthoringPort:
         running = replace(
             record,
             state=ProposalState.RUNNING,
-            message="GUI 已授权，正在提交后台作业",
+            message="GUI authorized; submitting background job",
         )
         self._records[proposal.proposal_id] = running
         if self._record_listener is not None:
@@ -3498,14 +3498,14 @@ class SessionGeometryAuthoringPort:
             self._records[proposal.proposal_id] = replace(
                 running,
                 state=ProposalState.FAILED,
-                message="GUI 后台作业启动失败",
+                message="GUI background job failed to start",
             )
             raise
         if not started:
             failed = replace(
                 running,
                 state=ProposalState.FAILED,
-                message="GUI 后台任务控制器忙或拒绝启动",
+                message="GUI background task controller is busy or rejected startup",
             )
             self._records[proposal.proposal_id] = failed
             raise AuthoringContractError(failed.message)
@@ -3597,7 +3597,7 @@ class SessionGeometryAuthoringPort:
             self.complete_mesh(
                 proposal_id,
                 ProposalState.SUCCEEDED,
-                "网格意图和生成模型已原子提交",
+                "Mesh intent and generated model committed atomically",
             )
         return delta
 
@@ -3814,7 +3814,7 @@ class AgentAuthoringBridge:
             ):
                 stale = self._port.stale(
                     proposal_id,
-                    "绑定文档、session 或 revision 已改变",
+                    "Bound document, session, or revision changed",
                 )
                 self._records[proposal_id] = stale
                 self._notify_lifecycle(stale)
@@ -4164,7 +4164,7 @@ class AgentAuthoringBridge:
         if record.state is ProposalState.PENDING_CONFIRMATION:
             stale = self._port.stale(
                 proposal.proposal_id,
-                "proposal hash、Agent session 或 turn identity 不匹配",
+                "Proposal hash, Agent session, or turn identity mismatch",
             )
             self._records[proposal.proposal_id] = stale
             self._notify_lifecycle(stale)
@@ -4353,8 +4353,8 @@ def create_session_authoring_workflow_controller(
 
     def geometry_edit_impact(edit_mode: str, in_place: str) -> str:
         return (
-            "确认后创建迭代模型，迁移可保留的网格设置与模型定义；"
-            "实际网格、验证、运行和结果不迁移"
+            "Confirm to create an iteration model and migrate retained mesh settings and model definitions; "
+            "mesh data, validation, runs, and results are not migrated"
             if edit_mode == "branch"
             else in_place
         )
@@ -4461,10 +4461,10 @@ def create_session_authoring_workflow_controller(
         kind = str(geometry.get("kind", ""))
         _require_geometry_intent_compatibility(part_function, kind)
         recipe_name = (
-            f"草图-{part_function}"
+            f"Sketch-{part_function}"
             if kind == "planar_profiles"
             else (
-                f"线框-{part_function}" if kind == "wire" else f"实体-{part_function}"
+                f"Wire-{part_function}" if kind == "wire" else f"Body-{part_function}"
             )
         )
         if kind == "planar_profiles":
@@ -4585,7 +4585,7 @@ def create_session_authoring_workflow_controller(
                 else:
                     raise ValueError("unsupported planar profile kind")
             geometry_summary = _bounded_geometry_design_summary(
-                "2D 平面轮廓",
+                "2D planar profiles",
                 profile_summaries,
             )
         elif kind == "extruded_path_slot_plate":
@@ -4668,7 +4668,7 @@ def create_session_authoring_workflow_controller(
                 for x, y in path_points[:8]
             )
             if len(path_points) > 8:
-                shown_path += f", …共{len(path_points)}点"
+                shown_path += f", …{len(path_points)} points total"
             provisional = bool(geometry.get("provisional", False))
             path_slot_details = [
                 _planar_profile_design_summary(
@@ -4676,15 +4676,15 @@ def create_session_authoring_workflow_controller(
                     raw_plate,
                     1,
                 ),
-                f"槽中心路径={shown_path}",
-                (f"槽宽={_display_number(geometry['slot_width'])} {length_unit}"),
-                f"拉伸高={_display_number(height)} {length_unit}",
+                f"Slot center path={shown_path}",
+                (f"Slot width={_display_number(geometry['slot_width'])} {length_unit}"),
+                f"Extrusion height={_display_number(height)} {length_unit}",
                 "holes=1",
             ]
             if provisional:
-                path_slot_details.append("尺寸标记为 provisional 提案值")
+                path_slot_details.append("Dimensions marked as provisional proposal values")
             geometry_summary = _bounded_geometry_design_summary(
-                "3D 路径槽平板",
+                "3D plate with path slot",
                 path_slot_details,
             )
         elif kind in {"extruded_profiles", "path_swept_profile"}:
@@ -4742,12 +4742,12 @@ def create_session_authoring_workflow_controller(
                 )
                 draft = geometry_draft(recipe)
                 transform_summary = (
-                    f"拉伸高={_display_number(height)} {length_unit}，方向=XY 正法向"
+                    f"Extrusion height={_display_number(height)} {length_unit}, direction=positive XY normal"
                 )
             else:
                 path = _composite_path(
                     geometry["path"],
-                    name=f"扫掠路径-{part_function}",
+                    name=f"SweepPath-{part_function}",
                 )
                 frame_strategy = str(geometry["frame_strategy"])
                 if frame_strategy not in {"fixed", "transport"}:
@@ -4766,7 +4766,7 @@ def create_session_authoring_workflow_controller(
                 )
                 draft = geometry_draft(recipe)
                 transform_summary = (
-                    f"路径扫掠段数={len(path.members)}，frame={frame_strategy}"
+                    f"Path sweep segments={len(path.members)}, frame={frame_strategy}"
                 )
             profile_summary = _bounded_geometry_design_summary(
                 "2D Profile",
@@ -4781,10 +4781,10 @@ def create_session_authoring_workflow_controller(
             )
             provisional = bool(geometry.get("provisional", False))
             provisional_summary = (
-                "；尺寸标记为 provisional 提案值" if provisional else ""
+                "; Dimensions marked as provisional proposal values" if provisional else ""
             )
             geometry_summary = (
-                f"{profile_summary}；3D {kind}：{transform_summary}"
+                f"{profile_summary}; 3D {kind}: {transform_summary}"
                 f"{provisional_summary}"
             )
         elif kind == "wire":
@@ -4833,7 +4833,7 @@ def create_session_authoring_workflow_controller(
                 points=points,
                 members=members,
             )
-            geometry_summary = f"1D 空间线几何(点={len(points)}，杆件={len(members)})"
+            geometry_summary = f"1D spatial wire geometry(points={len(points)}, members={len(members)})"
         elif kind == "box":
             if set(geometry) != {"kind", "width", "depth", "height"}:
                 raise ValueError("box geometry fields do not match")
@@ -4844,9 +4844,9 @@ def create_session_authoring_workflow_controller(
                 height=geometry["height"],
             )
             geometry_summary = (
-                f"3D 长方体(宽={_display_number(geometry['width'])}, "
-                f"深={_display_number(geometry['depth'])}, "
-                f"高={_display_number(geometry['height'])})"
+                f"3D box(width={_display_number(geometry['width'])}, "
+                f"depth={_display_number(geometry['depth'])}, "
+                f"height={_display_number(geometry['height'])})"
             )
         elif kind == "cylinder":
             if set(geometry) != {"kind", "radius", "height"}:
@@ -4857,15 +4857,15 @@ def create_session_authoring_workflow_controller(
                 height=geometry["height"],
             )
             geometry_summary = (
-                f"3D 圆柱(半径={_display_number(geometry['radius'])}, "
-                f"高={_display_number(geometry['height'])})"
+                f"3D cylinder(radius={_display_number(geometry['radius'])}, "
+                f"height={_display_number(geometry['height'])})"
             )
         else:
             raise ValueError("unsupported geometry kind")
         requirements = controller.collected_requirements("geometry")
         defaulted_keys = controller.defaulted_requirement_keys("geometry")
         proposal_summary = (
-            f"设计提案：{geometry_summary}；单位制 "
+            f"Design proposal: {geometry_summary}; units "
             f"{_geometry_unit_summary(requirements, defaulted_keys)}"
         )
         metadata = envelope(controller, "geometry")
@@ -4901,8 +4901,8 @@ def create_session_authoring_workflow_controller(
         return proposal_outcome(
             proposal,
             summary=proposal_summary,
-            impact="确认后创建该几何并刷新 GUI",
-            confirm_label="加入部件",
+            impact="Confirm to create this geometry and refresh the GUI",
+            confirm_label="Add part",
             extra_data={
                 "authoring_path": (
                     "legacy_planar_profiles"
@@ -4921,33 +4921,33 @@ def create_session_authoring_workflow_controller(
         )
 
     _PLANAR_DIAGNOSTIC_MESSAGES = {
-        "planar-ir.schema-invalid": "二维构造字段或版本无效，请修正标记字段。",
-        "planar-ir.budget-exceeded": "二维构造超过本地预算，请简化构造图。",
-        "planar-ir.duplicate-node-id": "二维构造包含重复节点 ID，请重命名冲突节点。",
-        "planar-ir.reference-missing": "二维构造引用了不存在的节点，请修正失败引用。",
-        "planar-ir.cycle-detected": "二维构造节点形成循环，请断开诊断指出的依赖。",
-        "planar-ir.unreachable-node": "二维构造包含未参与结果的节点，请删除或连接该节点。",
-        "planar-ir.invalid-primitive": "二维基础区域参数无效，请修正诊断指出的节点。",
-        "planar-ir.invalid-path-stroke": "定宽路径无效，请修正失败线段、宽度或连接方式。",
+        "planar-ir.schema-invalid": "Invalid 2D construction fields or version; correct the marked fields.",
+        "planar-ir.budget-exceeded": "2D construction exceeds the local budget; simplify the construction graph.",
+        "planar-ir.duplicate-node-id": "2D construction has duplicate node IDs; rename conflicting nodes.",
+        "planar-ir.reference-missing": "2D construction references missing nodes; correct the failed references.",
+        "planar-ir.cycle-detected": "2D construction nodes form a cycle; break the reported dependency.",
+        "planar-ir.unreachable-node": "2D construction has an unused node; remove or connect it.",
+        "planar-ir.invalid-primitive": "Invalid 2D primitive region parameters; correct the reported node.",
+        "planar-ir.invalid-path-stroke": "Invalid constant-width path; correct the failed segment, width, or join.",
         "planar-ir.subtract-no-effect": (
-            "减材节点未切除任何材料；请检查坐标，并注意矩形 x/y 表示左下角。"
+            "Subtraction node removed no material; check coordinates. Rectangle x/y denotes the lower-left corner."
         ),
-        "planar-ir.boolean-empty": "二维布尔运算结果为空，请调整 operand 或尺寸。",
-        "planar-ir.degenerate-result": "二维构造产生退化边或区域，请调整尺寸关系。",
-        "planar-ir.unsupported-boundary": "结果包含当前版本不支持的边界曲线。",
-        "planar-ir.materialization-failed": "二维边界无法物化为严格草图，模型保持不变。",
-        "planar-ir.profile-invalid": "物化草图未通过 Profile 拓扑证明。",
-        "planar-ir.equivalence-failed": "物化草图与布尔结果不等价，已阻止提案。",
+        "planar-ir.boolean-empty": "2D Boolean result is empty; adjust operands or dimensions.",
+        "planar-ir.degenerate-result": "2D construction produces degenerate edges or regions; adjust dimension relationships.",
+        "planar-ir.unsupported-boundary": "Result contains boundary curves unsupported by this version.",
+        "planar-ir.materialization-failed": "Cannot materialize 2D boundaries as a strict sketch; model unchanged.",
+        "planar-ir.profile-invalid": "Materialized sketch failed Profile topology proof.",
+        "planar-ir.equivalence-failed": "Materialized sketch differs from the Boolean result; proposal blocked.",
         "planar-ir.feature-splits-material": (
-            "内部切除使材料区域失去连通性；请根据诊断中的节点、边界接触"
-            "和包围盒调整位置或尺寸。"
+            "Internal cuts disconnect the material region; adjust positions or dimensions using the reported nodes, boundary contacts, "
+            "and bounding boxes."
         ),
         "planar-ir.transform-invalid": (
-            "输出参数无效：二维可使用 output: \"planar\" 或 "
-            "output: {\"kind\": \"planar\"}；三维请检查变换参数与源 Profile。"
+            "Invalid output parameters: for 2D use output: \"planar\" or "
+            "output: {\"kind\": \"planar\"}; for 3D check transform parameters and source Profile."
         ),
-        "planar-ir.preflight-failed": "最终三维 Recipe 未通过本地精确预检。",
-        "planar-ir.stale-context": "文档、Session 或 revision 已变化，请重新读取上下文。",
+        "planar-ir.preflight-failed": "Final 3D Recipe failed local exact preflight.",
+        "planar-ir.stale-context": "Document, Session, or revision changed; reread the context.",
     }
 
     def _planar_construction_failure(
@@ -4983,7 +4983,7 @@ def create_session_authoring_workflow_controller(
             payload["evidence"] = evidence
         user_message = _PLANAR_DIAGNOSTIC_MESSAGES.get(
             code,
-            "二维构造未通过本地验证，模型保持不变。",
+            "2D construction failed local validation; model unchanged.",
         )
         if retry["blocker"] is not None:
             user_message = f"{user_message} {retry['blocker']}"
@@ -5093,7 +5093,7 @@ def create_session_authoring_workflow_controller(
                 )
             path = _composite_path(
                 output["path"],
-                name=f"扫掠路径-{part_function}",
+                name=f"SweepPath-{part_function}",
             )
             recipe = PathSweptGeometry(
                 planar_recipe,
@@ -5201,7 +5201,7 @@ def create_session_authoring_workflow_controller(
                 raise ValueError(
                     "path_sweep frame_strategy must be fixed or transport"
                 )
-            _composite_path(normalized["path"], name="扫掠路径-output-validation")
+            _composite_path(normalized["path"], name="SweepPath-output-validation")
         return normalized
 
     def prepare_planar_construction(
@@ -5229,7 +5229,7 @@ def create_session_authoring_workflow_controller(
         retry_blocker = controller.planar_construction_retry_blocker()
         if retry_blocker is not None:
             return AuthoringToolOutcome(
-                "二维构造本轮已达到三次重试上限，请在下一轮重新提交。",
+                "2D construction reached the three-retry limit for this turn; resubmit next turn.",
                 {
                     "retry": retry_blocker,
                     "authoring_path": "planar_construction_ir_v1",
@@ -5330,7 +5330,7 @@ def create_session_authoring_workflow_controller(
             )
         except PlanarCompileCancelled:
             return AuthoringToolOutcome(
-                "二维构造编译已按取消请求停止，模型保持不变。",
+                "2D construction compilation cancelled; model unchanged.",
                 {
                     "diagnostic": {
                         "code": "planar-ir.cancelled",
@@ -5347,7 +5347,7 @@ def create_session_authoring_workflow_controller(
             )
         except OwnedWorkerTimeout:
             return AuthoringToolOutcome(
-                "二维构造编译超过本地时限，模型保持不变。",
+                "2D construction compilation exceeded the local time limit; model unchanged.",
                 {
                     "diagnostic": {
                         "code": "planar-ir.compile-timeout",
@@ -5430,16 +5430,16 @@ def create_session_authoring_workflow_controller(
         construction_summary = evidence["construction_summary"]
         proof_summary = evidence["proof_summary"]
         output_label = {
-            "planar": "2D 平面构造",
-            "extrusion": "3D Profile 拉伸",
-            "revolution": "3D Profile 旋转扫掠",
-            "path_sweep": "3D Profile 路径扫掠",
+            "planar": "2D planar construction",
+            "extrusion": "3D Profile extrusion",
+            "revolution": "3D Profile revolution",
+            "path_sweep": "3D Profile path sweep",
         }[output_kind]
         proposal_summary = (
-            f"设计提案：{output_label}"
-            f"（节点={construction_summary['node_count']}，"
-            f"材料区={proof_summary['material_profile_count']}，"
-            f"孔洞={proof_summary['hole_count']}）；单位制 "
+            f"Design proposal: {output_label}"
+            f"(nodes={construction_summary['node_count']}, "
+            f"material regions={proof_summary['material_profile_count']}, "
+            f"holes={proof_summary['hole_count']}); units "
             f"{_geometry_unit_summary(requirements, defaulted_keys)}"
         )
         metadata = envelope(controller, "planar-construction")
@@ -5471,11 +5471,11 @@ def create_session_authoring_workflow_controller(
             proposal,
             summary=proposal_summary,
             impact=(
-                "确认后创建该二维几何并刷新 GUI"
+                "Confirm to create this 2D geometry and refresh the GUI"
                 if output_kind == "planar"
-                else "确认后直接创建最终三维几何并刷新 GUI"
+                else "Confirm to create the final 3D geometry directly and refresh the GUI"
             ),
-            confirm_label="加入部件",
+            confirm_label="Add part",
             detached_preview=detached_preview,
             extra_data={
                 "authoring_path": "planar_construction_ir_v1",
@@ -6035,7 +6035,7 @@ def create_session_authoring_workflow_controller(
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(
                 error,
-                operation="读取 Profile 变换上下文",
+                operation="Read Profile transform context",
                 required_fields=("part_id",),
             )
 
@@ -6094,7 +6094,7 @@ def create_session_authoring_workflow_controller(
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(
                 error,
-                operation="Profile 拉伸",
+                operation="Profile extrusion",
             )
 
     def prepare_profile_revolution(
@@ -6133,7 +6133,7 @@ def create_session_authoring_workflow_controller(
                 controller,
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
-            return _profile_transform_error(error, operation="Profile 旋转扫掠")
+            return _profile_transform_error(error, operation="Profile revolution")
 
     def prepare_profile_path_sweep(
         arguments: Mapping[str, object],
@@ -6184,7 +6184,7 @@ def create_session_authoring_workflow_controller(
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(
                 error,
-                operation="Profile 路径扫掠",
+                operation="Profile path sweep",
                 first_failed_member=_first_failed_path_member(arguments.get("path")),
             )
 
@@ -6441,8 +6441,8 @@ def create_session_authoring_workflow_controller(
                 draft.recipe,
                 raw_spatial_relation,
             )
-            action = "切除" if boolean_operation == "cut" else "合并"
-            summary = f"在部件 {part.name} 上追加二维{action}特征：工具轮廓为 {kind}"
+            action = "cut" if boolean_operation == "cut" else "union"
+            summary = f"Append a 2D {action} feature to part {part.name}: tool profile is {kind}"
             metadata = envelope(controller, "geometry-planar-boolean")
             suffix = str(metadata.pop("identity_suffix"))
             edit_mode = planned_geometry_edit_mode()
@@ -6460,9 +6460,9 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    f"确认后追加二维{action}特征，并使旧网格与结果失效",
+                    f"Confirm to append a 2D {action} feature and invalidate the old mesh and results",
                 ),
-                confirm_label=f"追加{action}特征",
+                confirm_label=f"Append {action}",
                 extra_data={
                     "geometry_edit_mode": edit_mode,
                     **(
@@ -6497,8 +6497,8 @@ def create_session_authoring_workflow_controller(
             )
             draft = geometry_draft(rebuilt_recipe)
             summary = (
-                f"替换部件 {part.name} 的二维布尔特征 {feature_id}："
-                f"工具轮廓为 {kind}，并重放后续特征"
+                f"Replace 2D Boolean feature {feature_id} in part {part.name}: "
+                f"tool profile is {kind}; replay later features"
             )
             metadata = envelope(controller, "geometry-feature-replacement")
             suffix = str(metadata.pop("identity_suffix"))
@@ -6517,9 +6517,9 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后替换所选二维布尔特征、重放后续特征，并使旧网格与结果失效",
+                    "Confirm to replace the selected 2D Boolean feature, replay later features, and invalidate the old mesh and results",
                 ),
-                confirm_label="替换特征",
+                confirm_label="Replace feature",
                 extra_data={
                     "geometry_edit_mode": edit_mode,
                     "replaced_feature_id": feature_id,
@@ -6581,9 +6581,9 @@ def create_session_authoring_workflow_controller(
             except BooleanLineageResolutionError as error:
                 return AuthoringToolOutcome(str(error), {}, ok=False)
             summary = (
-                f"精确 {boolean_operation}：target Part {part.name} [{part.id}]，"
-                f"tool Part {tool.name} [{tool.id}]；结果 {result_name} "
-                f"[{prepared.context.result_part_id}]；两源 Part 抑制并可撤销恢复，"
+                f"Exact {boolean_operation}: target Part {part.name} [{part.id}], "
+                f"tool Part {tool.name} [{tool.id}]; result {result_name} "
+                f"[{prepared.context.result_part_id}]; both source Parts are suppressed and can be restored by undo, "
                 f"tool policy={tool_handling}"
             )
             metadata = envelope(controller, "geometry-part-boolean")
@@ -6607,10 +6607,10 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后创建一个 proven 结果 Part，抑制 target/tool 源 Part，"
-                    "并使旧网格、定义与结果失效",
+                    "Confirm to create a proven result Part, suppress target/tool source Parts, "
+                    "and invalidate the old mesh, definitions, and results",
                 ),
-                confirm_label="执行精确 Part 布尔",
+                confirm_label="Exact Part Boolean",
                 extra_data={
                     "result_part_id": prepared.context.result_part_id,
                     "feature_id": prepared.context.feature_id,
@@ -6661,9 +6661,9 @@ def create_session_authoring_workflow_controller(
             except BooleanLineageResolutionError as error:
                 return AuthoringToolOutcome(str(error), {}, ok=False)
             summary = (
-                f"精确 {boolean_operation}：Part {part.name} [{part.id}] 内 "
-                f"target Body {target_body_id}，tool Body {tool_body_id}；"
-                f"结果特征 {result_name}，保留 target ID、消费 tool，"
+                f"Exact {boolean_operation}: within Part {part.name} [{part.id}] "
+                f"target Body {target_body_id}, tool Body {tool_body_id}; "
+                f"result feature {result_name}, preserving target ID and consuming tool, "
                 f"policy={tool_handling}"
             )
             metadata = envelope(controller, "geometry-body-boolean")
@@ -6688,10 +6688,10 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后在同一 Part 内保留 target Body ID、消费 tool Body，"
-                    "并使旧网格、定义与结果失效",
+                    "Confirm to preserve the target Body ID and consume the tool Body within the same Part, "
+                    "and invalidate the old mesh, definitions, and results",
                 ),
-                confirm_label="执行精确 Body 布尔",
+                confirm_label="Exact Body Boolean",
                 extra_data={
                     "target_body_id": target_body_id,
                     "consumed_tool_body_id": tool_body_id,
@@ -6745,9 +6745,9 @@ def create_session_authoring_workflow_controller(
                 recipes,
             )
             summary = (
-                f"选择式拉伸部件 {part.name} 的 {len(selection.face_ids)} 个 "
-                f"Profile：高度 {_display_number(height)}，沿草图正法向，"
-                f"生成 {len(selection.face_ids)} 个独立 Part"
+                f"Extrude {len(selection.face_ids)} selected "
+                f"Profiles in part {part.name}: height {_display_number(height)}, along the positive sketch normal, "
+                f"creating {len(selection.face_ids)} separate Parts"
             )
             metadata = envelope(controller, "geometry-edit")
             suffix = str(metadata.pop("identity_suffix"))
@@ -6768,10 +6768,10 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后将选定 Profiles 原子转换为独立实体 Part，"
-                    "并使旧网格、定义与结果失效",
+                    "Confirm to atomically convert selected Profiles to separate solid Parts, "
+                    "and invalidate the old mesh, definitions, and results",
                 ),
-                confirm_label="拉伸选定 Profiles",
+                confirm_label="Extrude Profiles",
                 extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "revolve_profile":
@@ -6809,9 +6809,9 @@ def create_session_authoring_workflow_controller(
                 recipe,
             )
             summary = (
-                f"绕 {recipe.axis.upper()} 轴旋转扫掠部件 {part.name} 的 "
-                f"Profile {source_face_id}：角度 {recipe.angle_degrees:g}°，"
-                "生成 1 个实体 Part"
+                f"Revolve part {part.name} around the {recipe.axis.upper()} axis, "
+                f"Profile {source_face_id}: angle {recipe.angle_degrees:g}°, "
+                "creating 1 solid Part"
             )
             metadata = envelope(controller, "geometry-revolve")
             suffix = str(metadata.pop("identity_suffix"))
@@ -6833,9 +6833,9 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后将 Profile 原子替换为旋转实体，并使旧网格、定义与结果失效",
+                    "Confirm to atomically replace the Profile with a revolved solid and invalidate the old mesh, definitions, and results",
                 ),
-                confirm_label="旋转扫掠 Profile",
+                confirm_label="Revolve Profile",
                 extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "path_sweep_profile":
@@ -6883,7 +6883,7 @@ def create_session_authoring_workflow_controller(
             ):
                 raise ValueError("path member fields do not match")
             path = WireGeometry(
-                f"扫掠路径-{part.id}",
+                f"SweepPath-{part.id}",
                 tuple(
                     WirePoint(item["name"], item["x"], item["y"], item["z"])
                     for item in raw_points
@@ -6904,9 +6904,9 @@ def create_session_authoring_workflow_controller(
                 recipe,
             )
             summary = (
-                f"沿 {len(path.members)} 段显式开放折线路径扫掠部件 "
-                f"{part.name} 的 Profile {source_face_id}；"
-                f"frame={recipe.frame_strategy}，生成 1 个实体 Part"
+                f"Sweep along an explicit open polyline with {len(path.members)} segments: part "
+                f"{part.name}, Profile {source_face_id}; "
+                f"frame={recipe.frame_strategy}, creating 1 solid Part"
             )
             metadata = envelope(controller, "geometry-path-sweep")
             suffix = str(metadata.pop("identity_suffix"))
@@ -6928,39 +6928,39 @@ def create_session_authoring_workflow_controller(
                 summary=summary,
                 impact=geometry_edit_impact(
                     edit_mode,
-                    "确认后将 Profile 原子替换为路径扫掠实体，"
-                    "并使旧网格、定义与结果失效",
+                    "Confirm to atomically replace the Profile with a path-swept solid, "
+                    "and invalidate the old mesh, definitions, and results",
                 ),
-                confirm_label="沿路径扫掠 Profile",
+                confirm_label="Sweep Profile",
                 extra_data={"geometry_edit_mode": edit_mode},
             )
         if operation == "add_line":
             if set(edit) != {"start", "end"}:
                 raise ValueError("add_line fields do not match")
             draft = add_planar_line(part.geometry_recipe, **edit)
-            summary = f"在部件 {part.name} 的平面草图中增加直线"
+            summary = f"Add a line to the planar sketch in part {part.name}"
         elif operation == "add_arc":
             if set(edit) != {"start", "center", "end", "orientation"}:
                 raise ValueError("add_arc fields do not match")
             draft = add_planar_arc(part.geometry_recipe, **edit)
-            summary = f"在部件 {part.name} 的平面草图中增加圆弧"
+            summary = f"Add an arc to the planar sketch in part {part.name}"
         elif operation == "add_circle":
             if set(edit) != {"center_x", "center_y", "radius"}:
                 raise ValueError("add_circle fields do not match")
             draft = add_planar_circle(part.geometry_recipe, **edit)
             summary = (
-                f"在部件 {part.name} 的平面草图中增加圆："
-                f"圆心 ({edit['center_x']}, {edit['center_y']})，"
-                f"半径 {edit['radius']}"
+                f"Add a circle to the planar sketch in part {part.name}: "
+                f"center ({edit['center_x']}, {edit['center_y']}), "
+                f"radius {edit['radius']}"
             )
         elif operation == "add_rectangle":
             if set(edit) != {"x", "y", "width", "height"}:
                 raise ValueError("add_rectangle fields do not match")
             draft = add_planar_rectangle(part.geometry_recipe, **edit)
             summary = (
-                f"在部件 {part.name} 的平面草图中增加矩形轮廓："
-                f"起点 ({edit['x']}, {edit['y']})，"
-                f"尺寸 {edit['width']} × {edit['height']}"
+                f"Add a rectangular profile to the planar sketch in part {part.name}: "
+                f"origin ({edit['x']}, {edit['y']}), "
+                f"size {edit['width']} × {edit['height']}"
             )
         elif operation == "add_polygon":
             if set(edit) != {"vertices"}:
@@ -6976,7 +6976,7 @@ def create_session_authoring_workflow_controller(
                 part.geometry_recipe,
                 vertices=vertices,
             )
-            summary = f"在部件 {part.name} 的平面草图中增加{len(vertices)} 边闭合轮廓"
+            summary = f"Add a closed {len(vertices)}-sided profile to the planar sketch in part {part.name}"
         elif operation == "add_path_slot":
             if set(edit) != {"points", "width", "cap", "join"}:
                 raise ValueError("add_path_slot fields do not match")
@@ -6995,44 +6995,44 @@ def create_session_authoring_workflow_controller(
                 join=str(edit["join"]),
             )
             summary = (
-                f"在部件 {part.name} 的平面草图中增加一个连通定宽路径槽："
-                f"{len(points)} 个中心线路径点，槽宽 {edit['width']}"
+                f"Add a connected constant-width path slot to the planar sketch in part {part.name}: "
+                f"{len(points)} centerline points, slot width {edit['width']}"
             )
         elif operation == "update_point":
             allowed = {"point_id", "x", "y"}
             if not {"point_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_point fields do not match")
             draft = update_planar_point(part.geometry_recipe, **edit)
-            summary = f"更新部件 {part.name} 中的草图点 {edit['point_id']}"
+            summary = f"Update sketch point {edit['point_id']} in part {part.name}"
         elif operation == "update_circle":
             allowed = {"circle_id", "center_x", "center_y", "radius"}
             if not {"circle_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_circle fields do not match")
             draft = update_planar_circle(part.geometry_recipe, **edit)
-            summary = f"更新部件 {part.name} 中的圆 {edit['circle_id']}"
+            summary = f"Update circle {edit['circle_id']} in part {part.name}"
         elif operation == "update_line":
             allowed = {"line_id", "start", "end"}
             if not {"line_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_line fields do not match")
             draft = update_planar_line(part.geometry_recipe, **edit)
-            summary = f"更新部件 {part.name} 中的直线 {edit['line_id']}"
+            summary = f"Update line {edit['line_id']} in part {part.name}"
         elif operation == "update_arc":
             allowed = {"arc_id", "start", "center", "end", "orientation"}
             if not {"arc_id"} <= set(edit) <= allowed or len(edit) == 1:
                 raise ValueError("update_arc fields do not match")
             draft = update_planar_arc(part.geometry_recipe, **edit)
-            summary = f"更新部件 {part.name} 中的圆弧 {edit['arc_id']}"
+            summary = f"Update arc {edit['arc_id']} in part {part.name}"
         elif operation == "delete_curves":
             if set(edit) != {"curve_ids"}:
                 raise ValueError("delete_curves fields do not match")
             draft = delete_planar_curves(part.geometry_recipe, **edit)
-            summary = f"从部件 {part.name} 的平面草图中删除直线或圆弧"
+            summary = f"Delete lines or arcs from the planar sketch in part {part.name}"
         elif operation == "delete_circles":
             if set(edit) != {"circle_ids"}:
                 raise ValueError("delete_circles fields do not match")
             draft = delete_planar_circles(part.geometry_recipe, **edit)
             summary = (
-                f"从部件 {part.name} 的平面草图中删除 {len(edit['circle_ids'])} 个圆"
+                f"Delete {len(edit['circle_ids'])} circles from the planar sketch in part {part.name}"
             )
         elif operation == "replace_circle_pattern":
             if set(edit) != {
@@ -7046,22 +7046,22 @@ def create_session_authoring_workflow_controller(
             }:
                 raise ValueError("replace_circle_pattern fields do not match")
             draft = replace_planar_circle_pattern(part.geometry_recipe, **edit)
-            summary = f"将部件 {part.name} 中的圆替换为 {edit['count']} 孔线性阵列"
+            summary = f"Replace the circle in part {part.name} with a linear array of {edit['count']} holes"
         elif operation == "add_constraint":
             if set(edit) != {"constraint"}:
                 raise ValueError("add_constraint fields do not match")
             draft = add_planar_constraint(part.geometry_recipe, **edit)
-            summary = f"为部件 {part.name} 的平面草图增加约束"
+            summary = f"Add a constraint to the planar sketch in part {part.name}"
         elif operation == "replace_constraint":
             if set(edit) != {"constraint_id", "constraint"}:
                 raise ValueError("replace_constraint fields do not match")
             draft = replace_planar_constraint(part.geometry_recipe, **edit)
-            summary = f"替换部件 {part.name} 的草图约束 {edit['constraint_id']}"
+            summary = f"Replace sketch constraint {edit['constraint_id']} in part {part.name}"
         elif operation == "delete_constraints":
             if set(edit) != {"constraint_ids"}:
                 raise ValueError("delete_constraints fields do not match")
             draft = delete_planar_constraints(part.geometry_recipe, **edit)
-            summary = f"从部件 {part.name} 的平面草图中删除约束"
+            summary = f"Delete a constraint from the planar sketch in part {part.name}"
         elif operation == "batch":
             if set(edit) != {"edits"}:
                 raise ValueError("batch fields do not match")
@@ -7073,20 +7073,20 @@ def create_session_authoring_workflow_controller(
                 edits=raw_edits,
             )
             summary = (
-                f"批量修改部件 {part.name} 的平面草图：{len(raw_edits)} 个原子步骤"
+                f"Batch edit the planar sketch in part {part.name}: {len(raw_edits)} atomic steps"
             )
         elif operation == "translate":
             if not {"dx", "dy"} <= set(edit) <= {"dx", "dy", "dz"}:
                 raise ValueError("translate fields do not match")
             base_draft = geometry_draft(part.geometry_recipe)
             draft = translate_geometry(base_draft, **edit)
-            summary = f"平移部件 {part.name}"
+            summary = f"Translate part {part.name}"
         elif operation == "rotate":
             if set(edit) != {"axis", "angle_degrees"}:
                 raise ValueError("rotate fields do not match")
             base_draft = geometry_draft(part.geometry_recipe)
             draft = rotate_geometry(base_draft, **edit)
-            summary = f"旋转部件 {part.name}"
+            summary = f"Rotate part {part.name}"
         else:
             raise ValueError("unsupported incremental geometry edit")
         spatial_proof = verify_spatial_relation(
@@ -7111,9 +7111,9 @@ def create_session_authoring_workflow_controller(
             summary=summary,
             impact=geometry_edit_impact(
                 edit_mode,
-                "确认后在当前模型中更新该部件，并使旧网格与结果失效",
+                "Confirm to update this part in the current model and invalidate the old mesh and results",
             ),
-            confirm_label="应用修改",
+            confirm_label="Apply changes",
             extra_data={
                 "geometry_edit_mode": edit_mode,
                 **(
@@ -7364,11 +7364,11 @@ def create_session_authoring_workflow_controller(
                 "extruded_profiles",
                 "extruded_path_slot_plate",
             }:
-                return _profile_transform_error(error, operation="复合 Profile 拉伸")
+                return _profile_transform_error(error, operation="Composite Profile extrusion")
             if kind == "path_swept_profile":
                 return _profile_transform_error(
                     error,
-                    operation="复合路径扫掠",
+                    operation="Composite path sweep",
                     first_failed_member=_first_failed_path_member(
                         geometry.get("path") if isinstance(geometry, Mapping) else None
                     ),
@@ -7428,7 +7428,7 @@ def create_session_authoring_workflow_controller(
                 }
             )
         return AuthoringToolOutcome(
-            f"已读取 {len(visible)} 个可用于局部加密的稳定逻辑实体。",
+            f"Read {len(visible)} stable logical entities available for local refinement.",
             {
                 "part_id": str(part.id),
                 "entities": rows,
@@ -7505,7 +7505,7 @@ def create_session_authoring_workflow_controller(
                 "current native mesh exposes no materializable logical entities"
             )
         return AuthoringToolOutcome(
-            f"已读取 {len(entries)} 项可物化的模型拓扑。",
+            f"Read {len(entries)} materializable model topology entries.",
             {
                 "entries": entries,
                 "entry_count": len(entries),
@@ -7624,18 +7624,18 @@ def create_session_authoring_workflow_controller(
         return proposal_outcome(
             proposal,
             summary=(
-                f"划分 {requirements['mesh_order']} 阶"
-                f"{requirements['mesh_cell_shape']}网格；全局尺寸 "
-                f"{requirements['mesh_global_size']}；局部加密 "
-                f"{len(local_controls)} 项"
+                f"Generate order-{requirements['mesh_order']} "
+                f"{requirements['mesh_cell_shape']} mesh; global size "
+                f"{requirements['mesh_global_size']}; local refinements "
+                f"{len(local_controls)}"
                 + (
-                    f"；线单元 {requirements['line_element_type']}"
+                    f"; line elements {requirements['line_element_type']}"
                     if part.dimension == 1
                     else ""
                 )
             ),
-            impact="确认后划分网格，成功时安装网格并刷新 GUI",
-            confirm_label="开始划分",
+            impact="Confirm to generate the mesh; install it and refresh the GUI on success",
+            confirm_label="Generate mesh",
             extra_data={
                 "local_refinements": local_summary,
             },
@@ -7764,9 +7764,9 @@ def create_session_authoring_workflow_controller(
         )
         return proposal_outcome(
             proposal,
-            summary=f"提交 {step_name} 并绑定当前 validation stamp",
-            impact="接受后后台执行当前已预检的线性静力模型",
-            confirm_label="开始求解",
+            summary=f"Submit {step_name} with the current validation stamp",
+            impact="Accept to run the current preflighted linear static model in the background",
+            confirm_label="Start solve",
         )
 
     def request_project_save(
@@ -7790,10 +7790,10 @@ def create_session_authoring_workflow_controller(
                     "proposal_id": preview.proposal_id,
                     "proposal_hash": preview.proposal_hash,
                     "proposal_kind": "project_save",
-                    "title": "保存当前自主项目",
-                    "summary": "保存当前已接受的模型状态",
-                    "impact": "确认后调用本地项目保存；未确认草稿不会写入",
-                    "confirm_label": "保存模型",
+                    "title": "Save current native project",
+                    "summary": "Save current accepted model state",
+                    "impact": "Confirm to save the project locally; unconfirmed drafts are not written",
+                    "confirm_label": "Save model",
                     "target_document_id": preview.target_document_id,
                     "target_session_id": preview.target_session_id,
                     "base_session_revision": preview.base_session_revision,

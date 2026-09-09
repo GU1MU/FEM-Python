@@ -94,13 +94,13 @@ def test_workspace_menu_and_slash_share_handler_and_cancel_is_stable(
     assert handler.execution_count == 2
     assert handler.user_workspace is not None
     assert handler.user_workspace.root == workspace.resolve()
-    assert drawer.workspace_state.text() == f"工作区  {workspace.name}"
+    assert drawer.workspace_state.text() == f"Workspace  {workspace.name}"
     assert drawer.composer_hint.text() == ""
     assert drawer.composer_hint.isHidden()
     assert drawer.input.toPlainText() == ""
     assert message_spy.count() == 0
     assert [action.text() for action in drawer.add_menu.actions()] == [
-        "选择工作区…",
+        "Select workspace…",
     ]
     drawer.close()
 
@@ -226,7 +226,7 @@ def test_reference_rejects_path_escape(tmp_path):
     outside_file.write_text("secret", encoding="utf-8")
     workspace = normalize_user_workspace(workspace_root)
 
-    with pytest.raises(WorkspacePathError, match="超出用户工作区"):
+    with pytest.raises(WorkspacePathError, match="outside the user workspace"):
         build_workspace_file_reference(
             workspace,
             Path("..") / "outside" / "secret.txt",
@@ -360,7 +360,7 @@ def test_selection_rejects_agent_data_directory_overlap(
 
     assert not result.succeeded
     assert not result.cancelled
-    assert result.error == "用户工作区不能与 Agent 私有数据目录重叠"
+    assert result.error == "User workspace cannot overlap the private Agent data directory"
     assert handler.user_workspace is None
     assert handler.workspace_index is None
 
@@ -386,10 +386,10 @@ def test_bounded_index_reports_truncation_to_ui(gui_application, tmp_path):
 
     assert handler.workspace_index.truncated
     assert len(handler.workspace_index.files) <= 2
-    assert drawer.workspace_state.text() == f"工作区  {workspace.name}"
-    assert "个文件" not in drawer.workspace_state.text()
-    assert "索引已截断" not in drawer.workspace_state.text()
-    assert "已选择工作区" not in drawer.composer_hint.text()
+    assert drawer.workspace_state.text() == f"Workspace  {workspace.name}"
+    assert "files" not in drawer.workspace_state.text()
+    assert "Index truncated" not in drawer.workspace_state.text()
+    assert "Workspace selected" not in drawer.composer_hint.text()
     assert drawer.suggestion_title.text() == ""
     assert drawer.suggestion_title.isHidden()
 

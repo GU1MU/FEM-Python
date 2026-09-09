@@ -155,7 +155,7 @@ def test_completed_modify_part_card_exposes_feature_undo_button(gui_application)
     undo = drawer.findChild(QToolButton, "agentChatProposalUndoButton")
 
     assert undo is not None and undo.isEnabled()
-    assert undo.text() == "撤销"
+    assert undo.text() == "Undo"
     QTest.mouseClick(undo, Qt.MouseButton.LeftButton)
     application.processEvents()
 

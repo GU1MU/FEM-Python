@@ -42,7 +42,7 @@ def prepare_workspace_context(
     seen: set[tuple[str, str]] = set()
     for reference in references:
         if not isinstance(reference, WorkspaceFileReference):
-            raise WorkspaceContextError("工作区引用格式无效")
+            raise WorkspaceContextError("Invalid workspace reference")
         key = (reference.workspace_id, reference.relative_path)
         if key in seen:
             continue
@@ -55,7 +55,7 @@ def prepare_workspace_context(
     for reference in unique:
         workspace = normalize_user_workspace(reference.workspace_root)
         if workspace.workspace_id != reference.workspace_id:
-            raise WorkspaceContextError("工作区引用与当前目录不匹配")
+            raise WorkspaceContextError("Workspace reference does not match the current directory")
         current = build_workspace_file_reference(
             workspace,
             reference.relative_path,
@@ -66,11 +66,11 @@ def prepare_workspace_context(
         if current.file_type.casefold() == "inp":
             if input_source is not None:
                 raise WorkspaceContextError(
-                    "每轮只能选择一个 .inp 作为 Agent 当前输入模型"
+                    "Select only one .inp input model per turn"
                 )
             if current.size_bytes > MAX_AGENT_INPUT_BYTES:
                 raise WorkspaceContextError(
-                    "Abaqus 输入文件超过 50 MiB 本地附件上限"
+                    "Abaqus input exceeds the 50 MiB local attachment limit"
                 )
             input_encoding = _validate_text_file(source)
             _require_unchanged(
@@ -93,7 +93,7 @@ def prepare_workspace_context(
 
         if current.size_bytes > MAX_CONTEXT_FILE_BYTES:
             raise WorkspaceContextError(
-                f"文件 @{current.relative_path} 超过 1 MiB 上下文上限"
+                f"File @{current.relative_path} exceeds the 1 MiB context limit"
             )
         content, encoding = _read_text_file(source)
         _require_unchanged(
@@ -133,7 +133,7 @@ def prepare_workspace_context(
     )
     if len(request_context.encode("utf-8")) > MAX_CONTEXT_TOTAL_BYTES:
         raise WorkspaceContextError(
-            "本轮工作区文件上下文合计超过 4 MiB 上限"
+            "Workspace file context exceeds the 4 MiB limit for this turn"
         )
     return PreparedWorkspaceContext(
         request_context,
@@ -154,7 +154,7 @@ def _require_unchanged(
         or current.size_bytes != expected.size_bytes
     ):
         raise WorkspaceContextError(
-            f"文件 @{expected.relative_path} 已发生变化，请重新选择"
+            f"File @{expected.relative_path} has changed; select it again"
         )
 
 
@@ -163,15 +163,15 @@ def _read_text_file(path: Path) -> tuple[str, str]:
         with path.open("rb") as stream:
             raw = stream.read(MAX_CONTEXT_FILE_BYTES + 1)
     except OSError as exc:
-        raise WorkspaceContextError("工作区文件无法读取") from exc
+        raise WorkspaceContextError("Cannot read workspace file") from exc
     if len(raw) > MAX_CONTEXT_FILE_BYTES:
-        raise WorkspaceContextError("工作区文件超过上下文大小上限")
+        raise WorkspaceContextError("Workspace file exceeds the context size limit")
     encoding = _detect_encoding(raw)
     try:
         text = raw.decode(encoding, errors="strict")
     except UnicodeDecodeError as exc:
         raise WorkspaceContextError(
-            "工作区文件编码不受支持"
+            "Unsupported workspace file encoding"
         ) from exc
     _reject_binary_text(text)
     return text, encoding
@@ -182,7 +182,7 @@ def _validate_text_file(path: Path) -> str:
         with path.open("rb") as stream:
             prefix = stream.read(4)
     except OSError as exc:
-        raise WorkspaceContextError("Abaqus 输入文件无法读取") from exc
+        raise WorkspaceContextError("Cannot read Abaqus input file") from exc
     candidates = _encoding_candidates(prefix)
     for encoding in candidates:
         try:
@@ -200,10 +200,10 @@ def _validate_text_file(path: Path) -> str:
         except UnicodeDecodeError:
             continue
         except OSError as exc:
-            raise WorkspaceContextError("Abaqus 输入文件无法读取") from exc
+            raise WorkspaceContextError("Cannot read Abaqus input file") from exc
         return encoding
     raise WorkspaceContextError(
-        "Abaqus 输入文件编码必须是 UTF-8、带 BOM 的 UTF-16 或 GB18030"
+        "Abaqus input encoding must be UTF-8, UTF-16 with BOM, or GB18030"
     )
 
 
@@ -216,7 +216,7 @@ def _detect_encoding(raw: bytes) -> str:
         _reject_binary_text(decoded)
         return encoding
     raise WorkspaceContextError(
-        "工作区文件编码必须是 UTF-8、带 BOM 的 UTF-16 或 GB18030"
+        "Workspace file encoding must be UTF-8, UTF-16 with BOM, or GB18030"
     )
 
 
@@ -230,13 +230,13 @@ def _encoding_candidates(prefix: bytes) -> tuple[str, ...]:
 
 def _reject_binary_text(text: str) -> None:
     if "\x00" in text:
-        raise WorkspaceContextError("二进制文件不能作为 Agent 文本上下文")
+        raise WorkspaceContextError("Binary files cannot be used as Agent text context")
     controls = sum(
         ord(character) < 32 and character not in "\t\r\n\f"
         for character in text
     )
     if controls > max(8, len(text) // 100):
-        raise WorkspaceContextError("二进制文件不能作为 Agent 文本上下文")
+        raise WorkspaceContextError("Binary files cannot be used as Agent text context")
 
 
 __all__ = [

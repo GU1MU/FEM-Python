@@ -149,7 +149,7 @@ def test_composer_placeholder_hides_on_focus_and_returns_when_unfocused(
     application.processEvents()
 
     editor = host.agent_chat_drawer.input
-    expected_placeholder = "询问 FEM Agent；使用 @ 引用工作区文件…"
+    expected_placeholder = "Ask FEM Agent; @ for workspace files…"
     assert editor.placeholderText() == expected_placeholder
 
     editor.setFocus()
@@ -262,7 +262,7 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states(
             {**identity, "summary": "网格生成完成"},
         )
     )
-    assert drawer.composer_task_title.text() == "正在处理…"
+    assert drawer.composer_task_title.text() == "Processing…"
     assert drawer.composer_task_summary.isHidden()
     assert drawer.composer_task_status.isHidden()
     drawer.set_runtime_busy(False)
@@ -791,7 +791,7 @@ def test_static_preview_controls_do_not_create_files_or_start_runtime(
     tools.summary_button.click()
     assert tools.details.isVisible()
     assert [action.text() for action in drawer.add_menu.actions()] == [
-        "选择工作区…",
+        "Select workspace…",
     ]
     assert drawer.add_button.menu() is None
     assert drawer.add_button.text() == "＋"
@@ -802,7 +802,7 @@ def test_static_preview_controls_do_not_create_files_or_start_runtime(
     drawer.input.setPlainText("@")
     application.processEvents()
     assert drawer.suggestion.isVisible()
-    assert "各种类型" in drawer.suggestion_item.text()
+    assert "any type" in drawer.suggestion_item.text()
     assert not drawer.agent_runtime.busy
     assert list(tmp_path.iterdir()) == []
     host.close()

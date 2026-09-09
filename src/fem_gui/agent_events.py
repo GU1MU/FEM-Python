@@ -1,7 +1,7 @@
-"""GUI 使用的 FEM Agent 结构化事件契约与纯内存投影器。
+"""Structured FEM Agent event contract and in-memory projector for the GUI.
 
-本模块没有 Qt、Provider 或 ``fem_agent`` 依赖。它只负责验证可序列化事件，
-将事件归并为安全的展示状态，以及从完整事件日志重放同一状态。
+This module has no Qt, Provider, or ``fem_agent`` dependencies. It validates serializable events,
+projects safe display state, and replays that state from a complete event log.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ _SECRET_VALUE_PATTERNS = (
 
 
 class AgentEventError(ValueError):
-    """事件不符合契约或不能应用到当前会话状态。"""
+    """An event violates the contract or cannot be applied to the current session state."""
 
 
 class EventType(str, Enum):
@@ -260,7 +260,7 @@ def _is_number(value: object) -> bool:
 
 def _require_identifier(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not _IDENTIFIER_PATTERN.fullmatch(value):
-        raise AgentEventError(f"{field_name} 不是有效标识符")
+        raise AgentEventError(f"{field_name} is not a valid identifier")
     return value
 
 
@@ -271,15 +271,15 @@ def _require_string(
     allow_empty: bool = False,
 ) -> str:
     if not isinstance(value, str):
-        raise AgentEventError(f"{field_name} 必须是字符串")
+        raise AgentEventError(f"{field_name} must be a string")
     if not allow_empty and not value.strip():
-        raise AgentEventError(f"{field_name} 不能为空")
+        raise AgentEventError(f"{field_name} must not be empty")
     return value
 
 
 def _require_duration(value: object) -> float:
     if not _is_number(value) or float(value) < 0:
-        raise AgentEventError("duration_ms 必须是非负有限数值")
+        raise AgentEventError("duration_ms must be a finite non-negative number")
     return float(value)
 
 
@@ -289,9 +289,9 @@ def _validate_timestamp(value: object) -> str:
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise AgentEventError("timestamp 必须是 ISO-8601 时间") from exc
+        raise AgentEventError("timestamp must be an ISO-8601 time") from exc
     if parsed.tzinfo is None:
-        raise AgentEventError("timestamp 必须包含时区")
+        raise AgentEventError("timestamp must include a timezone")
     return timestamp
 
 
@@ -304,12 +304,12 @@ def _serialized_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             separators=(",", ":"),
         )
     except (RecursionError, TypeError, ValueError) as exc:
-        raise AgentEventError("payload 必须只包含 JSON 可序列化值") from exc
+        raise AgentEventError("payload must contain only JSON-serializable values") from exc
     if len(encoded.encode("utf-8")) > MAX_EVENT_PAYLOAD_BYTES:
-        raise AgentEventError("payload 超出事件大小上限")
+        raise AgentEventError("payload exceeds the event size limit")
     decoded = json.loads(encoded)
     if not isinstance(decoded, dict):
-        raise AgentEventError("payload 必须是对象")
+        raise AgentEventError("payload must be an object")
     return decoded
 
 
@@ -342,11 +342,11 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
     unknown = keys - required - optional
     if missing:
         raise AgentEventError(
-            f"{event_type.value} 缺少 payload 字段：{', '.join(sorted(missing))}"
+            f"{event_type.value} is missing payload fields: {', '.join(sorted(missing))}"
         )
     if unknown:
         raise AgentEventError(
-            f"{event_type.value} 包含未知 payload 字段："
+            f"{event_type.value} contains unknown payload fields: "
             f"{', '.join(sorted(unknown))}"
         )
 
@@ -362,7 +362,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             or not _REVISION_HASH_PATTERN.fullmatch(proposal_hash)
         ):
             raise AgentEventError(
-                "proposal_hash 必须是完整 SHA-256 十六进制值"
+                "proposal_hash must be a full hexadecimal SHA-256 value"
             )
         if payload["status"] not in {
             "succeeded",
@@ -370,14 +370,14 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             "failed",
             "stale",
         }:
-            raise AgentEventError("continuation status 不是可续跑终态")
+            raise AgentEventError("continuation status is not a resumable terminal state")
         return
     if event_type is EventType.MESSAGE_START:
         _require_identifier(payload["message_id"], "message_id")
         if payload["role"] != "assistant":
-            raise AgentEventError("阶段 3 消息 role 只允许 assistant")
+            raise AgentEventError("Phase 3 message role must be assistant")
         if payload["format"] != "restricted_markdown":
-            raise AgentEventError("消息 format 必须是 restricted_markdown")
+            raise AgentEventError("Message format must be restricted_markdown")
         try:
             MessagePresentationKind(
                 payload.get(
@@ -386,15 +386,15 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
                 )
             )
         except (TypeError, ValueError) as error:
-            raise AgentEventError("消息 presentation_kind 无效") from error
+            raise AgentEventError("Invalid message presentation_kind") from error
         return
     if event_type is EventType.MESSAGE_DELTA:
         _require_identifier(payload["message_id"], "message_id")
         delta = payload["delta"]
         if not isinstance(delta, str):
-            raise AgentEventError("delta 必须是字符串")
+            raise AgentEventError("delta must be a string")
         if delta == "":
-            raise AgentEventError("delta 不能为空")
+            raise AgentEventError("delta must not be empty")
         return
     if event_type is EventType.MESSAGE_COMPLETE:
         _require_identifier(payload["message_id"], "message_id")
@@ -406,7 +406,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
                 )
             )
         except (TypeError, ValueError) as error:
-            raise AgentEventError("消息 presentation_kind 无效") from error
+            raise AgentEventError("Invalid message presentation_kind") from error
         return
     if event_type is EventType.TOOL_REQUESTED:
         _require_identifier(payload["call_id"], "call_id")
@@ -437,7 +437,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
         try:
             DiagnosticSeverity(payload["severity"])
         except (TypeError, ValueError) as exc:
-            raise AgentEventError("severity 不是已知诊断级别") from exc
+            raise AgentEventError("severity is not a known diagnostic level") from exc
         if "code" in payload:
             _require_identifier(payload["code"], "code")
         return
@@ -446,13 +446,13 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
         _require_string(payload["title"], "title")
         _require_string(payload["summary"], "summary")
         if not _is_plain_int(payload["revision"]) or payload["revision"] < 0:
-            raise AgentEventError("revision 必须是非负整数")
+            raise AgentEventError("revision must be a non-negative integer")
         revision_hash = payload["revision_hash"]
         if (
             not isinstance(revision_hash, str)
             or not _REVISION_HASH_PATTERN.fullmatch(revision_hash)
         ):
-            raise AgentEventError("revision_hash 必须是完整 SHA-256 十六进制值")
+            raise AgentEventError("revision_hash must be a full hexadecimal SHA-256 value")
         return
     proposal_events = {
         EventType.PROPOSAL_REQUESTED,
@@ -473,7 +473,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             or not _REVISION_HASH_PATTERN.fullmatch(proposal_hash)
         ):
             raise AgentEventError(
-                "proposal_hash 必须是完整 SHA-256 十六进制值"
+                "proposal_hash must be a full hexadecimal SHA-256 value"
             )
         if event_type is EventType.PROPOSAL_REQUESTED:
             if payload["proposal_kind"] not in {
@@ -484,7 +484,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
                 "requirement_review",
                 "project_save",
             }:
-                raise AgentEventError("proposal_kind 不是已知类型")
+                raise AgentEventError("proposal_kind is not a known type")
             for field_name in (
                 "title",
                 "summary",
@@ -503,12 +503,12 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
             revision = payload["base_session_revision"]
             if not _is_plain_int(revision) or revision < 0:
                 raise AgentEventError(
-                    "base_session_revision 必须是非负整数"
+                    "base_session_revision must be a non-negative integer"
                 )
         elif event_type is EventType.PROPOSAL_PROGRESS:
             progress = payload["progress"]
             if not _is_number(progress) or not 0.0 <= float(progress) <= 1.0:
-                raise AgentEventError("proposal progress 必须在 0 到 1 之间")
+                raise AgentEventError("proposal progress must be between 0 and 1")
             _require_string(payload["message"], "message")
         elif event_type is EventType.PROPOSAL_SUCCEEDED:
             _require_string(payload["summary"], "summary")
@@ -529,7 +529,7 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
 
 @dataclass(frozen=True)
 class AgentEvent:
-    """单个、可序列化且自校验的 GUI Agent 事件。"""
+    """A serializable, self-validating GUI Agent event."""
 
     schema_version: str
     event_id: str
@@ -543,21 +543,21 @@ class AgentEvent:
     def __post_init__(self) -> None:
         if self.schema_version != AGENT_EVENT_SCHEMA_VERSION:
             raise AgentEventError(
-                f"不支持的 schema_version：{self.schema_version}"
+                f"Unsupported schema_version: {self.schema_version}"
             )
         _require_identifier(self.event_id, "event_id")
         _require_identifier(self.session_id, "session_id")
         _require_identifier(self.turn_id, "turn_id")
         if not _is_plain_int(self.sequence) or self.sequence < 1:
-            raise AgentEventError("sequence 必须是从 1 开始的整数")
+            raise AgentEventError("sequence must be an integer starting at 1")
         try:
             event_type = EventType(self.event_type)
         except (TypeError, ValueError) as exc:
-            raise AgentEventError("event_type 未知") from exc
+            raise AgentEventError("Unknown event_type") from exc
         object.__setattr__(self, "event_type", event_type)
         object.__setattr__(self, "timestamp", _validate_timestamp(self.timestamp))
         if not isinstance(self.payload, Mapping):
-            raise AgentEventError("payload 必须是对象")
+            raise AgentEventError("payload must be an object")
         safe_payload = _serialized_payload(self.payload)
         _validate_payload(event_type, safe_payload)
         object.__setattr__(self, "payload", _freeze_json(safe_payload))
@@ -591,7 +591,7 @@ class AgentEvent:
     @classmethod
     def from_dict(cls, record: Mapping[str, Any]) -> AgentEvent:
         if not isinstance(record, Mapping):
-            raise AgentEventError("事件记录必须是对象")
+            raise AgentEventError("Event record must be an object")
         required = {
             "schema_version",
             "event_id",
@@ -606,11 +606,11 @@ class AgentEvent:
         unknown = set(record) - required
         if missing:
             raise AgentEventError(
-                f"事件缺少字段：{', '.join(sorted(missing))}"
+                f"Event is missing fields: {', '.join(sorted(missing))}"
             )
         if unknown:
             raise AgentEventError(
-                f"事件包含未知字段：{', '.join(sorted(unknown))}"
+                f"Event contains unknown fields: {', '.join(sorted(unknown))}"
             )
         return cls(
             schema_version=record["schema_version"],
@@ -639,7 +639,7 @@ class AgentEvent:
 def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_VALUE_PATTERNS:
-        redacted = pattern.sub("<敏感信息已隐藏>", redacted)
+        redacted = pattern.sub("<sensitive information hidden>", redacted)
     return redact_absolute_paths(redacted)
 
 
@@ -650,15 +650,15 @@ def redact_absolute_paths(value: str) -> str:
         raise TypeError("value must be a string")
     redacted = value
     redacted = _FILE_URI_PATTERN.sub(
-        "<绝对路径已隐藏>",
+        "<absolute path hidden>",
         redacted,
     )
     redacted = _WINDOWS_ABSOLUTE_PATH_PATTERN.sub(
-        "<绝对路径已隐藏>",
+        "<absolute path hidden>",
         redacted,
     )
     redacted = _POSIX_ABSOLUTE_PATH_PATTERN.sub(
-        "<绝对路径已隐藏>",
+        "<absolute path hidden>",
         redacted,
     )
     return redacted
@@ -669,7 +669,7 @@ def safe_tool_summary(
     *,
     max_characters: int = MAX_SUMMARY_CHARACTERS,
 ) -> str:
-    """把任意工具值压缩为有界、脱敏且不调用对象 ``repr`` 的文字。"""
+    """Summarize any tool value as bounded, redacted text without calling object ``repr``."""
 
     def summarize(item: object, depth: int) -> str:
         if item is None:
@@ -678,7 +678,7 @@ def safe_tool_summary(
             return "true" if item else "false"
         if isinstance(item, (int, float)):
             if isinstance(item, float) and not math.isfinite(item):
-                return "<非有限数值>"
+                return "<non-finite number>"
             return str(item)
         if isinstance(item, str):
             return _redact_text(item)
@@ -693,10 +693,10 @@ def safe_tool_summary(
                 safe_key = (
                     _redact_text(key)
                     if isinstance(key, str)
-                    else "<非字符串键>"
+                    else "<non-string key>"
                 )
                 if isinstance(key, str) and _SENSITIVE_KEY_PATTERN.search(key):
-                    child_text = "<敏感信息已隐藏>"
+                    child_text = "<sensitive information hidden>"
                 else:
                     child_text = summarize(child, depth + 1)
                 parts.append(f"{safe_key}={child_text}")
@@ -709,7 +709,7 @@ def safe_tool_summary(
             if len(item) > 8:
                 values.append("…")
             return "[" + ", ".join(values) + "]"
-        return "<不支持的值>"
+        return "<unsupported value>"
 
     limit = max(24, int(max_characters))
     summary = summarize(value, 0).replace("\r", " ").replace("\n", " ")
@@ -849,7 +849,7 @@ class SessionPresentation:
     turns: list[TurnView] = field(default_factory=list)
 
     def to_snapshot(self) -> dict[str, Any]:
-        """返回只含安全展示字段的可序列化会话快照。"""
+        """Return a serializable session snapshot containing only safe display fields."""
 
         def convert(value: object) -> object:
             if isinstance(value, Enum):
@@ -868,7 +868,7 @@ class SessionPresentation:
 
 
 class AgentEventProjector:
-    """严格按 session 全局 sequence 将事件投影为聊天展示状态。"""
+    """Project events into chat display state in strict session-wide sequence order."""
 
     def __init__(self) -> None:
         self._presentation = SessionPresentation()
@@ -884,7 +884,7 @@ class AgentEventProjector:
 
     @property
     def presentation_view(self) -> SessionPresentation:
-        """返回仅供 GUI 所有者线程即时读取的内部投影。"""
+        """Return the internal projection for immediate reads by the GUI owner thread only."""
         self._materialize_message_text()
         return self._presentation
 
@@ -914,21 +914,21 @@ class AgentEventProjector:
         return self.presentation
 
     def apply_in_place(self, event: AgentEvent) -> SessionPresentation:
-        """应用事件并返回内部投影，避免 GUI 热路径创建深拷贝。"""
+        """Apply an event and return the internal projection without deep copies on the GUI hot path."""
         if not isinstance(event, AgentEvent):
-            raise AgentEventError("projector 只接受 AgentEvent")
+            raise AgentEventError("projector only accepts AgentEvent")
         if event.event_id in self._event_ids:
-            raise AgentEventError(f"重复 event_id：{event.event_id}")
+            raise AgentEventError(f"Duplicate event_id: {event.event_id}")
         expected_sequence = self._presentation.last_sequence + 1
         if event.sequence != expected_sequence:
             raise AgentEventError(
-                f"sequence 应为 {expected_sequence}，收到 {event.sequence}"
+                f"Expected sequence {expected_sequence}, received {event.sequence}"
             )
         if (
             self._presentation.session_id
             and event.session_id != self._presentation.session_id
         ):
-            raise AgentEventError("事件跨越了当前 session")
+            raise AgentEventError("Event crosses the current session")
         if event.event_type in {
             EventType.TURN_STARTED,
             EventType.CONTINUATION_STARTED,
@@ -958,13 +958,13 @@ class AgentEventProjector:
         return self._presentation
 
     def message_view(self, message_id: str) -> MessageView:
-        """返回内部消息视图，供所有者线程执行增量控件刷新。"""
+        """Return the internal message view for incremental widget updates by the owner thread."""
         for turn in reversed(self._presentation.turns):
             for message in reversed(turn.messages):
                 if message.message_id == message_id:
                     message.materialize_text()
                     return message
-        raise AgentEventError(f"未知 message_id：{message_id}")
+        raise AgentEventError(f"Unknown message_id: {message_id}")
 
     def _materialize_message_text(self) -> None:
         for turn in self._presentation.turns:
@@ -973,9 +973,9 @@ class AgentEventProjector:
 
     def _apply_turn_started(self, event: AgentEvent) -> None:
         if self._active_turn_id is not None:
-            raise AgentEventError("上一 turn 尚未结束")
+            raise AgentEventError("Previous turn has not ended")
         if any(turn.turn_id == event.turn_id for turn in self._presentation.turns):
-            raise AgentEventError("turn_id 已存在，不能重新开始")
+            raise AgentEventError("turn_id already exists and cannot restart")
         turn = TurnView(
             turn_id=event.turn_id,
             user_message=(
@@ -993,16 +993,16 @@ class AgentEventProjector:
 
     def _require_active_turn(self, event: AgentEvent) -> TurnView:
         if self._active_turn_id is None:
-            raise AgentEventError("当前没有运行中的 turn")
+            raise AgentEventError("No turn is currently running")
         if event.turn_id != self._active_turn_id:
-            raise AgentEventError("事件跨越了当前 turn")
+            raise AgentEventError("Event crosses the current turn")
         return self._presentation.turns[-1]
 
     def _find_turn(self, turn_id: str) -> TurnView:
         for turn in self._presentation.turns:
             if turn.turn_id == turn_id:
                 return turn
-        raise AgentEventError("proposal 事件引用了未知 turn")
+        raise AgentEventError("proposal event references an unknown turn")
 
     def _apply_turn_event(self, turn: TurnView, event: AgentEvent) -> None:
         event_type = event.event_type
@@ -1040,7 +1040,7 @@ class AgentEventProjector:
         for message in turn.messages:
             if message.message_id == message_id:
                 return message
-        raise AgentEventError(f"未知 message_id：{message_id}")
+        raise AgentEventError(f"Unknown message_id: {message_id}")
 
     @staticmethod
     def _find_tool(turn: TurnView, call_id: str) -> ToolActivityView:
@@ -1048,12 +1048,12 @@ class AgentEventProjector:
             for call in group.calls:
                 if call.call_id == call_id:
                     return call
-        raise AgentEventError(f"未知 call_id：{call_id}")
+        raise AgentEventError(f"Unknown call_id: {call_id}")
 
     def _message_start(self, turn: TurnView, event: AgentEvent) -> None:
         message_id = event.payload["message_id"]
         if any(message.message_id == message_id for message in turn.messages):
-            raise AgentEventError("message_id 已存在")
+            raise AgentEventError("message_id already exists")
         message = MessageView(
             message_id=message_id,
             role=event.payload["role"],
@@ -1074,14 +1074,14 @@ class AgentEventProjector:
     def _message_delta(self, turn: TurnView, event: AgentEvent) -> None:
         message = self._find_message(turn, event.payload["message_id"])
         if message.status is not MessageStatus.STREAMING:
-            raise AgentEventError("已结束的消息不能继续追加 delta")
+            raise AgentEventError("Cannot append delta to a completed message")
         message.append_delta(event.payload["delta"])
         self._last_timeline_kind = TimelineKind.MESSAGE
 
     def _message_complete(self, turn: TurnView, event: AgentEvent) -> None:
         message = self._find_message(turn, event.payload["message_id"])
         if message.status is not MessageStatus.STREAMING:
-            raise AgentEventError("消息已经结束")
+            raise AgentEventError("Message has already ended")
         message.materialize_text()
         if "presentation_kind" in event.payload:
             message.presentation_kind = MessagePresentationKind(
@@ -1097,7 +1097,7 @@ class AgentEventProjector:
         except AgentEventError:
             pass
         else:
-            raise AgentEventError("call_id 已存在")
+            raise AgentEventError("call_id already exists")
 
         if (
             self._last_timeline_kind is TimelineKind.TOOL_GROUP
@@ -1128,13 +1128,13 @@ class AgentEventProjector:
     def _tool_started(self, turn: TurnView, event: AgentEvent) -> None:
         call = self._find_tool(turn, event.payload["call_id"])
         if call.status is not ToolStatus.REQUESTED:
-            raise AgentEventError("工具只能从 requested 进入 running")
+            raise AgentEventError("Tools can only enter running from requested")
         call.status = ToolStatus.RUNNING
 
     def _tool_terminal(self, turn: TurnView, event: AgentEvent) -> None:
         call = self._find_tool(turn, event.payload["call_id"])
         if call.status is not ToolStatus.RUNNING:
-            raise AgentEventError("工具终态事件要求工具处于 running")
+            raise AgentEventError("Terminal tool events require a running tool")
         call.duration_ms = _require_duration(event.payload["duration_ms"])
         if event.event_type is EventType.TOOL_RESULT:
             call.status = ToolStatus.COMPLETED
@@ -1162,7 +1162,7 @@ class AgentEventProjector:
             diagnostic.diagnostic_id == diagnostic_id
             for diagnostic in turn.diagnostics
         ):
-            raise AgentEventError("diagnostic_id 已存在")
+            raise AgentEventError("diagnostic_id already exists")
         diagnostic = DiagnosticView(
             diagnostic_id=diagnostic_id,
             title=safe_tool_summary(
@@ -1188,7 +1188,7 @@ class AgentEventProjector:
             confirmation.confirmation_id == confirmation_id
             for confirmation in turn.confirmations
         ):
-            raise AgentEventError("confirmation_id 已存在")
+            raise AgentEventError("confirmation_id already exists")
         confirmation = ConfirmationView(
             confirmation_id=confirmation_id,
             title=safe_tool_summary(
@@ -1215,7 +1215,7 @@ class AgentEventProjector:
     ) -> None:
         proposal_id = event.payload["proposal_id"]
         if any(item.proposal_id == proposal_id for item in turn.proposals):
-            raise AgentEventError("proposal_id 已存在")
+            raise AgentEventError("proposal_id already exists")
         proposal = ProposalView(
             proposal_id=proposal_id,
             proposal_hash=event.payload["proposal_hash"],
@@ -1261,9 +1261,9 @@ class AgentEventProjector:
             None,
         )
         if proposal is None:
-            raise AgentEventError("proposal 事件引用了未知 proposal_id")
+            raise AgentEventError("proposal event references an unknown proposal_id")
         if proposal.proposal_hash != event.payload["proposal_hash"]:
-            raise AgentEventError("proposal_hash 与请求事件不一致")
+            raise AgentEventError("proposal_hash does not match the request event")
 
         event_type = event.event_type
         current = proposal.status
@@ -1310,7 +1310,7 @@ class AgentEventProjector:
         }
         if current not in allowed[event_type]:
             raise AgentEventError(
-                f"proposal 不能从 {current.value} 进入 {event_type.value}"
+                f"proposal cannot transition from {current.value} to {event_type.value}"
             )
 
         status_by_event = {
@@ -1326,10 +1326,10 @@ class AgentEventProjector:
         proposal.status = status_by_event[event_type]
         if event_type is EventType.PROPOSAL_ACCEPTED:
             proposal.authorized = True
-            proposal.status_message = "用户已授权"
+            proposal.status_message = "Authorized by user"
         elif event_type is EventType.PROPOSAL_STARTED:
             proposal.progress = 0.0
-            proposal.status_message = "后台任务已开始"
+            proposal.status_message = "Background task started"
         elif event_type is EventType.PROPOSAL_PROGRESS:
             proposal.progress = float(event.payload["progress"])
             proposal.status_message = safe_tool_summary(
@@ -1353,13 +1353,13 @@ class AgentEventProjector:
             message.status is MessageStatus.STREAMING
             for message in turn.messages
         ):
-            raise AgentEventError("存在未完成消息，不能完成 turn")
+            raise AgentEventError("Cannot complete turn with unfinished messages")
         if any(
             call.status in {ToolStatus.REQUESTED, ToolStatus.RUNNING}
             for group in turn.tool_groups
             for call in group.calls
         ):
-            raise AgentEventError("存在未完成工具调用，不能完成 turn")
+            raise AgentEventError("Cannot complete turn with unfinished tool calls")
         turn.status = TurnStatus.COMPLETED
         self._finish_turn()
 
@@ -1403,7 +1403,7 @@ class AgentEventProjector:
 
 
 class FakeAgentEventStream:
-    """为阶段 3 审核生成确定性的纯内存事件，不执行任何 Agent 能力。"""
+    """Generate deterministic in-memory events for phase 3 review without executing Agent capabilities."""
 
     def __init__(
         self,
@@ -1415,7 +1415,7 @@ class FakeAgentEventStream:
         _require_identifier(session_id, "session_id")
         _require_identifier(event_prefix, "event_prefix")
         if not _is_plain_int(start_sequence) or start_sequence < 1:
-            raise AgentEventError("start_sequence 必须是正整数")
+            raise AgentEventError("start_sequence must be a positive integer")
         self.session_id = session_id
         self._sequence = start_sequence
         self._event_prefix = event_prefix
@@ -1447,21 +1447,21 @@ class FakeAgentEventStream:
         specifications = (
             (
                 "read_model_summary",
-                "读取模型摘要",
+                "Read model summary",
                 {"file": "frame.inp", "scope": "metadata"},
                 {"nodes": 128, "elements": 96},
                 200,
             ),
             (
                 "check_material_sections",
-                "检查材料与截面",
+                "Check materials and sections",
                 {"model": "frame.inp"},
                 {"materials": 1, "sections": 1},
                 400,
             ),
             (
                 "validate_boundary_conditions",
-                "验证边界条件",
+                "Validate boundary conditions",
                 {"model": "frame.inp"},
                 {"constraints": 2, "loads": 1},
                 600,
@@ -1473,8 +1473,8 @@ class FakeAgentEventStream:
                 EventType.TURN_STARTED,
                 {
                     "user_message": (
-                        "请结合 @设计说明.md，检查 @frame.inp 的材料、约束和"
-                        "载荷设置。"
+                        "Use @design-notes.md to check the materials, constraints, and "
+                        "loads in @frame.inp."
                     )
                 },
             )
@@ -1532,7 +1532,7 @@ class FakeAgentEventStream:
                     {
                         "message_id": "preview-message-1",
                         "delta": (
-                            "**模型预检查已完成。** 材料与截面定义完整，"
+                            "**Model precheck complete.** Material and section definitions are complete, "
                         ),
                     },
                 ),
@@ -1542,8 +1542,8 @@ class FakeAgentEventStream:
                     {
                         "message_id": "preview-message-1",
                         "delta": (
-                            "边界条件能够抑制刚体位移。建议在正式分析前再次"
-                            "确认载荷单位。"
+                            "and boundary conditions suppress rigid body motion. Before analysis, reconfirm "
+                            "the load units."
                         ),
                     },
                 ),
@@ -1557,10 +1557,10 @@ class FakeAgentEventStream:
                     EventType.DIAGNOSTIC,
                     {
                         "diagnostic_id": "preview-analysis-summary",
-                        "title": "分析摘要",
+                        "title": "Analysis summary",
                         "message": (
-                            "当前输入使用 N–mm 单位制；正式求解前应确认集中"
-                            "载荷的单位。"
+                            "The input uses N–mm units; confirm the concentrated "
+                            "load units before solving."
                         ),
                         "severity": "warning",
                         "code": "UNIT-CHECK",
@@ -1571,10 +1571,10 @@ class FakeAgentEventStream:
                     EventType.CONFIRMATION_REQUESTED,
                     {
                         "confirmation_id": "preview-confirmation-1",
-                        "title": "需要确认",
+                        "title": "Confirmation required",
                         "summary": (
-                            "确认 revision 12 的载荷单位后，后续阶段才可请求"
-                            "执行求解。"
+                            "Confirm the load units for revision 12 before later stages can request "
+                            "a solve."
                         ),
                         "revision": 12,
                         "revision_hash": revision_hash,

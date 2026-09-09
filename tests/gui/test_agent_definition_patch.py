@@ -78,9 +78,9 @@ def test_bridge_applies_once_and_gui_card_undoes_once(gui_application) -> None:
     assert not session.snapshot().named_regions
     assert not session.snapshot().materials
     assert notice is not None
-    assert notice.text() == "Agent 已撤销修改"
+    assert notice.text() == "Agent changes undone"
     assert drawer.findChild(QToolButton, "agentChatPatchUndoButton") is None
-    assert drawer.composer_hint.text() == "已撤销 Agent 修改"
+    assert drawer.composer_hint.text() == "Agent changes undone"
 
 
 def test_direct_material_patch_uses_compact_inline_undo_notice(
@@ -125,7 +125,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
     assert notice is not None
     assert undo is not None
     assert notice.text() == "Agent 已创建材料"
-    assert undo.text() == "撤销修改"
+    assert undo.text() == "Undo"
     assert undo.width() < 110
     assert abs(notice.geometry().center().y() - undo.geometry().center().y()) <= 2
     assert undo.palette().color(undo.foregroundRole()).name() == "#315d7c"

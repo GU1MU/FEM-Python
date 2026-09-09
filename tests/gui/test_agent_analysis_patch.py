@@ -109,6 +109,6 @@ def test_manager_displays_name_separate_from_target_identity(gui_application) ->
         for row in range(dialog.table.rowCount())
     ]
 
-    assert any("位移-固定端 · 边-固定端" in row[2] for row in rows)
-    assert any("载荷-拉伸 · 边-加载端" in row[2] for row in rows)
-    assert any("结果请求-位移 · 节点" in row[2] for row in rows)
+    assert any("位移-固定端 - 边-固定端" in row[2] for row in rows)
+    assert any("载荷-拉伸 - 边-加载端" in row[2] for row in rows)
+    assert any("结果请求-位移 - Node" in row[2] for row in rows)

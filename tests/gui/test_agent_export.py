@@ -473,7 +473,7 @@ def test_export_receipt_card_projects_and_opens(
     )
     button = drawer.findChild(QToolButton, "agentChatExportOpenButton")
     assert button is not None
-    assert button.text() == "打开"
+    assert button.text() == "Open"
     # 文件缺失：降级为打开所在目录。
     button.click()
     assert opened == [QUrl.fromLocalFile(str(exports))]

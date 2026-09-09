@@ -141,35 +141,35 @@ _AUTHORING_TOOL_LONG_TIMEOUT_NAMES = frozenset(
 # entry covers future whitelist additions.
 _AUTHORING_LONG_TOOL_NARRATIONS = {
     "prepare_planar_construction_proposal": (
-        "正在后台线程编译二维构造，界面保持响应，预计需要数十秒。"
+        "Compiling 2D construction in the background. The UI remains responsive; this may take tens of seconds."
     ),
     "run_native_preflight": (
-        "正在后台执行确定性模型预检，界面保持响应，请稍候。"
+        "Running deterministic model preflight in the background. The UI remains responsive; please wait."
     ),
 }
 _AUTHORING_LONG_TOOL_HEARTBEAT_SUBJECTS = {
-    "prepare_planar_construction_proposal": "二维构造编译",
-    "run_native_preflight": "模型预检",
+    "prepare_planar_construction_proposal": "2D construction compilation",
+    "run_native_preflight": "Model preflight",
 }
 _AUTHORING_LONG_TOOL_DEFAULT_NARRATION = (
-    "正在后台执行本地计算，界面保持响应，请稍候。"
+    "Running local computation in the background. The UI remains responsive; please wait."
 )
-_AUTHORING_LONG_TOOL_DEFAULT_SUBJECT = "本地计算"
+_AUTHORING_LONG_TOOL_DEFAULT_SUBJECT = "Local computation"
 _AUTHORING_PROGRESS_HEARTBEAT_SECONDS = 10.0
 _RUNTIME_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
 _TOOL_DISPLAY_NAMES = {
-    "show_capabilities": "检查 Agent 能力",
-    "inspect_abaqus": "检查 Abaqus 模型",
-    "set_unit_context": "设置单位上下文",
-    "set_result_requests": "设置结果请求",
-    "get_analysis_summary": "生成分析摘要",
-    "validate_analysis": "验证分析模型",
-    "solve_confirmed_analysis": "请求开始求解",
-    "query_results": "查询求解结果",
-    "export_results": "检查结果导出",
-    "list_artifacts": "列出 Agent 工件",
-    "create_native_model_document": "新建模型文档",
+    "show_capabilities": "Check Agent capabilities",
+    "inspect_abaqus": "Inspect Abaqus model",
+    "set_unit_context": "Set unit context",
+    "set_result_requests": "Set result requests",
+    "get_analysis_summary": "Generate analysis summary",
+    "validate_analysis": "Validate analysis model",
+    "solve_confirmed_analysis": "Request solve",
+    "query_results": "Query solve results",
+    "export_results": "Check result export",
+    "list_artifacts": "List Agent artifacts",
+    "create_native_model_document": "New model document",
 }
 _AUTOMATIC_MODEL_PATCH_TOOLS = frozenset(
     {"apply_model_definition", "edit_model_object"}
@@ -345,7 +345,7 @@ def _default_provider_factory() -> CloudModelProvider:
     config_path = find_main_config()
     if config_path is None:
         raise AgentRuntimeConfigurationError(
-            "未找到 FEM Agent 配置文件。"
+            "FEM Agent configuration file not found."
         )
     try:
         file_config = LocalAgentConfig.load(config_path)
@@ -355,13 +355,13 @@ def _default_provider_factory() -> CloudModelProvider:
         )
         if not resolved.enabled:
             raise AgentRuntimeConfigurationError(
-                "FEM Agent 配置尚未启用；请将 enabled 设为 true。"
+                "FEM Agent is disabled; set enabled to true."
             )
         if resolved.provider.casefold() == "fake":
             return FakeProvider(model=resolved.model)
         if resolved.provider.casefold() != "deepseek":
             raise AgentRuntimeConfigurationError(
-                "GUI 当前只支持 DeepSeek 或 Fake Provider。"
+                "The GUI currently supports only DeepSeek or Fake Provider."
             )
         resolved.require_api_key()
         return DeepSeekProvider(
@@ -372,7 +372,7 @@ def _default_provider_factory() -> CloudModelProvider:
         raise
     except ConfigError as exc:
         raise AgentRuntimeConfigurationError(
-            "FEM Agent 配置无效或缺少凭据。"
+            "FEM Agent configuration is invalid or missing credentials."
         ) from exc
 
 
@@ -740,7 +740,7 @@ class QtAgentRuntime(QObject):
     ) -> bool:
         """Queue one user turn; file reads remain on the session worker."""
         if not isinstance(text, str) or not text.strip():
-            self.operationRejected.emit("消息不能为空")
+            self.operationRejected.emit("Message must not be empty")
             return False
         provider_text = self._provider_safe_text(
             text,
@@ -754,10 +754,10 @@ class QtAgentRuntime(QObject):
         reference_snapshot = tuple(references)
         with self._lock:
             if self._shutdown:
-                self.operationRejected.emit("Agent 后台已关闭")
+                self.operationRejected.emit("Agent runtime is closed")
                 return False
             if self._busy:
-                self.operationRejected.emit("当前会话已有操作正在运行")
+                self.operationRejected.emit("An operation is already running in this session")
                 return False
             self._busy = True
             self._cancel_requested = False
@@ -790,17 +790,17 @@ class QtAgentRuntime(QObject):
                 for character in revision_hash
             )
         ):
-            self.operationRejected.emit("求解确认信息无效")
+            self.operationRejected.emit("Invalid solve confirmation")
             return False
         with self._lock:
             if self._shutdown:
-                self.operationRejected.emit("Agent 后台已关闭")
+                self.operationRejected.emit("Agent runtime is closed")
                 return False
             if self._busy:
-                self.operationRejected.emit("当前会话已有操作正在运行")
+                self.operationRejected.emit("An operation is already running in this session")
                 return False
             if self._engine is None:
-                self.operationRejected.emit("当前没有可确认的 Agent 会话")
+                self.operationRejected.emit("No Agent session is available for confirmation")
                 return False
             self._busy = True
             self._cancel_requested = False
@@ -819,10 +819,10 @@ class QtAgentRuntime(QObject):
         """Queue ``engine.create_session`` on the serialized worker."""
         with self._lock:
             if self._shutdown:
-                self.operationRejected.emit("Agent 后台已关闭")
+                self.operationRejected.emit("Agent runtime is closed")
                 return False
             if self._busy:
-                self.operationRejected.emit("当前会话已有操作正在运行")
+                self.operationRejected.emit("An operation is already running in this session")
                 return False
             self._busy = True
             self._cancel_requested = False
@@ -899,7 +899,7 @@ class QtAgentRuntime(QObject):
         with self._lock:
             lifecycle = self._proposal_lifecycles.get(str(proposal_id))
             if lifecycle is None:
-                self.eventRejected.emit("提案生命周期尚未登记")
+                self.eventRejected.emit("Proposal lifecycle is not registered")
                 return False
             identity_matches = (
                 lifecycle.proposal_hash == str(proposal_hash)
@@ -915,7 +915,7 @@ class QtAgentRuntime(QObject):
             )
             if not identity_matches:
                 normalized = ProposalState.STALE
-                message = "proposal hash、Agent session 或 turn identity 不匹配"
+                message = "Proposal hash, Agent session, or turn identity mismatch"
             if lifecycle.state in {
                 ProposalState.REJECTED,
                 ProposalState.STALE,
@@ -923,7 +923,7 @@ class QtAgentRuntime(QObject):
                 ProposalState.FAILED,
                 ProposalState.CANCELLED,
             }:
-                self.eventRejected.emit("已拒绝重复或迟到的提案终态")
+                self.eventRejected.emit("Rejected duplicate or late proposal terminal state")
                 return False
             context = _TurnContext(
                 generation=self._generation,
@@ -956,7 +956,7 @@ class QtAgentRuntime(QObject):
 
             text = str(message).strip()
             terminal_text = text or (
-                "已完成"
+                "Completed"
                 if normalized is ProposalState.SUCCEEDED
                 else normalized.value
             )
@@ -1182,9 +1182,9 @@ class QtAgentRuntime(QObject):
         finally:
             self._control_executor.shutdown(wait=join_executors)
         if close_failed:
-            self.operationRejected.emit("Agent 后台关闭时发生错误")
+            self.operationRejected.emit("Error shutting down Agent runtime")
         elif shutdown_timed_out:
-            self.operationRejected.emit("Agent 后台关闭超时")
+            self.operationRejected.emit("Agent runtime shutdown timed out")
         self.shutdownFinished.emit()
 
     def _provider_safe_text(
@@ -1226,7 +1226,7 @@ class QtAgentRuntime(QObject):
                 return redacted
             redacted = (
                 redacted[:index]
-                + "<本地路径已隐藏>"
+                + "<local path hidden>"
                 + redacted[index + len(needle) :]
             )
 
@@ -1238,7 +1238,7 @@ class QtAgentRuntime(QObject):
         candidate = self._provider_factory()
         if not isinstance(candidate, (DeepSeekProvider, FakeProvider)):
             raise AgentRuntimeConfigurationError(
-                "GUI 拒绝了未注册的 Provider 类型。"
+                "GUI rejected an unregistered Provider type."
             )
         engine = self._engine_factory(
             self.agent_data_root,
@@ -1321,7 +1321,7 @@ class QtAgentRuntime(QObject):
                     _AUTHORING_LONG_TOOL_DEFAULT_SUBJECT,
                 )
                 self._narrate_authoring_tool_progress(
-                    f"（{subject}仍在进行，已用时 {int(now - started)} 秒…）",
+                    f"({subject} still running, {int(now - started)} s elapsed…)",
                 )
                 next_heartbeat = now + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
             if now >= deadline:
@@ -1592,22 +1592,22 @@ class QtAgentRuntime(QObject):
             if isinstance(error, WorkspaceContextError):
                 self._fail_turn(
                     context,
-                    title="工作区文件不可用",
+                    title="Workspace file unavailable",
                     message=str(error),
                     code="GUI-WORKSPACE-CONTEXT",
                 )
             elif isinstance(error, AgentRuntimeConfigurationError):
                 self._fail_turn(
                     context,
-                    title="Agent 配置不可用",
+                    title="Agent configuration unavailable",
                     message=str(error),
                     code="GUI-AGENT-CONFIG",
                 )
             else:
                 self._fail_turn(
                     context,
-                    title="Agent 后台错误",
-                    message="Agent 后台操作失败。",
+                    title="Agent runtime error",
+                    message="Agent background operation failed.",
                     code="GUI-RUNTIME-ERROR",
                 )
         finally:
@@ -1648,7 +1648,7 @@ class QtAgentRuntime(QObject):
                 or snapshot.revision_hash != revision_hash
             ):
                 raise AgentRuntimeConfigurationError(
-                    "模型状态已经变化，请重新检查分析摘要。"
+                    "Model state changed; review the analysis summary again."
                 )
             context, reset_session = self._start_turn(
                 generation,
@@ -1661,7 +1661,7 @@ class QtAgentRuntime(QObject):
                 self._new_event(
                     context,
                     EventType.TURN_STARTED,
-                    {"user_message": f"确认开始求解 revision {revision}"},
+                    {"user_message": f"Confirm solve for revision {revision}"},
                 )
             )
             call_id = f"{context.turn_id}-solve"
@@ -1678,7 +1678,7 @@ class QtAgentRuntime(QObject):
                         {
                             "call_id": call_id,
                             "tool_name": "solve_confirmed_analysis",
-                            "display_name": "开始有限元求解",
+                            "display_name": "Start finite element solve",
                             "request": (
                                 f"revision={revision}, "
                                 f"sha256={revision_hash[:16]}…"
@@ -1718,7 +1718,7 @@ class QtAgentRuntime(QObject):
                         EventType.TURN_STARTED,
                         {
                             "user_message": (
-                                f"确认开始求解 revision {revision}"
+                                f"Confirm solve for revision {revision}"
                             )
                         },
                     )
@@ -1726,11 +1726,11 @@ class QtAgentRuntime(QObject):
             message = (
                 str(error)
                 if isinstance(error, AgentRuntimeConfigurationError)
-                else "求解确认未能完成。"
+                else "Solve confirmation could not complete."
             )
             self._fail_turn(
                 context,
-                title="无法开始求解",
+                title="Cannot start solve",
                 message=message,
                 code="GUI-SOLVE-CONFIRMATION",
             )
@@ -1758,7 +1758,7 @@ class QtAgentRuntime(QObject):
             None,
         )
         if reference is None:
-            raise WorkspaceContextError("Abaqus 输入引用缺少本地元数据")
+            raise WorkspaceContextError("Abaqus input reference lacks local metadata")
         key = (
             reference.workspace_id,
             reference.relative_path,
@@ -1779,7 +1779,7 @@ class QtAgentRuntime(QObject):
             )
         except InputRejectedError as error:
             raise WorkspaceContextError(
-                "Abaqus 输入文件无法安全复制，请重新选择"
+                "Cannot safely copy Abaqus input; select it again"
             ) from error
         engine.attach_artifact(
             artifact.artifact_id,
@@ -1801,7 +1801,7 @@ class QtAgentRuntime(QObject):
             self._reset_gui_session(engine.session_id)
             self.sessionReset.emit(engine.session_id)
         except Exception:
-            self.operationRejected.emit("无法创建新的 Agent 会话")
+            self.operationRejected.emit("Cannot create a new Agent session")
         finally:
             self._finish_operation(generation)
 
@@ -1909,8 +1909,8 @@ class QtAgentRuntime(QObject):
             if context is not None:
                 self._fail_turn(
                     context,
-                    title="处理失败",
-                    message="未能继续处理，请重试。",
+                    title="Processing failed",
+                    message="Could not continue processing; please retry.",
                     code="GUI-CONTINUATION-ERROR",
                 )
         finally:
@@ -1948,7 +1948,7 @@ class QtAgentRuntime(QObject):
                 self._new_event_locked(
                     context,
                     EventType.TURN_CANCELLED,
-                    {"reason": "用户已取消本轮操作。"},
+                    {"reason": "User cancelled this turn."},
                 )
             )
             context.terminal = True
@@ -2027,17 +2027,17 @@ class QtAgentRuntime(QObject):
             ):
                 return
             if context is None:
-                rejection = "已拒绝无活动 turn 的 EngineEvent"
+                rejection = "Rejected EngineEvent without an active turn"
             elif (
                 context.terminal and event.event is EngineEventType.OPERATION_CANCELLED
             ):
                 return
             elif context.terminal:
-                rejection = "已拒绝 turn 结束后的晚到 EngineEvent"
+                rejection = "Rejected late EngineEvent after turn ended"
             elif event.session_id != context.session_id:
-                rejection = "已拒绝跨 session 的 EngineEvent"
+                rejection = "Rejected cross-session EngineEvent"
             elif context.seen_engine_events.get(id(event)) is event:
-                rejection = "已拒绝重复 EngineEvent"
+                rejection = "Rejected duplicate EngineEvent"
             else:
                 context.seen_engine_events[id(event)] = event
                 if event.event is not EngineEventType.MESSAGE_DELTA:
@@ -2292,7 +2292,7 @@ class QtAgentRuntime(QObject):
                 message = diagnostic.get("message")
                 if isinstance(message, str) and message.strip():
                     context.failure_reason = self._safe_message(message)
-            context.failure_reason = context.failure_reason or "Agent 后台操作失败。"
+            context.failure_reason = context.failure_reason or "Agent background operation failed."
             return []
         if event.event is EngineEventType.OPERATION_CANCELLED:
             context.terminal = True
@@ -2300,7 +2300,7 @@ class QtAgentRuntime(QObject):
                 self._new_event_locked(
                     context,
                     EventType.TURN_CANCELLED,
-                    {"reason": "用户已取消本轮操作。"},
+                    {"reason": "User cancelled this turn."},
                 )
             ]
         if event.event is EngineEventType.TOOL_STARTED:
@@ -2310,7 +2310,7 @@ class QtAgentRuntime(QObject):
         if event.event is EngineEventType.ANALYSIS_SUMMARY:
             return self._analysis_summary_events_locked(context, event)
         if event.event is EngineEventType.CONFIRMATION_REQUIRED:
-            context.failure_reason = "当前分析状态尚不能开始求解。"
+            context.failure_reason = "Current analysis state is not ready to solve."
             return [
                 self._diagnostic_event_locked(
                     context,
@@ -2335,10 +2335,10 @@ class QtAgentRuntime(QObject):
         call_id = event.data.get("call_id")
         tool_name = event.data.get("tool")
         if not isinstance(call_id, str) or not isinstance(tool_name, str):
-            context.failure_reason = "Agent 工具事件缺少标识信息。"
+            context.failure_reason = "Agent tool event lacks identifying information."
             return []
         if call_id in context.tools:
-            self.eventRejected.emit("已拒绝重复的工具调用标识")
+            self.eventRejected.emit("Rejected duplicate tool call identifier")
             return []
         events = self._complete_active_message_locked(
             context,
@@ -2382,13 +2382,13 @@ class QtAgentRuntime(QObject):
     ) -> list[AgentEvent]:
         call_id = event.data.get("call_id")
         if not isinstance(call_id, str):
-            context.failure_reason = "Agent 工具返回缺少调用标识。"
+            context.failure_reason = "Agent tool result lacks a call identifier."
             return []
         activity = context.tools.get(call_id)
         if activity is None:
             tool_name = event.data.get("tool")
             if not isinstance(tool_name, str):
-                context.failure_reason = "Agent 工具返回缺少工具名称。"
+                context.failure_reason = "Agent tool result lacks a tool name."
                 return []
             started = EngineEvent(
                 EngineEventType.TOOL_STARTED,
@@ -2405,7 +2405,7 @@ class QtAgentRuntime(QObject):
         else:
             events = []
         if activity.terminal:
-            self.eventRejected.emit("已拒绝重复的工具完成事件")
+            self.eventRejected.emit("Rejected duplicate tool completion event")
             return events
         activity.terminal = True
         duration_ms = max(
@@ -2415,7 +2415,7 @@ class QtAgentRuntime(QObject):
         result = event.data.get("result")
         result_mapping = result if isinstance(result, Mapping) else {}
         summary = safe_tool_summary(
-            result_mapping.get("summary", "工具调用已完成"),
+            result_mapping.get("summary", "Tool call completed"),
         )
         diagnostics = result_mapping.get("diagnostics")
         diagnostic_items = (
@@ -2449,7 +2449,7 @@ class QtAgentRuntime(QObject):
                         "call_id": call_id,
                         "error": summary,
                         "diagnostic": (
-                            "；".join(messages)
+                            "; ".join(messages)
                             if messages
                             else summary
                         ),
@@ -2466,7 +2466,7 @@ class QtAgentRuntime(QObject):
                     {
                         "call_id": call_id,
                         "warning": (
-                            "；".join(messages)
+                            "; ".join(messages)
                             if messages
                             else summary
                         ),
@@ -2541,7 +2541,7 @@ class QtAgentRuntime(QObject):
     ) -> list[AgentEvent]:
         summary = event.data.get("analysis_summary")
         if not isinstance(summary, Mapping):
-            context.failure_reason = "分析摘要格式无效。"
+            context.failure_reason = "Invalid analysis summary format."
             return []
         diagnostics = summary.get("diagnostics")
         if isinstance(diagnostics, (list, tuple)) and any(
@@ -2560,31 +2560,31 @@ class QtAgentRuntime(QObject):
             or not isinstance(revision_hash, str)
             or len(revision_hash) != 64
         ):
-            context.failure_reason = "分析摘要缺少有效 revision。"
+            context.failure_reason = "Analysis summary lacks a valid revision."
             return []
         model_name = safe_tool_summary(
-            summary.get("model_name", "模型"),
+            summary.get("model_name", "Model"),
             max_characters=100,
         )
         step = summary.get("analysis_step")
         step_name = (
             safe_tool_summary(
-                step.get("name", "未指定"),
+                step.get("name", "Unspecified"),
                 max_characters=80,
             )
             if isinstance(step, Mapping)
-            else "未指定"
+            else "Unspecified"
         )
         confirmation_id = (
             f"{context.turn_id}-confirmation-{revision}"
         )
         context.pending_confirmation = {
             "confirmation_id": confirmation_id,
-            "title": "确认开始有限元求解",
+            "title": "Confirm finite element solve",
             "summary": (
-                f"{model_name} · {summary.get('node_count', 0)} 节点 · "
-                f"{summary.get('element_count', 0)} 单元 · "
-                f"分析步 {step_name}"
+                f"{model_name} · {summary.get('node_count', 0)} nodes · "
+                f"{summary.get('element_count', 0)} elements · "
+                f"Step {step_name}"
             ),
             "revision": revision,
             "revision_hash": revision_hash,
@@ -2598,11 +2598,11 @@ class QtAgentRuntime(QObject):
     ) -> list[AgentEvent]:
         call_id = context.solve_call_id
         if call_id is None:
-            context.failure_reason = "收到未关联确认操作的求解结果。"
+            context.failure_reason = "Received a solve result without an associated confirmation."
             return []
         activity = context.tools.get(call_id)
         if activity is None:
-            context.failure_reason = "求解操作缺少本地活动记录。"
+            context.failure_reason = "Solve operation lacks a local activity record."
             return []
         status = str(event.data.get("status", "")).casefold()
         duration_ms = max(
@@ -2615,12 +2615,12 @@ class QtAgentRuntime(QObject):
                 self._new_event_locked(
                     context,
                     EventType.TURN_CANCELLED,
-                    {"reason": "用户已取消本轮求解。"},
+                    {"reason": "User cancelled this solve."},
                 )
             ]
         activity.terminal = True
         if status != "succeeded":
-            context.failure_reason = "有限元求解未成功完成。"
+            context.failure_reason = "Finite element solve did not complete successfully."
             return [
                 self._new_event_locked(
                     context,
@@ -2650,8 +2650,8 @@ class QtAgentRuntime(QObject):
                 {
                     "call_id": call_id,
                     "result": (
-                        f"求解完成 · run {run_id} · "
-                        f"{artifact_count} 个 Agent 工件"
+                        f"Solve complete · run {run_id} · "
+                        f"{artifact_count} Agent artifacts"
                     ),
                     "duration_ms": duration_ms,
                 },
@@ -2749,13 +2749,13 @@ class QtAgentRuntime(QObject):
         title = (
             self._safe_message(raw_title)
             if isinstance(raw_title, str) and raw_title.strip()
-            else "Agent 诊断"
+            else "Agent diagnostic"
         )
         raw_message = diagnostic.get("message")
         message = (
             self._safe_message(raw_message)
             if isinstance(raw_message, str) and raw_message.strip()
-            else "Agent 后台返回了诊断信息。"
+            else "Agent runtime returned diagnostic information."
         )
         return self._new_event_locked(
             context,
