@@ -1545,19 +1545,19 @@ def explain_result_response(response: AgentResultQueryResponse) -> str:
     scalar = response.scalar
     location = _location_text(scalar.location, scalar.region)
     return (
-        f"{scalar.variable.value} {scalar.component} 的"
-        f"{_aggregation_text(scalar.aggregation)}为 "
-        f"{scalar.value:.12g} {scalar.unit}，{location}；"
-        f"run {scalar.source.run_id}，step {scalar.source.step_name}。"
+        f"{scalar.variable.value} {scalar.component} "
+        f"{_aggregation_text(scalar.aggregation)} is "
+        f"{scalar.value:.12g} {scalar.unit}, {location}; "
+        f"run {scalar.source.run_id}, step {scalar.source.step_name}."
     )
 
 
 def _aggregation_text(value: AgentResultAggregation) -> str:
     return {
-        AgentResultAggregation.MAXIMUM: "最大值",
-        AgentResultAggregation.MINIMUM: "最小值",
-        AgentResultAggregation.ABSOLUTE_EXTREME: "绝对值极值",
-        AgentResultAggregation.SUM: "合计",
+        AgentResultAggregation.MAXIMUM: "maximum",
+        AgentResultAggregation.MINIMUM: "minimum",
+        AgentResultAggregation.ABSOLUTE_EXTREME: "absolute extreme",
+        AgentResultAggregation.SUM: "sum",
     }[value]
 
 
@@ -1566,17 +1566,17 @@ def _location_text(
     region: str,
 ) -> str:
     if location is None:
-        return f"区域 {region}"
+        return f"scope {region}"
     identities = []
     if location.node_id is not None:
-        identities.append(f"节点 {location.node_id}")
+        identities.append(f"node {location.node_id}")
     if location.element_id is not None:
-        identities.append(f"单元 {location.element_id}")
+        identities.append(f"element {location.element_id}")
     if location.integration_point is not None:
-        identities.append(f"积分点 {location.integration_point}")
+        identities.append(f"integration point {location.integration_point}")
     if location.local_node is not None:
-        identities.append(f"局部节点 {location.local_node}")
-    return f"区域 {region}，位置 " + " / ".join(identities)
+        identities.append(f"local node {location.local_node}")
+    return f"scope {region}, location " + " / ".join(identities)
 
 
 def _strict_mapping(

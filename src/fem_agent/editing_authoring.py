@@ -447,16 +447,16 @@ def create_edit_proposal(
     if target.step_name is not None:
         parameters["step_name"] = target.step_name
     label = {
-        "named_region": "作用域",
-        "material": "材料",
-        "section": "截面",
-        "section_assignment": "截面指派",
-        "analysis_step": "分析步",
-        "boundary_condition": "边界条件",
-        "load": "载荷",
-        "result_request": "结果请求",
+        "named_region": "Scope",
+        "material": "Material",
+        "section": "Section",
+        "section_assignment": "Section assignment",
+        "analysis_step": "Step",
+        "boundary_condition": "Boundary condition",
+        "load": "Load",
+        "result_request": "Result request",
     }[target.object_type]
-    changed_fields = "、".join(normalized_changes)
+    changed_fields = ", ".join(normalized_changes)
     proposal = AgentProposal.create(
         proposal_id=proposal_id,
         proposal_kind=ProposalKind.DESTRUCTIVE_EDIT,
@@ -489,10 +489,10 @@ def create_edit_proposal(
             "current_result_display_reset": True,
         },
         display_summary={
-            "title": f"编辑{label}：{target.display_name}",
-            "summary": f"修改{label}“{target.display_name}”的{changed_fields}",
-            "impact": "修改后需重新预检；历史作业和结果继续保留",
-            "confirm_label": "确认修改",
+            "title": f"Edit {label}: {target.display_name}",
+            "summary": f"Change {changed_fields} of {label} “{target.display_name}”",
+            "impact": "Rerun prechecks after editing; retain historical jobs and results",
+            "confirm_label": "Confirm changes",
         },
     )
     return proposal, target
@@ -528,14 +528,14 @@ def create_edit_patch(
         step_name=step_name,
     )
     label = {
-        "named_region": "作用域",
-        "material": "材料",
-        "section": "截面",
-        "section_assignment": "截面指派",
-        "analysis_step": "分析步",
-        "boundary_condition": "边界条件",
-        "load": "载荷",
-        "result_request": "结果请求",
+        "named_region": "Scope",
+        "material": "Material",
+        "section": "Section",
+        "section_assignment": "Section assignment",
+        "analysis_step": "Step",
+        "boundary_condition": "Boundary condition",
+        "load": "Load",
+        "result_request": "Result request",
     }[target.object_type]
     patch = ModelPatch.create(
         patch_id=patch_id,
@@ -557,10 +557,10 @@ def create_edit_patch(
             "results": False,
         },
         display_summary={
-            "title": f"Agent 已编辑{label}",
+            "title": f"Agent edited {label}",
             "summary": str(proposal.display_summary["summary"]),
             "objects": [target.display_name],
-            "undo_label": "撤销本次 Agent 修改",
+            "undo_label": "Undo",
         },
     )
     return patch, target

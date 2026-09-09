@@ -469,7 +469,7 @@ def create_mesh_proposal(
             "results": context.result_available,
         },
         display_summary={
-            "title": "生成网格",
+            "title": "Generate mesh",
             "target_model": context.model_name,
             "target_part": {"part_id": part.part_id, "name": part.name},
             mode_label: mode_value,
@@ -479,7 +479,7 @@ def create_mesh_proposal(
             "local_refinements": local_summary,
             "resource_level": resource_level,
             "estimate_only": True,
-            "confirm_label": "开始划分",
+            "confirm_label": "Start meshing",
             "mesh_intent_hash": mesh_intent.intent_hash,
             "base_session_revision": binding.session_revision,
         },

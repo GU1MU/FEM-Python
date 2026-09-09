@@ -320,7 +320,7 @@ def test_delete_proposal_is_path_free_and_requires_unique_gui_authorization() ->
     assert proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT
     assert proposal.operations[0].kind is OperationKind.DELETE_MODEL_OBJECT
     assert session.session_revision == revision
-    assert "确认删除" == proposal.display_summary["confirm_label"]
+    assert "Confirm deletion" == proposal.display_summary["confirm_label"]
     assert "path" not in json.dumps(proposal.to_dict(), ensure_ascii=False)
 
     bridge.register_proposal(proposal)

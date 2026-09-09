@@ -144,7 +144,7 @@ def test_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None:
         "request_mesh",
     ]
     assert proposal.base_session_revision == session.session_revision
-    assert proposal.display_summary["confirm_label"] == "开始划分"
+    assert proposal.display_summary["confirm_label"] == "Start meshing"
     assert proposal.display_summary["estimate_only"] is True
     assert proposal.display_summary["local_refinements"][0]["target"] == (
         "edge:C5"

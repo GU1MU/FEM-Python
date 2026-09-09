@@ -440,10 +440,10 @@ def create_scope_definition_change(
     operations = _state_operations(regions, definitions)
     evidence = [item.to_dict() for item in scopes.evidence]
     summary = {
-        "title": "Agent 已创建作用域和材料定义",
+        "title": "Agent created scopes and material definitions",
         "summary": (
-            f"创建 4 个语义作用域、材料 {material_name}、"
-            f"截面 {section_name} 及板体分配"
+            f"Create 4 semantic scopes, material {material_name}, "
+            f"section {section_name}, and the plate assignment"
         ),
         "objects": [
             *(item.name for item in scopes.regions),
@@ -451,7 +451,7 @@ def create_scope_definition_change(
             section_name,
         ],
         "scope_evidence": evidence,
-        "undo_label": "撤销本次 Agent 修改",
+        "undo_label": "Undo",
     }
     common = {
         "agent_session_id": agent_session_id,
@@ -489,9 +489,9 @@ def create_scope_definition_change(
                 **common,
                 "display_summary": {
                     **summary,
-                    "title": "定义修改将使已有结果失效",
-                    "impact": "已有验证、作业和结果将失效",
-                    "confirm_label": "确认修改",
+                    "title": "Definition changes will invalidate existing results",
+                    "impact": "Existing validation, jobs, and results will become invalid",
+                    "confirm_label": "Confirm changes",
                 },
             },
         )

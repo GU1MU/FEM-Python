@@ -393,4 +393,4 @@ def test_valid_result_forces_gui_confirmation() -> None:
 
     assert type(change) is AgentProposal
     assert change.invalidation_impact["results"] is True
-    assert change.display_summary["confirm_label"] == "确认修改"
+    assert change.display_summary["confirm_label"] == "Confirm changes"

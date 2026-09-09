@@ -127,7 +127,7 @@ def test_fake_port_explanation_uses_only_returned_scalar() -> None:
     assert port.catalog_calls == 1
     assert port.calls == [request]
     assert "1.25 mm" in explanation
-    assert "节点 42" in explanation
+    assert "node 42" in explanation
     assert "run run-a7" in explanation
     assert "step 分析步-静力" in explanation
 

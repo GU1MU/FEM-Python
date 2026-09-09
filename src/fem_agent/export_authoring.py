@@ -24,8 +24,8 @@ EXPORT_CSV_TOOL_NAME = "export_accepted_result_csv"
 RESULT_DISPLAY_CONTEXT_TOOL_NAME = "read_result_display_context"
 NO_WORKSPACE_DIAGNOSTIC_CODE = "export.no_workspace"
 NO_WORKSPACE_DIAGNOSTIC_MESSAGE = (
-    "尚未选择工作区，请先执行 /workspace 选择目录，"
-    "导出文件将保存到该目录下的 agent_exports 中"
+    "No workspace selected. Use /workspace to select a directory first; "
+    "exported files will be saved in its agent_exports subdirectory"
 )
 EXPORT_KINDS = {"csv", "png"}
 EXPORT_NAME_MAX_LENGTH = 180

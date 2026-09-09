@@ -148,7 +148,7 @@ def test_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> None
     )
     before = session.snapshot()
 
-    assert proposal.display_summary["title"] == "加入部件"
+    assert proposal.display_summary["title"] == "Add part"
 
     bridge.register_proposal(proposal)
 
@@ -214,7 +214,7 @@ def test_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None
     )
     before = session.snapshot()
 
-    assert proposal.display_summary["title"] == "加入部件"
+    assert proposal.display_summary["title"] == "Add part"
     bridge.register_proposal(proposal)
 
     receipt = bridge.accept_from_gui_control(proposal.proposal_id)

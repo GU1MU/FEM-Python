@@ -124,7 +124,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
     detail_label = drawer.findChild(QLabel, "agentChatProposalSummary")
     assert notice is not None
     assert undo is not None
-    assert notice.text() == "Agent 已创建材料"
+    assert notice.text() == "Agent: Material created"
     assert undo.text() == "Undo"
     assert undo.width() < 110
     assert abs(notice.geometry().center().y() - undo.geometry().center().y()) <= 2

@@ -667,10 +667,10 @@ def _patch(
     details: Mapping[str, object],
 ) -> ModelPatch:
     summary = {
-        "create_named_region": "已创建作用域",
-        "create_boundary_condition": "已创建边界条件",
-        "create_load": "已创建载荷",
-        "create_result_request": "已创建结果请求",
+        "create_named_region": "Scope created",
+        "create_boundary_condition": "Boundary condition created",
+        "create_load": "Load created",
+        "create_result_request": "Result request created",
     }[action]
     return ModelPatch.create(
         patch_id=patch_id,
@@ -703,11 +703,11 @@ def _patch(
             "current_result_display_reset": True,
         },
         display_summary={
-            "title": f"Agent {summary}",
+            "title": f"Agent: {summary}",
             "summary": summary,
             "objects": list(created_names),
             "details": dict(details),
-            "undo_label": "撤销修改",
+            "undo_label": "Undo",
         },
     )
 

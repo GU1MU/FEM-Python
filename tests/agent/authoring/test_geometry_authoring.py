@@ -65,7 +65,7 @@ def test_plate_hole_accepts_coordinates_or_offset_and_rejects_incomplete_hole() 
             height=6.0,
             hole_radius=1.0,
         )
-    with pytest.raises(ValueError, match="完整位于"):
+    with pytest.raises(ValueError, match="entirely inside"):
         plate_with_hole_geometry(
             "实体-孔板",
             width=10.0,

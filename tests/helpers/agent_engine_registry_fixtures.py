@@ -42,13 +42,13 @@ class _AdditionalModelToolRegistry:
                     "proposal_id": "proposal-new-model-geometry",
                     "proposal_hash": "b" * 64,
                     "proposal_kind": "geometry",
-                    "title": "加入部件",
+                    "title": "Add part",
                     "summary": (
                         "设计提案：2D 平面构造（节点=1，材料区=1，孔洞=0）；"
                         "单位制 mm-N-MPa（默认）"
                     ),
                     "impact": "确认后创建该二维几何并刷新 GUI",
-                    "confirm_label": "加入部件",
+                    "confirm_label": "Add part",
                     "target_document_id": "1",
                     "target_session_id": "native-session",
                     "base_session_revision": 0,

@@ -566,11 +566,11 @@ def create_analysis_definition_change(
     result_invalidating = _has_accepted_result(snapshot)
     destructive = bool(existing_steps) or result_invalidating
     summary = {
-        "title": "Agent 已创建完整线性静力分析定义",
+        "title": "Agent: Complete linear static analysis defined",
         "summary": (
-            f"{step.name}：{len(step.boundaries)} 个位移、"
+            f"{step.name}: {len(step.boundaries)} displacements, "
             f"{len(step.cloads) + len(step.edge_loads) + len(step.surface_loads)} "
-            f"个载荷、{len(step.outputs)} 个结果请求"
+            f"loads, {len(step.outputs)} result requests"
         ),
         "analysis": details,
         "objects": [
@@ -579,7 +579,7 @@ def create_analysis_definition_change(
             *(item.name for item in analysis.loads),
             *(item.name for item in analysis.results),
         ],
-        "undo_label": "撤销本次 Agent 修改",
+        "undo_label": "Undo",
     }
     common = {
         "agent_session_id": agent_session_id,
@@ -624,13 +624,13 @@ def create_analysis_definition_change(
                 **common,
                 "display_summary": {
                     **summary,
-                    "title": "分析定义修改需要确认",
+                    "title": "Confirm analysis definition changes",
                     "impact": (
-                        "将替换已有分析定义并使已有结果失效"
+                        "Replace the existing analysis definition and invalidate existing results"
                         if result_invalidating
-                        else "将替换已有分析定义"
+                        else "Replace the existing analysis definition"
                     ),
-                    "confirm_label": "确认修改",
+                    "confirm_label": "Confirm changes",
                 },
             },
         )

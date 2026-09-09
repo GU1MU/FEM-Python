@@ -366,8 +366,8 @@ def create_solve_proposal(
             "results": False,
         },
         display_summary={
-            "title": "提交线性静力求解",
-            "confirm_label": "开始求解",
+            "title": "Submit linear static solve",
+            "confirm_label": "Start solve",
             "summary": summary.to_dict(),
             "validation_stamp": stamp.stamp_hash,
         },

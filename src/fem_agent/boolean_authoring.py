@@ -152,7 +152,7 @@ def create_part_boolean_proposal(
             else {"mesh": True, "definitions": True, "results": True}
         ),
         display_summary={
-            "title": f"精确{('合并' if operation == 'fuse' else '切除')}部件",
+            "title": f"Exact Part {('Fuse' if operation == 'fuse' else 'Cut')}",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": operation,
@@ -180,10 +180,10 @@ def create_part_boolean_proposal(
                 [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
             ),
             "migration_summary": (
-                "创建迭代模型；迁移可保留的网格设置与模型定义；"
-                "不迁移实际网格、验证、运行或结果"
+                "Create an iteration model; migrate retainable mesh settings and model definitions; "
+                "do not migrate the generated mesh, validation, runs, or results"
                 if edit_mode == "branch"
-                else "在当前模型中提交精确 Part Boolean"
+                else "Apply the exact Part Boolean in the current model"
             ),
             "base_session_revision": context.binding.session_revision,
         },
@@ -318,7 +318,7 @@ def create_body_boolean_proposal(
             else {"mesh": True, "definitions": True, "results": True}
         ),
         display_summary={
-            "title": f"精确{('合并' if operation == 'fuse' else '切除')}实体",
+            "title": f"Exact Body {('Fuse' if operation == 'fuse' else 'Cut')}",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": operation,
@@ -344,10 +344,10 @@ def create_body_boolean_proposal(
                 [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
             ),
             "migration_summary": (
-                "创建迭代模型；迁移可保留的网格设置与模型定义；"
-                "不迁移实际网格、验证、运行或结果"
+                "Create an iteration model; migrate retainable mesh settings and model definitions; "
+                "do not migrate the generated mesh, validation, runs, or results"
                 if edit_mode == "branch"
-                else "在当前模型中提交精确 Body Boolean"
+                else "Apply the exact Body Boolean in the current model"
             ),
             "base_session_revision": context.binding.session_revision,
         },

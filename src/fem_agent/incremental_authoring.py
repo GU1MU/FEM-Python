@@ -375,10 +375,10 @@ def create_incremental_definition_patch(
             "current_result_display_reset": True,
         },
         display_summary={
-            "title": f"Agent {_ACTION_SUMMARIES[normalized_action]}",
+            "title": f"Agent: {_ACTION_SUMMARIES[normalized_action]}",
             "summary": _ACTION_SUMMARIES[normalized_action],
             "objects": list(created_names),
-            "undo_label": "撤销修改",
+            "undo_label": "Undo",
         },
     )
 
@@ -487,14 +487,14 @@ def require_incremental_definition_batch(
 
 
 _ACTION_SUMMARIES = {
-    "create_plate_scopes": "已创建当前平板的语义作用域",
-    "create_material": "已创建材料",
-    "create_section": "已创建截面",
-    "assign_section": "已创建截面指派",
-    "create_static_step": "已创建线性静力分析步",
-    "create_boundary_condition": "已创建边界条件",
-    "create_load": "已创建载荷",
-    "create_result_request": "已创建结果请求",
+    "create_plate_scopes": "Semantic scopes created for the current plate",
+    "create_material": "Material created",
+    "create_section": "Section created",
+    "assign_section": "Section assignment created",
+    "create_static_step": "Linear static step created",
+    "create_boundary_condition": "Boundary condition created",
+    "create_load": "Load created",
+    "create_result_request": "Result request created",
 }
 
 

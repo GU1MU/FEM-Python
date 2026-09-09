@@ -6115,24 +6115,24 @@ class AuthoringWorkflowController:
         self._refresh_turn_snapshot_locked()
         title, summary, impact = {
             "geometry": (
-                "确认几何需求",
-                f"请审阅 {len(review.fields)} 项几何与项目单位参数",
-                "确认后这些值才可用于创建几何",
+                "Confirm geometry requirements",
+                f"Review {len(review.fields)} geometry and project unit parameters",
+                "Confirm before using these values to create geometry",
             ),
             "mesh": (
-                "确认网格需求",
-                f"请审阅 {len(review.fields)} 项网格参数",
-                "确认后这些值才可用于划分网格",
+                "Confirm mesh requirements",
+                f"Review {len(review.fields)} mesh parameters",
+                "Confirm before using these values for meshing",
             ),
             "definitions": (
-                "确认材料与截面需求",
-                f"请审阅 {len(review.fields)} 项材料与截面参数",
-                "确认后这些值才可用于材料、截面和指派",
+                "Confirm material and section requirements",
+                f"Review {len(review.fields)} material and section parameters",
+                "Confirm before using these values for materials, sections, and assignments",
             ),
             "analysis": (
-                "确认分析需求",
-                f"请审阅 {len(review.fields)} 项边界条件、载荷与结果参数",
-                "确认后这些值才可用于分析定义",
+                "Confirm analysis requirements",
+                f"Review {len(review.fields)} boundary condition, load, and result parameters",
+                "Confirm before using these values for analysis definitions",
             ),
         }[requirement_group]
         return AuthoringToolOutcome(
@@ -6151,7 +6151,7 @@ class AuthoringWorkflowController:
                     "title": title,
                     "summary": summary,
                     "impact": impact,
-                    "confirm_label": "确认",
+                    "confirm_label": "Confirm",
                     "target_document_id": binding["document_id"],
                     "target_session_id": binding["session_id"],
                     "base_session_revision": binding["session_revision"],

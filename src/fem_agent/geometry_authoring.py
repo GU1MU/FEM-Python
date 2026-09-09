@@ -730,7 +730,7 @@ def create_geometry_proposal(
                 "unit_context": units,
             },
         )
-        operation_label = "加入部件"
+        operation_label = "Add part"
         target_model = project_name
     else:
         if context.model_name is None:
@@ -743,7 +743,7 @@ def create_geometry_proposal(
                 "unit_context": units,
             },
         )
-        operation_label = "加入部件"
+        operation_label = "Add part"
         target_model = context.model_name
     proposal_summary = operation_label if summary is None else str(summary).strip()
     if not proposal_summary:
@@ -955,14 +955,14 @@ def create_geometry_edit_proposal(
             else {"mesh": True, "definitions": True, "results": True}
         ),
         display_summary={
-            "title": f"修改部件 {target.name}",
+            "title": f"Edit part {target.name}",
             "geometry_edit_mode": edit_mode,
             "creates_iteration_model": edit_mode == "branch",
             "migration_summary": (
-                "创建迭代模型；迁移可保留的网格设置与模型定义；"
-                "不迁移实际网格、验证、运行或结果"
+                "Create an iteration model; migrate retainable mesh settings and model definitions; "
+                "do not migrate the generated mesh, validation, runs, or results"
                 if edit_mode == "branch"
-                else "在当前模型中替换部件几何"
+                else "Replace the part geometry in the current model"
             ),
             "target_model": context.model_name,
             "operation": OperationKind.REPLACE_PART_GEOMETRY.value,
@@ -1119,7 +1119,7 @@ def create_profile_extrusion_proposal(
             else {"mesh": True, "definitions": True, "results": True}
         ),
         display_summary={
-            "title": f"拉伸部件 {target.name} 的选定 Profiles",
+            "title": f"Extrude selected profiles of part {target.name}",
             "summary": proposal_summary,
             "target_model": context.model_name,
             "operation": OperationKind.EXTRUDE_PART_PROFILES.value,
@@ -1143,10 +1143,10 @@ def create_profile_extrusion_proposal(
                 else {"mesh": True, "definitions": True, "results": True}
             ),
             "migration_summary": (
-                "创建迭代模型；迁移可保留的网格设置与模型定义；"
-                "不迁移实际网格、验证、运行或结果"
+                "Create an iteration model; migrate retainable mesh settings and model definitions; "
+                "do not migrate the generated mesh, validation, runs, or results"
                 if edit_mode == "branch"
-                else "在当前模型中转换 Profile 几何"
+                else "Transform profile geometry in the current model"
             ),
             "base_session_revision": context.binding.session_revision,
             "proofs": [draft.proof.to_dict() for draft in drafts],
@@ -1335,7 +1335,7 @@ def _create_single_profile_derived_proposal(
             else {"mesh": True, "definitions": True, "results": True}
         ),
         display_summary={
-            "title": f"从部件 {target.name} 创建三维派生特征",
+            "title": f"Create a derived 3D feature from part {target.name}",
             "summary": normalized_summary,
             "target_model": context.model_name,
             "operation": operation_kind.value,
@@ -1356,10 +1356,10 @@ def _create_single_profile_derived_proposal(
                 [] if edit_mode == "branch" else ["mesh", "definitions", "results"]
             ),
             "migration_summary": (
-                "创建迭代模型；迁移可保留的网格设置与模型定义；"
-                "不迁移实际网格、验证、运行或结果"
+                "Create an iteration model; migrate retainable mesh settings and model definitions; "
+                "do not migrate the generated mesh, validation, runs, or results"
                 if edit_mode == "branch"
-                else "在当前模型中转换 Profile 几何"
+                else "Transform profile geometry in the current model"
             ),
             "invalidation_impact": (
                 {"mesh": False, "definitions": False, "results": False}
@@ -3181,7 +3181,7 @@ def feature_topology_catalog(
             "read": True,
             "create": False,
             "edit": False,
-            "message": "Agent 可只读识别面草图拉伸布尔特征，暂不支持创建或编辑。",
+            "message": "Agent can only read face-sketch Extrude Boolean features; creation and editing are not yet supported.",
         }
     return catalog
 
@@ -3384,7 +3384,7 @@ def _geometry_recipe_to_payload(recipe: object) -> dict[str, object]:
                 "read": True,
                 "create": False,
                 "edit": False,
-                "message": "Agent 可只读识别面草图拉伸布尔特征，暂不支持创建或编辑。",
+                "message": "Agent can only read face-sketch Extrude Boolean features; creation and editing are not yet supported.",
             },
         }
     if type(recipe) is MultiBodyGeometry:
@@ -3449,7 +3449,7 @@ def _geometry_recipe_from_payload(value: object) -> object:
         raise TypeError("geometry recipe payload must be an object")
     kind = value.get("kind")
     if kind == "face_sketch_boolean":
-        raise ValueError("Agent 暂不支持创建或编辑面草图拉伸布尔特征；仅支持只读识别。")
+        raise ValueError("Agent can only read face-sketch Extrude Boolean features; creation and editing are not yet supported.")
     fields: dict[str, set[str]] = {
         "rectangle": {"kind", "name", "width", "height"},
         "disk": {"kind", "name", "radius"},

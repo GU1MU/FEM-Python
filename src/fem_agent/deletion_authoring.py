@@ -45,14 +45,14 @@ _DELETE_TYPES = frozenset(
     }
 )
 _TYPE_LABELS = {
-    "part": "部件",
-    "feature": "特征",
-    "generated_mesh": "已生成网格",
-    "named_region": "作用域",
-    "analysis_step": "分析步",
-    "boundary_condition": "边界条件",
-    "load": "载荷",
-    "result_request": "结果请求",
+    "part": "Part",
+    "feature": "Feature",
+    "generated_mesh": "Generated mesh",
+    "named_region": "Scope",
+    "analysis_step": "Step",
+    "boundary_condition": "Boundary condition",
+    "load": "Load",
+    "result_request": "Result request",
 }
 
 
@@ -142,8 +142,8 @@ def deletable_object_catalog(
                     part_id,
                     name,
                     impact=(
-                        "删除该部件及其几何、网格设置和部件作用域",
-                        "依赖指派、分析定义、预检、作业和结果可能失效",
+                        "Delete this part, its geometry, mesh settings, and part scopes",
+                        "Dependent assignments, analysis definitions, prechecks, jobs, and results may become invalid",
                     ),
                 )
             )
@@ -163,8 +163,8 @@ def deletable_object_catalog(
                             feature_target,
                             feature_display,
                             impact=(
-                                "删除该部件当前最后创建的特征",
-                                "当前网格、相关预检、作业和结果将失效",
+                                "Delete the most recently created feature of this part",
+                                "The current mesh and related prechecks, jobs, and results will become invalid",
                             ),
                         )
                     )
@@ -175,10 +175,10 @@ def deletable_object_catalog(
             DeletableObject(
                 "generated_mesh",
                 "current",
-                "当前已生成网格",
+                "Current generated mesh",
                 impact=(
-                    "清除当前生成模型和网格",
-                    "网格作用域及其依赖定义、预检、作业和结果将失效",
+                    "Clear the current generated model and mesh",
+                    "Mesh scopes and their dependent definitions, prechecks, jobs, and results will become invalid",
                 ),
             )
         )
@@ -205,8 +205,8 @@ def deletable_object_catalog(
                     step_name,
                     step_name,
                     impact=(
-                        "删除该分析步内全部边界条件、载荷和结果请求",
-                        "相关预检、作业和结果将失效",
+                        "Delete all boundary conditions, loads, and result requests in this step",
+                        "Related prechecks, jobs, and results will become invalid",
                     ),
                 )
             )
@@ -294,7 +294,7 @@ def create_delete_proposal(
     if target.step_name is not None:
         parameters["step_name"] = target.step_name
     label = _TYPE_LABELS[target.object_type]
-    impact_text = "；".join(target.impact)
+    impact_text = "; ".join(target.impact)
     proposal = AgentProposal.create(
         proposal_id=proposal_id,
         proposal_kind=ProposalKind.DESTRUCTIVE_EDIT,
@@ -327,10 +327,10 @@ def create_delete_proposal(
             "results": True,
         },
         display_summary={
-            "title": f"删除{label}：{target.display_name}",
-            "summary": f"删除{label}“{target.display_name}”",
+            "title": f"Delete {label}: {target.display_name}",
+            "summary": f"Delete {label} “{target.display_name}”",
             "impact": impact_text,
-            "confirm_label": "确认删除",
+            "confirm_label": "Confirm deletion",
         },
     )
     return proposal, target
@@ -462,8 +462,8 @@ def _step_child_catalog(
                     name,
                     step_name,
                     (
-                        "删除该边界条件",
-                        "相关预检、作业和结果将失效",
+                        "Delete this boundary condition",
+                        "Related prechecks, jobs, and results will become invalid",
                     ),
                 )
             )
@@ -478,8 +478,8 @@ def _step_child_catalog(
                         name,
                         step_name,
                         (
-                            "删除该载荷",
-                            "相关预检、作业和结果将失效",
+                            "Delete this load",
+                            "Related prechecks, jobs, and results will become invalid",
                         ),
                     )
                 )
@@ -493,8 +493,8 @@ def _step_child_catalog(
                     name,
                     step_name,
                     (
-                        "删除该结果请求",
-                        "后续求解将不再生成对应请求结果",
+                        "Delete this result request",
+                        "Future solves will no longer generate the requested results",
                     ),
                 )
             )
@@ -514,12 +514,12 @@ def _named_region_impact(
         _step_region_dependency_count(step, region_name)
         for step in tuple(getattr(snapshot, "steps", ()))
     )
-    impact = ["删除该作用域"]
+    impact = ["Delete this scope"]
     if assignments:
-        impact.append(f"级联删除 {assignments} 个截面指派")
+        impact.append(f"Also delete {assignments} dependent section assignments")
     if definitions:
-        impact.append(f"级联删除 {definitions} 个依赖分析定义")
-    impact.append("相关预检、作业和结果将失效")
+        impact.append(f"Also delete {definitions} dependent analysis definitions")
+    impact.append("Related prechecks, jobs, and results will become invalid")
     return tuple(impact)
 
 
