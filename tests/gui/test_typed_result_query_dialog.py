@@ -126,13 +126,13 @@ def test_catalog_order_typed_association_and_descriptor_components_are_exact(
         type(key) is FieldMaterializationKey for key in actual_node_keys
     )
     assert dialog.current_selection() == catalog.default_selection
-    assert dialog.field_combo.currentText() == "位移 U"
-    assert "（就绪）" not in dialog.field_combo.currentText()
+    assert dialog.field_combo.currentText() == "Displacement U"
+    assert " (Ready)" not in dialog.field_combo.currentText()
     assert not hasattr(dialog, "availability_label")
-    assert "字段状态：" not in {
+    assert "Field status:" not in {
         label.text() for label in dialog.findChildren(QLabel)
     }
-    assert "关闭" not in {
+    assert "Close" not in {
         button.text() for button in dialog.findChildren(QPushButton)
     }
 
@@ -302,12 +302,12 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
     dialog.set_query_result(query_result)
 
     assert dialog.table.rowCount() == len(query_result.records)
-    assert dialog.table.horizontalHeaderItem(5).text() == "区域"
-    assert dialog.table.horizontalHeaderItem(6).text() == "平均状态"
+    assert dialog.table.horizontalHeaderItem(5).text() == "Region"
+    assert dialog.table.horizontalHeaderItem(6).text() == "Averaging status"
     for row, record in enumerate(query_result.records):
         location = record.location
         assert dialog.record_at(row) == record
-        assert dialog.table.item(row, 0).text() == "节点"
+        assert dialog.table.item(row, 0).text() == "Node"
         assert dialog.table.item(row, 1).text() == str(location.node_id)
         assert dialog.table.item(row, 2).text() == (
             "" if location.element_id is None else str(location.element_id)
@@ -326,11 +326,11 @@ def test_query_result_keeps_element_nodal_provenance_rows_in_order(
             else encode_result_region_key(location.region_key)
         )
         assert dialog.table.item(row, 6).text() == (
-            "缺失"
+            "Missing"
             if location.averaged is None
-            else "是"
+            else "Yes"
             if location.averaged
-            else "否"
+            else "No"
         )
     assert "generation 1" in dialog.result_summary.text()
 

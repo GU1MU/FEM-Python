@@ -277,7 +277,7 @@ def test_result_ribbon_selects_real_fields_and_deformation_scale(gui_application
     )
     assert element_nodal_selection.component
     assert window.result_position_combo.count() == 1
-    assert window.result_position_combo.currentText() == "节点"
+    assert window.result_position_combo.currentText() == "Node"
 
     custom_index = window.result_scale_combo.findData("custom")
     window.result_scale_combo.setCurrentIndex(custom_index)
@@ -328,7 +328,7 @@ def test_display_settings_dialog_applies_viewport_options(gui_application, gui_i
 
     assert len(opened) == 1
     dialog = opened[0]
-    assert dialog.windowTitle() == "显示设置"
+    assert dialog.windowTitle() == "Display Settings"
     dialog.engineering_format.setChecked(True)
     dialog.horizontal_orientation.setChecked(True)
     dialog.edge_style.setCurrentIndex(dialog.edge_style.findData("dashed"))
@@ -410,7 +410,7 @@ def test_stress_exposes_no_discarded_position_controls(gui_application, gui_inp_
         is FieldPosition.ELEMENT_NODAL
     )
     assert window.result_position_combo.count() == 1
-    assert window.result_position_combo.currentText() == "节点"
+    assert window.result_position_combo.currentText() == "Node"
     assert window.result_averaging_threshold.isHidden()
     rendered_selection = (
         window.viewport._result_render_payload.topology.selection

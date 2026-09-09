@@ -1,4 +1,4 @@
-"""视口背景状态、配色派生和持久化。"""
+"""Viewport background state, derived colors, and persistence."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor
 
 @dataclass(frozen=True, slots=True)
 class ViewportBackgroundSettings:
-    """描述纯色或渐变视口背景。"""
+    """Describe a solid or gradient viewport background."""
 
     style: str = "gradient"
     bottom_color: str = "#e1f1f8"
@@ -44,7 +44,7 @@ class ViewportBackgroundSettings:
 
 
 def load_background_settings(store: QSettings) -> tuple[ViewportBackgroundSettings, bool]:
-    """读取应用级视口背景；没有记忆设置时返回默认值。"""
+    """Read the application viewport background, using defaults if no settings are remembered."""
     remember = store.value("viewportBackground/remember", False, type=bool)
     if not remember:
         return ViewportBackgroundSettings(), False
@@ -62,7 +62,7 @@ def save_background_settings(
     settings: ViewportBackgroundSettings,
     remember: bool,
 ) -> None:
-    """保存或清除应用级视口背景。"""
+    """Save or clear the application viewport background."""
     store.setValue("viewportBackground/remember", bool(remember))
     if not remember:
         store.remove("viewportBackground/style")

@@ -1,4 +1,4 @@
-"""有限元模型对象的只读索引与结构化信息准备。"""
+"""Read-only indexing and structured information for finite element model entities."""
 
 from __future__ import annotations
 
@@ -36,45 +36,45 @@ from .result_presentation import (
 
 
 _RESULT_VARIABLE_LABELS = {
-    "U": "位移 U",
-    "UR": "转角 UR",
-    "RF": "反力 RF",
-    "RM": "反力矩 RM",
-    "LE": "对数应变 LE",
-    "S": "应力 S",
+    "U": "Displacement U",
+    "UR": "Rotation UR",
+    "RF": "Reaction Force RF",
+    "RM": "Reaction Moment RM",
+    "LE": "Logarithmic Strain LE",
+    "S": "Stress S",
 }
 _RESULT_COMPONENT_LABELS = {
-    "Magnitude": "模",
-    "Mises": "Mises 等效应力",
-    "MaxPrincipal": "最大主应力",
-    "MidPrincipal": "中间主应力",
-    "MinPrincipal": "最小主应力",
-    "S11Max": "最大轴向应力",
-    "S11Min": "最小轴向应力",
-    "S11AbsMax": "最大绝对值轴向应力",
+    "Magnitude": "Magnitude",
+    "Mises": "Mises equivalent stress",
+    "MaxPrincipal": "Maximum principal stress",
+    "MidPrincipal": "Middle principal stress",
+    "MinPrincipal": "Minimum principal stress",
+    "S11Max": "Maximum axial stress",
+    "S11Min": "Minimum axial stress",
+    "S11AbsMax": "Maximum absolute axial stress",
 }
 _RESULT_STATE_LABELS = {
-    FieldState.READY: "就绪",
-    FieldState.LAZY: "按需加载",
-    FieldState.UNAVAILABLE: "不可用",
+    FieldState.READY: "Ready",
+    FieldState.LAZY: "Load on demand",
+    FieldState.UNAVAILABLE: "Unavailable",
 }
 _RESULT_COLUMNS = (
-    "状态",
-    "分量",
-    "数值",
-    "节点",
-    "单元",
-    "积分点",
-    "局部节点",
-    "结果区域",
-    "平均",
-    "诊断",
+    "Status",
+    "Component",
+    "Value",
+    "Node",
+    "Element",
+    "Integration point",
+    "Local node",
+    "Result region",
+    "Averaging",
+    "Diagnostics",
 )
 _SECTION_POINT_RESULT_COLUMNS = (
     *_RESULT_COLUMNS[:7],
-    "截面位置",
-    "截面局部 Y",
-    "截面局部 Z",
+    "Section position",
+    "Section local Y",
+    "Section local Z",
     *_RESULT_COLUMNS[7:],
 )
 
@@ -115,7 +115,7 @@ class EntitySelection:
 
 
 class InspectionService:
-    """为一个 FEMModel 建立一次只读反向索引。"""
+    """Build a read-only reverse index once for an FEMModel."""
 
     def __init__(
         self,
@@ -228,7 +228,7 @@ class InspectionService:
                     boundary,
                 ):
                     self.node_analysis[node_id].append(
-                        (step.name, "位移边界条件", component, float(boundary.value), reference)
+                        (step.name, "Displacement BC", component, float(boundary.value), reference)
                     )
             for index, load in enumerate(step.cloads):
                 reference = EntityReference("cload", (step_index, index))
@@ -236,7 +236,7 @@ class InspectionService:
                     self.node_set_loads[str(load.target)].append(reference)
                 for node_id in self.target_node_ids(load.target):
                     self.node_analysis[node_id].append(
-                        (step.name, "节点力", f"U{load.component}", float(load.value), reference)
+                        (step.name, "Nodal force", f"U{load.component}", float(load.value), reference)
                     )
             for index, load in enumerate(step.surface_loads):
                 self.region_loads[("surface", load.surface)].append(
@@ -286,17 +286,17 @@ class InspectionService:
         return (
             int(node.id), float(node.x), float(node.y),
             float(getattr(node, "z", 0.0)),
-            "、".join(self.node_sets_by_node.get(int(node.id), ())),
+            ", ".join(self.node_sets_by_node.get(int(node.id), ())),
         )
 
     def element_row(self, element_id: int) -> tuple[object, ...]:
         record = self.element_record(element_id)
         nodes = record["node_ids"]
         preview = ", ".join(str(value) for value in nodes[:4]) + (", …" if len(nodes) > 4 else "")
-        section = "—" if record["section_index"] is None else f"截面 {record['section_index'] + 1}"
+        section = "—" if record["section_index"] is None else f"Section {record['section_index'] + 1}"
         return (
             record["id"], record["type"], preview,
-            "、".join(record["sets"]), record["material"] or "—", section,
+            ", ".join(record["sets"]), record["material"] or "—", section,
         )
 
     def inspect(self, kind: str, key: object) -> EntityInspection:
@@ -315,7 +315,7 @@ class InspectionService:
             "output": self._inspect_output,
         }
         if kind not in handlers:
-            raise KeyError(f"不支持的信息对象：{kind}")
+            raise KeyError(f"Unsupported inspection entity: {kind}")
         return handlers[kind](key)
 
     def selection_for(self, kind: str, key: object) -> EntitySelection:
@@ -393,24 +393,24 @@ class InspectionService:
         mesh = self.model.mesh
         spatial_dimension = getattr(mesh, "spatial_dimension", None)
         dimension = (
-            f"{spatial_dimension}维"
+            f"{spatial_dimension}D"
             if spatial_dimension in {1, 2, 3}
-            else "三维"
+            else "3D"
             if mesh.nodes and hasattr(mesh.nodes[0], "z")
-            else "二维"
+            else "2D"
         )
         fields = (
-            ("模型名称", str(self.model.name or "模型")), ("空间维度", dimension),
-            ("节点数量", str(len(mesh.nodes))), ("单元数量", str(len(mesh.elements))),
-            ("总自由度数量", str(mesh.num_dofs)),
-            ("单元类型统计", _counter_text(element.type for element in mesh.elements)),
-            ("节点集数量", str(len(self.model.node_sets))),
-            ("单元集数量", str(len(self.model.element_sets))),
-            ("表面和边数量", str(len(self.model.surfaces) + len(self.model.edges))),
-            ("材料数量", str(len(self.model.materials))), ("截面数量", str(len(self.model.sections))),
-            ("分析步数量", str(len(self.model.steps))),
+            ("Model name", str(self.model.name or "Model")), ("Spatial dimension", dimension),
+            ("Node count", str(len(mesh.nodes))), ("Element count", str(len(mesh.elements))),
+            ("Total DOF count", str(mesh.num_dofs)),
+            ("Element type counts", _counter_text(element.type for element in mesh.elements)),
+            ("Node set count", str(len(self.model.node_sets))),
+            ("Element set count", str(len(self.model.element_sets))),
+            ("Surface and edge count", str(len(self.model.surfaces) + len(self.model.edges))),
+            ("Material count", str(len(self.model.materials))), ("Section count", str(len(self.model.sections))),
+            ("Step count", str(len(self.model.steps))),
         )
-        return EntityInspection("模型概况", "model", None, (InspectionPage("概况", fields),))
+        return EntityInspection("Model Overview", "model", None, (InspectionPage("Overview", fields),))
 
     def _inspect_node(self, key: object) -> EntityInspection:
         node_id = int(key)
@@ -424,10 +424,10 @@ class InspectionService:
         )
         references = tuple(EntityReference("element", int(row[0])) for row in adjacent)
         pages = [InspectionPage(
-            "基本信息",
-            (("节点编号", str(node_id)), ("坐标", ", ".join(format_number(value) for value in coords)),
-             ("所属节点集", "、".join(self.node_sets_by_node.get(node_id, ())) or "—")),
-            (InspectionTable("相邻单元", ("单元编号", "单元类型"), adjacent, references),),
+            "Basic information",
+            (("Node ID", str(node_id)), ("Coordinates", ", ".join(format_number(value) for value in coords)),
+             ("Node sets", ", ".join(self.node_sets_by_node.get(node_id, ())) or "—")),
+            (InspectionTable("Adjacent elements", ("Element ID", "Element type"), adjacent, references),),
         )]
         analysis_rows = tuple(
             (step, kind, component, format_number(value))
@@ -435,8 +435,8 @@ class InspectionService:
         )
         if analysis_rows:
             pages.append(InspectionPage(
-                "分析定义", tables=(InspectionTable(
-                    "分析定义", ("分析步", "类型", "分量", "数值"), analysis_rows,
+                "Analysis definitions", tables=(InspectionTable(
+                    "Analysis definitions", ("Step", "Type", "Component", "Value"), analysis_rows,
                     tuple(row[4] for row in self.node_analysis[node_id]),
                 ),),
             ))
@@ -446,7 +446,7 @@ class InspectionService:
         if result_page is not None:
             pages.append(result_page)
         return EntityInspection(
-            f"节点 {node_id}",
+            f"Node {node_id}",
             "node",
             node_id,
             tuple(pages),
@@ -457,17 +457,17 @@ class InspectionService:
         record = self.element_record(element_id)
         props = record["properties"]
         fields = [
-            ("单元编号", str(element_id)), ("本地单元类型", record["type"]),
-            ("所属单元集", "、".join(record["sets"]) or "—"),
-            ("材料", record["material"] or "—"),
-            ("截面", "—" if record["section_index"] is None else f"截面 {record['section_index'] + 1}"),
+            ("Element ID", str(element_id)), ("Native element type", record["type"]),
+            ("Element sets", ", ".join(record["sets"]) or "—"),
+            ("Material", record["material"] or "—"),
+            ("Section", "—" if record["section_index"] is None else f"Section {record['section_index'] + 1}"),
         ]
         if record["abaqus_type"]:
-            fields.insert(2, ("Abaqus 单元类型", str(record["abaqus_type"])))
+            fields.insert(2, ("Abaqus element type", str(record["abaqus_type"])))
         if "plane_type" in props:
-            fields.append(("平面类型", _plane_label(props["plane_type"])))
+            fields.append(("Plane type", _plane_label(props["plane_type"])))
         if "thickness" in props:
-            fields.append(("厚度", format_number(props["thickness"])))
+            fields.append(("Thickness", format_number(props["thickness"])))
         connection_rows = []
         references = []
         for local_index, node_id in enumerate(record["node_ids"], 1):
@@ -483,12 +483,12 @@ class InspectionService:
             if name not in {"plane_type", "thickness"}
         )
         tables = [InspectionTable(
-            "连接关系", ("局部节点", "全局节点", "X", "Y", "Z"),
+            "Connectivity", ("Local node", "Global node", "X", "Y", "Z"),
             tuple(connection_rows), tuple(references),
         )]
         if property_rows:
-            tables.append(InspectionTable("有效属性", ("属性", "数值"), property_rows))
-        pages = [InspectionPage("基本信息", tuple(fields)), InspectionPage("连接与属性", tables=tuple(tables))]
+            tables.append(InspectionTable("Effective properties", ("Property", "Value"), property_rows))
+        pages = [InspectionPage("Basic information", tuple(fields)), InspectionPage("Connectivity and properties", tables=tuple(tables))]
         frame_report = self._beam_frame_report_cached(element_id)
         frame_entry = (
             frame_report.for_element(element_id)
@@ -509,12 +509,12 @@ class InspectionService:
             provenance = (
                 "direct element"
                 if frame_entry.assignment_index is None
-                else f"截面分配 {int(frame_entry.assignment_index) + 1}"
+                else f"Section assignment {int(frame_entry.assignment_index) + 1}"
             )
             frame_fields = [
-                ("单元编号", str(element_id)),
+                ("Element ID", str(element_id)),
                 ("frame source", str(frame.source)),
-                ("effective properties 来源", provenance),
+                ("Effective properties source", provenance),
                 (
                     "assignment element set",
                     str(frame_entry.element_set or "—"),
@@ -538,14 +538,14 @@ class InspectionService:
                     )
                 )
             pages.append(
-                InspectionPage("Beam 局部坐标", tuple(frame_fields))
+                InspectionPage("Beam local coordinates", tuple(frame_fields))
             )
         result_page = self._provider_result_page(
             ElementResultInspectionRequest(element_id)
         )
         if result_page is not None:
             pages.append(result_page)
-        return EntityInspection(f"单元 {element_id}", "element", element_id, tuple(pages))
+        return EntityInspection(f"Element {element_id}", "element", element_id, tuple(pages))
 
     def _provider_result_page(
         self,
@@ -574,7 +574,7 @@ class InspectionService:
             return None
         section_point_labels = result_provider_section_point_labels(provider)
         return InspectionPage(
-            "结果",
+            "Results",
             tables=tuple(
                 _provider_result_table(
                     field_entry,
@@ -593,13 +593,13 @@ class InspectionService:
             for node_id in item.node_ids
         )
         fields = (
-            ("名称", name), ("节点数量", str(len(item.node_ids))),
-            ("边界条件引用", self._reference_names(self.node_set_boundaries.get(name, ()))),
-            ("节点力引用", self._reference_names(self.node_set_loads.get(name, ()))),
+            ("Name", name), ("Node count", str(len(item.node_ids))),
+            ("Boundary condition references", self._reference_names(self.node_set_boundaries.get(name, ()))),
+            ("Nodal force references", self._reference_names(self.node_set_loads.get(name, ()))),
         )
-        table = InspectionTable("成员节点", ("节点编号", "X", "Y", "Z"), rows,
+        table = InspectionTable("Member nodes", ("Node ID", "X", "Y", "Z"), rows,
                                 tuple(EntityReference("node", int(row[0])) for row in rows))
-        return EntityInspection(f"节点集 {name}", "node_set", name, (InspectionPage("节点集", fields, (table,)),))
+        return EntityInspection(f"Node set {name}", "node_set", name, (InspectionPage("Node set", fields, (table,)),))
 
     def _inspect_element_set(self, key: object) -> EntityInspection:
         name = str(key)
@@ -607,17 +607,17 @@ class InspectionService:
         records = [self.element_record(element_id) for element_id in item.element_ids]
         rows = tuple((
             str(record["id"]), record["type"], record["material"] or "—",
-            "—" if record["section_index"] is None else f"截面 {record['section_index'] + 1}",
+            "—" if record["section_index"] is None else f"Section {record['section_index'] + 1}",
         ) for record in records)
         fields = (
-            ("名称", name), ("单元数量", str(len(records))),
-            ("单元类型统计", _counter_text(record["type"] for record in records)),
-            ("使用的材料", "、".join(sorted({record["material"] for record in records if record["material"]})) or "—"),
-            ("使用的截面", "、".join(sorted({f"截面 {record['section_index'] + 1}" for record in records if record["section_index"] is not None})) or "—"),
+            ("Name", name), ("Element count", str(len(records))),
+            ("Element type counts", _counter_text(record["type"] for record in records)),
+            ("Materials used", ", ".join(sorted({record["material"] for record in records if record["material"]})) or "—"),
+            ("Sections used", ", ".join(sorted({f"Section {record['section_index'] + 1}" for record in records if record["section_index"] is not None})) or "—"),
         )
-        table = InspectionTable("成员单元", ("单元编号", "类型", "材料", "截面"), rows,
+        table = InspectionTable("Member elements", ("Element ID", "Type", "Material", "Section"), rows,
                                 tuple(EntityReference("element", int(row[0])) for row in rows))
-        return EntityInspection(f"单元集 {name}", "element_set", name, (InspectionPage("单元集", fields, (table,)),))
+        return EntityInspection(f"Element set {name}", "element_set", name, (InspectionPage("Element set", fields, (table,)),))
 
     def _inspect_surface(self, key: object) -> EntityInspection:
         name = str(key)
@@ -628,54 +628,54 @@ class InspectionService:
         return self._inspect_region("edge", name, self.model.edges[name].edges)
 
     def _inspect_region(self, kind: str, name: str, members: tuple[Any, ...]) -> EntityInspection:
-        label = "表面" if kind == "surface" else "边"
+        label = "Surface" if kind == "surface" else "Edge"
         rows = tuple((
             str(member.elem_id), str(member.local_index),
             ", ".join(str(value) for value in member.node_ids),
         ) for member in members)
         fields = (
-            ("名称", name), ("类型", label), (f"{label}数量", str(len(members))),
-            ("涉及单元数量", str(len({member.elem_id for member in members}))),
-            ("边界条件引用", self._reference_names(self.region_boundaries.get((kind, name), ()))),
-            ("载荷引用", self._reference_names(self.region_loads.get((kind, name), ()))),
+            ("Name", name), ("Type", label), (f"{label} count", str(len(members))),
+            ("Involved element count", str(len({member.elem_id for member in members}))),
+            ("Boundary condition references", self._reference_names(self.region_boundaries.get((kind, name), ()))),
+            ("Load references", self._reference_names(self.region_loads.get((kind, name), ()))),
         )
-        table = InspectionTable(f"成员{label}", ("单元编号", f"局部{label}编号", "节点编号"), rows,
+        table = InspectionTable(f"Member {label.lower()}s", ("Element ID", f"Local {label.lower()} ID", "Node ID"), rows,
                                 tuple(EntityReference("element", int(row[0])) for row in rows))
         return EntityInspection(f"{label} {name}", kind, name, (InspectionPage(label, fields, (table,)),))
 
     def _inspect_material(self, key: object) -> EntityInspection:
         name = str(key)
         material = self.model.materials[name]
-        fields = [("材料名称", name)]
+        fields = [("Material name", name)]
         for property_name in ("E", "nu", "rho", "density"):
             if property_name in material.properties:
                 fields.append((_property_label(property_name), format_number(material.properties[property_name])))
-        sections = [f"截面 {index + 1}" for index, section in enumerate(self.model.sections) if section.material == name]
-        fields.extend((("引用截面", "、".join(sections) or "—"),
-                       ("作用单元数量", str(len(self.material_elements.get(name, ()))))))
-        return EntityInspection(f"材料 {name}", "material", name, (InspectionPage("材料", tuple(fields)),))
+        sections = [f"Section {index + 1}" for index, section in enumerate(self.model.sections) if section.material == name]
+        fields.extend((("Referenced sections", ", ".join(sections) or "—"),
+                       ("Affected element count", str(len(self.material_elements.get(name, ()))))))
+        return EntityInspection(f"Material {name}", "material", name, (InspectionPage("Material", tuple(fields)),))
 
     def _inspect_section(self, key: object) -> EntityInspection:
         index = int(key)
         section = self.model.sections[index]
         ids = self.section_elements.get(index, ())
         fields = [
-            ("截面编号", str(index + 1)), ("截面类型", section.section_type),
-            ("材料", section.material), ("作用单元集", section.element_set),
-            ("作用单元数量", str(len(ids))),
+            ("Section ID", str(index + 1)), ("Section type", section.section_type),
+            ("Material", section.material), ("Affected element sets", section.element_set),
+            ("Affected element count", str(len(ids))),
         ]
         plane_types = {self.element_record(value)["properties"].get("plane_type") for value in ids}
         thicknesses = {self.element_record(value)["properties"].get("thickness") for value in ids}
         plane_types.discard(None)
         thicknesses.discard(None)
         if plane_types:
-            fields.append(("平面类型", "、".join(sorted(_plane_label(value) for value in plane_types))))
+            fields.append(("Plane type", ", ".join(sorted(_plane_label(value) for value in plane_types))))
         if thicknesses:
-            fields.append(("厚度", "、".join(sorted(format_number(value) for value in thicknesses))))
+            fields.append(("Thickness", ", ".join(sorted(format_number(value) for value in thicknesses))))
         for name, value in section.properties.items():
             if _is_physical_property(name, value) and name not in {"plane_type", "thickness"}:
                 fields.append((_property_label(name), format_number(value)))
-        return EntityInspection(f"截面 {index + 1}", "section", index, (InspectionPage("截面", tuple(fields)),))
+        return EntityInspection(f"Section {index + 1}", "section", index, (InspectionPage("Section", tuple(fields)),))
 
     def _inspect_assignment(self, key: object) -> EntityInspection:
         index = int(key)
@@ -721,9 +721,9 @@ class InspectionService:
             }
         )
         fields = [
-            ("分配编号", str(index + 1)),
-            ("截面", str(assignment.section_name)),
-            ("目标单元集", str(assignment.region_name)),
+            ("Assignment ID", str(index + 1)),
+            ("Section", str(assignment.section_name)),
+            ("Target element set", str(assignment.region_name)),
             (
                 "section type",
                 str(getattr(section, "section_type", "—")),
@@ -749,15 +749,15 @@ class InspectionService:
                 (
                     "not applicable"
                     if not_applicable
-                    else ("、".join(sources) or "—")
+                    else (", ".join(sources) or "—")
                 ),
             ),
             (
-                "有效元素数量",
+                "Valid element count",
                 "0" if not_applicable else str(len(entries)),
             ),
             (
-                "无效元素数量",
+                "Invalid element count",
                 (
                     "0"
                     if not_applicable
@@ -784,11 +784,11 @@ class InspectionService:
         ):
             fields.extend(
                 (
-                    ("矩形高度（local z）", format_number(properties.get("height"))),
-                    ("矩形宽度（local y）", format_number(properties.get("width"))),
+                    ("Rectangle height (local z)", format_number(properties.get("height"))),
+                    ("Rectangle width (local y)", format_number(properties.get("width"))),
                     (
-                        "截面轴映射",
-                        "width → local y；height → local z",
+                        "Section axis mapping",
+                        "width → local y; height → local z",
                     ),
                 )
             )
@@ -798,8 +798,8 @@ class InspectionService:
         if diagnostics:
             tables = (
                 InspectionTable(
-                    "方向诊断",
-                    ("代码", "严重性", "说明"),
+                    "Orientation diagnostics",
+                    ("Code", "Severity", "Description"),
                     tuple(
                         (
                             str(getattr(item, "code", "")),
@@ -817,10 +817,10 @@ class InspectionService:
                 ),
             )
         return EntityInspection(
-            f"截面分配 {index + 1}",
+            f"Section assignment {index + 1}",
             "assignment",
             index,
-            (InspectionPage("截面分配", tuple(fields), tables),),
+            (InspectionPage("Section assignment", tuple(fields), tables),),
         )
 
     def _inspect_step(self, key: object) -> EntityInspection:
@@ -846,23 +846,23 @@ class InspectionService:
             "summary_output_count",
             len(step.outputs),
         )
-        pages = [InspectionPage("概况", (
-            ("分析步名称", step.name), ("分析类型", _procedure_label(step.procedure)),
-            ("边界条件数量", str(boundary_count)), ("载荷数量", str(load_count)),
-            ("输出请求数量", str(output_count)),
+        pages = [InspectionPage("Overview", (
+            ("Step name", step.name), ("Analysis type", _procedure_label(step.procedure)),
+            ("Boundary condition count", str(boundary_count)), ("Load count", str(load_count)),
+            ("Output request count", str(output_count)),
         ))]
-        boundary_rows = tuple((str(index + 1), "位移边界条件", str(item.target),
+        boundary_rows = tuple((str(index + 1), "Displacement BC", str(item.target),
                                _component_range(item.first_component, item.last_component), format_number(item.value))
                               for index, item in enumerate(step.boundaries))
         if boundary_rows:
-            pages.append(InspectionPage("边界条件", tables=(InspectionTable(
-                "边界条件", ("序号", "类型", "目标", "分量", "数值"), boundary_rows,
+            pages.append(InspectionPage("Boundary conditions", tables=(InspectionTable(
+                "Boundary conditions", ("Index", "Type", "Target", "Component", "Value"), boundary_rows,
                 tuple(EntityReference("boundary", (step_index, index)) for index in range(len(boundary_rows))),
             ),)))
         load_rows: list[tuple[str, ...]] = []
         load_refs: list[EntityReference] = []
         for index, item in enumerate(step.cloads):
-            load_rows.append((str(len(load_rows) + 1), "节点力", str(item.target), f"U{item.component}", format_number(item.value)))
+            load_rows.append((str(len(load_rows) + 1), "Nodal force", str(item.target), f"U{item.component}", format_number(item.value)))
             load_refs.append(EntityReference("cload", (step_index, index)))
         for kind, items, target_name in (("surface_load", step.surface_loads, "surface"), ("edge_load", step.edge_loads, "edge")):
             for index, item in enumerate(items):
@@ -873,12 +873,12 @@ class InspectionService:
         for index, item in enumerate(step.line_loads):
             load_rows.append((
                 str(len(load_rows) + 1),
-                "边力",
+                "Edge force",
                 str(item.target),
                 (
-                    "局部（Beam 已解析局部坐标）"
+                    "Local (resolved beam coordinates)"
                     if item.coordinate_system == "local"
-                    else "全局坐标"
+                    else "Global coordinates"
                 ),
                 ", ".join(format_number(value) for value in item.vector),
             ))
@@ -886,18 +886,18 @@ class InspectionService:
         for index, item in enumerate(step.body_loads):
             load_rows.append((
                 str(len(load_rows) + 1),
-                "体力",
+                "Body force",
                 str(item.target),
-                "全局坐标",
+                "Global coordinates",
                 ", ".join(format_number(value) for value in item.vector),
             ))
             load_refs.append(EntityReference("body_load", (step_index, index)))
         for index, item in enumerate(step.gravity_loads):
             load_rows.append((
                 str(len(load_rows) + 1),
-                "重力",
-                "整个模型" if item.target is None else str(item.target),
-                "全局坐标",
+                "Gravity",
+                "Entire model" if item.target is None else str(item.target),
+                "Global coordinates",
                 ", ".join(
                     format_number(value)
                     for value in item.acceleration
@@ -907,17 +907,17 @@ class InspectionService:
                 EntityReference("gravity_load", (step_index, index))
             )
         if load_rows:
-            pages.append(InspectionPage("载荷", tables=(InspectionTable(
-                "载荷", ("序号", "类型", "目标", "分量或方向", "数值"), tuple(load_rows), tuple(load_refs),
+            pages.append(InspectionPage("Loads", tables=(InspectionTable(
+                "Loads", ("Index", "Type", "Target", "Component or direction", "Value"), tuple(load_rows), tuple(load_refs),
             ),)))
         output_rows = tuple((str(index + 1), _output_kind(item.kind), _output_target(item.target), ", ".join(item.variables))
                             for index, item in enumerate(step.outputs))
         if output_rows:
-            pages.append(InspectionPage("输出请求", tables=(InspectionTable(
-                "输出请求", ("序号", "类型", "位置", "变量"), output_rows,
+            pages.append(InspectionPage("Output requests", tables=(InspectionTable(
+                "Output requests", ("Index", "Type", "Position", "Variables"), output_rows,
                 tuple(EntityReference("output", (step_index, index)) for index in range(len(output_rows))),
             ),)))
-        return EntityInspection(f"分析步 {step.name}", "step", step_index, tuple(pages))
+        return EntityInspection(f"Step {step.name}", "step", step_index, tuple(pages))
 
     def _inspect_boundary(self, key: object) -> EntityInspection:
         step_index, index = key
@@ -925,25 +925,25 @@ class InspectionService:
         item = step.boundaries[index]
         node_ids = resolve_displacement_node_ids(self.model, item)
         fields = (
-            ("所属分析步", step.name), ("类型", "位移边界条件"), ("目标区域", str(item.target)),
-            ("作用域类型", displacement_target_kind(item)),
-            ("目标节点数量", str(len(node_ids))),
-            ("约束分量", _component_range(item.first_component, item.last_component)),
-            ("数值", format_number(item.value)),
+            ("Step", step.name), ("Type", "Displacement BC"), ("Target region", str(item.target)),
+            ("Scope type", displacement_target_kind(item)),
+            ("Target node count", str(len(node_ids))),
+            ("Constrained components", _component_range(item.first_component, item.last_component)),
+            ("Value", format_number(item.value)),
         )
         rows = tuple((f"U{component}", format_number(item.value))
                      for component in range(item.first_component, item.last_component + 1))
-        tables = (InspectionTable("分量与数值", ("分量", "数值"), rows),) if len(rows) > 1 else ()
-        return EntityInspection("边界条件", "boundary", key, (InspectionPage("边界条件", fields, tables),))
+        tables = (InspectionTable("Components and values", ("Component", "Value"), rows),) if len(rows) > 1 else ()
+        return EntityInspection("Boundary conditions", "boundary", key, (InspectionPage("Boundary conditions", fields, tables),))
 
     def _inspect_cload(self, key: object) -> EntityInspection:
         step_index, index = key
         step = self.model.steps[step_index]
         item = step.cloads[index]
-        fields = (("所属分析步", step.name), ("类型", "节点力"), ("目标", str(item.target)),
-                  ("目标节点数量", str(len(self.target_node_ids(item.target)))),
-                  ("分量", f"U{item.component}"), ("数值", format_number(item.value)))
-        return EntityInspection("节点力", "cload", key, (InspectionPage("载荷", fields),))
+        fields = (("Step", step.name), ("Type", "Nodal force"), ("Target", str(item.target)),
+                  ("Target node count", str(len(self.target_node_ids(item.target)))),
+                  ("Component", f"U{item.component}"), ("Value", format_number(item.value)))
+        return EntityInspection("Nodal force", "cload", key, (InspectionPage("Loads", fields),))
 
     def _inspect_surface_load(self, key: object) -> EntityInspection:
         return self._inspect_distributed_load("surface_load", key)
@@ -956,23 +956,23 @@ class InspectionService:
         step = self.model.steps[step_index]
         item = step.line_loads[index]
         fields = (
-            ("所属分析步", step.name),
-            ("类型", "边力（梁单元分布力）"),
-            ("目标", str(item.target)),
-            ("目标单元数量", str(len(self.target_element_ids(item.target)))),
+            ("Step", step.name),
+            ("Type", "Edge force (distributed beam load)"),
+            ("Target", str(item.target)),
+            ("Target element count", str(len(self.target_element_ids(item.target)))),
             (
-                "坐标系",
+                "Coordinate system",
                 (
-                    "局部（Beam 已解析局部坐标）"
+                    "Local (resolved beam coordinates)"
                     if item.coordinate_system == "local"
-                    else "全局"
+                    else "Global"
                 ),
             ),
-            ("载荷向量", ", ".join(format_number(value) for value in item.vector)),
+            ("Load vector", ", ".join(format_number(value) for value in item.vector)),
         )
         return EntityInspection(
-            "边力", "line_load", key,
-            (InspectionPage("载荷", fields),),
+            "Edge force", "line_load", key,
+            (InspectionPage("Loads", fields),),
         )
 
     def _inspect_gravity_load(self, key: object) -> EntityInspection:
@@ -980,16 +980,16 @@ class InspectionService:
         step = self.model.steps[step_index]
         item = step.gravity_loads[index]
         target = (
-            "整个模型"
+            "Entire model"
             if item.target is None
             else str(item.target)
         )
         fields = (
-            ("所属分析步", step.name),
-            ("类型", "重力"),
-            ("目标", target),
+            ("Step", step.name),
+            ("Type", "Gravity"),
+            ("Target", target),
             (
-                "加速度向量",
+                "Acceleration vector",
                 ", ".join(
                     format_number(value)
                     for value in item.acceleration
@@ -997,8 +997,8 @@ class InspectionService:
             ),
         )
         return EntityInspection(
-            "重力", "gravity_load", key,
-            (InspectionPage("载荷", fields),),
+            "Gravity", "gravity_load", key,
+            (InspectionPage("Loads", fields),),
         )
 
     def _inspect_body_load(self, key: object) -> EntityInspection:
@@ -1006,19 +1006,19 @@ class InspectionService:
         step = self.model.steps[step_index]
         item = step.body_loads[index]
         fields = (
-            ("所属分析步", step.name),
-            ("类型", "体力"),
-            ("目标", str(item.target)),
+            ("Step", step.name),
+            ("Type", "Body force"),
+            ("Target", str(item.target)),
             (
-                "力密度向量",
+                "Force density vector",
                 ", ".join(format_number(value) for value in item.vector),
             ),
         )
         return EntityInspection(
-            "体力",
+            "Body force",
             "body_load",
             key,
-            (InspectionPage("载荷", fields),),
+            (InspectionPage("Loads", fields),),
         )
 
     def _inspect_distributed_load(self, kind: str, key: object) -> EntityInspection:
@@ -1028,21 +1028,21 @@ class InspectionService:
         item = step.surface_loads[index] if is_surface else step.edge_loads[index]
         region = item.surface if is_surface else item.edge
         members = self.model.surfaces[region].faces if is_surface else self.model.edges[region].edges
-        fields = [("所属分析步", step.name), ("类型", _load_type_label(item.load_type)),
-                  ("目标", region), ("面或边数量", str(len(members)))]
+        fields = [("Step", step.name), ("Type", _load_type_label(item.load_type)),
+                  ("Target", region), ("Face or edge count", str(len(members)))]
         if item.load_type != "pressure" and item.vector:
-            fields.append(("方向或向量", ", ".join(format_number(value) for value in item.vector)))
+            fields.append(("Direction or vector", ", ".join(format_number(value) for value in item.vector)))
         if item.magnitude is not None:
-            fields.append((("压力大小" if item.load_type == "pressure" else "数值"), format_number(item.magnitude)))
-        return EntityInspection("面力" if is_surface else "边力", kind, key, (InspectionPage("载荷", tuple(fields)),))
+            fields.append((("Pressure magnitude" if item.load_type == "pressure" else "Value"), format_number(item.magnitude)))
+        return EntityInspection("Surface force" if is_surface else "Edge force", kind, key, (InspectionPage("Loads", tuple(fields)),))
 
     def _inspect_output(self, key: object) -> EntityInspection:
         step_index, index = key
         step = self.model.steps[step_index]
         item = step.outputs[index]
-        fields = (("所属分析步", step.name), ("类型", _output_kind(item.kind)),
-                  ("输出位置", _output_target(item.target)), ("变量", ", ".join(item.variables)))
-        return EntityInspection("输出请求", "output", key, (InspectionPage("输出请求", fields),))
+        fields = (("Step", step.name), ("Type", _output_kind(item.kind)),
+                  ("Output position", _output_target(item.target)), ("Variables", ", ".join(item.variables)))
+        return EntityInspection("Output requests", "output", key, (InspectionPage("Output requests", fields),))
 
     def _reference_names(self, references: tuple[EntityReference, ...] | list[EntityReference]) -> str:
         names = []
@@ -1059,16 +1059,16 @@ class InspectionService:
                 step_index, index = reference.key
                 step = self.model.steps[step_index]
                 labels = {
-                    "boundary": "边界条件",
-                    "cload": "节点力",
-                    "surface_load": "面力",
-                    "edge_load": "边力",
-                    "line_load": "边力",
-                    "body_load": "体力",
-                    "gravity_load": "重力",
+                    "boundary": "Boundary conditions",
+                    "cload": "Nodal force",
+                    "surface_load": "Surface force",
+                    "edge_load": "Edge force",
+                    "line_load": "Edge force",
+                    "body_load": "Body force",
+                    "gravity_load": "Gravity",
                 }
                 names.append(f"{step.name} / {labels[reference.kind]} {index + 1}")
-        return "、".join(names) or "—"
+        return ", ".join(names) or "—"
 
 
 def _require_result_provider(
@@ -1105,7 +1105,7 @@ def _provider_result_table(
     )
     if descriptor.unit_label is not None:
         field_label = f"{field_label} [{descriptor.unit_label}]"
-    title = f"{field_label}（{state_label}）"
+    title = f"{field_label} ({state_label})"
     diagnostic = _diagnostic_summary(availability.diagnostics)
     if availability.state is not FieldState.READY:
         variable = descriptor.field_id.variable.value
@@ -1200,9 +1200,9 @@ def _provider_result_table(
 def _localized_result_component(component: str, variable: str) -> str:
     if component == "Magnitude":
         return {
-            "U": "位移模",
-            "RF": "反力模",
-        }.get(variable, "模")
+            "U": "Displacement magnitude",
+            "RF": "Reaction Force magnitude",
+        }.get(variable, "Magnitude")
     return _RESULT_COMPONENT_LABELS.get(component, component)
 
 
@@ -1222,13 +1222,13 @@ def _localized_result_field(
         field_id,
         section_point_labels=section_point_labels,
     )
-    return f"{base}（{position}）"
+    return f"{base} ({position})"
 
 
 def _averaged_label(value: bool | None) -> str:
     if value is None:
         return "—"
-    return "是" if value else "否"
+    return "Yes" if value else "No"
 
 
 def _result_location_reference(location: Any) -> EntityReference | None:
@@ -1259,7 +1259,7 @@ def _vector_text(values: object) -> str:
 
 def _diagnostic_summary(diagnostics: object) -> str:
     values = tuple(diagnostics)
-    return "；".join(
+    return "; ".join(
         (
             f"[{getattr(item, 'code', 'diagnostic')}] "
             f"{getattr(item, 'message', str(item))}"
@@ -1269,11 +1269,11 @@ def _diagnostic_summary(diagnostics: object) -> str:
 
 
 def _counter_text(values: Any) -> str:
-    return "、".join(f"{name}: {count}" for name, count in Counter(values).items()) or "—"
+    return ", ".join(f"{name}: {count}" for name, count in Counter(values).items()) or "—"
 
 
 def _component_range(first: int, last: int) -> str:
-    return f"U{first}" if first == last else "、".join(f"U{value}" for value in range(first, last + 1))
+    return f"U{first}" if first == last else ", ".join(f"U{value}" for value in range(first, last + 1))
 
 
 def _is_physical_property(name: str, value: object) -> bool:
@@ -1288,36 +1288,36 @@ def _is_physical_property(name: str, value: object) -> bool:
 
 def _property_label(name: str) -> str:
     return {
-        "E": "弹性模量 E", "nu": "泊松比 ν", "rho": "密度 ρ",
-        "density": "密度 ρ", "area": "截面积", "A": "截面积",
-        "I": "惯性矩", "Iyy": "惯性矩 Iyy", "Izz": "惯性矩 Izz",
-        "J": "扭转常数 J", "section_type": "截面类型",
-        "height": "矩形高度（局部 z）", "width": "矩形宽度（局部 y）",
-        "radius": "半径", "inner_radius": "内半径", "outer_radius": "外半径",
+        "E": "Elastic modulus E", "nu": "Poisson's ratio ν", "rho": "Density ρ",
+        "density": "Density ρ", "area": "Section area", "A": "Section area",
+        "I": "Moment of inertia", "Iyy": "Moment of inertia Iyy", "Izz": "Moment of inertia Izz",
+        "J": "Torsion constant J", "section_type": "Section type",
+        "height": "Rectangle height (local z)", "width": "Rectangle width (local y)",
+        "radius": "Radius", "inner_radius": "Inner radius", "outer_radius": "Outer radius",
     }.get(name, name)
 
 
 def _plane_label(value: object) -> str:
-    return "平面应变" if str(value).lower().startswith("strain") else "平面应力"
+    return "Plane strain" if str(value).lower().startswith("strain") else "Plane stress"
 
 
 def _procedure_label(value: str) -> str:
-    return "线性静力" if str(value).lower() == "static" else str(value)
+    return "Linear static" if str(value).lower() == "static" else str(value)
 
 
 def _output_kind(value: str) -> str:
-    return {"field": "场输出", "history": "历史输出"}.get(value, value)
+    return {"field": "Field output", "history": "History output"}.get(value, value)
 
 
 def _output_target(value: str) -> str:
-    return {"node": "节点", "element": "单元"}.get(value, value)
+    return {"node": "Node", "element": "Element"}.get(value, value)
 
 
 def _load_type_label(value: str) -> str:
-    return "压力" if str(value).lower() == "pressure" else "面力或边力"
+    return "Pressure" if str(value).lower() == "pressure" else "Surface or edge force"
 
 
 def _load_direction(item: Any) -> str:
     if str(item.load_type).lower() == "pressure":
-        return "法向"
+        return "Normal"
     return ", ".join(format_number(value) for value in item.vector) or "—"

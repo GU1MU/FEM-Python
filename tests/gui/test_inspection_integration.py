@@ -394,7 +394,7 @@ def test_tree_boundary_click_reuses_mesh_scope_selection_highlight(gui_applicati
     highlight_button = next(
         button
         for button in information.findChildren(QPushButton)
-        if button.text() == "高亮"
+        if button.text() == "Highlight"
     )
 
     highlight_button.click()

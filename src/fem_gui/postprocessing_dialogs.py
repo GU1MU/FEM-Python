@@ -1,4 +1,4 @@
-"""结果查询、结果显示、视口显示和云图设置弹窗。"""
+"""Dialogs for result queries, result display, viewport display, and contours."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ class _TypedQueryMode:
 
 
 class TypedResultDisplayDialog(QDialog):
-    """从 immutable result catalog 选择完整的 scalar field identity。"""
+    """Select a complete scalar field identity from an immutable result catalog."""
 
     applyRequested = Signal(TypedResultDisplaySettings)
 
@@ -141,7 +141,7 @@ class TypedResultDisplayDialog(QDialog):
         )
 
         super().__init__(parent)
-        self.setWindowTitle("结果显示")
+        self.setWindowTitle("Result Display")
         self.setMinimumWidth(420)
         self._catalog = catalog
         self._section_point_labels = dict(section_point_labels or {})
@@ -152,12 +152,12 @@ class TypedResultDisplayDialog(QDialog):
         self.step_combo = QComboBox(self)
         self.step_combo.addItem(catalog.source.step_name, catalog.source)
         self.shape_combo = QComboBox(self)
-        self.shape_combo.addItem("未变形形状", "undeformed")
-        self.shape_combo.addItem("变形形状", "deformed")
+        self.shape_combo.addItem("Undeformed shape", "undeformed")
+        self.shape_combo.addItem("Deformed shape", "deformed")
         self.shape_combo.setCurrentIndex(
             self.shape_combo.findData(initial.shape_mode)
         )
-        self.contour_checkbox = QCheckBox("显示云图", self)
+        self.contour_checkbox = QCheckBox("Show contours", self)
         self.contour_checkbox.setChecked(initial.contour_enabled)
         self.field_combo = QComboBox(self)
         self.component_combo = QComboBox(self)
@@ -174,19 +174,19 @@ class TypedResultDisplayDialog(QDialog):
         self.field_combo.setCurrentIndex(
             self.field_combo.findData(current_selection.field_key)
         )
-        form.addRow("结果步：", self.step_combo)
-        form.addRow("几何形状：", self.shape_combo)
+        form.addRow("Step:", self.step_combo)
+        form.addRow("Shape:", self.shape_combo)
         form.addRow(self.contour_checkbox)
-        form.addRow("场变量：", self.field_combo)
-        form.addRow("分量：", self.component_combo)
-        form.addRow("字段状态：", self.availability_label)
+        form.addRow("Field:", self.field_combo)
+        form.addRow("Component:", self.component_combo)
+        form.addRow("Field status:", self.availability_label)
         layout.addLayout(form)
 
-        self.scale_group = QGroupBox("变形比例", self)
+        self.scale_group = QGroupBox("Deformation scale", self)
         scale_layout = QVBoxLayout(self.scale_group)
-        self.auto_scale = QRadioButton("自动", self.scale_group)
-        self.real_scale = QRadioButton("真实比例", self.scale_group)
-        self.custom_scale = QRadioButton("指定比例", self.scale_group)
+        self.auto_scale = QRadioButton("Auto", self.scale_group)
+        self.real_scale = QRadioButton("True scale", self.scale_group)
+        self.custom_scale = QRadioButton("Custom scale", self.scale_group)
         scale_buttons = QButtonGroup(self.scale_group)
         for button in (
             self.auto_scale,
@@ -211,9 +211,9 @@ class TypedResultDisplayDialog(QDialog):
         }[initial.scale_mode].setChecked(True)
         layout.addWidget(self.scale_group)
 
-        self.overlay_checkbox = QCheckBox("叠加未变形轮廓", self)
+        self.overlay_checkbox = QCheckBox("Overlay undeformed outline", self)
         self.overlay_checkbox.setChecked(initial.overlay_undeformed)
-        self.edges_checkbox = QCheckBox("显示单元边", self)
+        self.edges_checkbox = QCheckBox("Show element edges", self)
         self.edges_checkbox.setChecked(initial.show_edges)
         layout.addWidget(self.overlay_checkbox)
         layout.addWidget(self.edges_checkbox)
@@ -247,18 +247,18 @@ class TypedResultDisplayDialog(QDialog):
 
     @property
     def catalog(self) -> ResultCatalog:
-        """返回 dialog 绑定的 exact immutable catalog。"""
+        """Return the exact immutable catalog bound to the dialog."""
 
         return self._catalog
 
     @property
     def source(self) -> ResultSourceKey:
-        """返回 catalog 所属的 exact result source。"""
+        """Return the exact result source owning the catalog."""
 
         return self._catalog.source
 
     def current_availability(self) -> FieldAvailability:
-        """返回当前字段的完整 catalog entry。"""
+        """Return the complete catalog entry for the current field."""
 
         key = self.field_combo.currentData()
         if type(key) is not FieldMaterializationKey:
@@ -269,7 +269,7 @@ class TypedResultDisplayDialog(QDialog):
         raise RuntimeError("field key is outside the dialog catalog")
 
     def current_selection(self) -> ScalarFieldSelection:
-        """返回当前完整 materialization key 与 descriptor component。"""
+        """Return the complete materialization key and descriptor component."""
 
         availability = self.current_availability()
         component = self.component_combo.currentData()
@@ -282,7 +282,7 @@ class TypedResultDisplayDialog(QDialog):
         return ScalarFieldSelection(availability.key, component)
 
     def settings(self) -> TypedResultDisplaySettings:
-        """返回当前 catalog-native 显示设置。"""
+        """Return the current catalog-native display settings."""
 
         scale_mode = (
             "auto"
@@ -302,14 +302,14 @@ class TypedResultDisplayDialog(QDialog):
         )
 
     def apply(self) -> None:
-        """仅为 READY/LAZY selection 发出 typed settings。"""
+        """Emit typed settings only for READY/LAZY selections."""
 
         if self.current_availability().state is FieldState.UNAVAILABLE:
             return
         self.applyRequested.emit(self.settings())
 
     def accept_with_apply(self) -> None:
-        """提交可显示字段并关闭对话框。"""
+        """Submit a displayable field and close the dialog."""
 
         if self.current_availability().state is FieldState.UNAVAILABLE:
             return
@@ -363,7 +363,7 @@ class TypedResultDisplayDialog(QDialog):
 
 
 class _ThinHorizontalSlider(QSlider):
-    """使用细轨道和紧凑滑块，避免原生样式在 Windows 上被拉高。"""
+    """Use a thin track and compact handle to avoid tall native styling on Windows."""
 
     _margin = 5
     _track_height = 2
@@ -412,7 +412,7 @@ class _ThinHorizontalSlider(QSlider):
 
 
 class _SignificantDigitsDoubleSpinBox(QDoubleSpinBox):
-    """以固定有效数字显示数值，同时保留内部精度。"""
+    """Display a fixed number of significant digits while retaining internal precision."""
 
     def __init__(self, significant_digits: int, parent=None) -> None:
         super().__init__(parent)
@@ -434,27 +434,27 @@ class _SignificantDigitsDoubleSpinBox(QDoubleSpinBox):
 
 
 class DisplaySettingsDialog(QDialog):
-    """控制结果视口中的轮廓、图例和辅助显示。"""
+    """Control outlines, legends, and auxiliary displays in the result viewport."""
 
     applyRequested = Signal(object)
 
     def __init__(self, options: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("显示设置")
+        self.setWindowTitle("Display Settings")
         self.setMinimumWidth(620)
         layout = QVBoxLayout(self)
 
-        self.outline_group = QGroupBox("轮廓", self)
+        self.outline_group = QGroupBox("Outline", self)
         outline_layout = QHBoxLayout(self.outline_group)
         outline_layout.setSpacing(12)
         self.edge_mode = QComboBox(self.outline_group)
         for label, key in (
-            ("几何边", CONTOUR_EDGE_GEOMETRY),
-            ("全部边", CONTOUR_EDGE_ALL),
-            ("外部边", CONTOUR_EDGE_EXTERIOR),
-            ("特征边", CONTOUR_EDGE_FEATURE),
-            ("自由边", CONTOUR_EDGE_FREE),
-            ("无边", CONTOUR_EDGE_NONE),
+            ("Geometry edges", CONTOUR_EDGE_GEOMETRY),
+            ("All edges", CONTOUR_EDGE_ALL),
+            ("Exterior edges", CONTOUR_EDGE_EXTERIOR),
+            ("Feature edges", CONTOUR_EDGE_FEATURE),
+            ("Free edges", CONTOUR_EDGE_FREE),
+            ("No edges", CONTOUR_EDGE_NONE),
         ):
             self.edge_mode.addItem(label, key)
         selected_edge_mode = options.get("edge_mode")
@@ -474,10 +474,10 @@ class DisplaySettingsDialog(QDialog):
         self.edge_mode.setFixedWidth(112)
         self.edge_style = QComboBox(self.outline_group)
         for label, key in (
-            ("实线", "solid"),
-            ("虚线", "dashed"),
-            ("短划线", "short_dashed"),
-            ("加粗线", "bold"),
+            ("Solid", "solid"),
+            ("Dashed", "dashed"),
+            ("Short dashed", "short_dashed"),
+            ("Bold", "bold"),
         ):
             self.edge_style.addItem(label, key)
         self.edge_style.setCurrentIndex(
@@ -491,27 +491,27 @@ class DisplaySettingsDialog(QDialog):
         self.edge_width.setValue(float(options.get("edge_width", 1.0)))
         self.edge_width.setFixedWidth(60)
         self.edge_width_unit = QLabel("pt", self.outline_group)
-        outline_layout.addWidget(QLabel("线条", self.outline_group))
+        outline_layout.addWidget(QLabel("Lines", self.outline_group))
         outline_layout.addWidget(self.edge_mode)
         outline_layout.addSpacing(18)
-        outline_layout.addWidget(QLabel("样式", self.outline_group))
+        outline_layout.addWidget(QLabel("Style", self.outline_group))
         outline_layout.addWidget(self.edge_style)
         outline_layout.addSpacing(18)
-        outline_layout.addWidget(QLabel("粗细", self.outline_group))
+        outline_layout.addWidget(QLabel("Width", self.outline_group))
         outline_layout.addWidget(self.edge_width)
         outline_layout.addWidget(self.edge_width_unit)
         outline_layout.addStretch(1)
         layout.addWidget(self.outline_group)
 
-        self.legend_group = QGroupBox("图例", self)
+        self.legend_group = QGroupBox("Legend", self)
         legend_layout = QGridLayout(self.legend_group)
         legend_layout.setHorizontalSpacing(16)
         legend_layout.setVerticalSpacing(14)
         legend_layout.setColumnMinimumWidth(3, 110)
         legend_layout.setColumnStretch(6, 1)
-        legend_layout.addWidget(QLabel("数值格式", self.legend_group), 0, 0)
-        self.scientific_format = QRadioButton("科学计数", self.legend_group)
-        self.engineering_format = QRadioButton("工程计数", self.legend_group)
+        legend_layout.addWidget(QLabel("Number format", self.legend_group), 0, 0)
+        self.scientific_format = QRadioButton("Scientific", self.legend_group)
+        self.engineering_format = QRadioButton("Engineering", self.legend_group)
         self.number_format_buttons = QButtonGroup(self.legend_group)
         self.number_format_buttons.addButton(self.scientific_format)
         self.number_format_buttons.addButton(self.engineering_format)
@@ -528,7 +528,7 @@ class DisplaySettingsDialog(QDialog):
         number_format_layout.addStretch(1)
         self.number_format_host.setFixedWidth(175)
         legend_layout.addWidget(self.number_format_host, 0, 1)
-        legend_layout.addWidget(QLabel("小数位", self.legend_group), 0, 2)
+        legend_layout.addWidget(QLabel("Decimals", self.legend_group), 0, 2)
         self.decimals = QSpinBox(self.legend_group)
         self.decimals.setRange(0, 12)
         self.decimals.setValue(int(options.get("decimals", 2)))
@@ -540,9 +540,9 @@ class DisplaySettingsDialog(QDialog):
             alignment=Qt.AlignmentFlag.AlignLeft,
         )
 
-        legend_layout.addWidget(QLabel("图例方向", self.legend_group), 1, 0)
-        self.horizontal_orientation = QRadioButton("横向", self.legend_group)
-        self.vertical_orientation = QRadioButton("纵向", self.legend_group)
+        legend_layout.addWidget(QLabel("Orientation", self.legend_group), 1, 0)
+        self.horizontal_orientation = QRadioButton("Horizontal", self.legend_group)
+        self.vertical_orientation = QRadioButton("Vertical", self.legend_group)
         self.horizontal_orientation.setFixedWidth(
             self.scientific_format.sizeHint().width()
         )
@@ -562,7 +562,7 @@ class DisplaySettingsDialog(QDialog):
         orientation_layout.addStretch(1)
         self.orientation_host.setFixedWidth(175)
         legend_layout.addWidget(self.orientation_host, 1, 1)
-        legend_layout.addWidget(QLabel("字体", self.legend_group), 1, 2)
+        legend_layout.addWidget(QLabel("Font", self.legend_group), 1, 2)
         self.legend_font = QComboBox(self.legend_group)
         for font in ("Arial", "Times New Roman", "Courier New"):
             self.legend_font.addItem(font, font)
@@ -576,7 +576,7 @@ class DisplaySettingsDialog(QDialog):
             3,
             alignment=Qt.AlignmentFlag.AlignLeft,
         )
-        legend_layout.addWidget(QLabel("大小", self.legend_group), 1, 4)
+        legend_layout.addWidget(QLabel("Size", self.legend_group), 1, 4)
         self.legend_font_size = QSpinBox(self.legend_group)
         self.legend_font_size.setRange(6, 72)
         self.legend_font_size.setValue(int(options.get("legend_font_size", 14)))
@@ -591,11 +591,11 @@ class DisplaySettingsDialog(QDialog):
         legend_layout.addWidget(self.legend_font_size_host, 1, 5)
         layout.addWidget(self.legend_group)
 
-        self.legend = QCheckBox("显示图例", self)
+        self.legend = QCheckBox("Show legend", self)
         self.legend.setChecked(bool(options.get("legend", True)))
-        self.show_ids = QCheckBox("显示编号", self)
+        self.show_ids = QCheckBox("Show IDs", self)
         self.show_ids.setChecked(bool(options.get("show_ids", False)))
-        self.show_coordinate_system = QCheckBox("显示坐标系", self)
+        self.show_coordinate_system = QCheckBox("Show coordinate system", self)
         self.show_coordinate_system.setChecked(
             bool(options.get("show_coordinate_system", True))
         )
@@ -648,23 +648,23 @@ class DisplaySettingsDialog(QDialog):
 
 
 class ContourSettingsDialog(QDialog):
-    """控制云图范围、色带、渲染方式和节点平均阈值。"""
+    """Control contour ranges, palettes, rendering, and nodal averaging thresholds."""
 
     applyRequested = Signal(object)
 
     def __init__(self, options: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("云图设置")
+        self.setWindowTitle("Contour Settings")
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
 
-        self.render_group = QGroupBox("渲染", self)
+        self.render_group = QGroupBox("Rendering", self)
         render_layout = QVBoxLayout(self.render_group)
         render_controls_row = QHBoxLayout()
         render_controls_row.setSpacing(12)
-        render_controls_row.addWidget(QLabel("模式", self.render_group))
-        self.filled_mode = QRadioButton("填充", self.render_group)
-        self.shaded_mode = QRadioButton("光影", self.render_group)
+        render_controls_row.addWidget(QLabel("Mode", self.render_group))
+        self.filled_mode = QRadioButton("Filled", self.render_group)
+        self.shaded_mode = QRadioButton("Shaded", self.render_group)
         self.render_mode_buttons = QButtonGroup(self.render_group)
         self.render_mode_buttons.addButton(self.filled_mode)
         self.render_mode_buttons.addButton(self.shaded_mode)
@@ -687,24 +687,24 @@ class ContourSettingsDialog(QDialog):
         self.render_mode_host.setFixedWidth(150)
         render_controls_row.addWidget(self.render_mode_host)
         render_controls_row.addSpacing(20)
-        render_controls_row.addWidget(QLabel("样式", self.render_group))
+        render_controls_row.addWidget(QLabel("Style", self.render_group))
         self.style = QComboBox(self.render_group)
-        self.style.addItem("分段", "segmented")
-        self.style.addItem("连续", "continuous")
+        self.style.addItem("Segmented", "segmented")
+        self.style.addItem("Continuous", "continuous")
         self.style.setCurrentIndex(
             max(0, self.style.findData(options.get("style", "segmented")))
         )
         self.style.setFixedWidth(90)
         render_controls_row.addWidget(self.style)
         render_controls_row.addSpacing(20)
-        render_controls_row.addWidget(QLabel("色带", self.render_group))
+        render_controls_row.addWidget(QLabel("Palette", self.render_group))
         self.colormap = QComboBox(self.render_group)
         for label, key in (
-            ("彩虹", ABAQUS_RAINBOW),
-            ("维里迪斯", "viridis"),
-            ("等离子", "plasma"),
-            ("冷暖", "coolwarm"),
-            ("灰度", "gray"),
+            ("Rainbow", ABAQUS_RAINBOW),
+            ("Viridis", "viridis"),
+            ("Plasma", "plasma"),
+            ("Coolwarm", "coolwarm"),
+            ("Grayscale", "gray"),
         ):
             self.colormap.addItem(label, key)
         selected_colormap = options.get("colormap", ABAQUS_RAINBOW)
@@ -748,7 +748,7 @@ class ContourSettingsDialog(QDialog):
         self.averaging_threshold.setSuffix(" %")
         self.averaging_threshold.setValue(float(options.get("averaging_threshold", 75.0)))
         self.averaging_threshold.setToolTip(
-            "仅用于节点平均应力；超过阈值的当前分量按单元侧分开显示"
+            "For nodally averaged stress only; split the current component by element side above the threshold"
         )
         self.averaging_threshold_slider = _ThinHorizontalSlider(
             self.render_group
@@ -786,12 +786,12 @@ class ContourSettingsDialog(QDialog):
             value_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("级数", self.levels_row)
-        self.form.addRow("阈值", self.averaging_threshold_row)
+        self.form.addRow("Levels", self.levels_row)
+        self.form.addRow("Threshold", self.averaging_threshold_row)
         render_layout.addLayout(self.form)
         layout.addWidget(self.render_group)
 
-        self.range_group = QGroupBox("范围", self)
+        self.range_group = QGroupBox("Range", self)
         range_layout = QVBoxLayout(self.range_group)
         self.minimum = _SignificantDigitsDoubleSpinBox(5, self.range_group)
         self.maximum = _SignificantDigitsDoubleSpinBox(5, self.range_group)
@@ -811,28 +811,28 @@ class ContourSettingsDialog(QDialog):
             )
         self.minimum.setValue(minimum)
         self.maximum.setValue(maximum)
-        self.show_minimum = QCheckBox("显示", self.range_group)
+        self.show_minimum = QCheckBox("Show", self.range_group)
         self.show_minimum.setChecked(
             bool(options.get("show_minimum", False))
         )
-        self.show_maximum = QCheckBox("显示", self.range_group)
+        self.show_maximum = QCheckBox("Show", self.range_group)
         self.show_maximum.setChecked(
             bool(options.get("show_maximum", False))
         )
         value_row = QHBoxLayout()
         value_row.setSpacing(8)
-        value_row.addWidget(QLabel("最小值", self.range_group))
+        value_row.addWidget(QLabel("Minimum", self.range_group))
         value_row.addWidget(self.minimum)
         value_row.addWidget(self.show_minimum)
         value_row.addSpacing(20)
-        value_row.addWidget(QLabel("最大值", self.range_group))
+        value_row.addWidget(QLabel("Maximum", self.range_group))
         value_row.addWidget(self.maximum)
         value_row.addWidget(self.show_maximum)
         value_row.addStretch(1)
         range_layout.addLayout(value_row)
 
-        self.auto_range = QRadioButton("自动", self.range_group)
-        self.manual_range = QRadioButton("手动", self.range_group)
+        self.auto_range = QRadioButton("Auto", self.range_group)
+        self.manual_range = QRadioButton("Manual", self.range_group)
         (self.manual_range if options.get("manual") else self.auto_range).setChecked(True)
         self.range_buttons = QButtonGroup(self.range_group)
         self.range_buttons.addButton(self.auto_range)
@@ -878,7 +878,7 @@ class ContourSettingsDialog(QDialog):
 
     def apply(self) -> None:
         if self.manual_range.isChecked() and self.minimum.value() >= self.maximum.value():
-            QMessageBox.warning(self, "云图设置", "手动范围的最小值必须小于最大值。")
+            QMessageBox.warning(self, "Contour Settings", "The manual range minimum must be less than the maximum.")
             return
         self.applyRequested.emit(self.settings())
 
@@ -891,7 +891,7 @@ class ContourSettingsDialog(QDialog):
 
 
 class TypedResultQueryDialog(QDialog):
-    """用 provider catalog 构造精确查询，数值工作由外层命令完成。"""
+    """Build exact queries from a provider catalog; outer commands perform numerical work."""
 
     selectionRequested = Signal(object)
     queryRequested = Signal(object)
@@ -914,7 +914,7 @@ class TypedResultQueryDialog(QDialog):
             raise ValueError("catalog must exactly match provider.catalog()")
 
         super().__init__(parent)
-        self.setWindowTitle("查询结果")
+        self.setWindowTitle("Query Results")
         self.resize(900, 520)
         self._catalog = catalog
         self._source = provider.source
@@ -935,27 +935,27 @@ class TypedResultQueryDialog(QDialog):
         self.step_combo.addItem(self._source.step_name, self._source)
         self.association_combo = QComboBox(self)
         self.association_combo.addItem(
-            "节点",
+            "Node",
             _TypedQueryMode(FieldAssociation.NODE),
         )
         self.association_combo.addItem(
-            "单元",
+            "Element",
             _TypedQueryMode(FieldAssociation.ELEMENT),
         )
         self.field_combo = QComboBox(self)
         self.component_combo = QComboBox(self)
         self.ids_edit = QLineEdit(self)
-        self.ids_edit.setPlaceholderText("留空查询全部；例如：1, 3, 5-8")
-        form.addRow("结果步：", self.step_combo)
-        form.addRow("对象类型：", self.association_combo)
-        form.addRow("场变量：", self.field_combo)
-        form.addRow("分量：", self.component_combo)
-        form.addRow("对象编号：", self.ids_edit)
+        self.ids_edit.setPlaceholderText("Leave blank for all; e.g. 1, 3, 5-8")
+        form.addRow("Step:", self.step_combo)
+        form.addRow("Entity type:", self.association_combo)
+        form.addRow("Field:", self.field_combo)
+        form.addRow("Component:", self.component_combo)
+        form.addRow("Entity IDs:", self.ids_edit)
         layout.addLayout(form)
 
         command_row = QHBoxLayout()
-        self.query_button = QPushButton("查询", self)
-        copy_button = QPushButton("复制", self)
+        self.query_button = QPushButton("Query", self)
+        copy_button = QPushButton("Copy", self)
         self.query_button.clicked.connect(self.request_query)
         copy_button.clicked.connect(self.copy_table)
         command_row.addWidget(self.query_button)
@@ -963,7 +963,7 @@ class TypedResultQueryDialog(QDialog):
         command_row.addStretch(1)
         layout.addLayout(command_row)
 
-        self.result_summary = QLabel("尚未查询", self)
+        self.result_summary = QLabel("No query yet", self)
         layout.addWidget(self.result_summary)
         self.table = QTableWidget(self)
         self.table.setEditTriggers(
@@ -1003,24 +1003,24 @@ class TypedResultQueryDialog(QDialog):
 
     @property
     def catalog(self) -> ResultCatalog:
-        """返回 dialog 绑定的 exact immutable catalog。"""
+        """Return the exact immutable catalog bound to the dialog."""
 
         return self._catalog
 
     @property
     def source(self) -> ResultSourceKey:
-        """返回 dialog 打开时绑定的完整结果来源。"""
+        """Return the complete result source bound when the dialog opened."""
 
         return self._source
 
     @property
     def query_pending(self) -> bool:
-        """返回是否已有一个 typed query 正在执行。"""
+        """Return whether a typed query is running."""
 
         return self._query_pending
 
     def set_query_pending(self, pending: bool) -> None:
-        """在一个查询生命周期内冻结所有 query intent 控件。"""
+        """Freeze all query intent controls for the duration of a query."""
 
         if type(pending) is not bool:
             raise TypeError("pending must be a bool")
@@ -1031,18 +1031,18 @@ class TypedResultQueryDialog(QDialog):
         self.component_combo.setEnabled(enabled)
         self.ids_edit.setEnabled(enabled)
         if pending:
-            self.result_summary.setText("正在查询……")
+            self.result_summary.setText("Querying...")
         self._refresh_availability()
 
     def set_query_message(self, message: str) -> None:
-        """显示不携带 records 的查询状态消息。"""
+        """Display a query status message without records."""
 
         if type(message) is not str:
             raise TypeError("message must be a string")
-        self.result_summary.setText(message.strip() or "结果查询未完成")
+        self.result_summary.setText(message.strip() or "Result query incomplete")
 
     def current_availability(self) -> FieldAvailability:
-        """返回当前字段的 typed catalog entry。"""
+        """Return the typed catalog entry for the current field."""
 
         key = self.field_combo.currentData()
         if type(key) is not FieldMaterializationKey:
@@ -1050,7 +1050,7 @@ class TypedResultQueryDialog(QDialog):
         return self._availability_for_key(key)
 
     def current_selection(self) -> ScalarFieldSelection:
-        """返回当前完整 field key 与 scalar component。"""
+        """Return the complete field key and scalar component."""
 
         availability = self.current_availability()
         component = self.component_combo.currentData()
@@ -1063,11 +1063,11 @@ class TypedResultQueryDialog(QDialog):
         return ScalarFieldSelection(availability.key, component)
 
     def current_query(self) -> ResultQuery:
-        """根据 typed association 与 FEM ID 输入构造精确查询。"""
+        """Build an exact query from a typed association and FEM ID input."""
 
         availability = self.current_availability()
         if availability.state is FieldState.UNAVAILABLE:
-            raise ValueError("当前字段不可查询。")
+            raise ValueError("The current field cannot be queried.")
         selection = self.current_selection()
         mode = self.association_combo.currentData()
         if type(mode) is not _TypedQueryMode:
@@ -1094,7 +1094,7 @@ class TypedResultQueryDialog(QDialog):
         )
 
     def request_query(self, *_args: object) -> None:
-        """把 selection/query 交给外层，不在 dialog 内恢复或读取字段。"""
+        """Delegate selection/query to the outer layer without recovering or reading fields here."""
 
         if self._query_pending:
             return
@@ -1102,14 +1102,14 @@ class TypedResultQueryDialog(QDialog):
             selection = self.current_selection()
             query = self.current_query()
         except (RuntimeError, ValueError) as error:
-            QMessageBox.warning(self, "查询结果", str(error))
+            QMessageBox.warning(self, "Query Results", str(error))
             return
         self._last_query = query
         self.selectionRequested.emit(selection)
         self.queryRequested.emit(query)
 
     def set_query_result(self, result: ResultQueryResult) -> None:
-        """按 application 结果原序显示全部 query records。"""
+        """Display all query records in the original application result order."""
 
         if type(result) is not ResultQueryResult:
             raise TypeError("result must be ResultQueryResult")
@@ -1190,18 +1190,18 @@ class TypedResultQueryDialog(QDialog):
             self.table.selectRow(0)
         self._displayed_generation = result.materialization_generation
         self.result_summary.setText(
-            f"共 {len(result.records)} 行 · "
+            f"{len(result.records)} rows · "
             f"materialization generation "
             f"{result.materialization_generation}"
         )
 
     def show_result(self, result: ResultQueryResult) -> None:
-        """兼容 Qt slot 风格的显式展示入口。"""
+        """Explicit display entry point compatible with Qt slots."""
 
         self.set_query_result(result)
 
     def record_at(self, row: int) -> ResultQueryRecord:
-        """返回显示行绑定的 exact ResultQueryRecord。"""
+        """Return the exact ResultQueryRecord bound to a displayed row."""
 
         if type(row) is not int:
             raise TypeError("row must be an integer")
@@ -1216,7 +1216,7 @@ class TypedResultQueryDialog(QDialog):
         return record
 
     def copy_table(self) -> None:
-        """复制当前 typed query 表格。"""
+        """Copy the current typed query table."""
 
         QApplication.clipboard().setText(self._table_text("\t"))
 
@@ -1337,23 +1337,23 @@ class TypedResultQueryDialog(QDialog):
 
     def _prepare_table(self, *, include_section_points: bool) -> None:
         section_headers = (
-            ("截面位置", "截面局部 Y", "截面局部 Z")
+            ("Section position", "Section local Y", "Section local Z")
             if include_section_points
             else ()
         )
         headers = (
-            "关联",
-            "节点",
-            "单元",
-            "积分点",
-            "局部节点",
+            "Association",
+            "Node",
+            "Element",
+            "Integration point",
+            "Local node",
             *section_headers,
-            "区域",
-            "平均状态",
+            "Region",
+            "Averaging status",
             "X",
             "Y",
             "Z",
-            "值",
+            "Value",
         )
         self.table.clear()
         self.table.setColumnCount(len(headers))
@@ -1404,12 +1404,12 @@ def _typed_query_association_matches(
 
 def _typed_association_text(association: FieldAssociation) -> str:
     labels = {
-        FieldAssociation.NODE: "节点",
-        FieldAssociation.ELEMENT_NODE: "节点",
-        FieldAssociation.ELEMENT: "单元",
-        FieldAssociation.INTEGRATION_POINT: "积分点",
-        FieldAssociation.NODE_REGION: "节点",
-        FieldAssociation.RESOLVED_NODAL: "节点",
+        FieldAssociation.NODE: "Node",
+        FieldAssociation.ELEMENT_NODE: "Node",
+        FieldAssociation.ELEMENT: "Element",
+        FieldAssociation.INTEGRATION_POINT: "Integration point",
+        FieldAssociation.NODE_REGION: "Node",
+        FieldAssociation.RESOLVED_NODAL: "Node",
     }
     return labels[association]
 
@@ -1438,7 +1438,7 @@ def _parse_typed_query_ids(
                 candidates = (int(token),)
             except ValueError as error:
                 raise ValueError(
-                    f"无法识别的有限元编号：{token}"
+                    f"Unrecognized FEM ID: {token}"
                 ) from error
         else:
             first, last = (int(value) for value in match.groups())
@@ -1446,7 +1446,7 @@ def _parse_typed_query_ids(
             candidates = range(first, last + step, step)
         for candidate in candidates:
             if candidate not in valid:
-                raise ValueError(f"有限元编号不存在：{candidate}")
+                raise ValueError(f"FEM ID does not exist: {candidate}")
             if candidate not in parsed:
                 parsed.append(candidate)
     return tuple(parsed)
@@ -1463,7 +1463,7 @@ def _typed_field_label(
                 descriptor.field_id,
                 section_point_labels=section_point_labels,
             )
-            return f"应力 S（{position}）"
+            return f"Stress S ({position})"
         return _TYPED_RESULT_FIELD_LABELS.get(
             descriptor.label_key,
             descriptor.label_key,
@@ -1475,17 +1475,17 @@ def _typed_field_label(
 
 
 _TYPED_RESULT_FIELD_LABELS = {
-    "result.field.u.node": "位移 U",
-    "result.field.ur.node": "转角 UR",
-    "result.field.rf.node": "反力 RF",
-    "result.field.rm.node": "反力矩 RM",
-    "result.field.le.centroid": "对数应变 LE（单元质心）",
-    "result.field.s.element_nodal": "应力 S（节点）",
+    "result.field.u.node": "Displacement U",
+    "result.field.ur.node": "Rotation UR",
+    "result.field.rf.node": "Reaction Force RF",
+    "result.field.rm.node": "Reaction Moment RM",
+    "result.field.le.centroid": "Logarithmic Strain LE (element centroid)",
+    "result.field.s.element_nodal": "Stress S (Node)",
 }
 _TYPED_RESULT_FIELD_STATE_LABELS = {
-    FieldState.READY: "就绪",
-    FieldState.LAZY: "按需加载",
-    FieldState.UNAVAILABLE: "不可用",
+    FieldState.READY: "Ready",
+    FieldState.LAZY: "Load on demand",
+    FieldState.UNAVAILABLE: "Unavailable",
 }
 
 
@@ -1499,7 +1499,7 @@ def _typed_result_display_field_label(
             descriptor.field_id,
             section_point_labels=section_point_labels,
         )
-        label = f"应力 S（{position}）"
+        label = f"Stress S ({position})"
     else:
         label = _TYPED_RESULT_FIELD_LABELS.get(
             descriptor.label_key,
@@ -1507,7 +1507,7 @@ def _typed_result_display_field_label(
         )
     return (
         f"{label}"
-        f"（{_TYPED_RESULT_FIELD_STATE_LABELS[availability.state]}）"
+        f" ({_TYPED_RESULT_FIELD_STATE_LABELS[availability.state]})"
     )
 
 
@@ -1515,14 +1515,14 @@ def _typed_result_display_availability_text(
     availability: FieldAvailability,
 ) -> str:
     if availability.state is FieldState.READY:
-        return "已就绪"
+        return "Ready"
     if availability.state is FieldState.LAZY:
-        return "待物化；应用后由外层命令加载"
+        return "Pending materialization; loaded by the outer command after applying"
     if availability.diagnostics:
         return "\n".join(
             diagnostic.message for diagnostic in availability.diagnostics
         )
-    return "不可用"
+    return "Unavailable"
 
 
 def _validate_typed_display_selection(
@@ -1591,8 +1591,8 @@ def _optional_number_text(value: float | None) -> str:
 
 def _averaged_text(value: bool | None) -> str:
     if value is None:
-        return "缺失"
-    return "是" if value else "否"
+        return "Missing"
+    return "Yes" if value else "No"
 
 
 def _number_text(value: float) -> str:
@@ -1606,7 +1606,7 @@ def _dialog_buttons(parent: QWidget) -> QDialogButtonBox:
         | QDialogButtonBox.StandardButton.Cancel,
         parent=parent,
     )
-    buttons.button(QDialogButtonBox.StandardButton.Apply).setText("应用")
-    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+    buttons.button(QDialogButtonBox.StandardButton.Apply).setText("Apply")
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
     return buttons

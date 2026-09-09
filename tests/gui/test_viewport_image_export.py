@@ -47,8 +47,8 @@ def test_export_dialog_defaults_to_two_times_current_viewport(gui_application) -
     assert not dialog.height_spin.isEnabled()
 
     labels = {label.text() for label in dialog.findChildren(QLabel)}
-    assert "宽度：" in labels
-    assert "高度：" in labels
+    assert "Width:" in labels
+    assert "Height:" in labels
     assert "当前视口：" not in labels
     assert "自定义宽度：" not in labels
     assert "自定义高度：" not in labels

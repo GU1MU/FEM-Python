@@ -1,4 +1,4 @@
-"""结构化有限元对象信息的统一只读窗口。"""
+"""Unified read-only window for structured finite element entity information."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .inspection_service import EntityInspection, EntityReference, InspectionPag
 
 
 class InspectionTableModel(QAbstractTableModel):
-    """显示服务已经准备好的只读表格。"""
+    """Display read-only tables prepared by the service."""
 
     def __init__(self, table: InspectionTable, parent=None) -> None:
         super().__init__(parent)
@@ -55,7 +55,7 @@ class InspectionTableModel(QAbstractTableModel):
 
 
 class EntityInfoDialog(QDialog):
-    """显示一个对象的字段、关联表格和结果页。"""
+    """Display an entity's fields, related tables, and result pages."""
 
     highlightRequested = Signal(str, object)
     locateRequested = Signal(str, object)
@@ -80,8 +80,8 @@ class EntityInfoDialog(QDialog):
                 tabs.addTab(self._build_page(page), page.title)
             layout.addWidget(tabs, 1)
         buttons = QHBoxLayout()
-        highlight = QPushButton("高亮", self)
-        locate = QPushButton("定位", self)
+        highlight = QPushButton("Highlight", self)
+        locate = QPushButton("Locate", self)
         can_locate = inspection.kind in {
             "node", "element", "node_set", "element_set", "surface", "edge",
             "material", "section", "boundary", "cload", "surface_load", "edge_load",
@@ -89,11 +89,11 @@ class EntityInfoDialog(QDialog):
         }
         highlight.setEnabled(can_locate)
         locate.setEnabled(can_locate)
-        copy = QPushButton("复制", self)
-        close = QPushButton("关闭", self)
+        copy = QPushButton("Copy", self)
+        close = QPushButton("Close", self)
         highlight.clicked.connect(lambda: self.highlightRequested.emit(inspection.kind, inspection.key))
         locate.clicked.connect(lambda: self.locateRequested.emit(inspection.kind, inspection.key))
-        export = QPushButton("导出", self)
+        export = QPushButton("Export", self)
         copy.clicked.connect(self.copy_information)
         export.clicked.connect(self.export_information)
         close.clicked.connect(self.close)
@@ -117,7 +117,7 @@ class EntityInfoDialog(QDialog):
         layout.setContentsMargins(3, 5, 3, 3)
         layout.setSpacing(6)
         if page.fields:
-            table = InspectionTable("基本信息", ("项目", "内容"), tuple(page.fields))
+            table = InspectionTable("Basic information", ("Item", "Content"), tuple(page.fields))
             view = self._make_table(table, max_visible_rows=14)
             view.setColumnWidth(0, 165)
             layout.addWidget(view)
@@ -164,7 +164,7 @@ class EntityInfoDialog(QDialog):
 
     def export_information(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
-            self, "导出信息", f"{self.inspection.title}.tsv", "制表符文本 (*.tsv);;文本文件 (*.txt)"
+            self, "Export Information", f"{self.inspection.title}.tsv", "Tab-separated text (*.tsv);;Text files (*.txt)"
         )
         if not path:
             return

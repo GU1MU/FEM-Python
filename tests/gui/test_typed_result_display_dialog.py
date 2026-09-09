@@ -178,9 +178,9 @@ def test_catalog_and_descriptor_order_keep_complete_typed_identity(gui_applicati
         dialog.field_combo.itemText(index)
         for index in range(dialog.field_combo.count())
     ) == (
-        "位移 U（就绪）",
-        "vendor.result.reaction（按需加载）",
-        "应力 S（节点）（不可用）",
+        "Displacement U (Ready)",
+        "vendor.result.reaction (Load on demand)",
+        "Stress S (Node) (Unavailable)",
     )
     assert all(
         type(dialog.field_combo.itemData(index)) is FieldMaterializationKey
@@ -242,7 +242,7 @@ def test_ready_and_lazy_apply_emit_complete_typed_settings(gui_application) -> N
     )
     assert emitted[-1].selection.field_key is lazy.key
     assert dialog.apply_button.isEnabled()
-    assert "外层命令加载" in dialog.availability_label.text()
+    assert "loaded by the outer command" in dialog.availability_label.text()
     dialog.close()
 
 

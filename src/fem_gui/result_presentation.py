@@ -24,26 +24,26 @@ class _SectionPointView(Protocol):
 
 
 _POSITION_LABELS = {
-    FieldPosition.NODE: "节点",
-    FieldPosition.INTEGRATION_POINT: "积分点",
-    FieldPosition.ELEMENT_NODAL: "节点",
-    FieldPosition.SECTION_END: "截面",
+    FieldPosition.NODE: "Node",
+    FieldPosition.INTEGRATION_POINT: "Integration point",
+    FieldPosition.ELEMENT_NODAL: "Node",
+    FieldPosition.SECTION_END: "Section",
 }
 _VARIABLE_LABELS = {
-    ResultVariable.U: "位移 U",
-    ResultVariable.UR: "转角 UR",
-    ResultVariable.RF: "反力 RF",
-    ResultVariable.RM: "反力矩 RM",
-    ResultVariable.SF: "截面力 SF",
-    ResultVariable.SM: "截面矩 SM",
-    ResultVariable.LE: "对数应变 LE",
-    ResultVariable.S: "应力 S",
+    ResultVariable.U: "Displacement U",
+    ResultVariable.UR: "Rotation UR",
+    ResultVariable.RF: "Reaction Force RF",
+    ResultVariable.RM: "Reaction Moment RM",
+    ResultVariable.SF: "Section Force SF",
+    ResultVariable.SM: "Section Moment SM",
+    ResultVariable.LE: "Logarithmic Strain LE",
+    ResultVariable.S: "Stress S",
 }
 _RECTANGLE_SECTION_POINT_LABELS = {
-    1: "右上",
-    2: "左上",
-    3: "左下",
-    4: "右下",
+    1: "upper right",
+    2: "upper left",
+    3: "lower left",
+    4: "lower right",
 }
 
 
@@ -107,9 +107,9 @@ def section_point_relative_position_label(point: _SectionPointView) -> str:
     """Return a rectangular corner name, preserving IDs for other shapes."""
 
     if point.local_y != 0.0 and point.local_z != 0.0:
-        horizontal = "右" if point.local_y > 0.0 else "左"
-        vertical = "上" if point.local_z > 0.0 else "下"
-        return f"{horizontal}{vertical}"
+        horizontal = "right" if point.local_y > 0.0 else "left"
+        vertical = "upper" if point.local_z > 0.0 else "lower"
+        return f"{vertical} {horizontal}"
     return f"Section point {point.number}"
 
 

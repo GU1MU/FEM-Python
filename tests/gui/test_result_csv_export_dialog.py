@@ -63,7 +63,7 @@ def test_dialog_selects_ready_fields_without_showing_field_status(gui_applicatio
     assert ready_fields
     assert dialog.current_selection() == catalog.default_selection
     assert dialog.path_edit.text() == ""
-    assert dialog.path_edit.placeholderText() == "请选择 CSV 保存路径"
+    assert dialog.path_edit.placeholderText() == "Select a CSV save path"
     assert not dialog.export_button.isEnabled()
     assert all(
         selection.field_key
@@ -75,12 +75,12 @@ def test_dialog_selects_ready_fields_without_showing_field_status(gui_applicatio
     visible_text = " ".join(
         label.text() for label in dialog.findChildren(QLabel)
     )
-    assert "字段状态" not in visible_text
-    assert "已就绪" not in visible_text
-    assert "按需加载" not in visible_text
-    assert "不可用" not in visible_text
-    assert "分量：" in visible_text
-    assert "可多选" not in visible_text
+    assert "Field status" not in visible_text
+    assert "Ready" not in visible_text
+    assert "Load on demand" not in visible_text
+    assert "Unavailable" not in visible_text
+    assert "Component:" in visible_text
+    assert "Multiple selection" not in visible_text
     assert dialog.component_list.verticalScrollMode() == (
         QAbstractItemView.ScrollMode.ScrollPerPixel
     )
@@ -163,7 +163,7 @@ def test_browse_normalizes_csv_suffix_and_cancel_keeps_path(
     monkeypatch.setattr(
         dialog_module.QFileDialog,
         "getSaveFileName",
-        lambda *_args, **_kwargs: (str(picked), "CSV 文件 (*.csv)"),
+        lambda *_args, **_kwargs: (str(picked), "CSV files (*.csv)"),
     )
     dialog.browse_button.click()
     assert dialog.target_path() == picked.with_suffix(".csv")

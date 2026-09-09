@@ -1,4 +1,4 @@
-"""约束与载荷符号显示设置。"""
+"""Constraint and load symbol display settings."""
 
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ from .dialogs import CompactDoubleSpinBox, configure_form_layout
 
 
 COLOR_OPTIONS = (
-    ("蓝灰", "#5F7F96"),
-    ("砖红", "#A65D54"),
-    ("赭橙", "#B47A4B"),
-    ("灰绿", "#638477"),
-    ("灰紫", "#80728F"),
+    ("Blue gray", "#5F7F96"),
+    ("Brick red", "#A65D54"),
+    ("Ochre orange", "#B47A4B"),
+    ("Gray green", "#638477"),
+    ("Gray purple", "#80728F"),
 )
 
 
 class SymbolSettingsDialog(QDialog):
-    """设置当前分析步的约束与载荷符号。"""
+    """Configure constraint and load symbols for the current step."""
 
     applyRequested = Signal(object)
 
@@ -37,7 +37,7 @@ class SymbolSettingsDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("约束与载荷显示")
+        self.setWindowTitle("Constraint and Load Display")
         self.setMinimumWidth(400)
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -47,42 +47,42 @@ class SymbolSettingsDialog(QDialog):
             self.step_combo.addItem(name, name)
         index = self.step_combo.findData(settings.step_name)
         self.step_combo.setCurrentIndex(index if index >= 0 else 0)
-        self.show_constraints = QCheckBox("显示位移约束", self)
+        self.show_constraints = QCheckBox("Show displacement constraints", self)
         self.show_constraints.setChecked(settings.show_constraints)
-        self.show_nodal_loads = QCheckBox("显示节点力", self)
+        self.show_nodal_loads = QCheckBox("Show nodal forces", self)
         self.show_nodal_loads.setChecked(settings.show_nodal_loads)
-        self.show_edge_loads = QCheckBox("显示边力", self)
+        self.show_edge_loads = QCheckBox("Show edge forces", self)
         self.show_edge_loads.setChecked(settings.show_edge_loads)
-        self.show_surface_loads = QCheckBox("显示面力", self)
+        self.show_surface_loads = QCheckBox("Show surface forces", self)
         self.show_surface_loads.setChecked(settings.show_surface_loads)
-        self.show_line_loads = QCheckBox("显示梁单元边力", self)
+        self.show_line_loads = QCheckBox("Show beam edge forces", self)
         self.show_line_loads.setChecked(settings.show_line_loads)
-        self.show_values = QCheckBox("显示数值标签", self)
+        self.show_values = QCheckBox("Show value labels", self)
         self.show_values.setChecked(settings.show_values)
         self.scale = CompactDoubleSpinBox(self)
         self.scale.setRange(0.01, 100.0)
         self.scale.setDecimals(3)
         self.scale.setValue(settings.scale)
-        self.normalize = QCheckBox("箭头归一化", self)
+        self.normalize = QCheckBox("Normalize arrows", self)
         self.normalize.setChecked(settings.normalize_arrows)
         self.density = QComboBox(self)
-        for label, key in (("低", "low"), ("中等", "medium"), ("高", "high")):
+        for label, key in (("Low", "low"), ("Medium", "medium"), ("High", "high")):
             self.density.addItem(label, key)
         self.density.setCurrentIndex(max(0, self.density.findData(settings.sampling_density)))
         self.constraint_color = _color_combo(settings.constraint_color, self)
         self.load_color = _color_combo(settings.load_color, self)
-        form.addRow("分析步：", self.step_combo)
+        form.addRow("Step:", self.step_combo)
         form.addRow(self.show_constraints)
         form.addRow(self.show_nodal_loads)
         form.addRow(self.show_edge_loads)
         form.addRow(self.show_surface_loads)
         form.addRow(self.show_line_loads)
         form.addRow(self.show_values)
-        form.addRow("符号比例：", self.scale)
+        form.addRow("Symbol scale:", self.scale)
         form.addRow(self.normalize)
-        form.addRow("区域符号密度：", self.density)
-        form.addRow("约束颜色：", self.constraint_color)
-        form.addRow("载荷颜色：", self.load_color)
+        form.addRow("Region symbol density:", self.density)
+        form.addRow("Constraint color:", self.constraint_color)
+        form.addRow("Load color:", self.load_color)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
@@ -90,16 +90,16 @@ class SymbolSettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("应用")
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("Apply")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
         buttons.accepted.connect(self.accept_with_apply)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def settings(self) -> SymbolSettings:
-        """返回当前设置。"""
+        """Return the current settings."""
         step_data = self.step_combo.currentData()
         return SymbolSettings(
             step_name=str(step_data) if step_data is not None else None,

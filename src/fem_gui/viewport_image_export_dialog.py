@@ -1,4 +1,4 @@
-"""视口图片导出设置对话框。"""
+"""Viewport image export settings dialog."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ from .theme import COLORS
 
 MIN_IMAGE_DIMENSION = 64
 MAX_IMAGE_DIMENSION = 16384
-IMAGE_FILE_FILTER = "PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg)"
+IMAGE_FILE_FILTER = "PNG images (*.png);;JPEG images (*.jpg *.jpeg)"
 
 
 @dataclass(frozen=True, slots=True)
 class ViewportImageExportOptions:
-    """已经解析、可直接传给视口截图接口的导出设置。"""
+    """Parsed export settings ready for the viewport screenshot interface."""
 
     scale: int
     window_size: tuple[int, int] | None
@@ -38,7 +38,7 @@ class ViewportImageExportOptions:
 
 
 class ViewportImageExportDialog(QDialog):
-    """选择本次视口图片导出的分辨率与背景选项。"""
+    """Select resolution and background options for this viewport image export."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class ViewportImageExportDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportImageExportDialog")
-        self.setWindowTitle("视口图片导出设置")
+        self.setWindowTitle("Viewport Image Export Settings")
         self.setMinimumWidth(520)
         self._current_size = (int(current_size[0]), int(current_size[1]))
 
@@ -58,8 +58,8 @@ class ViewportImageExportDialog(QDialog):
         self.path_edit = QLineEdit(self)
         self.path_edit.setObjectName("viewportExportPath")
         self.path_edit.setReadOnly(True)
-        self.path_edit.setPlaceholderText("请选择图片保存路径")
-        self.browse_button = QPushButton("浏览…", self)
+        self.path_edit.setPlaceholderText("Select an image save path")
+        self.browse_button = QPushButton("Browse...", self)
         self.browse_button.setObjectName("viewportExportBrowse")
         path_layout = QHBoxLayout()
         path_layout.setContentsMargins(0, 0, 0, 0)
@@ -68,10 +68,10 @@ class ViewportImageExportDialog(QDialog):
 
         self.quality_combo = QComboBox(self)
         self.quality_combo.setObjectName("viewportExportQuality")
-        self.quality_combo.addItem("当前分辨率", 1)
-        self.quality_combo.addItem("高清 2×", 2)
-        self.quality_combo.addItem("超清 4×", 4)
-        self.quality_combo.addItem("自定义", "custom")
+        self.quality_combo.addItem("Current resolution", 1)
+        self.quality_combo.addItem("High quality 2×", 2)
+        self.quality_combo.addItem("Ultra quality 4×", 4)
+        self.quality_combo.addItem("Custom", "custom")
         self.quality_combo.setCurrentIndex(1)
 
         initial_width = self._clamp_dimension(self._current_size[0] * 2)
@@ -90,26 +90,26 @@ class ViewportImageExportDialog(QDialog):
             }}
             """
         )
-        self.transparent_background_check = QCheckBox("透明背景", self)
+        self.transparent_background_check = QCheckBox("Transparent background", self)
         self.transparent_background_check.setObjectName(
             "viewportExportTransparentBackground"
         )
         self.transparent_background_check.setChecked(False)
         self.transparent_background_check.setEnabled(False)
 
-        form.addRow("保存路径：", path_layout)
-        form.addRow("导出质量：", self.quality_combo)
-        form.addRow("宽度：", self.width_spin)
-        form.addRow("高度：", self.height_spin)
-        form.addRow("背景：", self.transparent_background_check)
+        form.addRow("Save path:", path_layout)
+        form.addRow("Export quality:", self.quality_combo)
+        form.addRow("Width:", self.width_spin)
+        form.addRow("Height:", self.height_spin)
+        form.addRow("Background:", self.transparent_background_check)
         layout.addLayout(form)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -121,12 +121,12 @@ class ViewportImageExportDialog(QDialog):
 
     @property
     def target_path(self) -> str:
-        """返回用户选定并完成扩展名规范化的保存路径。"""
+        """Return the selected save path with its extension normalized."""
         return self.path_edit.text().strip()
 
     @property
     def options(self) -> ViewportImageExportOptions:
-        """返回当前控件状态对应的截图参数。"""
+        """Return screenshot parameters for the current control state."""
         quality = self.quality_combo.currentData()
         if quality == "custom":
             scale = 1
@@ -148,7 +148,7 @@ class ViewportImageExportDialog(QDialog):
 
     @property
     def output_size(self) -> tuple[int, int]:
-        """返回当前选择会生成的图片像素尺寸。"""
+        """Return the image pixel dimensions for the current selection."""
         return (
             self.width_spin.value(),
             self.height_spin.value(),
@@ -179,7 +179,7 @@ class ViewportImageExportDialog(QDialog):
     def _choose_target_path(self) -> None:
         path, _selected_filter = QFileDialog.getSaveFileName(
             self,
-            "选择视口图片保存位置",
+            "Select Viewport Image Save Location",
             self.target_path,
             IMAGE_FILE_FILTER,
         )

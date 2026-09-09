@@ -177,7 +177,7 @@ class ResultCsvExportDialog(QDialog):
             raise ValueError("catalog has no ready result field to export")
 
         super().__init__(parent)
-        self.setWindowTitle("导出 CSV")
+        self.setWindowTitle("Export CSV")
         self.setMinimumWidth(520)
         self._catalog = catalog
         self._fields = fields
@@ -205,8 +205,8 @@ class ResultCsvExportDialog(QDialog):
         self.component_list.setStyleSheet(_COMPONENT_LIST_STYLESHEET)
         self._component_selections: list[ScalarFieldSelection] = []
         self.path_edit = QLineEdit(self)
-        self.path_edit.setPlaceholderText("请选择 CSV 保存路径")
-        self.browse_button = QPushButton("浏览…", self)
+        self.path_edit.setPlaceholderText("Select a CSV save path")
+        self.browse_button = QPushButton("Browse...", self)
 
         path_host = QWidget(self)
         path_layout = QHBoxLayout(path_host)
@@ -214,10 +214,10 @@ class ResultCsvExportDialog(QDialog):
         path_layout.addWidget(self.path_edit, 1)
         path_layout.addWidget(self.browse_button)
 
-        form.addRow("场变量：", self.variable_combo)
-        form.addRow("结果位置：", self.position_combo)
-        form.addRow("分量：", self.component_list)
-        form.addRow("保存到：", path_host)
+        form.addRow("Field:", self.variable_combo)
+        form.addRow("Result position:", self.position_combo)
+        form.addRow("Component:", self.component_list)
+        form.addRow("Save to:", path_host)
         layout.addLayout(form)
 
         self.button_box = QDialogButtonBox(
@@ -228,11 +228,11 @@ class ResultCsvExportDialog(QDialog):
         self.export_button = self.button_box.button(
             QDialogButtonBox.StandardButton.Ok
         )
-        self.export_button.setText("导出")
+        self.export_button.setText("Export")
         self.cancel_button = self.button_box.button(
             QDialogButtonBox.StandardButton.Cancel
         )
-        self.cancel_button.setText("取消")
+        self.cancel_button.setText("Cancel")
         button_width = max(
             self.browse_button.sizeHint().width(),
             self.export_button.sizeHint().width(),
@@ -292,7 +292,7 @@ class ResultCsvExportDialog(QDialog):
     def target_path(self) -> Path:
         text = self.path_edit.text().strip()
         if not text:
-            raise ValueError("CSV 保存路径不能为空")
+            raise ValueError("CSV save path cannot be empty")
         return Path(text).with_suffix(".csv")
 
     def accept(self) -> None:
@@ -467,9 +467,9 @@ class ResultCsvExportDialog(QDialog):
     def _browse(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
             self,
-            "选择 CSV 保存位置",
+            "Select CSV Save Location",
             self.path_edit.text(),
-            "CSV 文件 (*.csv)",
+            "CSV files (*.csv)",
         )
         if not path:
             return

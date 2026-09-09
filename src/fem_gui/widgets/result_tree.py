@@ -1,4 +1,4 @@
-"""只展示真实可用结果族的精简结果树。"""
+"""Compact result tree showing only available result families."""
 
 from __future__ import annotations
 
@@ -31,19 +31,19 @@ ResultRootKey = tuple[int, str]
 
 
 _FIELD_LABELS = {
-    "result.field.u.node": "位移 U",
-    "result.field.ur.node": "转角 UR",
-    "result.field.rf.node": "反力 RF",
-    "result.field.rm.node": "反力矩 RM",
-    "result.field.sf.integration_point": "截面力 SF（积分点）",
-    "result.field.sm.integration_point": "截面矩 SM（积分点）",
-    "result.field.le.centroid": "对数应变 LE",
-    "result.field.s.element_nodal": "应力 S",
+    "result.field.u.node": "Displacement U",
+    "result.field.ur.node": "Rotation UR",
+    "result.field.rf.node": "Reaction Force RF",
+    "result.field.rm.node": "Reaction Moment RM",
+    "result.field.sf.integration_point": "Section Force SF (integration point)",
+    "result.field.sm.integration_point": "Section Moment SM (integration point)",
+    "result.field.le.centroid": "Logarithmic Strain LE",
+    "result.field.s.element_nodal": "Stress S",
 }
 
 
 class ResultTree(QTreeWidget):
-    """按顶层作业或外部结果组织可用结果字段。"""
+    """Organize available result fields by top-level job or external result."""
 
     fieldSelectionActivated = Signal(ScalarFieldSelection)
     fieldSelectionRouted = Signal(int, str, object, ScalarFieldSelection)
@@ -86,7 +86,7 @@ class ResultTree(QTreeWidget):
         self._active_run_ids.clear()
         self._active_document_id = None
         self.clear()
-        item = QTreeWidgetItem(["尚无分析结果"])
+        item = QTreeWidgetItem(["No analysis results"])
         self.addTopLevelItem(item)
         item.setData(0, ROLE_RESULT_KIND, "empty")
 
@@ -148,7 +148,7 @@ class ResultTree(QTreeWidget):
             display_name = (
                 current_root.text(0)
                 if current_root is not None
-                else step_name or "结果"
+                else step_name or "Results"
             )
             self._upsert_run_root(
                 document_id,
@@ -178,8 +178,8 @@ class ResultTree(QTreeWidget):
         self._active_run_ids.clear()
         self._catalog = None
         self._section_point_labels = dict(section_point_labels or {})
-        root = QTreeWidgetItem(["分析结果"])
-        step = QTreeWidgetItem([step_name or "当前分析步"])
+        root = QTreeWidgetItem(["Analysis Results"])
+        step = QTreeWidgetItem([step_name or "Current step"])
         root.addChild(step)
 
         default_item: QTreeWidgetItem | None = None
@@ -187,7 +187,7 @@ class ResultTree(QTreeWidget):
         for availability in visible_result_fields(catalog.fields):
             if result_field_is_beam_section(availability.descriptor.field_id):
                 if beam_stress_item is None:
-                    beam_stress_item = QTreeWidgetItem(["应力 S"])
+                    beam_stress_item = QTreeWidgetItem(["Stress S"])
                     step.addChild(beam_stress_item)
                 field_item, selected_component = self._catalog_field_item(
                     availability,
@@ -361,8 +361,8 @@ class ResultTree(QTreeWidget):
             return
         self.setCurrentItem(item)
         menu = QMenu(self)
-        activate = menu.addAction("激活")
-        close = menu.addAction("关闭") if kind == "archive" else None
+        activate = menu.addAction("Activate")
+        close = menu.addAction("Close") if kind == "archive" else None
         chosen = menu.exec(self.viewport().mapToGlobal(position))
         if chosen is activate:
             self.runActivated.emit(document_id, run_id)
@@ -431,7 +431,7 @@ class ResultTree(QTreeWidget):
             )
             default_item = selected
         else:
-            step = QTreeWidgetItem([step_name or "当前分析步"])
+            step = QTreeWidgetItem([step_name or "Current step"])
             _set_identity(step, document_id, run_id, None, "step")
         root.addChild(step)
 
@@ -481,7 +481,7 @@ class ResultTree(QTreeWidget):
         source: object,
         section_point_labels: Mapping[int, str],
     ) -> tuple[QTreeWidgetItem, QTreeWidgetItem | None]:
-        step = QTreeWidgetItem([step_name or "当前分析步"])
+        step = QTreeWidgetItem([step_name or "Current step"])
         _set_identity(step, document_id, run_id, source, "step")
         default_item: QTreeWidgetItem | None = None
         beam_stress_item: QTreeWidgetItem | None = None
@@ -573,7 +573,7 @@ class ResultTree(QTreeWidget):
         for index in range(self.topLevelItemCount()):
             if self.topLevelItem(index).data(0, ROLE_RESULT_KIND) == "empty":
                 return
-        item = QTreeWidgetItem(["尚无分析结果"])
+        item = QTreeWidgetItem(["No analysis results"])
         item.setData(0, ROLE_RESULT_KIND, "empty")
         self.addTopLevelItem(item)
 

@@ -104,7 +104,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(gui_appl
     wait_for_result_idle(window)
     assert window.document.result_only
     assert window.document.path == path
-    assert "[结果只读]" in window.windowTitle()
+    assert "[Read-only Results]" in window.windowTitle()
     assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "结果"
     assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.result_provider is not None and window.result_provider.is_archived
@@ -120,7 +120,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(gui_appl
     assert window.actions["open_result"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert not window.actions["reload"].isEnabled()
-    assert window.actions["screenshot"].toolTip() == "导出视口"
+    assert window.actions["screenshot"].toolTip() == "Export Viewport"
     assert not window.actions["save_project"].isEnabled()
     assert not window.actions["submit_job"].isEnabled()
     disabled = {
@@ -506,15 +506,15 @@ def test_result_archive_view_keeps_only_result_topology_and_regions() -> None:
     assert view.steps == ()
     assert view.metadata == {}
     model_fields = dict(service.inspect("model", None).pages[0].fields)
-    assert model_fields["空间维度"] == "2维"
-    assert model_fields["总自由度数量"] == str(
+    assert model_fields["Spatial dimension"] == "2D"
+    assert model_fields["Total DOF count"] == str(
         len(archive.topology.node_ids) * archive.profile.dofs_per_node
     )
-    assert model_fields["分析步数量"] == "0"
+    assert model_fields["Step count"] == "0"
     node_fields = dict(
         service.inspect("node", archive.topology.node_ids[0]).pages[0].fields
     )
-    assert len(node_fields["坐标"].split(",")) == 2
+    assert len(node_fields["Coordinates"].split(",")) == 2
 
 
 @pytest.mark.usefixtures("real_gmsh")
@@ -600,15 +600,15 @@ def test_result_action_reasons_are_typed_for_busy_and_no_result() -> None:
         )
     }
     assert not idle[GuiActionKey.SAVE_RESULT].enabled
-    assert "成功结果" in idle[GuiActionKey.SAVE_RESULT].reason
+    assert "successful results" in idle[GuiActionKey.SAVE_RESULT].reason
     assert not idle[GuiActionKey.SAVE_RESULT_AS].enabled
     assert idle[GuiActionKey.SAVE_RESULT_AS].reason == idle[GuiActionKey.SAVE_RESULT].reason
     assert not busy[GuiActionKey.SAVE_RESULT].enabled
-    assert "后台任务" in busy[GuiActionKey.SAVE_RESULT].reason
+    assert "background task" in busy[GuiActionKey.SAVE_RESULT].reason
     assert not busy[GuiActionKey.SAVE_RESULT_AS].enabled
     assert busy[GuiActionKey.SAVE_RESULT_AS].reason == busy[GuiActionKey.SAVE_RESULT].reason
     assert not busy[GuiActionKey.OPEN_RESULT].enabled
-    assert "后台任务" in busy[GuiActionKey.OPEN_RESULT].reason
+    assert "background task" in busy[GuiActionKey.OPEN_RESULT].reason
 
 
 def test_result_dialog_cancel_keeps_document_and_advertises_femres_filter(

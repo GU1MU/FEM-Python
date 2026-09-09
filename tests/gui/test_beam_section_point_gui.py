@@ -49,10 +49,10 @@ _POINT_COMPONENTS = (
     "MinPrincipal",
 )
 _POSITION_LABELS = (
-    "右上",
-    "左上",
-    "左下",
-    "右下",
+    "upper right",
+    "upper left",
+    "lower left",
+    "lower right",
 )
 
 
@@ -155,7 +155,7 @@ def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_applica
     stress = next(
         step.child(index)
         for index in range(step.childCount())
-        if step.child(index).text(0) == "应力 S"
+        if step.child(index).text(0) == "Stress S"
     )
     position_items = tuple(
         stress.child(index)
@@ -170,7 +170,7 @@ def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_applica
         )
         == _POINT_COMPONENTS
     )
-    assert all("（" not in item.text(0) for item in position_items)
+    assert all("(" not in item.text(0) for item in position_items)
 
     stress.setExpanded(False)
     position_items[1].setExpanded(False)
@@ -194,7 +194,7 @@ def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_applica
     refreshed_stress = next(
         refreshed_step.child(index)
         for index in range(refreshed_step.childCount())
-        if refreshed_step.child(index).text(0) == "应力 S"
+        if refreshed_step.child(index).text(0) == "Stress S"
     )
     assert refreshed_stress.isExpanded()
     assert refreshed_stress.child(0).isExpanded()
@@ -249,7 +249,7 @@ def test_beam_result_tree_and_ribbon_publish_four_exact_ip_locations(gui_applica
         window.result_variable_combo.setCurrentIndex(variable_index)
         window._populate_result_positions()
         window._populate_result_components()
-        assert _combo_texts(window.result_position_combo) == ("积分点",)
+        assert _combo_texts(window.result_position_combo) == ("Integration point",)
         field_id = window.result_position_combo.currentData()
         assert field_id == ResultFieldId(
             variable,
@@ -345,12 +345,12 @@ def test_probe_and_inspection_expose_section_point_location_identity(gui_applica
     assert tuple(
         dialog.table.horizontalHeaderItem(index).text()
         for index in range(dialog.table.columnCount())
-    )[5:8] == ("截面位置", "截面局部 Y", "截面局部 Z")
+    )[5:8] == ("Section position", "Section local Y", "Section local Z")
     for row, record in enumerate(query_result.records):
         section_point = record.location.section_point
         assert section_point is not None
         assert dialog.record_at(row) == record
-        assert dialog.table.item(row, 5).text() == "左上"
+        assert dialog.table.item(row, 5).text() == "upper left"
         assert float(dialog.table.item(row, 6).text()) == section_point.local_y
         assert float(dialog.table.item(row, 7).text()) == section_point.local_z
 
@@ -359,19 +359,19 @@ def test_probe_and_inspection_expose_section_point_location_identity(gui_applica
     )
     service = InspectionService(result.model, result_provider=provider)
     report = service.inspect("element", 30)
-    result_page = next(page for page in report.pages if page.title == "结果")
+    result_page = next(page for page in report.pages if page.title == "Results")
     table = next(
         table
         for table in result_page.tables
-        if table.title == "应力 S（左上）（就绪）"
+        if table.title == "Stress S (upper left) (Ready)"
     )
     assert inspected.fields
     assert table.columns[7:10] == (
-        "截面位置",
-        "截面局部 Y",
-        "截面局部 Z",
+        "Section position",
+        "Section local Y",
+        "Section local Z",
     )
-    assert {row[7] for row in table.rows} == {"左上"}
+    assert {row[7] for row in table.rows} == {"upper left"}
     dialog.close()
 
 
@@ -420,6 +420,6 @@ def test_viewport_payload_and_legend_keep_selected_point_identity(gui_applicatio
         if location is not None and location.section_point is not None
     )
     identity = viewport._result_location_identity(location)
-    assert "Section position 左上" in identity
+    assert "Section position upper left" in identity
     assert "Section coordinates" in identity
     viewport.close()

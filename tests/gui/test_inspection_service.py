@@ -148,12 +148,12 @@ def test_service_builds_node_element_and_assignment_indexes_once(gui_inp_path):
     assert service.node_sets_by_node[2] == ["RIGHT"]
     assert service.adjacent_elements[2] == [1]
     node = service.inspect("node", 2)
-    basic = _page(node, "基本信息")
-    assert _fields(basic)["坐标"] == "1, 0"
-    assert _fields(basic)["所属节点集"] == "RIGHT"
+    basic = _page(node, "Basic information")
+    assert _fields(basic)["Coordinates"] == "1, 0"
+    assert _fields(basic)["Node sets"] == "RIGHT"
     assert basic.tables[0].rows == (("1", "Quad4"),)
-    assert _page(node, "分析定义").tables[0].rows[0][:3] == ("Static-1", "节点力", "U1")
-    assert all(page.title != "结果" for page in node.pages)
+    assert _page(node, "Analysis definitions").tables[0].rows[0][:3] == ("Static-1", "Nodal force", "U1")
+    assert all(page.title != "Results" for page in node.pages)
 
     record = service.element_record(1)
     assert service._element_record_cached.cache_info().currsize == 1
@@ -169,28 +169,28 @@ def test_collection_material_section_and_step_information_is_structured(gui_inp_
     service = InspectionService(read(gui_inp_path))
 
     node_set = service.inspect("node_set", "LEFT")
-    assert _fields(node_set.pages[0])["节点数量"] == "2"
+    assert _fields(node_set.pages[0])["Node count"] == "2"
     assert len(node_set.pages[0].tables[0].rows) == 2
-    assert "边界条件" in _fields(node_set.pages[0])["边界条件引用"]
+    assert "Boundary conditions" in _fields(node_set.pages[0])["Boundary condition references"]
 
     element_set = service.inspect("element_set", "SOLID")
-    assert _fields(element_set.pages[0])["使用的材料"] == "STEEL"
+    assert _fields(element_set.pages[0])["Materials used"] == "STEEL"
     assert element_set.pages[0].tables[0].rows[0][:3] == ("1", "Quad4", "STEEL")
 
     material = _fields(service.inspect("material", "STEEL").pages[0])
-    assert material["弹性模量 E"] == "210000"
-    assert material["泊松比 ν"] == "0.3"
-    assert material["作用单元数量"] == "1"
+    assert material["Elastic modulus E"] == "210000"
+    assert material["Poisson's ratio ν"] == "0.3"
+    assert material["Affected element count"] == "1"
     section = _fields(service.inspect("section", 0).pages[0])
-    assert section["材料"] == "STEEL"
-    assert section["平面类型"] == "平面应力"
-    assert section["厚度"] == "1"
+    assert section["Material"] == "STEEL"
+    assert section["Plane type"] == "Plane stress"
+    assert section["Thickness"] == "1"
 
     step_index = next(index for index, step in enumerate(service.model.steps) if step.name == "Static-1")
     step = service.inspect("step", step_index)
-    assert [page.title for page in step.pages] == ["概况", "载荷", "输出请求"]
-    assert _page(step, "载荷").tables[0].rows[0][1:] == ("节点力", "RIGHT", "U1", "10")
-    assert _page(step, "输出请求").tables[0].rows[0][1:] == ("场输出", "节点", "U, RF")
+    assert [page.title for page in step.pages] == ["Overview", "Loads", "Output requests"]
+    assert _page(step, "Loads").tables[0].rows[0][1:] == ("Nodal force", "RIGHT", "U1", "10")
+    assert _page(step, "Output requests").tables[0].rows[0][1:] == ("Field output", "Node", "U, RF")
 
 
 def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
@@ -210,34 +210,34 @@ def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
         result.model,
         result_provider=provider,
     )
-    node_page = _page(service.inspect("node", 1), "结果")
-    element_page = _page(service.inspect("element", 2), "结果")
+    node_page = _page(service.inspect("node", 1), "Results")
+    element_page = _page(service.inspect("element", 2), "Results")
 
     assert tuple(type(request) for request in observed) == (
         NodeResultInspectionRequest,
         ElementResultInspectionRequest,
     )
     assert tuple(table.title for table in node_page.tables) == (
-        "位移 U（就绪）",
-        "反力 RF（就绪）",
-        "应力 S（节点）（就绪）",
+        "Displacement U (Ready)",
+        "Reaction Force RF (Ready)",
+        "Stress S (Node) (Ready)",
     )
     assert tuple(table.title for table in element_page.tables) == (
-        "应力 S（节点）（就绪）",
+        "Stress S (Node) (Ready)",
     )
     assert all(
         table.columns
         == (
-            "状态",
-            "分量",
-            "数值",
-            "节点",
-            "单元",
-            "积分点",
-            "局部节点",
-            "结果区域",
-            "平均",
-            "诊断",
+            "Status",
+            "Component",
+            "Value",
+            "Node",
+            "Element",
+            "Integration point",
+            "Local node",
+            "Result region",
+            "Averaging",
+            "Diagnostics",
         )
         for table in (*node_page.tables, *element_page.tables)
     )
@@ -246,12 +246,12 @@ def test_typed_provider_drives_node_and_element_result_pages_in_catalog_order(
 def test_typed_result_rows_preserve_all_location_provenance() -> None:
     result, provider = _provider_with_all_continuum_fields()
     service = InspectionService(result.model, result_provider=provider)
-    page = _page(service.inspect("node", 1), "结果")
+    page = _page(service.inspect("node", 1), "Results")
     by_title = {table.title: table for table in page.tables}
 
     element_node = tuple(
         row
-        for row in by_title["应力 S（节点）（就绪）"].rows
+        for row in by_title["Stress S (Node) (Ready)"].rows
         if row[1] == "S11"
     )
 
@@ -273,12 +273,12 @@ def test_typed_provider_update_is_exact_and_clearable() -> None:
 
     service.update_result_provider(provider)
     assert service.result_provider is provider
-    assert _page(service.inspect("node", 1), "结果").tables
+    assert _page(service.inspect("node", 1), "Results").tables
 
     service.update_result_provider(None)
     assert service.result_provider is None
     assert all(
-        page.title != "结果"
+        page.title != "Results"
         for page in service.inspect("node", 1).pages
     )
 
@@ -297,16 +297,16 @@ def test_lazy_and_unavailable_provider_fields_do_not_materialize_or_block_model(
     monkeypatch.setattr(ResultProvider, "materialize", materialize)
     service = InspectionService(result.model, result_provider=provider)
 
-    assert service.inspect("model", None).pages[0].title == "概况"
-    node_page = _page(service.inspect("node", 1), "结果")
-    element_page = _page(service.inspect("element", 1), "结果")
+    assert service.inspect("model", None).pages[0].title == "Overview"
+    node_page = _page(service.inspect("node", 1), "Results")
+    element_page = _page(service.inspect("element", 1), "Results")
     titles = tuple(
         table.title
         for table in (*node_page.tables, *element_page.tables)
     )
 
-    assert any(title.endswith("（按需加载）") for title in titles)
-    assert all("单元质心" not in title for title in titles)
+    assert any(title.endswith(" (Load on demand)") for title in titles)
+    assert all("element centroid" not in title for title in titles)
     assert calls == []
 
 
@@ -334,15 +334,15 @@ def test_beam_section_and_line_load_use_the_common_inspection_service():
     element_properties = dict(
         service.inspect("element", 10).pages[1].tables[1].rows
     )
-    assert element_properties["截面类型"] == "rectangle"
-    assert element_properties["矩形高度（局部 z）"] == "0.1"
-    assert element_properties["矩形宽度（局部 y）"] == "0.02"
+    assert element_properties["Section type"] == "rectangle"
+    assert element_properties["Rectangle height (local z)"] == "0.1"
+    assert element_properties["Rectangle width (local y)"] == "0.02"
     load_fields = _fields(service.inspect("line_load", (0, 0)).pages[0])
     assert (
-        load_fields["坐标系"]
-        == "局部（Beam 已解析局部坐标）"
+        load_fields["Coordinate system"]
+        == "Local (resolved beam coordinates)"
     )
-    assert load_fields["载荷向量"] == "0, -5, 0"
+    assert load_fields["Load vector"] == "0, -5, 0"
     assert service.selection_for("line_load", (0, 0)).element_ids == (10,)
 
 
@@ -425,18 +425,18 @@ def test_assignment_and_element_inspection_use_effective_frame_query(
     assert assignment["orientation source"] == source
     assert assignment["authored reference"] == reference
     assert assignment["effective frame source"] == source
-    assert assignment["有效元素数量"] == "1"
-    assert assignment["无效元素数量"] == "0"
+    assert assignment["Valid element count"] == "1"
+    assert assignment["Invalid element count"] == "0"
     assert assignment["validity"] == "valid"
-    assert assignment["矩形高度（local z）"] == "0.1"
-    assert assignment["矩形宽度（local y）"] == "0.02"
+    assert assignment["Rectangle height (local z)"] == "0.1"
+    assert assignment["Rectangle width (local y)"] == "0.02"
     assert service.selection_for("assignment", 0).element_ids == (10,)
 
     frame = _fields(
-        _page(service.inspect("element", 10), "Beam 局部坐标")
+        _page(service.inspect("element", 10), "Beam local coordinates")
     )
     assert frame["frame source"] == source
-    assert frame["effective properties 来源"] == "截面分配 1"
+    assert frame["Effective properties source"] == "Section assignment 1"
     assert frame["local x"] == "1, 0, 0"
     assert frame["local y"] == "0, 1, 0"
     assert frame["local z"] == "0, 0, 1"
@@ -486,8 +486,8 @@ def test_non_beam_assignment_marks_orientation_not_applicable():
 
     assert assignment["orientation source"] == "not applicable"
     assert assignment["effective frame source"] == "not applicable"
-    assert assignment["有效元素数量"] == "0"
-    assert assignment["无效元素数量"] == "0"
+    assert assignment["Valid element count"] == "0"
+    assert assignment["Invalid element count"] == "0"
     assert assignment["validity"] == "not applicable"
     assert "diagnostics" not in assignment
 
@@ -506,8 +506,8 @@ def test_global_gravity_uses_the_common_inspection_and_selection(gui_inp_path):
 
     inspection = service.inspect("gravity_load", (step_index, 0))
 
-    assert inspection.title == "重力"
-    assert _fields(inspection.pages[0])["目标"] == "整个模型"
+    assert inspection.title == "Gravity"
+    assert _fields(inspection.pages[0])["Target"] == "Entire model"
     assert service.selection_for(
         "gravity_load",
         (step_index, 0),

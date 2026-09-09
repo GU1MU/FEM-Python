@@ -1,4 +1,4 @@
-"""视口背景设置对话框。"""
+"""Viewport background settings dialog."""
 
 from __future__ import annotations
 
@@ -21,16 +21,16 @@ from .dialogs import configure_form_layout
 
 
 PRESETS = (
-    ("清浅蓝灰", ViewportBackgroundSettings()),
-    ("白色", ViewportBackgroundSettings("solid", "#ffffff", "#ffffff")),
-    ("浅灰", ViewportBackgroundSettings("solid", "#f2f4f5", "#f2f4f5")),
-    ("深蓝渐变", ViewportBackgroundSettings("gradient", "#607d92", "#1e3448")),
-    ("黑色", ViewportBackgroundSettings("solid", "#16191c", "#16191c")),
+    ("Light blue gray", ViewportBackgroundSettings()),
+    ("White", ViewportBackgroundSettings("solid", "#ffffff", "#ffffff")),
+    ("Light gray", ViewportBackgroundSettings("solid", "#f2f4f5", "#f2f4f5")),
+    ("Dark blue gradient", ViewportBackgroundSettings("gradient", "#607d92", "#1e3448")),
+    ("Black", ViewportBackgroundSettings("solid", "#16191c", "#16191c")),
 )
 
 
 class ViewportBackgroundDialog(QDialog):
-    """选择背景预设或自定义渐变，并支持实时预览。"""
+    """Select a background preset or custom gradient with live preview."""
 
     previewRequested = Signal(object)
     applyRequested = Signal(object, bool)
@@ -43,7 +43,7 @@ class ViewportBackgroundDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("viewportBackgroundDialog")
-        self.setWindowTitle("视口背景")
+        self.setWindowTitle("Viewport Background")
         self.setMinimumWidth(390)
         self._baseline = settings.normalized()
         self._bottom_color = self._baseline.bottom_color
@@ -56,29 +56,29 @@ class ViewportBackgroundDialog(QDialog):
         self.preset_combo.setObjectName("backgroundPreset")
         for label, value in PRESETS:
             self.preset_combo.addItem(label, value)
-        self.preset_combo.addItem("自定义", None)
+        self.preset_combo.addItem("Custom", None)
         self.style_combo = QComboBox(self)
         self.style_combo.setObjectName("backgroundStyle")
-        self.style_combo.addItem("纯色", "solid")
-        self.style_combo.addItem("渐变", "gradient")
+        self.style_combo.addItem("Solid", "solid")
+        self.style_combo.addItem("Gradient", "gradient")
         self.bottom_button = QPushButton(self)
         self.bottom_button.setObjectName("backgroundBottomColor")
         self.top_button = QPushButton(self)
         self.top_button.setObjectName("backgroundTopColor")
-        form.addRow("预设：", self.preset_combo)
-        form.addRow("背景样式：", self.style_combo)
-        form.addRow("底部颜色：", self.bottom_button)
-        form.addRow("顶部颜色：", self.top_button)
+        form.addRow("Preset:", self.preset_combo)
+        form.addRow("Background style:", self.style_combo)
+        form.addRow("Bottom color:", self.bottom_button)
+        form.addRow("Top color:", self.top_button)
         layout.addLayout(form)
-        self.auto_contrast = QCheckBox("自动调整文字和边线颜色", self)
+        self.auto_contrast = QCheckBox("Auto-adjust text and edge colors", self)
         self.auto_contrast.setChecked(self._baseline.auto_contrast)
-        self.remember = QCheckBox("记住设置", self)
+        self.remember = QCheckBox("Remember settings", self)
         self.remember.setChecked(remember)
         layout.addWidget(self.auto_contrast)
         layout.addWidget(self.remember)
 
         command_row = QHBoxLayout()
-        reset = QPushButton("恢复默认", self)
+        reset = QPushButton("Restore Defaults", self)
         reset.clicked.connect(
             lambda _checked=False: self._set_controls(ViewportBackgroundSettings())
         )
@@ -90,9 +90,9 @@ class ViewportBackgroundDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("应用")
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("Apply")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         command_row.addWidget(buttons)
         layout.addLayout(command_row)
 
@@ -166,7 +166,7 @@ class ViewportBackgroundDialog(QDialog):
 
     def _choose_color(self, target: str) -> None:
         current = self._bottom_color if target == "bottom" else self._top_color
-        color = QColorDialog.getColor(QColor(current), self, "选择视口背景颜色")
+        color = QColorDialog.getColor(QColor(current), self, "Select Viewport Background Color")
         if not color.isValid():
             return
         if target == "bottom":

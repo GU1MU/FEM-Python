@@ -190,7 +190,7 @@ def test_model_without_successful_jobs_has_no_result_root(gui_application) -> No
 
     assert tree.upsert_model_runs(1, projection) == ()
     assert tree.roots == {}
-    assert tree.topLevelItem(0).text(0) == "尚无分析结果"
+    assert tree.topLevelItem(0).text(0) == "No analysis results"
 
 
 def test_same_selection_is_scoped_to_document_and_source(gui_application) -> None:
