@@ -105,7 +105,7 @@ def localize_part_boolean_context(
         f"BF{context.feature_id[3:]}",
         "B1",
         "B2",
-        "工具部件",
+        "Tool Part",
         entities,
         mappings,
     )

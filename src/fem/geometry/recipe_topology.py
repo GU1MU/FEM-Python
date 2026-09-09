@@ -1083,7 +1083,7 @@ def _strict_sketch_topology(recipe: SketchGeometry) -> RecipeTopology:
             recipe,
             code="sketch.profile-invalid" if first is None else first.code,
             message=(
-                "严格草图 Profile 无法证明为可提交的平面拓扑"
+                "Strict sketch Profiles cannot be proven to have submittable planar topology"
                 if first is None
                 else first.message
             ),
@@ -1357,7 +1357,7 @@ def _extruded_topology(recipe: ExtrudedGeometry) -> RecipeTopology:
         return _unknown_topology(
             recipe,
             code="extrude.source-face.topology-unproven",
-            message="拉伸源必须具有唯一的二维 logical body",
+            message="The Extrude source must have a unique 2D logical body",
             operation="extrude",
             source_signatures=(("base", base.signature),),
         )
@@ -1600,7 +1600,7 @@ def _revolved_topology(recipe: RevolvedGeometry) -> RecipeTopology:
         return _unknown_topology(
             recipe,
             code="revolve.source-face.topology-unproven",
-            message="扫掠源必须具有唯一且可验证的二维 logical body",
+            message="The sweep source must have a unique, verifiable 2D logical body",
             operation="revolve",
             source_signatures=(("base", base.signature),),
         )
@@ -1690,7 +1690,7 @@ def _path_swept_topology(recipe: PathSweptGeometry) -> RecipeTopology:
         return _unknown_topology(
             recipe,
             code="path-sweep.source.topology-unproven",
-            message="路径扫掠需要一个可验证的 material Profile 和开放路径",
+            message="Path sweep requires a verifiable material Profile and an open path",
             operation="path_sweep",
             source_signatures=(("base", base.signature), ("path", path.signature)),
         )
@@ -1933,7 +1933,7 @@ def _face_sketch_boolean_topology(
         return _unknown_topology(
             recipe,
             code="face-sketch-boolean.lineage.unproven",
-            message="面草图布尔尚未完成全部参与轮廓的 OCC 谱系证明。",
+            message="The face-sketch Boolean has not completed OCC lineage proofs for all participating Profiles.",
             operation=f"face-sketch-boolean.{recipe.operation.value}",
             source_signatures=sources,
         )
@@ -1950,7 +1950,7 @@ def _face_sketch_boolean_topology(
             return _unknown_topology(
                 recipe,
                 code="face-sketch-boolean.body-unresolved",
-                message="工作面无法在 MultiBody 中唯一确定目标 Body。",
+                message="The workplane cannot uniquely identify the target Body in MultiBody.",
                 operation=f"face-sketch-boolean.{recipe.operation.value}",
                 source_signatures=sources,
             )

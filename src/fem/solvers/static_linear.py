@@ -278,8 +278,8 @@ class PreparedSystem:
             raise RuntimeError(_PARDISO_MEMORY_FAILURE) from error
         except (RuntimeError, ValueError) as error:
             raise ValueError(
-                "模型约束不足或刚度矩阵奇异；"
-                "请检查刚体位移、材料、截面和单元连接"
+                "The model is underconstrained or the stiffness matrix is singular; "
+                "check rigid-body motion, materials, sections, and element connectivity"
             ) from error
 
     def solve(
@@ -870,7 +870,7 @@ def validate_problem(
     model: Any,
     step: StepSelector | None = None,
 ) -> AnalysisStep | None:
-    """使用与线性静力求解完全一致的规则验证模型和分析步。"""
+    """Validate the model and steps using exactly the same rules as the linear static solver."""
     selected_step = _resolve_step(model, step)
     validate_model_structure(model)
     validate_analysis_step(model, selected_step)

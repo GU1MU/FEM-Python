@@ -169,26 +169,26 @@ def derive_geometry_feature_rows(
             )
             hole_count = sum(profile.is_hole for profile in analysis.profiles)
             return (
-                f"草图  点={len(recipe.points)}，曲线={len(recipe.curves)}，"
-                f"Profile={material_count}，孔={hole_count}",
+                f"Sketch  Points={len(recipe.points)}, Curves={len(recipe.curves)}, "
+                f"Profiles={material_count}, Holes={hole_count}",
             )
         material_count = sum(
             contour.operation == "material" for contour in recipe.contours
         )
         cut_count = len(recipe.contours) - material_count
         return (
-            f"草图  轮廓={len(recipe.contours)}，材料={material_count}，"
-            f"切除={cut_count}",
+            f"Sketch  Contours={len(recipe.contours)}, Material={material_count}, "
+            f"Cuts={cut_count}",
         )
     if isinstance(recipe, WireGeometry):
-        return (f"线框  节点={len(recipe.points)}，杆件={len(recipe.members)}",)
+        return (f"Wire  Nodes={len(recipe.points)}, Members={len(recipe.members)}",)
     if isinstance(recipe, MovedGeometry):
         return derive_geometry_feature_rows(recipe.base) + (
-            f"移动  X={recipe.dx:g}，Y={recipe.dy:g}，Z={recipe.dz:g}",
+            f"Move  X={recipe.dx:g}, Y={recipe.dy:g}, Z={recipe.dz:g}",
         )
     if isinstance(recipe, RotatedGeometry):
         return derive_geometry_feature_rows(recipe.base) + (
-            f"旋转  {recipe.axis.upper()} 轴，{recipe.angle_degrees:g}°",
+            f"Rotate  {recipe.axis.upper()} axis, {recipe.angle_degrees:g}°",
         )
     if isinstance(recipe, ExtrudedGeometry):
         try:
@@ -203,71 +203,71 @@ def derive_geometry_feature_rows(
         profile_summary = (
             ""
             if profile_count <= 1
-            else f"，Profiles={profile_count}"
+            else f", Profiles={profile_count}"
         )
         return derive_geometry_feature_rows(recipe.base) + (
-            f"拉伸  高度={recipe.height:g}{profile_summary}",
+            f"Extrude  Height={recipe.height:g}{profile_summary}",
         )
     if isinstance(recipe, RevolvedGeometry):
         profile_count = len(recipe.source_face_ids)
         profile_summary = (
             ""
             if profile_count <= 1
-            else f"，Profiles={profile_count}"
+            else f", Profiles={profile_count}"
         )
         return derive_geometry_feature_rows(recipe.base) + (
-            f"扫掠  {recipe.axis.upper()} 轴，"
+            f"Sweep  {recipe.axis.upper()} axis, "
             f"{recipe.angle_degrees:g}°{profile_summary}",
         )
     if isinstance(recipe, PathSweptGeometry):
         return derive_geometry_feature_rows(recipe.base) + (
-            f"路径扫掠  路径段={len(recipe.path.members)}，"
+            f"Path sweep  Path segments={len(recipe.path.members)}, "
             f"frame={recipe.frame_strategy}",
         )
     if isinstance(recipe, FaceSketchBooleanGeometry):
         operation = (
-            "拉伸合并"
+            "Extrude Fuse"
             if recipe.operation is FaceSketchBooleanOperation.FUSE
-            else "拉伸切除"
+            else "Extrude Cut"
         )
         direction = (
-            "向外"
+            "Outward"
             if recipe.direction is FaceSketchBooleanDirection.OUTWARD
-            else "向内"
+            else "Inward"
         )
         return derive_geometry_feature_rows(recipe.base) + (
-            f"{operation}  工作面={recipe.support_face_id}，"
-            f"方向={direction}，距离={recipe.distance:g}，"
-            f"轮廓={len(recipe.participating_profile_ids)}，"
-            f"外部关联={len(recipe.external_references)}",
+            f"{operation}  Workplane={recipe.support_face_id}, "
+            f"Direction={direction}, Distance={recipe.distance:g}, "
+            f"Profiles={len(recipe.participating_profile_ids)}, "
+            f"External references={len(recipe.external_references)}",
         )
     if isinstance(recipe, BooleanGeometry):
-        names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}
+        names = {"fuse": "Fuse", "cut": "Cut", "fragment": "Fragment"}
         if recipe.planar_context is not None:
             return derive_geometry_feature_rows(recipe.object_geometry) + (
-                f"二维{names[recipe.operation]}  "
-                f"目标={recipe.planar_context.target_face_id}，"
-                f"工具 Profiles={len(recipe.planar_context.tool_face_ids)}",
+                f"2D {names[recipe.operation]}  "
+                f"Target={recipe.planar_context.target_face_id}, "
+                f"Tool Profiles={len(recipe.planar_context.tool_face_ids)}",
             )
         return derive_geometry_feature_rows(recipe.object_geometry) + (
-            f"{names[recipe.operation]}  工具体={recipe.tool_geometry.name}",
+            f"{names[recipe.operation]}  Tool body={recipe.tool_geometry.name}",
         )
     if isinstance(recipe, RectangleGeometry):
-        description = f"矩形  {recipe.width:g} × {recipe.height:g}"
+        description = f"Rectangle  {recipe.width:g} × {recipe.height:g}"
     elif isinstance(recipe, DiskGeometry):
-        description = f"圆盘  半径={recipe.radius:g}"
+        description = f"Disk  Radius={recipe.radius:g}"
     elif isinstance(recipe, PlateWithHoleGeometry):
         description = (
-            f"带孔板  {recipe.width:g} × {recipe.height:g}，"
-            f"孔半径={recipe.hole_radius:g}"
+            f"Plate with hole  {recipe.width:g} × {recipe.height:g}, "
+            f"Hole radius={recipe.hole_radius:g}"
         )
     elif isinstance(recipe, BoxGeometry):
-        description = f"长方体  {recipe.width:g} × {recipe.depth:g} × {recipe.height:g}"
+        description = f"Box  {recipe.width:g} × {recipe.depth:g} × {recipe.height:g}"
     elif isinstance(recipe, CylinderGeometry):
-        description = f"圆柱  半径={recipe.radius:g}，高度={recipe.height:g}"
+        description = f"Cylinder  Radius={recipe.radius:g}, Height={recipe.height:g}"
     else:  # pragma: no cover - _require_native_recipe owns supported types
         raise TypeError(f"unsupported native geometry recipe: {type(recipe).__name__}")
-    return (f"基础体  {description}",)
+    return (f"Base geometry  {description}",)
 
 
 def _require_native_recipe(recipe: Any) -> None:

@@ -66,7 +66,7 @@ def resolve_extrusion_source_faces(
         diagnostic = (
             topology.diagnostics[0].message
             if topology.diagnostics
-            else "当前二维拓扑无法安全拉伸"
+            else "The current 2D topology cannot be safely extruded"
         )
         raise ExtrusionSourceResolutionError(
             "extrude.source-face.topology-unproven",
@@ -83,7 +83,7 @@ def resolve_extrusion_source_faces(
         if reference.kind != "face":
             raise ExtrusionSourceResolutionError(
                 "extrude.source-face.wrong-kind",
-                f"拉伸源 {reference.logical_id!r} 必须引用二维面",
+                f"Extrude source {reference.logical_id!r} must reference a 2D face",
                 logical_id=reference.logical_id,
             )
         references.append(reference)
@@ -104,7 +104,7 @@ def resolve_extrusion_source_faces(
     if not canonical_faces:
         raise ExtrusionSourceResolutionError(
             "extrude.source-face.required",
-            "当前二维几何没有可拉伸的 material Profile",
+            "The current 2D geometry has no extrudable material Profile",
         )
 
     if references:
@@ -115,19 +115,19 @@ def resolve_extrusion_source_faces(
             except KeyError as error:
                 raise ExtrusionSourceResolutionError(
                     "extrude.source-face.unknown",
-                    f"所选 Profile {reference.logical_id!r} 已失效，请重新选择",
+                    f"The selected Profile {reference.logical_id!r} is stale; select it again",
                     logical_id=reference.logical_id,
                 ) from error
             if entity.kind != "face":
                 raise ExtrusionSourceResolutionError(
                     "extrude.source-face.wrong-kind",
-                    f"拉伸源 {reference.logical_id!r} 必须引用二维面",
+                    f"Extrude source {reference.logical_id!r} must reference a 2D face",
                     logical_id=reference.logical_id,
                 )
             if not entity.selectable:
                 raise ExtrusionSourceResolutionError(
                     "extrude.source-face.unselectable",
-                    f"所选 Profile {reference.logical_id!r} 当前不可选择",
+                    f"The selected Profile {reference.logical_id!r} is currently not selectable",
                     logical_id=reference.logical_id,
                 )
             resolved.append(_canonical_face_id(topology, entity.logical_id))
@@ -158,7 +158,7 @@ def resolve_extrusion_source_faces(
             if shared:
                 raise ExtrusionSourceResolutionError(
                     "extrude.source-face.shared-boundary",
-                    "所选 Profiles 共享边界，当前阶段无法证明稳定拉伸拓扑",
+                    "The selected Profiles share boundaries; stable extrusion topology cannot currently be proven",
                     logical_id=sorted(shared)[0],
                 )
 
@@ -218,7 +218,7 @@ def _canonical_face_id(topology, logical_id: str) -> str:
         if current in visited:
             raise ExtrusionSourceResolutionError(
                 "extrude.source-face.alias-ambiguous",
-                f"Profile alias {logical_id!r} 形成循环，无法唯一解析",
+                f"Profile alias {logical_id!r} forms a cycle and cannot be uniquely resolved",
                 logical_id=logical_id,
             )
         visited.add(current)
@@ -229,7 +229,7 @@ def _canonical_face_id(topology, logical_id: str) -> str:
         if len(linked_faces) != 1:
             raise ExtrusionSourceResolutionError(
                 "extrude.source-face.alias-ambiguous",
-                f"Profile alias {logical_id!r} 无法唯一解析",
+                f"Profile alias {logical_id!r} cannot be uniquely resolved",
                 logical_id=logical_id,
             )
         current = linked_faces[0]
@@ -277,7 +277,7 @@ def _boundary_edge_ids(
         )
     raise ExtrusionSourceResolutionError(
         "extrude.source-face.topology-unproven",
-        f"Profile {face_id!r} 没有可证明的边界拓扑",
+        f"Profile {face_id!r} has no provable boundary topology",
         logical_id=face_id,
     )
 

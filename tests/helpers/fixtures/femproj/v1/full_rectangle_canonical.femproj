@@ -32,7 +32,7 @@
       "name": "Base-1",
       "kind": "base",
       "payload": {
-        "summary": "基础体  矩形  10 × 5"
+        "summary": "Base geometry  Rectangle  10 × 5"
       }
     }
   ],

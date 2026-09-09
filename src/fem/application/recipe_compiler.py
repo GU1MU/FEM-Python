@@ -101,15 +101,15 @@ class CompiledRecipeTopology:
         except KeyError as error:
             if not self.catalog.exact and self.catalog.diagnostics:
                 raise TopologyResolutionError(
-                    f"逻辑实体 {reference.logical_id!r} "
-                    f"不可用于建模：{self.catalog.diagnostics[0].message}"
+                    f"Logical entity {reference.logical_id!r} "
+                    f"cannot be used for modeling: {self.catalog.diagnostics[0].message}"
                 ) from error
             raise TopologyResolutionError(
-                f"逻辑实体 {reference.logical_id!r} 已失效，请重新选择"
+                f"Logical entity {reference.logical_id!r} is stale; select it again"
             ) from error
         if logical.kind != reference.kind:
             raise TopologyResolutionError(
-                f"逻辑实体 {reference.logical_id!r} 的类型不匹配"
+                f"Logical entity {reference.logical_id!r} has a mismatched type"
             )
         if not logical.selectable:
             diagnostic = next(
@@ -118,15 +118,15 @@ class CompiledRecipeTopology:
                     for item in self.catalog.diagnostics
                     if item.code == logical.diagnostic_code
                 ),
-                "当前几何操作无法证明该实体的拓扑身份",
+                "The current geometry operation cannot prove this entity's topological identity",
             )
             raise TopologyResolutionError(
-                f"逻辑实体 {reference.logical_id!r} 不可用于建模：{diagnostic}"
+                f"Logical entity {reference.logical_id!r} cannot be used for modeling: {diagnostic}"
             )
         entities = tuple(self.logical_entities.get(logical.logical_id, ()))
         if not entities:
             raise TopologyResolutionError(
-                f"逻辑实体 {reference.logical_id!r} 无法解析，请重新选择"
+                f"Logical entity {reference.logical_id!r} cannot be resolved; select it again"
             )
         return entities
 
@@ -211,7 +211,7 @@ def _compile_exact(cad: Any, recipe: NativeGeometry) -> _CompiledDraft:
         return _compile_multi_body(cad, recipe)
     if isinstance(recipe, BooleanGeometry):
         return _compile_boolean(cad, recipe)
-    raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+    raise TypeError(f"Unsupported geometry recipe: {type(recipe).__name__}")
 
 
 def _translate_compiled_draft(
@@ -303,7 +303,7 @@ def _capture_rigid_entity_fingerprints(
         entity = outside[0]
         raise TopologyResolutionError(
             "rigid-transform.rebind.outside-domain: "
-            f"逻辑实体 ({entity.dimension}, {entity.tag}) 不属于计算域边界"
+            f"Logical entity ({entity.dimension}, {entity.tag}) is not on the computational domain boundary"
         )
     required = list(referenced)
     frontier = tuple(
@@ -353,7 +353,7 @@ def _rebind_rigid_transform(
     if len(original_domain) != len(transformed_domain):
         raise TopologyResolutionError(
             "rigid-transform.rebind.domain-count: "
-            "刚体变换改变了计算域数量"
+            "The rigid transformation changed the number of computational domains"
         )
     transformed_closure = _domain_boundary_closure(
         cad,
@@ -426,8 +426,8 @@ def _rebind_rigid_transform(
             if len(matches) != 1:
                 raise TopologyResolutionError(
                     "rigid-transform.rebind.ambiguous: "
-                    f"实体 ({original.dimension}, {original.tag}) "
-                    f"匹配到 {len(matches)} 个变换后候选"
+                    f"Entity ({original.dimension}, {original.tag}) "
+                    f"matched {len(matches)} transformed candidates"
                 )
             rebound[original] = matches[0]
             used.add(matches[0])
@@ -439,7 +439,7 @@ def _rebind_rigid_transform(
             entity = error.args[0]
             raise TopologyResolutionError(
                 "rigid-transform.rebind.missing: "
-                f"无法重新绑定实体 ({entity.dimension}, {entity.tag})"
+                f"Cannot rebind entity ({entity.dimension}, {entity.tag})"
             ) from error
 
     return _CompiledDraft(
@@ -574,7 +574,7 @@ def _compile_wire(cad: Any, recipe: WireGeometry) -> _CompiledDraft:
             point_refs[point.name] = cad.point(point.x, point.y, point.z)
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 point:{point.name}：{error}"
+                f"Cannot create point:{point.name}: {error}"
             ) from error
 
     member_refs: dict[str, Any] = {}
@@ -586,8 +586,8 @@ def _compile_wire(cad: Any, recipe: WireGeometry) -> _CompiledDraft:
             )
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 edge:{member.name}，端点 "
-                f"{member.start!r} 和 {member.end!r}：{error}"
+                f"Cannot create edge:{member.name} with endpoints "
+                f"{member.start!r} and {member.end!r}: {error}"
             ) from error
 
     return _CompiledDraft(
@@ -620,7 +620,7 @@ def _compile_strict_sketch(
         message = (
             analysis.blocking_diagnostics[0].message
             if analysis.blocking_diagnostics
-            else "严格草图没有可构建的 Profile"
+            else "The strict sketch has no buildable Profile"
         )
         raise TopologyResolutionError(message)
 
@@ -632,7 +632,7 @@ def _compile_strict_sketch(
             )
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 point:{point.id}：{error}"
+                f"Cannot create point:{point.id}: {error}"
             ) from error
 
     # Each semantic curve can compile to multiple OCC curves.  The boolean
@@ -649,7 +649,7 @@ def _compile_strict_sketch(
             )
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 edge:{curve.id}：{error}"
+                f"Cannot create edge:{curve.id}: {error}"
             ) from error
 
     loop_refs: dict[str, Any] = {}
@@ -672,7 +672,7 @@ def _compile_strict_sketch(
             loop_refs[profile.id] = cad.curve_loop(tuple(oriented))
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 Profile {profile.id!r} 的闭合曲线环：{error}"
+                f"Cannot create the closed curve loop for Profile {profile.id!r}: {error}"
             ) from error
 
     material_profiles = tuple(
@@ -695,7 +695,7 @@ def _compile_strict_sketch(
             )
         except (TypeError, ValueError) as error:
             raise TopologyResolutionError(
-                f"无法创建 face:profile/{profile.id.split('/', 1)[-1]}：{error}"
+                f"Cannot create face:profile/{profile.id.split('/', 1)[-1]}: {error}"
             ) from error
 
     domain = tuple(surfaces[profile.id] for profile in material_profiles)
@@ -923,7 +923,7 @@ def _compile_disk(cad: Any, recipe: DiskGeometry) -> _CompiledDraft:
     domain = (cad.disk(0.0, 0.0, recipe.radius),)
     outer = tuple(cad.boundary(domain))
     if not outer or any(entity.dimension != 1 for entity in outer):
-        raise TopologyResolutionError("圆盘外边界识别失败")
+        raise TopologyResolutionError("Failed to identify the disk's outer boundary")
     return _CompiledDraft(
         domain,
         {
@@ -943,7 +943,7 @@ def _compile_plate_with_hole(
     hole = cad.disk(recipe.hole_x, recipe.hole_y, recipe.hole_radius)
     domain = tuple(cad.cut((plate,), (hole,)).of_dimension(2))
     if len(domain) != 1:
-        raise TopologyResolutionError("带孔板布尔切除没有生成唯一平面域")
+        raise TopologyResolutionError("The plate-with-hole Boolean Cut did not generate a unique planar domain")
     boundary = tuple(cad.boundary(domain))
     outer = _rectangle_edges(
         cad,
@@ -956,7 +956,7 @@ def _compile_plate_with_hole(
     outer_set = set(_flatten(outer))
     hole_boundary = tuple(entity for entity in boundary if entity not in outer_set)
     if not hole_boundary:
-        raise TopologyResolutionError("带孔板圆孔边界识别失败")
+        raise TopologyResolutionError("Failed to identify the plate's circular hole boundary")
     points = _boundary_of(cad, outer)
     logical = {
         "point:bottom-left": _select_one(cad, points, x=0.0, y=0.0),
@@ -1122,11 +1122,11 @@ def _compile_cylinder(cad: Any, recipe: CylinderGeometry) -> _CompiledDraft:
     cap_set = {*bottom, *top}
     outer = tuple(entity for entity in faces if entity not in cap_set)
     if len(outer) != 1:
-        raise TopologyResolutionError("圆柱外侧面识别失败")
+        raise TopologyResolutionError("Failed to identify the cylinder's outer side face")
     bottom_rim = tuple(cad.boundary(bottom))
     top_rim = tuple(cad.boundary(top))
     if not bottom_rim or not top_rim:
-        raise TopologyResolutionError("圆柱端部圆周识别失败")
+        raise TopologyResolutionError("Failed to identify the cylinder's end circumferences")
     return _CompiledDraft(
         domain,
         {
@@ -1159,20 +1159,20 @@ def _compile_boolean(cad: Any, recipe: BooleanGeometry) -> _CompiledDraft:
     }[recipe.operation]
     domain = tuple(operation(objects, tools).of_dimension(geometry_dimension(recipe)))
     if not domain:
-        raise TopologyResolutionError("布尔操作没有生成有效几何")
+        raise TopologyResolutionError("The Boolean operation did not generate valid geometry")
     catalog = describe_recipe_topology(recipe)
     if not catalog.exact:
         return _CompiledDraft(domain, {}, {})
     outer = axis_aligned_rectangle(recipe.object_geometry)
     if outer is None:
-        raise TopologyResolutionError("无法证明布尔结果的外轮廓")
+        raise TopologyResolutionError("Cannot prove the outer contour of the Boolean result")
     x, y, width, height = outer.x, outer.y, outer.width, outer.height
     boundary = tuple(cad.boundary(domain))
     outer_edges = _rectangle_edges(cad, boundary, x, y, width, height)
     outer_set = set(_flatten(outer_edges))
     hole_edges = tuple(entity for entity in boundary if entity not in outer_set)
     if not hole_edges:
-        raise TopologyResolutionError("无法证明布尔切除的内轮廓")
+        raise TopologyResolutionError("Cannot prove the inner contour of the Boolean Cut")
     outer_points = _boundary_of(cad, outer_edges)
     logical: dict[str, tuple[Any, ...]] = {
         "point:bottom-left": _select_one(cad, outer_points, x=x, y=y),
@@ -1443,7 +1443,7 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
         if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
             raise TopologyResolutionError(
                 "extrude.compile.surface-not-unique: "
-                f"{source_face_id} 没有唯一 OCC plane surface"
+                f"{source_face_id} has no unique OCC plane surface"
             )
         feature = cad.extrude(
             source_surfaces,
@@ -1458,22 +1458,22 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
         if len(source_domain) != 1 or source_domain[0].dimension != 3:
             raise TopologyResolutionError(
                 "extrude.compile.empty-result: "
-                f"{source_face_id} 没有生成唯一 volume"
+                f"{source_face_id} did not generate a unique volume"
             )
         if len(bottom) != 1:
             raise TopologyResolutionError(
                 "extrude.compile.bottom-not-unique: "
-                f"{source_face_id} 没有生成唯一 bottom face"
+                f"{source_face_id} did not generate a unique bottom face"
             )
         if len(top) != 1:
             raise TopologyResolutionError(
                 "extrude.compile.top-not-unique: "
-                f"{source_face_id} 没有生成唯一 top face"
+                f"{source_face_id} did not generate a unique top face"
             )
         if not sides:
             raise TopologyResolutionError(
                 "extrude.compile.side-not-unique: "
-                f"{source_face_id} 没有生成 side faces"
+                f"{source_face_id} did not generate side faces"
             )
 
         source_face_name = source_face_id.split(":", 1)[1]
@@ -1512,7 +1512,7 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
                 if source_curve not in bottom_curves:
                     raise TopologyResolutionError(
                         "extrude.compile.side-not-unique: "
-                        f"源边 {edge_id} 不属于 {source_face_id}"
+                        f"Source edge {edge_id} does not belong to {source_face_id}"
                     )
                 matches = tuple(
                     side
@@ -1522,14 +1522,14 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
                 if len(matches) != 1:
                     raise TopologyResolutionError(
                         "extrude.compile.side-not-unique: "
-                        f"拉伸无法唯一追踪源边 {edge_id}"
+                        f"Extrude cannot uniquely trace source edge {edge_id}"
                     )
                 side = matches[0]
                 top_matches = tuple(side_boundaries[side] & top_curves)
                 if len(top_matches) != 1:
                     raise TopologyResolutionError(
                         "extrude.compile.top-not-unique: "
-                        f"拉伸无法唯一追踪顶边 {edge_id}"
+                        f"Extrude cannot uniquely trace top edge {edge_id}"
                     )
                 resolved_sides.append(side)
                 resolved_top.append(top_matches[0])
@@ -1566,7 +1566,7 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
             source_points = tuple(base.logical_entities[point_id])
             if len(source_points) != 1:
                 raise TopologyResolutionError(
-                    f"拉伸源点 {point_id} 不是唯一实体"
+                    f"Extrude source point {point_id} is not a unique entity"
                 )
             source_point = source_points[0]
             vertical = tuple(
@@ -1576,12 +1576,12 @@ def _compile_extrusion(cad: Any, recipe: ExtrudedGeometry) -> _CompiledDraft:
             )
             if len(vertical) != 1:
                 raise TopologyResolutionError(
-                    f"拉伸无法唯一追踪竖边 {point_id}"
+                    f"Extrude cannot uniquely trace vertical edge {point_id}"
                 )
             top_point = tuple(vertical_endpoints[vertical[0]] & top_points)
             if len(top_point) != 1:
                 raise TopologyResolutionError(
-                    f"拉伸无法唯一追踪顶点 {point_id}"
+                    f"Extrude cannot uniquely trace top point {point_id}"
                 )
             point_name = _logical_name(base_point)
             namespace = (
@@ -1654,7 +1654,7 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
         if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
             raise TopologyResolutionError(
                 "revolve.compile.surface-not-unique: "
-                f"{source_face_id} 没有唯一 OCC plane surface"
+                f"{source_face_id} has no unique OCC plane surface"
             )
         surface_normal = cad.geometry_direction(source_surfaces[0])
         if surface_normal is not None:
@@ -1694,7 +1694,7 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
                 if signed and min(signed) < -tolerance and max(signed) > tolerance:
                     raise TopologyResolutionError(
                         "revolve.compile.profile-crosses-axis: "
-                        f"{source_face_id} 穿过旋转轴，会生成重叠或退化体"
+                        f"{source_face_id} crosses the rotation axis and would generate overlapping or degenerate solids"
                     )
         feature = cad.revolve(
             source_surfaces,
@@ -1708,25 +1708,25 @@ def _compile_revolution(cad: Any, recipe: RevolvedGeometry) -> _CompiledDraft:
         if len(volumes) != 1 or volumes[0].dimension != 3:
             raise TopologyResolutionError(
                 "revolve.compile.empty-result: "
-                f"{source_face_id} 没有生成唯一 volume"
+                f"{source_face_id} did not generate a unique volume"
             )
         if cad.volume(volumes[0]) <= 0.0:
             raise TopologyResolutionError(
                 "revolve.compile.zero-volume: "
-                "当前二维面、扫掠轴和角度会生成零体积或退化实体；"
-                "请改用与草图平面不垂直的轴"
+                "The current 2D face, sweep axis, and angle produce a zero-volume or degenerate solid; "
+                "use an axis that is not perpendicular to the sketch plane"
             )
         sides = tuple(feature.sides)
         if not sides:
             raise TopologyResolutionError(
-                "revolve.compile.side-missing: 旋转扫掠没有可证明的侧面"
+                "revolve.compile.side-missing: The rotational sweep has no provable side faces"
             )
         logical["face:sides"] = sides
         if recipe.angle_degrees < 360.0:
             ends = tuple(feature.ends)
             if len(ends) != 1:
                 raise TopologyResolutionError(
-                    "revolve.compile.end-not-unique: 旋转终止面 lineage 不唯一"
+                    "revolve.compile.end-not-unique: The rotational end-face lineage is not unique"
                 )
             logical["face:start"] = source_surfaces
             logical["face:end"] = ends
@@ -1754,14 +1754,14 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     if len(selection.face_ids) != 1:
         raise TopologyResolutionError(
             "path-sweep.compile.source-not-unique: "
-            "路径扫掠必须显式选择一个 material Profile"
+            "Path sweep requires explicitly selecting one material Profile"
         )
     source_face_id = selection.face_ids[0]
     source_surfaces = tuple(base.logical_entities.get(source_face_id, ()))
     if len(source_surfaces) != 1 or source_surfaces[0].dimension != 2:
         raise TopologyResolutionError(
             "path-sweep.compile.surface-not-unique: "
-            f"{source_face_id} 没有唯一 OCC plane surface"
+            f"{source_face_id} has no unique OCC plane surface"
         )
 
     ordered_names = (
@@ -1780,7 +1780,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     if math.dist(origin, (start.x, start.y, start.z)) > tolerance:
         raise TopologyResolutionError(
             "path-sweep.compile.start-position-mismatch: "
-            "路径起点必须与 Profile 平面原点一致，以显式确定起始姿态"
+            "The path start must coincide with the Profile plane origin to explicitly determine the initial pose"
         )
     tangent = (
         following.x - start.x,
@@ -1794,7 +1794,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     if not math.isclose(alignment, 1.0, rel_tol=0.0, abs_tol=1.0e-9):
         raise TopologyResolutionError(
             "path-sweep.compile.start-orientation-mismatch: "
-            "Profile 正法向必须与路径首段平行，以显式确定起始姿态"
+            "The positive Profile normal must be parallel to the first path segment to explicitly determine the initial pose"
         )
 
     path_points = {
@@ -1818,11 +1818,11 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     if len(volumes) != 1 or volumes[0].dimension != 3:
         raise TopologyResolutionError(
             "path-sweep.compile.multi-solid: "
-            "路径扫掠未生成唯一 volume"
+            "Path sweep did not generate a unique volume"
         )
     if cad.volume(volumes[0]) <= 0.0:
         raise TopologyResolutionError(
-            "path-sweep.compile.zero-volume: 路径扫掠生成了非正体积实体"
+            "path-sweep.compile.zero-volume: Path sweep generated a solid with nonpositive volume"
         )
     source_center = tuple(cad.center_of_mass(source_surfaces[0]))
     end_faces = tuple(feature.ends)
@@ -1839,12 +1839,12 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     terminals = tuple(entity for entity in end_faces if entity not in start_faces)
     if len(start_faces) != 1 or len(terminals) != 1:
         raise TopologyResolutionError(
-            "path-sweep.compile.end-not-unique: 路径扫掠端面 lineage 不唯一"
+            "path-sweep.compile.end-not-unique: Path sweep end-face lineage is not unique"
         )
     sides = tuple(feature.sides)
     if not sides:
         raise TopologyResolutionError(
-            "path-sweep.compile.side-missing: 路径扫掠没有可证明的侧面"
+            "path-sweep.compile.side-missing: Path sweep has no provable side faces"
         )
     side_boundaries = {
         side: set(cad.boundary((side,), combined=False))
@@ -1907,7 +1907,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
             if len(matches) != 1:
                 raise TopologyResolutionError(
                     "path-sweep.compile.start-edge-lineage: "
-                    f"无法唯一追踪源边 {edge_id} 的起始副本"
+                    f"Cannot uniquely trace the starting copy of source edge {edge_id}"
                 )
             copied_curves.add(matches[0])
         seed_indexes = tuple(
@@ -1947,7 +1947,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
     if tuple(sorted(ordered_seeds)) != ordered_seeds:
         raise TopologyResolutionError(
             "path-sweep.compile.side-order-ambiguous: "
-            "Gmsh 侧面顺序无法与 Profile 边界顺序对齐"
+            "Gmsh side-face order cannot be aligned with Profile boundary order"
         )
     for edge_index, edge_id in enumerate(edge_ids):
         start_index = edge_seed_indexes[edge_id]
@@ -1960,7 +1960,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
         if not matched:
             raise TopologyResolutionError(
                 "path-sweep.compile.side-lineage-missing: "
-                f"无法追踪源边 {edge_id} 的侧面"
+                f"Cannot trace the side face of source edge {edge_id}"
             )
         # Semantic circles may contain multiple OCC curves; validate those
         # side faces as an unordered boundary graph below.
@@ -1994,7 +1994,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
         ):
             raise TopologyResolutionError(
                 "path-sweep.compile.side-lineage-disconnected: "
-                f"源边 {edge_id} 的侧面链未连续达到终端面"
+                f"The side-face chain of source edge {edge_id} does not reach the end face continuously"
             )
         logical[f"face:side/{edge_id.split(':', 1)[1]}"] = matched
         claimed.update(matched)
@@ -2004,7 +2004,7 @@ def _compile_path_sweep(cad: Any, recipe: PathSweptGeometry) -> _CompiledDraft:
             outer_sides.extend(matched)
     if claimed != set(sides):
         raise TopologyResolutionError(
-            "path-sweep.compile.side-lineage-incomplete: 路径扫掠侧面 lineage 不完整"
+            "path-sweep.compile.side-lineage-incomplete: Path sweep side-face lineage is incomplete"
         )
     region_bindings = {
         RecipeRegionSelector.BOTTOM: start_faces,
@@ -2071,7 +2071,7 @@ def _compile_face_sketch_boolean(
     if prepared.step_proofs != recipe.step_proofs:
         raise TopologyResolutionError(
             "face-sketch-boolean.lineage.catalog-mismatch: "
-            "保存的逐轮廓证明与当前 OCC 结果不一致"
+            "The saved per-Profile proof does not match the current OCC result"
         )
     return prepared.draft
 
@@ -2093,7 +2093,7 @@ def _prepare_face_sketch_boolean_draft(
     )
     if missing:
         raise TopologyResolutionError(
-            "face-sketch-boolean.profile.invalid: 参与轮廓不存在或不是材料轮廓 "
+            "face-sketch-boolean.profile.invalid: The participating Profile is missing or is not a material Profile "
             f"{missing!r}"
         )
 
@@ -2124,7 +2124,7 @@ def _prepare_face_sketch_boolean_draft(
         start_faces = tuple(tool.logical_entities.get("face:bottom", ()))
         if len(start_faces) != 1:
             raise TopologyResolutionError(
-                "face-sketch-boolean.tool.start-face: 工具体起始面无法唯一解析"
+                "face-sketch-boolean.tool.start-face: The tool body's start face cannot be uniquely resolved"
             )
         _positive_face_overlap(
             cad,
@@ -2202,7 +2202,7 @@ def _prepare_face_sketch_boolean_draft(
 
     if final_proof is None:
         raise TopologyResolutionError(
-            "face-sketch-boolean.profile.required: 至少需要一个参与轮廓"
+            "face-sketch-boolean.profile.required: At least one participating Profile is required"
         )
     _require_unaffected_body_isolation(
         cad,
@@ -2231,7 +2231,7 @@ def _face_step_context(step_index: int) -> Any:
         f"BF{step_index}",
         "B1",
         "B2",
-        f"面草图工具-{step_index}",
+        f"Face-sketch tool-{step_index}",
     )
 
 
@@ -2269,14 +2269,14 @@ def _require_matching_sketch_plane(
 ) -> None:
     if sketch_plane is None:
         raise TopologyResolutionError(
-            "face-sketch-boolean.sketch.strict: 面草图必须是严格平面草图"
+            "face-sketch-boolean.sketch.strict: The face sketch must be a strict planar sketch"
         )
     left = (*sketch_plane.origin, *sketch_plane.x_direction, *sketch_plane.y_direction)
     right = (*support_plane.origin, *support_plane.x_direction, *support_plane.y_direction)
     scale = max(*(abs(value) for value in (*left, *right)), 1.0)
     if any(abs(a - b) > 1.0e-8 * scale for a, b in zip(left, right, strict=True)):
         raise TopologyResolutionError(
-            "face-sketch-boolean.sketch.workplane-mismatch: 草图坐标系与工作面不一致"
+            "face-sketch-boolean.sketch.workplane-mismatch: The sketch coordinate system does not match the workplane"
         )
 
 
@@ -2307,7 +2307,7 @@ def _profile_tool_sketch(
     points = tuple(point for point in sketch.points if point.id in point_ids)
     plane = sketch.plane
     if plane is None:
-        raise TopologyResolutionError("面草图必须是严格平面草图")
+        raise TopologyResolutionError("The face sketch must be a strict planar sketch")
     if inward:
         plane = SketchPlane(
             plane.origin,
@@ -2339,7 +2339,7 @@ def _strict_curve_point_ids(curve: Any) -> tuple[str, ...]:
         return curve.start_point_id, curve.center_point_id, curve.end_point_id
     if isinstance(curve, SketchCircle):
         return (curve.center_point_id,)
-    raise TypeError(f"不支持的草图曲线: {type(curve).__name__}")
+    raise TypeError(f"Unsupported sketch curve: {type(curve).__name__}")
 
 
 def _positive_face_overlap(cad: Any, support: Any, tool_start: Any) -> float:
@@ -2352,7 +2352,7 @@ def _positive_face_overlap(cad: Any, support: Any, tool_start: Any) -> float:
     except Exception as error:
         raise TopologyResolutionError(
             "face-sketch-boolean.profile.overlap-unresolved: "
-            "无法校验轮廓与工作面的材料重叠"
+            "Cannot verify material overlap between the Profile and workplane"
         ) from error
     tolerance = (
         float(cad.effective_bounding_box_tolerance(1.0e-9)) ** 2
@@ -2361,7 +2361,7 @@ def _positive_face_overlap(cad: Any, support: Any, tool_start: Any) -> float:
     )
     if not math.isfinite(area) or area <= tolerance:
         raise TopologyResolutionError(
-            "face-sketch-boolean.profile.no-overlap: 参与轮廓与工作面没有正面积材料重叠"
+            "face-sketch-boolean.profile.no-overlap: The participating Profile has no positive-area material overlap with the workplane"
         )
     return area
 
@@ -2386,7 +2386,7 @@ def _resolve_current_face_seed(
             return FaceSeedConnectionProof(logical_id, "face:bottom", area)
     raise TopologyResolutionError(
         "face-sketch-boolean.fuse.face-seed-unresolved: "
-        "当前结果与工具体起始面没有可证明的正面积面种子连接"
+        "The current result has no provable positive-area face-seed connection to the tool body's start face"
     )
 
 
@@ -2407,7 +2407,7 @@ def _require_unaffected_body_isolation(
         if float(cad.distance(result_volume, volume)) <= tolerance:
             raise TopologyResolutionError(
                 "face-sketch-boolean.multibody.isolation: "
-                "结果与非目标 Body 相交或接触"
+                "The result intersects or touches a nontarget Body"
             )
 
 
@@ -2584,7 +2584,7 @@ def _finalize(
     draft: _CompiledDraft,
 ) -> CompiledRecipeTopology:
     if not draft.domain:
-        raise TopologyResolutionError("几何配方没有生成有效计算域")
+        raise TopologyResolutionError("The geometry recipe did not generate a valid computational domain")
     boundary = tuple(cad.boundary(draft.domain))
     selectable = catalog.selectable_entities()
     logical: dict[str, tuple[Any, ...]] = {}
@@ -2612,11 +2612,11 @@ def _validate_logical_entities(
 ) -> None:
     if not entities:
         raise TopologyResolutionError(
-            f"逻辑实体 {logical.logical_id} 没有对应 CAD 实体"
+            f"Logical entity {logical.logical_id} has no corresponding CAD entity"
         )
     if any(entity.dimension != logical.dimension for entity in entities):
         raise TopologyResolutionError(
-            f"逻辑实体 {logical.logical_id} 的 CAD 维度不匹配"
+            f"Logical entity {logical.logical_id} has a mismatched CAD dimension"
         )
     for entity in entities:
         cad.bounding_box(entity)
@@ -2626,7 +2626,7 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
     if isinstance(recipe, FaceSketchBooleanGeometry):
         if len(recipe.step_proofs) != len(recipe.participating_profile_ids):
             raise TopologyResolutionError(
-                "face-sketch-boolean.lineage.unproven: 面草图布尔缺少完整逐轮廓证明"
+                "face-sketch-boolean.lineage.unproven: The face-sketch Boolean lacks a complete per-Profile proof"
             )
         return _compile_face_sketch_boolean(cad, recipe).domain
     if isinstance(recipe, MultiBodyGeometry):
@@ -2647,7 +2647,7 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
             operation(objects, tools).of_dimension(geometry_dimension(recipe))
         )
         if not result:
-            raise TopologyResolutionError("布尔操作没有生成有效几何")
+            raise TopologyResolutionError("The Boolean operation did not generate valid geometry")
         return result
     if isinstance(recipe, PlateWithHoleGeometry):
         plate = cad.rectangle(0.0, 0.0, recipe.width, recipe.height)
@@ -2711,7 +2711,7 @@ def _build_domain_only(cad: Any, recipe: NativeGeometry) -> tuple[Any, ...]:
         return _compile_revolution(cad, recipe).domain
     if isinstance(recipe, PathSweptGeometry):
         return _compile_path_sweep(cad, recipe).domain
-    raise TypeError(f"不支持的几何配方: {type(recipe).__name__}")
+    raise TypeError(f"Unsupported geometry recipe: {type(recipe).__name__}")
 
 
 def _rectangle_edges(
@@ -2737,7 +2737,7 @@ def _select_one(cad: Any, entities: tuple[Any, ...], **coordinates: float):
             f"{axis}={value:g}" for axis, value in coordinates.items()
         )
         raise TopologyResolutionError(
-            f"几何实体选择 {description} 得到 {len(selected)} 个候选，要求唯一"
+            f"Geometric entity selection {description} found {len(selected)} candidates; exactly one is required"
         )
     return selected
 

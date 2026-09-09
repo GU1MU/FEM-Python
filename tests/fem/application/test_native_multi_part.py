@@ -72,7 +72,7 @@ def test_unproven_three_dimensional_boolean_is_rejected_atomically(
         ),
     )
 
-    with pytest.raises(ValueError, match="拓扑证明"):
+    with pytest.raises(ValueError, match="topology proof"):
         session.add_native_part(recipe, name="无效部件")
 
     assert session.snapshot().parts == ()

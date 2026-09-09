@@ -141,11 +141,11 @@ def generate_fem_model(
     ):
         if settings is not None:
             raise TypeError(
-                "MeshTaskSnapshot 已包含网格设置，不能重复传入 settings"
+                "MeshTaskSnapshot already contains mesh settings; do not pass settings again"
             )
         if named_regions is not None:
             raise TypeError(
-                "MeshTaskSnapshot 已包含命名区域，不能重复传入 named_regions"
+                "MeshTaskSnapshot already contains named regions; do not pass named_regions again"
             )
         return _generate_multi_part_fem_model(
             recipe_or_snapshot,
@@ -160,7 +160,7 @@ def generate_fem_model(
     require_meshable_body_relations(recipe)
     contract = require_complete_native_mesh_contract(recipe, mesh_settings)
     if mesh_settings is None:
-        raise TypeError("网格生成需要 MeshSettings")
+        raise TypeError("Mesh generation requires MeshSettings")
     validate_native_authoring_context(
         recipe,
         regions,
@@ -177,7 +177,7 @@ def generate_fem_model(
         if error.name != "gmsh":
             raise
         raise ModuleNotFoundError(
-            "几何与网格功能需要 Gmsh；请安装项目的 cad 可选依赖"
+            "Geometry and meshing require Gmsh; install the project's optional cad dependencies"
         ) from error
 
     gmsh_lease = PROCESS_GMSH_COORDINATOR.acquire(
@@ -347,24 +347,24 @@ def _generate_multi_part_fem_model(
         )
     )
     if not active_parts:
-        raise ValueError("网格生成至少需要一个未抑制部件")
+        raise ValueError("Mesh generation requires at least one unsuppressed Part")
     dimensions = {
         geometry_dimension(part.geometry_recipe)
         for part in active_parts
     }
     if len(dimensions) != 1:
-        details = "、".join(
+        details = ", ".join(
             f"{part.name} [{part.id}]={part.dimension}D"
             for part in active_parts
         )
         raise ValueError(
             "analysis.mixed-dimension.unsupported: "
-            f"当前分析不支持混合维度部件（{details}）"
+            f"The current analysis does not support Parts of mixed dimensions ({details})"
         )
     dimension = next(iter(dimensions))
     if dimension == 3 and len(active_parts) > 1:
         relation_recipe = MultiBodyGeometry(
-            "部件关系预检",
+            "Part relationship preflight",
             tuple(
                 SolidBody(f"B{index}", part.name, part.geometry_recipe)
                 for index, part in enumerate(active_parts, start=1)
@@ -376,14 +376,14 @@ def _generate_multi_part_fem_model(
             raise type(error)(
                 str(error)
                 .replace("body.overlap.mesh-blocked", "part.overlap.mesh-blocked")
-                .replace("Body", "部件")
+                .replace("Body", "Part")
             ) from error
 
     per_part_models: list[tuple[NativePart, FEMModel]] = []
     for part in active_parts:
         if part.mesh_settings is None:
             raise TypeError(
-                f"部件 {part.name} [{part.id}] 缺少网格设置"
+                f"Part {part.name} [{part.id}] is missing mesh settings"
             )
         local_settings = _localize_part_mesh_settings(
             part.id,
@@ -498,7 +498,7 @@ def _aggregate_part_models(
         int(model.mesh.dofs_per_node) != int(first_mesh.dofs_per_node)
         for _part, model in rows
     ):
-        raise ValueError("部件网格的每节点自由度不一致")
+        raise ValueError("Part meshes have inconsistent degrees of freedom per node")
 
     nodes: list[Node2D | Node3D] = []
     elements: list[Element2D | Element3D] = []
@@ -618,10 +618,10 @@ def _normalize_inputs(
 ]:
     if isinstance(recipe_or_snapshot, MeshTaskSnapshot):
         if settings is not None:
-            raise TypeError("MeshTaskSnapshot 已包含网格设置，不能重复传入 settings")
+            raise TypeError("MeshTaskSnapshot already contains mesh settings; do not pass settings again")
         if named_regions is not None:
             raise TypeError(
-                "MeshTaskSnapshot 已包含命名区域，不能重复传入 named_regions"
+                "MeshTaskSnapshot already contains named regions; do not pass named_regions again"
             )
         recipe = recipe_or_snapshot.geometry_recipe
         mesh_settings = recipe_or_snapshot.mesh_settings
@@ -634,11 +634,11 @@ def _normalize_inputs(
         model_name = str(getattr(recipe, "name", "")).strip()
 
     if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
-        raise TypeError("网格生成需要有效的原生几何配方")
+        raise TypeError("Mesh generation requires a valid Native geometry recipe")
     if mesh_settings is not None and type(mesh_settings) is not MeshSettings:
-        raise TypeError("网格生成需要 MeshSettings")
+        raise TypeError("Mesh generation requires MeshSettings")
     if not model_name:
-        raise ValueError("网格生成需要非空模型名称")
+        raise ValueError("Mesh generation requires a nonempty model name")
     regions = (
         tuple(region_source.values())
         if isinstance(region_source, Mapping)
@@ -689,7 +689,7 @@ def _configure_hexahedral_mesh(
     resolver: RecipeTopologyResolver,
 ) -> None:
     if not resolver.supports_hexahedron(recipe):
-        raise ValueError("六面体结构化网格当前仅支持长方体或矩形草图拉伸体")
+        raise ValueError("Structured hexahedral meshing currently supports only boxes or extruded rectangular sketches")
     curves = _unique_entities(
         entity
         for entity in cad.boundary(topology.boundary, combined=False)
@@ -705,7 +705,7 @@ def _configure_hexahedral_mesh(
         mesher.transfinite_surface(surface)
         mesher.recombine(surface)
     if len(topology.domain) != 1:
-        raise TopologyResolutionError("结构化六面体网格要求唯一计算域")
+        raise TopologyResolutionError("Structured hexahedral meshing requires a unique computational domain")
     mesher.transfinite_volume(topology.domain[0])
 
 
@@ -714,14 +714,14 @@ def _distance_field_sources(
 ) -> Mapping[str, tuple[Any, ...]]:
     resolved = _unique_entities(entities)
     if not resolved:
-        raise TopologyResolutionError("局部网格控制没有解析到几何实体")
+        raise TopologyResolutionError("Local mesh controls did not resolve to geometric entities")
     dimensions = {entity.dimension for entity in resolved}
     if len(dimensions) != 1:
-        raise TopologyResolutionError("局部网格控制不能混用不同维度的几何实体")
+        raise TopologyResolutionError("Local mesh controls cannot mix geometric entities of different dimensions")
     dimension = next(iter(dimensions))
     source_name = {0: "points", 1: "curves", 2: "surfaces"}.get(dimension)
     if source_name is None:
-        raise TopologyResolutionError("局部网格控制只支持点、边或面")
+        raise TopologyResolutionError("Local mesh controls support only points, edges, or faces")
     return {source_name: resolved}
 
 
@@ -916,7 +916,7 @@ def _audit_native_wire_mesh(
         element_by_id[element_id] = element
     element_ids = set(element_by_id)
     if not elements:
-        raise TopologyResolutionError("body:domain 没有生成任何线单元")
+        raise TopologyResolutionError("body:domain did not generate any line elements")
     unexpected = tuple(
         element.type
         for element in elements
@@ -924,8 +924,8 @@ def _audit_native_wire_mesh(
     )
     if unexpected:
         raise TopologyResolutionError(
-            f"body:domain 包含未预期的单元类型 {unexpected[0]!r}，"
-            f"要求 {contract.canonical_element_type!r}"
+            f"body:domain contains unexpected element type {unexpected[0]!r}; "
+            f"expected {contract.canonical_element_type!r}"
         )
 
     point_nodes: dict[str, int] = {}
@@ -935,13 +935,13 @@ def _audit_native_wire_mesh(
         node_ids = gmsh_io.entity_node_ids(native_mesh, entities)
         if len(node_ids) != 1:
             raise TopologyResolutionError(
-                f"{logical_id} 应解析为恰好一个网格节点，实际为 {node_ids!r}"
+                f"{logical_id} must resolve to exactly one mesh node; got {node_ids!r}"
             )
         point_nodes[logical_id] = int(node_ids[0])
     if len(set(point_nodes.values())) != len(point_nodes):
         duplicate = _first_duplicate_value(point_nodes)
         raise TopologyResolutionError(
-            f"{duplicate} 与另一个逻辑点共享网格节点，声明的图身份被改变"
+            f"{duplicate} shares a mesh node with another logical point, changing the declared graph identity"
         )
 
     member_element_ids: dict[str, set[int]] = {}
@@ -952,10 +952,10 @@ def _audit_native_wire_mesh(
         entities = topology.logical_entities.get(logical_id, ())
         ids = set(gmsh_io.entity_element_ids(native_mesh, entities))
         if not ids:
-            raise TopologyResolutionError(f"{logical_id} 没有生成任何线单元")
+            raise TopologyResolutionError(f"{logical_id} did not generate any line elements")
         if not ids.issubset(element_ids):
             raise TopologyResolutionError(
-                f"{logical_id} 解析出了不属于导入模型的单元 ID"
+                f"{logical_id} resolved to element IDs outside the imported model"
             )
         member_element_ids[logical_id] = ids
         for endpoint in (member.start, member.end):
@@ -966,7 +966,7 @@ def _audit_native_wire_mesh(
                 if int(element.id) in ids
             ):
                 raise TopologyResolutionError(
-                    f"{logical_id} 的端点 point:{endpoint} 未出现在其单元链中"
+                    f"Endpoint point:{endpoint} of {logical_id} is missing from its element chain"
                 )
 
     members_by_logical_id = {
@@ -1054,14 +1054,14 @@ def _audit_native_wire_mesh(
         missing = sorted(element_ids - union)
         extra = sorted(union - element_ids)
         raise TopologyResolutionError(
-            "body:domain 与声明 member 单元并集不一致："
+            "body:domain differs from the union of declared member elements: "
             f"missing={missing!r}, extra={extra!r}"
         )
     domain_entities = topology.logical_entities.get("body:domain", ())
     domain_ids = set(gmsh_io.entity_element_ids(native_mesh, domain_entities))
     if domain_ids != union:
         raise TopologyResolutionError(
-            "body:domain 的 CAD 所有权与声明 member 单元并集不一致"
+            "CAD ownership of body:domain differs from the union of declared member elements"
         )
     if contract.line_element_type == "Truss2":
         subdivided = tuple(
@@ -1082,9 +1082,9 @@ def _first_duplicate_value(values: Mapping[str, int]) -> str:
     for logical_id, node_id in values.items():
         previous = seen.get(node_id)
         if previous is not None:
-            return f"{logical_id} 与 {previous}"
+            return f"{logical_id} and {previous}"
         seen[node_id] = logical_id
-    return "逻辑点"
+    return "Logical point"
 
 
 def _unique_entities(entities: Iterable[Any]) -> tuple[Any, ...]:

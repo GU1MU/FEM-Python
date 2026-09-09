@@ -38,10 +38,10 @@ def test_feature_history_matches_current_shallow_summary_projection() -> None:
         ("Extrude-1", "extrude"),
     )
     assert tuple(record.payload["summary"] for record in history) == (
-        "基础体  矩形  4 × 2",
-        "移动  X=1，Y=-2，Z=0",
-        "旋转  Z 轴，30°",
-        "拉伸  高度=3",
+        "Base geometry  Rectangle  4 × 2",
+        "Move  X=1, Y=-2, Z=0",
+        "Rotate  Z axis, 30°",
+        "Extrude  Height=3",
     )
 
 
@@ -56,10 +56,10 @@ def test_boolean_history_projects_object_chain_and_current_tool_summary() -> Non
     history = derive_feature_history(recipe)
 
     assert tuple(record.name for record in history) == ("Base-1", "Cut-1")
-    assert history[-1].payload == {"summary": "切除  工具体=Hole"}
+    assert history[-1].payload == {"summary": "Cut  Tool body=Hole"}
     assert derive_geometry_feature_rows(recipe) == (
-        "基础体  矩形  4 × 2",
-        "切除  工具体=Hole",
+        "Base geometry  Rectangle  4 × 2",
+        "Cut  Tool body=Hole",
     )
 
 
@@ -83,7 +83,7 @@ def test_wire_history_uses_the_canonical_headless_summary() -> None:
         ("Wire-1", "wire"),
     )
     assert derive_geometry_feature_rows(recipe) == (
-        "线框  节点=3，杆件=2",
+        "Wire  Nodes=3, Members=2",
     )
 
 

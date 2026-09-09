@@ -39,11 +39,11 @@ def test_revolved_recipe_validates_axis_angle_and_source_profile() -> None:
         "face:sides",
         "body:domain",
     )
-    with pytest.raises(ValueError, match="扫掠轴"):
+    with pytest.raises(ValueError, match="sweep axis"):
         RevolvedGeometry(_rectangle(), "a", 90.0)
-    with pytest.raises(ValueError, match="扫掠角度"):
+    with pytest.raises(ValueError, match="sweep angle"):
         RevolvedGeometry(_rectangle(), "x", 0.0)
-    with pytest.raises(ValueError, match="扫掠角度"):
+    with pytest.raises(ValueError, match="sweep angle"):
         RevolvedGeometry(_rectangle(), "x", 361.0)
 
 

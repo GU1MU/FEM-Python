@@ -60,14 +60,14 @@ class LocalMeshControl:
         if type(self.target) is not LogicalEntityRef:
             raise TypeError("local mesh target must be a LogicalEntityRef")
         if self.target.kind not in {"point", "edge", "face"}:
-            raise ValueError("局部网格控制只支持点、边或面")
+            raise ValueError("Local mesh controls support only points, edges, or faces")
         if (
             isinstance(self.size, bool)
             or not isinstance(self.size, (int, float))
             or not math.isfinite(float(self.size))
             or float(self.size) <= 0.0
         ):
-            raise ValueError("局部网格尺寸必须大于零")
+            raise ValueError("Local mesh size must be greater than zero")
         if type(self.falloff) is not MeshSizeFalloff:
             raise TypeError("local mesh falloff must be a MeshSizeFalloff")
         object.__setattr__(self, "size", float(self.size))
@@ -100,15 +100,15 @@ class MeshSettings:
             or not math.isfinite(float(self.size))
             or float(self.size) <= 0.0
         ):
-            raise ValueError("全局网格尺寸必须大于零")
+            raise ValueError("Global mesh size must be greater than zero")
         if isinstance(self.order, bool) or self.order not in (1, 2):
-            raise ValueError("单元阶次只能是一阶或二阶")
+            raise ValueError("Element order must be 1 or 2")
         if self.auto_level is not None and (
             isinstance(self.auto_level, bool)
             or type(self.auto_level) is not int
             or self.auto_level not in {1, 2, 3, 4, 5}
         ):
-            raise ValueError("AutoMesh level 只能是 1 到 5 的严格整数")
+            raise ValueError("AutoMesh level must be a strict integer from 1 to 5")
         if type(self.strict_cell_shape) is not bool:
             raise TypeError("strict_cell_shape must be a bool")
         if type(self.cell_shape) is not str or self.cell_shape not in {
@@ -119,7 +119,7 @@ class MeshSettings:
             "hexahedron",
         }:
             raise ValueError(
-                "网格类型只能是线、三角形、四边形、四面体或六面体"
+                "Mesh type must be line, triangle, quadrilateral, tetrahedron, or hexahedron"
             )
         if self.cell_shape == "line":
             if type(self.line_element_type) is not str or self.line_element_type not in {
@@ -127,13 +127,13 @@ class MeshSettings:
                 "Beam2",
             }:
                 raise ValueError(
-                    "线网格必须显式指定 Truss2 或 Beam2 单元类型"
+                    "A line mesh must explicitly specify the Truss2 or Beam2 element type"
                 )
             if self.order != 1:
-                raise ValueError("线网格只支持一阶两节点单元")
+                raise ValueError("Line meshes support only first-order, two-node elements")
         elif self.line_element_type is not None:
             raise ValueError(
-                "只有线网格可以指定 Truss2 或 Beam2 单元类型"
+                "Only line meshes can specify the Truss2 or Beam2 element type"
             )
         controls = tuple(self.local_controls)
         if any(type(control) is not LocalMeshControl for control in controls):
@@ -141,10 +141,10 @@ class MeshSettings:
                 "local_controls must contain only LocalMeshControl values"
             )
         if any(control.size >= float(self.size) for control in controls):
-            raise ValueError("实体局部尺寸必须小于全局尺寸")
+            raise ValueError("Entity local size must be smaller than global size")
         keys = {(control.target, control.falloff) for control in controls}
         if len(keys) != len(controls):
-            raise ValueError("同一个几何实体和 falloff profile 不能重复设置局部尺寸")
+            raise ValueError("Local size cannot be set more than once for the same geometric entity and falloff profile")
         object.__setattr__(self, "size", float(self.size))
         falloff_order = {"global_size": 0, "target_radius": 1}
         object.__setattr__(

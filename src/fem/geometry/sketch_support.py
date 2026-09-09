@@ -38,9 +38,9 @@ class SketchReferencePoint:
             raise TypeError("reference must be a SketchExternalReference")
         position = tuple(float(value) for value in self.position)
         if len(position) != 3 or not all(math.isfinite(value) for value in position):
-            raise ValueError("参考点三维坐标无效")
+            raise ValueError("Invalid reference point 3D coordinates")
         if not math.isfinite(float(self.u)) or not math.isfinite(float(self.v)):
-            raise ValueError("参考点 U/V 坐标无效")
+            raise ValueError("Invalid reference point U/V coordinates")
         object.__setattr__(self, "position", position)
         object.__setattr__(self, "u", float(self.u))
         object.__setattr__(self, "v", float(self.v))
@@ -76,16 +76,16 @@ class SketchSnapCandidate:
 
     def __post_init__(self) -> None:
         if self.kind not in _SNAP_PRIORITIES:
-            raise ValueError("草图吸附候选类型无效")
+            raise ValueError("Invalid sketch snap candidate type")
         values = (self.screen_x, self.screen_y, self.u, self.v)
         if not all(math.isfinite(float(value)) for value in values):
-            raise ValueError("草图吸附候选坐标无效")
+            raise ValueError("Invalid sketch snap candidate coordinates")
         if self.reference_point is not None:
             expected = self.reference_point.derived_type.value
             if self.kind != expected:
-                raise ValueError("外部参考与吸附候选类型不一致")
+                raise ValueError("The external reference and snap candidate types do not match")
         if self.kind == "sketch_point" and not self.sketch_point_id:
-            raise ValueError("草图点吸附候选缺少点 ID")
+            raise ValueError("The sketch point snap candidate is missing a point ID")
 
 
 _SNAP_PRIORITIES: dict[str, int] = {
@@ -105,9 +105,9 @@ class FaceWorkplaneResolutionError(ValueError):
 
     def __init__(self, code: str, message: str) -> None:
         if type(code) is not str or not code.strip():
-            raise ValueError("工作面诊断代码不能为空")
+            raise ValueError("Workplane diagnostic code cannot be empty")
         if type(message) is not str or not message.strip():
-            raise ValueError("工作面诊断消息不能为空")
+            raise ValueError("Workplane diagnostic message cannot be empty")
         self.code = code
         self.message = message
         super().__init__(f"{code}: {message}")
@@ -130,17 +130,17 @@ class ResolvedFaceWorkplane:
         face = LogicalEntityRef(self.support_face_id)
         body = LogicalEntityRef(self.target_body_id)
         if face.kind != "face" or body.kind != "body":
-            raise ValueError("工作面和目标 Body 逻辑 ID 类型无效")
+            raise ValueError("Invalid workplane or target Body logical ID type")
         if getattr(self.surface, "dimension", None) != 2:
-            raise ValueError("工作面 OCC 实体必须为二维")
+            raise ValueError("The workplane OCC entity must be 2D")
         if getattr(self.volume, "dimension", None) != 3:
-            raise ValueError("目标 Body OCC 实体必须为三维")
+            raise ValueError("The target Body OCC entity must be 3D")
         if type(self.plane) is not SketchPlane:
-            raise TypeError("工作面必须使用 SketchPlane")
+            raise TypeError("The workplane must use SketchPlane")
         if type(self.strategy) is not FaceSketchWorkplaneStrategy:
-            raise TypeError("工作面坐标策略无效")
+            raise TypeError("Invalid workplane coordinate strategy")
         if not math.isfinite(self.area) or self.area <= 0.0:
-            raise ValueError("工作面面积必须为有限正值")
+            raise ValueError("Workplane area must be finite and positive")
 
     @property
     def origin(self) -> tuple[float, float, float]:
@@ -161,7 +161,7 @@ class ResolvedFaceWorkplane:
         """Return the signed extrusion direction in global coordinates."""
 
         if type(direction) is not FaceSketchBooleanDirection:
-            raise TypeError("拉伸方向无效")
+            raise TypeError("Invalid Extrude direction")
         return direction.vector(self.outward_normal)
 
 
@@ -178,7 +178,7 @@ def resolve_face_workplane(
     ):
         raise FaceWorkplaneResolutionError(
             "face-workplane.face-required",
-            "未选择工作面",
+            "No workplane selected",
         )
     reference = (
         support_face
@@ -188,17 +188,17 @@ def resolve_face_workplane(
     if reference.kind != "face":
         raise FaceWorkplaneResolutionError(
             "face-workplane.face-required",
-            "未选择工作面",
+            "No workplane selected",
         )
     entity_mapping = getattr(logical_entities, "logical_entities", logical_entities)
     try:
         surfaces = tuple(entity_mapping.get(reference.logical_id, ()))
     except AttributeError as error:
-        raise TypeError("logical_entities 必须是逻辑实体映射") from error
+        raise TypeError("logical_entities must be a mapping of logical entities") from error
     if len(surfaces) != 1 or getattr(surfaces[0], "dimension", None) != 2:
         raise FaceWorkplaneResolutionError(
             "face-workplane.face-stale",
-            "所选工作面已失效，无法由原逻辑面 ID 唯一恢复",
+            "The selected workplane is stale and cannot be uniquely restored from the original logical face ID",
         )
     surface = surfaces[0]
     try:
@@ -206,12 +206,12 @@ def resolve_face_workplane(
     except Exception as error:
         raise FaceWorkplaneResolutionError(
             "face-workplane.face-stale",
-            "所选工作面已失效，无法由原逻辑面 ID 唯一恢复",
+            "The selected workplane is stale and cannot be uniquely restored from the original logical face ID",
         ) from error
     if geometry_type.casefold() != "plane":
         raise FaceWorkplaneResolutionError(
             "face-workplane.not-plane",
-            "所选工作面不是解析平面",
+            "The selected workplane is not an analytic plane",
         )
 
     try:
@@ -219,12 +219,12 @@ def resolve_face_workplane(
     except Exception as error:
         raise FaceWorkplaneResolutionError(
             "face-workplane.body-ambiguous",
-            "工作面无法唯一确定目标 Body",
+            "The workplane cannot uniquely identify the target Body",
         ) from error
     if len(adjacent_volumes) != 1:
         raise FaceWorkplaneResolutionError(
             "face-workplane.body-ambiguous",
-            "工作面无法唯一确定目标 Body",
+            "The workplane cannot uniquely identify the target Body",
         )
     volume = adjacent_volumes[0]
     body_id = _resolve_target_body_id(entity_mapping, volume)
@@ -241,12 +241,12 @@ def resolve_face_workplane(
     except Exception as error:
         raise FaceWorkplaneResolutionError(
             "face-workplane.frame-unresolved",
-            "工作面坐标系无法按保存策略恢复",
+            "The workplane coordinate system cannot be restored using the saved strategy",
         ) from error
     if not math.isfinite(area) or area <= 0.0:
         raise FaceWorkplaneResolutionError(
             "face-workplane.frame-unresolved",
-            "工作面坐标系无法按保存策略恢复",
+            "The workplane coordinate system cannot be restored using the saved strategy",
         )
     return ResolvedFaceWorkplane(
         reference.logical_id,
@@ -281,7 +281,7 @@ def _resolve_target_body_id(
             return "body:domain"
     raise FaceWorkplaneResolutionError(
         "face-workplane.body-ambiguous",
-        "工作面无法唯一确定目标 Body",
+        "The workplane cannot uniquely identify the target Body",
     )
 
 
@@ -290,10 +290,10 @@ def _resolve_u_axis(
     strategy: FaceSketchWorkplaneStrategy | None,
 ) -> tuple[FaceSketchWorkplaneStrategy, tuple[float, float, float]]:
     if len(outward) != 3:
-        raise ValueError("外法向必须包含三个分量")
+        raise ValueError("The outward normal must contain three components")
     magnitude = math.sqrt(sum(value * value for value in outward))
     if not math.isfinite(magnitude) or magnitude <= _FRAME_TOLERANCE:
-        raise ValueError("外法向无效")
+        raise ValueError("Invalid outward normal")
     normal = tuple(value / magnitude for value in outward)
     candidates = (
         tuple(_AXES)
@@ -315,7 +315,7 @@ def _resolve_u_axis(
         return FaceSketchWorkplaneStrategy(axis_name, sign), u_axis
     raise FaceWorkplaneResolutionError(
         "face-workplane.frame-unresolved",
-        "工作面坐标系无法按保存策略恢复",
+        "The workplane coordinate system cannot be restored using the saved strategy",
     )
 
 
@@ -330,7 +330,7 @@ def _normalized_cross(
     )
     magnitude = math.sqrt(sum(value * value for value in values))
     if not math.isfinite(magnitude) or magnitude <= _FRAME_TOLERANCE:
-        raise ValueError("工作面 V 轴无法恢复")
+        raise ValueError("The workplane V axis cannot be restored")
     return tuple(value / magnitude for value in values)
 
 
@@ -441,9 +441,9 @@ def select_sketch_snap_candidate(
     cursor_x, cursor_y = (float(value) for value in cursor)
     threshold = float(pixel_threshold)
     if not all(math.isfinite(value) for value in (cursor_x, cursor_y, threshold)):
-        raise ValueError("吸附像素参数无效")
+        raise ValueError("Invalid snap pixel parameters")
     if threshold < 0.0:
-        raise ValueError("吸附像素阈值不能为负值")
+        raise ValueError("The snap pixel threshold cannot be negative")
     ranked: list[tuple[float, int, str, SketchSnapCandidate]] = []
     for candidate in candidates:
         if type(candidate) is not SketchSnapCandidate:

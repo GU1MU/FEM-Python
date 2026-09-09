@@ -67,17 +67,17 @@ def resolve_planar_boolean_faces(
     if type(tool_geometry) is not SketchGeometry or not tool_geometry.is_strict:
         raise PlanarBooleanSelectionError(
             "planar-boolean.tool.strict-sketch-required",
-            "二维布尔工具必须是独立的严格草图",
+            "The 2D Boolean tool must be an independent strict sketch",
         )
     if not _uses_global_xy_plane(object_geometry):
         raise PlanarBooleanSelectionError(
             "planar-boolean.target.plane-unsupported",
-            "二维布尔目标必须位于全局 XY 平面",
+            "The 2D Boolean target must lie in the global XY plane",
         )
     if not _uses_global_xy_plane(tool_geometry):
         raise PlanarBooleanSelectionError(
             "planar-boolean.tool.plane-unsupported",
-            "二维布尔工具草图必须位于全局 XY 平面",
+            "The 2D Boolean tool sketch must lie in the global XY plane",
         )
     try:
         requested_tools = tuple(tool_face_ids)
@@ -86,7 +86,7 @@ def resolve_planar_boolean_faces(
     if not requested_tools:
         raise PlanarBooleanSelectionError(
             "planar-boolean.tool.required",
-            "二维布尔至少需要一个闭合 material Profile 作为工具轮廓",
+            "A 2D Boolean requires at least one closed material Profile as a tool contour",
         )
     target = _resolve(
         object_geometry,
@@ -96,7 +96,7 @@ def resolve_planar_boolean_faces(
     if len(target.face_ids) != 1:
         raise PlanarBooleanSelectionError(
             "planar-boolean.target.required",
-            "二维布尔必须恰好选择一个 material Face",
+            "A 2D Boolean requires exactly one selected material Face",
         )
     tool = _resolve(tool_geometry, requested_tools, role="tool")
     return PlanarBooleanSelection(target, tool)

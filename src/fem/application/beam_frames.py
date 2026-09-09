@@ -173,7 +173,7 @@ def resolve_effective_beam_frames(
             message=str(error),
             subject=target,
             path=("definitions", "sections"),
-            remediation="请修复材料、截面及其区域分配。",
+            remediation="Fix the materials, sections, and their region assignments.",
             details={"error_type": type(error).__name__},
         )
         return BeamFrameReport(
@@ -438,7 +438,7 @@ def _relevant_resolution_issues(
                         str(issue.assignment_index),
                     ),
                     remediation=(
-                        "请修复梁截面方向、材料或截面区域分配。"
+                        "Fix the beam section orientation, materials, or section region assignments."
                     ),
                     details=details,
                 )
@@ -554,8 +554,8 @@ def _orientation_error_diagnostic(
         subject=target,
         path=_orientation_path(effective, element_id),
         remediation=(
-            "请输入有限、非零且不与任何目标梁轴平行的全局局部 y "
-            "参考方向。"
+            "Enter a finite, nonzero local y reference direction in global coordinates "
+            "that is not parallel to any target beam axis."
         ),
         details={
             "element_id": element_id,
@@ -583,7 +583,7 @@ def _structure_error_diagnostic(
         message=str(error),
         subject=target,
         path=("mesh", "elements", str(element_id)),
-        remediation="请修复梁单元连接关系、节点坐标及几何长度。",
+        remediation="Fix the beam element connectivity, node coordinates, and geometric lengths.",
         details={
             "element_id": element_id,
             "error_type": type(error).__name__,
@@ -622,7 +622,7 @@ def _unsupported_target_diagnostic(
         message=message,
         subject=target,
         path=("elements", str(element_id)),
-        remediation="请选择只包含 Beam2 单元的目标区域。",
+        remediation="Select a target region containing only Beam2 elements.",
         details={"element_id": element_id},
     )
 
@@ -638,7 +638,7 @@ def _target_error_report(
         message=message,
         subject=target,
         path=("target",),
-        remediation="请选择当前模型中存在的 Beam2 单元或单元集。",
+        remediation="Select Beam2 elements or an element set that exists in the current model.",
     )
     return BeamFrameReport(
         target=target,

@@ -183,7 +183,7 @@ def internal_error_report(
         message=str(error),
         subject=str(step_name),
         path=("steps", str(step_name)),
-        remediation="请检查模型定义或查看应用日志。",
+        remediation="Check the model definitions or the application log.",
         details={"error_type": type(error).__name__},
     )
     return PreflightReport(

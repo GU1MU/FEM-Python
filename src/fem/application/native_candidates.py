@@ -316,7 +316,7 @@ def _evaluate_beam_orientation(
                     severity=PreflightSeverity.ERROR,
                     stage=PreflightStage.CAPABILITY,
                     message=(
-                        f"{member} 的 Beam 局部 y 参考方向与构件轴线平行"
+                        f"The Beam local y reference direction for {member} is parallel to the member axis"
                     ),
                     subject=target,
                     path=(
@@ -324,7 +324,7 @@ def _evaluate_beam_orientation(
                         "operations",
                         operation,
                     ),
-                    remediation="请为该构件选择不平行于轴线的局部 y 参考方向。",
+                    remediation="Choose a local y reference direction that is not parallel to this member's axis.",
                     details={
                         "operation": operation,
                         "member": member,
@@ -349,12 +349,12 @@ def _evaluate_beam_orientation(
             severity=PreflightSeverity.WARNING,
             stage=PreflightStage.CAPABILITY,
             message=(
-                f"{operation} 的目标中有 {len(missing)} 个 Beam member "
-                "尚未设置显式方向"
+                f"{len(missing)} target Beam members for {operation} "
+                "have no explicit orientation"
             ),
             subject=target,
             path=("capabilities", "operations", operation),
-            remediation="请先为所有目标 Beam member 分配显式局部 y 参考方向。",
+            remediation="Assign explicit local y reference directions to all target Beam members first.",
             details={
                 "operation": operation,
                 "members": missing,
@@ -615,7 +615,7 @@ def _rejected(
         message=message,
         subject=subject,
         path=("capabilities", "operations", operation),
-        remediation="请修正候选定义或选择兼容的 native 区域。",
+        remediation="Correct the candidate definition or select a compatible Native region.",
     )
     return AuthoringCapability(
         operation,

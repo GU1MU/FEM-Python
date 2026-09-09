@@ -605,7 +605,7 @@ def _evaluate_line_load_candidate(
                         message=str(error),
                         subject=str(step_name),
                         path=("steps", str(step_name)),
-                        remediation="请选择当前 definitions 中存在的分析步。",
+                        remediation="Select a step that exists in the current definitions.",
                     ),
                 ),
             )
@@ -760,7 +760,7 @@ def _unsupported_candidate(
         message=message,
         subject=subject,
         path=("capabilities", "operations", operation),
-        remediation="请选择支持该操作且只包含 Beam2 单元的目标区域。",
+        remediation="Select a target region that supports this operation and contains only Beam2 elements.",
         details={"operation": operation},
     )
     return AuthoringCapability(
@@ -940,7 +940,7 @@ def describe_native_authoring_capabilities(
             ),
             subject=getattr(recipe, "name", "native_mesh"),
             path=("mesh_settings", "line_element_type"),
-            remediation="设置 MeshSettings.line_element_type 为 Truss2 或 Beam2。",
+            remediation="Set MeshSettings.line_element_type to Truss2 or Beam2.",
         )
         aggregate = _empty_capability_aggregate((line_diagnostic,))
         result_catalog = None
@@ -1149,15 +1149,15 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
             getattr(snapshot, "validation_current")(name)
         ) if can_check else False
         check_reason = (
-            "当前模型制品可检查"
+            "The current model artifact can be checked"
             if can_check
-            else "请先生成网格或打开包含分析步的 INP 模型"
+            else "Generate a mesh or open an INP model containing steps first"
         )
         submit_reason = (
-            "当前分析步已通过模型检查"
+            "The current step has passed the model check"
             if validation_current
             else (
-                "请先通过当前分析步的模型检查"
+                "Pass the model check for the current step first"
                 if can_check
                 else check_reason
             )
@@ -1548,7 +1548,7 @@ def _native_region_capability(
                 ),
                 subject=region,
                 path=("capabilities", "operations", "load.line.local"),
-                remediation="如需方向敏感的局部线载荷，请提供 Beam2 显式方向。",
+                remediation="Provide explicit Beam2 orientations for direction-sensitive local line loads.",
             )
             add("load.line.local", True, (automatic,))
     elif region.kind == "edge":
@@ -1688,7 +1688,7 @@ def _aggregate_capabilities(
                     subject=subject,
                     path=("capabilities", descriptor.canonical_type),
                     remediation=(
-                        "当前局部轴由单元几何自动确定；请核对方向假设。"
+                        "The local axes are determined automatically from element geometry; check the orientation assumptions."
                     ),
                     details={"operations": limitation.operations},
                 )
@@ -2080,8 +2080,8 @@ def _assumed_orientation_diagnostic(
             _normalize_operation(operation),
         ),
         remediation=(
-            "旧模型可继续执行；新建或保存该方向敏感定义时请提供显式"
-            "局部 y 参考方向。"
+            "Existing models can still run; when creating or saving this direction-sensitive definition, provide an explicit "
+            "local y reference direction."
         ),
         details=details,
     )
@@ -2286,7 +2286,7 @@ def _unsupported_mix_diagnostic(
         message=message,
         subject=subject,
         path=("capabilities",),
-        remediation="请选择具有共同单元族与自由度契约的区域。",
+        remediation="Select a region with a common element family and degree-of-freedom contract.",
     )
 
 
@@ -2301,7 +2301,7 @@ def _missing_region_capability(
         message=message or f"region {region.name!r} is not defined",
         subject=region,
         path=("regions", region.kind, region.name),
-        remediation="请选择当前模型中存在的同类命名区域。",
+        remediation="Select a named region of the same type that exists in the current model.",
     )
     return RegionCapability(
         region=region,

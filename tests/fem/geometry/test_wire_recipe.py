@@ -151,7 +151,7 @@ def test_wire_is_a_native_base_and_rigid_transforms_preserve_dimension() -> None
 def test_wire_cannot_be_extruded_or_used_in_a_boolean() -> None:
     wire = _wire()
 
-    with pytest.raises(ValueError, match="二维"):
+    with pytest.raises(ValueError, match="2D"):
         ExtrudedGeometry(wire, 1.0)
-    with pytest.raises(ValueError, match="一维"):
+    with pytest.raises(ValueError, match="1D"):
         BooleanGeometry("Invalid", "fuse", wire, wire)

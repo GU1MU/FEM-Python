@@ -1717,7 +1717,7 @@ def _definition_diagnostic(error: Exception) -> PreflightDiagnostic:
         message=message,
         subject="model_definitions",
         path=("definitions",),
-        remediation="请修正名称、引用和目标区域后重试。",
+        remediation="Correct the names, references, and target regions, then retry.",
         details={"error_type": type(error).__name__},
     )
 
@@ -1732,15 +1732,15 @@ def _beam_orientation_diagnostic(
 ) -> PreflightDiagnostic:
     remediation = {
         "beam.orientation.invalid": (
-            "请提供三个有限、非零的全局局部 y 参考方向分量。"
+            "Provide three finite components for a nonzero local y reference direction in global coordinates."
         ),
         "beam.orientation.parallel": (
-            "请让参考方向与目标梁单元轴线保持明显非平行。"
+            "Keep the reference direction clearly nonparallel to the target beam element axes."
         ),
         "beam.orientation.unsupported_target": (
-            "请仅将 Beam orientation 用于完全由 Beam2 单元组成的区域。"
+            "Use Beam orientation only for regions composed entirely of Beam2 elements."
         ),
-    }.get(code, "请修正 Beam orientation 后重试。")
+    }.get(code, "Correct the Beam orientation, then retry.")
     return PreflightDiagnostic(
         code=code,
         severity=PreflightSeverity.ERROR,
@@ -1816,7 +1816,7 @@ def _section_resolution_diagnostic(
             "sections",
             str(issue.assignment_index),
         ),
-        remediation="请修复材料、截面参数或目标单元集。",
+        remediation="Fix the materials, section parameters, or target element sets.",
         details={
             "element_id": issue.element_id,
             "material": issue.material,

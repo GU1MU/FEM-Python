@@ -476,7 +476,7 @@ def _analyze_strict_sketch(
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.open-loop",
-                    f"点 {point_id} 是开放轮廓端点",
+                    f"Point {point_id} is an endpoint of an open contour",
                     (point_id,),
                 )
             )
@@ -484,7 +484,7 @@ def _analyze_strict_sketch(
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.t-junction",
-                    f"点 {point_id} 连接了 {degree} 条曲线，轮廓不是唯一闭环",
+                    f"Point {point_id} connects {degree} curves; the contour is not a unique closed loop",
                     (point_id,) + tuple(sorted(item[0] for item in connections)),
                 )
             )
@@ -492,7 +492,7 @@ def _analyze_strict_sketch(
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.unused-point",
-                    f"点 {point_id} 没有连接曲线",
+                    f"Point {point_id} has no connected curves",
                     (point_id,),
                     blocking=False,
                     severity="warning",
@@ -536,7 +536,7 @@ def _analyze_strict_sketch(
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.open-loop",
-                    "曲线图无法按唯一顺序闭合",
+                    "The curve graph cannot close in a unique order",
                     tuple(sorted(component_edges)),
                 )
             )
@@ -551,7 +551,7 @@ def _analyze_strict_sketch(
             diagnostics.append(
                 SketchDiagnostic(
                     "sketch.zero-area-profile",
-                    "闭环面积在几何容差内为零",
+                    "The closed loop area is zero within geometric tolerance",
                     tuple(sorted(component_edges)),
                 )
             )
@@ -563,7 +563,7 @@ def _analyze_strict_sketch(
         diagnostics.append(
             SketchDiagnostic(
                 "sketch.no-profile",
-                "草图没有可以提交的闭合 Profile",
+                "The sketch has no closed Profile that can be submitted",
             )
         )
         return SketchProfileAnalysis((), tuple(_deduplicate_diagnostics(diagnostics)))
@@ -609,7 +609,7 @@ def _analyze_strict_sketch(
         diagnostics.append(
             SketchDiagnostic(
                 "sketch.no-material-profile",
-                "草图没有材料 Profile",
+                "The sketch has no material Profile",
             )
         )
     return SketchProfileAnalysis(
@@ -879,7 +879,7 @@ def _curve_intersection_diagnostics(
                 diagnostics.append(
                     SketchDiagnostic(
                         pair_code,
-                        f"曲线 {left_id} 和 {right_id} 的几何关系无法唯一解释",
+                        f"The geometric relationship between curves {left_id} and {right_id} cannot be uniquely interpreted",
                         (left_id, right_id),
                         blocking=not tangent_contact,
                         severity="warning" if tangent_contact else "error",
@@ -932,7 +932,7 @@ def _loop_containment_diagnostics(
                 diagnostics.append(
                     SketchDiagnostic(
                         "sketch.tangent-ambiguity",
-                        "两个 Profile 的边界在几何容差内相切或重合",
+                        "The two Profile boundaries are tangent or coincident within geometric tolerance",
                         tuple(sorted((*left.curve_ids, *right.curve_ids))),
                     )
                 )

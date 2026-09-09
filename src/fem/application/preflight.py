@@ -128,7 +128,7 @@ def _evaluate_static_preflight(
                     error,
                     subject="model",
                     remediation=(
-                        "请使用已注册且具有完整 capability descriptor 的单元。"
+                        "Use registered elements with complete capability descriptors."
                     ),
                 )
             )
@@ -144,7 +144,7 @@ def _evaluate_static_preflight(
                 PreflightStage.STRUCTURE,
                 error,
                 subject="model",
-                remediation="请修复网格、集合或模型结构引用。",
+                remediation="Fix the mesh, sets, or model structure references.",
             )
         )
 
@@ -158,7 +158,7 @@ def _evaluate_static_preflight(
                 error,
                 subject=requested_name,
                 path=("steps", requested_name),
-                remediation="请选择当前模型中存在的分析步。",
+                remediation="Select a step that exists in the current model.",
             )
         )
     report_step_name = (
@@ -181,7 +181,7 @@ def _evaluate_static_preflight(
                     subject=report_step_name,
                     path=("steps", report_step_name),
                     remediation=(
-                        "请修复当前分析步及其继承的前序分析步边界引用。"
+                        "Fix the boundary references in the current step and its inherited preceding steps."
                     ),
                 )
             )
@@ -221,7 +221,7 @@ def _evaluate_static_preflight(
                     error,
                     subject=report_step_name,
                     path=("steps", report_step_name, "boundary"),
-                    remediation="请修复当前分析步的边界和载荷定义。",
+                    remediation="Fix the boundary and load definitions in the current step.",
                 )
             )
         else:
@@ -241,7 +241,7 @@ def _evaluate_static_preflight(
                             report_step_name,
                             "boundaries",
                         ),
-                        remediation="请为当前分析步或任一前序分析步添加位移约束。",
+                        remediation="Add displacement constraints to the current step or any preceding step.",
                     )
                 )
 
@@ -281,7 +281,7 @@ def _evaluate_static_preflight(
                         subject=report_step_name,
                         path=("steps", report_step_name, "stiffness"),
                         remediation=(
-                            "请检查约束、材料、截面、单元连接和零刚度自由度。"
+                            "Check the constraints, materials, sections, element connectivity, and zero-stiffness degrees of freedom."
                         ),
                     )
                 )
@@ -295,12 +295,12 @@ def _evaluate_static_preflight(
                     severity=PreflightSeverity.WARNING,
                     stage=PreflightStage.STIFFNESS,
                     message=(
-                        "大型模型快速检查已跳过全局刚度矩阵的数值分解。"
+                        "The large-model quick check skipped numerical factorization of the global stiffness matrix."
                     ),
                     subject=report_step_name,
                     path=("steps", report_step_name, "stiffness"),
                     remediation=(
-                        "提交分析后，求解器仍会执行完整刚度矩阵装配与分解。"
+                        "After analysis submission, the solver will still fully assemble and factorize the stiffness matrix."
                     ),
                 )
             )
@@ -408,7 +408,7 @@ def _append_quick_capability_diagnostics(
                 error,
                 subject="model",
                 remediation=(
-                    "请使用已注册且具有完整 capability descriptor 的单元。"
+                    "Use registered elements with complete capability descriptors."
                 ),
             )
         )
@@ -418,13 +418,13 @@ def _append_quick_capability_diagnostics(
             severity=PreflightSeverity.WARNING,
             stage=PreflightStage.CAPABILITY,
             message=(
-                "大型模型快速检查按唯一单元类型验证能力与截面，"
-                "未逐单元构造完整截面解析对象。"
+                "The large-model quick check validates capabilities and sections by unique element type, "
+                "without constructing full section resolution objects for every element."
             ),
             subject="model",
             path=("capabilities",),
             remediation=(
-                "提交分析后，求解器仍会对实际单元执行完整截面与刚度验证。"
+                "After analysis submission, the solver will still fully validate sections and stiffness for the actual elements."
             ),
             details={"element_types": element_types},
         )
@@ -449,7 +449,7 @@ def _append_quick_definition_diagnostics(
                 message="The model has no material definitions.",
                 subject="materials",
                 path=("definitions", "materials"),
-                remediation="请创建至少一个与单元族兼容的材料。",
+                remediation="Create at least one material compatible with the element family.",
             )
         )
     if not sections:
@@ -461,7 +461,7 @@ def _append_quick_definition_diagnostics(
                 message="The model has no section assignments.",
                 subject="sections",
                 path=("definitions", "sections"),
-                remediation="请创建截面并分配到单元集。",
+                remediation="Create a section and assign it to an element set.",
             )
         )
 
@@ -492,7 +492,7 @@ def _append_quick_definition_diagnostics(
                 error,
                 subject="sections",
                 path=("definitions", "sections"),
-                remediation="请修复材料、截面参数及单元集引用。",
+                remediation="Fix the materials, section parameters, and element set references.",
             )
         )
         return False
@@ -674,7 +674,7 @@ def _append_quick_definition_diagnostics(
                 ),
                 subject=tuple(uncovered_sample),
                 path=("definitions", "sections", "coverage"),
-                remediation="请将兼容截面分配到所有单元。",
+                remediation="Assign compatible sections to all elements.",
                 details={
                     "element_count": uncovered_count,
                     "element_ids": tuple(uncovered_sample),
@@ -718,7 +718,7 @@ def _append_quick_section_diagnostic(
             message=message,
             subject=subject,
             path=path,
-            remediation="请修复材料、截面及其单元集分配。",
+            remediation="Fix the materials, sections, and their element set assignments.",
             details=details,
         )
     )
@@ -739,7 +739,7 @@ def _append_definition_diagnostics(
                 message="The model has no material definitions.",
                 subject="materials",
                 path=("definitions", "materials"),
-                remediation="请创建至少一个与单元族兼容的材料。",
+                remediation="Create at least one material compatible with the element family.",
             )
         )
     if not sections:
@@ -751,7 +751,7 @@ def _append_definition_diagnostics(
                 message="The model has no section assignments.",
                 subject="sections",
                 path=("definitions", "sections"),
-                remediation="请创建截面并分配到单元集。",
+                remediation="Create a section and assign it to an element set.",
             )
         )
 
@@ -765,7 +765,7 @@ def _append_definition_diagnostics(
                 error,
                 subject="sections",
                 path=("definitions", "sections"),
-                remediation="请修复材料和截面参数。",
+                remediation="Fix the material and section parameters.",
             )
         )
         return False
@@ -816,7 +816,7 @@ def _append_definition_diagnostics(
                     "sections",
                     str(issue.assignment_index),
                 ),
-                remediation="请修复材料、截面及其单元集分配。",
+                remediation="Fix the materials, sections, and their element set assignments.",
                 details=details,
             )
         )
@@ -832,7 +832,7 @@ def _append_definition_diagnostics(
                 ),
                 subject=resolution.uncovered_element_ids,
                 path=("definitions", "sections", "coverage"),
-                remediation="请将兼容截面分配到所有单元。",
+                remediation="Assign compatible sections to all elements.",
                 details={
                     "element_ids": resolution.uncovered_element_ids,
                 },
@@ -1069,7 +1069,7 @@ def _validate_static_procedure(
             message=message,
             subject=step_name,
             path=("steps", step_name, "procedure"),
-            remediation="请选择线性静力过程并关闭 nlgeom。",
+            remediation="Select a linear static procedure and disable nlgeom.",
             details={"procedure": procedure, "nlgeom": nlgeom},
         )
     )

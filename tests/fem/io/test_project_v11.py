@@ -58,7 +58,7 @@ def _committed_face_sketch_project() -> tuple[dict[str, object], BoxGeometry]:
             FaceSketchBooleanGeometry(
                 base,
                 "FSB1",
-                "拉伸合并-1",
+                "Extrude Fuse-1",
                 "face:top",
                 workplane.strategy,
                 sketch,

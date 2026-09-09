@@ -86,11 +86,11 @@ class RectangleGeometry:
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
         if not normalized_name:
-            raise ValueError("几何名称不能为空")
+            raise ValueError("Geometry name cannot be empty")
         if float(self.width) <= 0.0:
-            raise ValueError("矩形宽度必须大于零")
+            raise ValueError("Rectangle width must be greater than zero")
         if float(self.height) <= 0.0:
-            raise ValueError("矩形高度必须大于零")
+            raise ValueError("Rectangle height must be greater than zero")
         object.__setattr__(self, "name", normalized_name)
         object.__setattr__(self, "width", float(self.width))
         object.__setattr__(self, "height", float(self.height))
@@ -106,9 +106,9 @@ class DiskGeometry:
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
         if not normalized_name:
-            raise ValueError("几何名称不能为空")
+            raise ValueError("Geometry name cannot be empty")
         if float(self.radius) <= 0.0:
-            raise ValueError("圆盘半径必须大于零")
+            raise ValueError("Disk radius must be greater than zero")
         object.__setattr__(self, "name", normalized_name)
         object.__setattr__(self, "radius", float(self.radius))
 
@@ -126,9 +126,9 @@ class BoxGeometry:
         normalized_name = str(self.name).strip()
         dimensions = tuple(float(value) for value in (self.width, self.depth, self.height))
         if not normalized_name:
-            raise ValueError("几何名称不能为空")
+            raise ValueError("Geometry name cannot be empty")
         if any(value <= 0.0 for value in dimensions):
-            raise ValueError("长方体尺寸必须大于零")
+            raise ValueError("Box dimensions must be greater than zero")
         object.__setattr__(self, "name", normalized_name)
         for field_name, value in zip(("width", "depth", "height"), dimensions):
             object.__setattr__(self, field_name, value)
@@ -146,9 +146,9 @@ class CylinderGeometry:
         normalized_name = str(self.name).strip()
         dimensions = float(self.radius), float(self.height)
         if not normalized_name:
-            raise ValueError("几何名称不能为空")
+            raise ValueError("Geometry name cannot be empty")
         if any(value <= 0.0 for value in dimensions):
-            raise ValueError("圆柱半径和高度必须大于零")
+            raise ValueError("Cylinder radius and height must be greater than zero")
         object.__setattr__(self, "name", normalized_name)
         object.__setattr__(self, "radius", dimensions[0])
         object.__setattr__(self, "height", dimensions[1])
@@ -290,12 +290,12 @@ class PlateWithHoleGeometry:
         )
         width, height, hole_x, hole_y, radius = values
         if not normalized_name:
-            raise ValueError("几何名称不能为空")
+            raise ValueError("Geometry name cannot be empty")
         if width <= 0.0 or height <= 0.0 or radius <= 0.0:
-            raise ValueError("板尺寸和孔半径必须大于零")
+            raise ValueError("Plate dimensions and hole radius must be greater than zero")
         clearance = min(hole_x, width - hole_x, hole_y, height - hole_y)
         if clearance <= radius:
-            raise ValueError("圆孔必须完整位于矩形板内部")
+            raise ValueError("The circular hole must lie entirely inside the rectangular plate")
         object.__setattr__(self, "name", normalized_name)
         for field_name, value in zip(
             ("width", "height", "hole_x", "hole_y", "hole_radius"),
@@ -316,12 +316,12 @@ class SketchRectangle:
 
     def __post_init__(self) -> None:
         if self.operation not in {"material", "cut"}:
-            raise ValueError("草图轮廓只能用于添加材料或切除材料")
+            raise ValueError("Sketch contours can only add or remove material")
         values = tuple(float(value) for value in (self.x, self.y, self.width, self.height))
         if not all(math.isfinite(value) for value in values):
-            raise ValueError("草图轮廓参数必须是有限数值")
+            raise ValueError("Sketch contour parameters must be finite numbers")
         if values[2] <= 0.0 or values[3] <= 0.0:
-            raise ValueError("矩形宽度和高度必须大于零")
+            raise ValueError("Rectangle width and height must be greater than zero")
         for field_name, value in zip(("x", "y", "width", "height"), values):
             object.__setattr__(self, field_name, value)
 
@@ -350,12 +350,12 @@ class SketchCircle:
             operation, x, y, radius = args
             normalized_operation = operation
             if normalized_operation not in {"material", "cut"}:
-                raise ValueError("草图轮廓只能用于添加材料或切除材料")
+                raise ValueError("Sketch contours can only add or remove material")
             normalized_x = _normalize_sketch_scalar(x, "x")
             normalized_y = _normalize_sketch_scalar(y, "y")
             normalized_radius = _normalize_sketch_scalar(radius, "radius")
             if normalized_radius <= 0.0:
-                raise ValueError("圆半径必须大于零")
+                raise ValueError("Circle radius must be greater than zero")
             object.__setattr__(self, "id", None)
             object.__setattr__(self, "center_point_id", None)
             object.__setattr__(self, "radius", normalized_radius)
@@ -372,7 +372,7 @@ class SketchCircle:
             )
             normalized_radius = _normalize_sketch_scalar(radius, "radius")
             if normalized_radius <= 0.0:
-                raise ValueError("圆半径必须大于零")
+                raise ValueError("Circle radius must be greater than zero")
             object.__setattr__(self, "id", normalized_id)
             object.__setattr__(self, "center_point_id", normalized_center)
             object.__setattr__(self, "radius", normalized_radius)
@@ -550,7 +550,7 @@ class FaceSketchBooleanDirection(str, Enum):
         )
         magnitude = math.sqrt(sum(component * component for component in normal))
         if magnitude <= _SKETCH_GEOMETRY_TOLERANCE:
-            raise ValueError("工作面外法向必须为非零向量")
+            raise ValueError("The workplane outward normal must be a nonzero vector")
         sign = 1.0 if self is type(self).OUTWARD else -1.0
         return tuple(sign * component / magnitude for component in normal)
 
@@ -566,11 +566,11 @@ class FaceSketchWorkplaneStrategy:
     def __post_init__(self) -> None:
         normalized_axis = str(self.seed_axis).lower()
         if normalized_axis not in {"x", "y", "z"}:
-            raise ValueError("工作面 U 轴种子必须是全局 X、Y 或 Z 轴")
+            raise ValueError("The workplane U-axis seed must be the global X, Y, or Z axis")
         if isinstance(self.sign, bool) or self.sign not in {-1, 1}:
-            raise ValueError("工作面 U 轴符号必须是 1 或 -1")
+            raise ValueError("The workplane U-axis sign must be 1 or -1")
         if self.origin_rule != "area_center":
-            raise ValueError("工作面原点规则必须为面积中心")
+            raise ValueError("The workplane origin rule must be the area centroid")
         object.__setattr__(self, "seed_axis", normalized_axis)
 
 
@@ -593,11 +593,11 @@ class SketchExternalReference:
     derived_type: SketchExternalReferenceType
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", _normalize_sketch_id(self.id, "外部参考 ID"))
+        object.__setattr__(self, "id", _normalize_sketch_id(self.id, "External reference ID"))
         if type(self.source) is not LogicalEntityRef:
-            raise TypeError("外部参考来源必须是 LogicalEntityRef")
+            raise TypeError("The external reference source must be a LogicalEntityRef")
         if type(self.derived_type) is not SketchExternalReferenceType:
-            raise TypeError("外部参考派生类型无效")
+            raise TypeError("Invalid external reference derivation type")
         expected_kind = {
             SketchExternalReferenceType.TOPOLOGY_VERTEX: "point",
             SketchExternalReferenceType.LINE_MIDPOINT: "edge",
@@ -606,7 +606,7 @@ class SketchExternalReference:
             SketchExternalReferenceType.FACE_CENTER: "face",
         }[self.derived_type]
         if self.source.kind != expected_kind:
-            raise ValueError("外部参考来源类型与派生类型不匹配")
+            raise ValueError("The external reference source type does not match the derivation type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,12 +620,12 @@ class SketchExternalCoincidence:
         object.__setattr__(
             self,
             "point_id",
-            _normalize_sketch_id(self.point_id, "外部重合草图点 ID"),
+            _normalize_sketch_id(self.point_id, "External coincidence sketch point ID"),
         )
         object.__setattr__(
             self,
             "reference_id",
-            _normalize_sketch_id(self.reference_id, "外部重合参考 ID"),
+            _normalize_sketch_id(self.reference_id, "External coincidence reference ID"),
         )
 
 
@@ -1142,7 +1142,7 @@ class SketchGeometry:
     ) -> None:
         normalized_name = str(name).strip()
         if not normalized_name:
-            raise ValueError("草图名称不能为空")
+            raise ValueError("Sketch name cannot be empty")
 
         # The positional strict form is (name, plane, points, curves).  The
         # keyword form naturally lands in the named ``plane``/``points``/
@@ -1190,9 +1190,9 @@ class SketchGeometry:
             and getattr(item, "is_legacy", True)
             for item in normalized_contours
         ):
-            raise ValueError("草图至少需要一个有效轮廓")
+            raise ValueError("A sketch requires at least one valid contour")
         if not any(item.operation == "material" for item in normalized_contours):
-            raise ValueError("草图至少需要一个添加材料轮廓")
+            raise ValueError("A sketch requires at least one contour that adds material")
         object.__setattr__(self, "name", normalized_name)
         object.__setattr__(self, "contours", normalized_contours)
         object.__setattr__(self, "plane", None)
@@ -1236,9 +1236,9 @@ class SketchGeometry:
     ) -> None:
         del plane  # The constructor has already validated the immutable frame.
         if not points:
-            raise ValueError("严格草图至少需要一个点")
+            raise ValueError("A strict sketch requires at least one point")
         if not curves:
-            raise ValueError("严格草图至少需要一条曲线")
+            raise ValueError("A strict sketch requires at least one curve")
         if any(type(point) is not SketchPoint for point in points):
             raise TypeError("strict sketch points must contain only SketchPoint values")
         if any(type(curve) not in STRICT_SKETCH_CURVE_TYPES for curve in curves):
@@ -2065,12 +2065,12 @@ class MovedGeometry:
                 BooleanGeometry,
             ),
         ):
-            raise TypeError("移动操作需要已有几何")
+            raise TypeError("Move requires existing geometry")
         values = tuple(float(value) for value in (self.dx, self.dy, self.dz))
         if not all(math.isfinite(value) for value in values):
-            raise ValueError("移动距离必须是有限数值")
+            raise ValueError("Move distances must be finite numbers")
         if geometry_dimension(self.base) == 2 and values[2] != 0.0:
-            raise ValueError("二维几何只能在 XY 平面内移动")
+            raise ValueError("2D geometry can only move within the XY plane")
         for field_name, value in zip(("dx", "dy", "dz"), values):
             object.__setattr__(self, field_name, value)
 
@@ -2100,15 +2100,15 @@ class RotatedGeometry:
                 BooleanGeometry,
             ),
         ):
-            raise TypeError("旋转操作需要已有几何")
+            raise TypeError("Rotate requires existing geometry")
         normalized_axis = str(self.axis).lower()
         if normalized_axis not in {"x", "y", "z"}:
-            raise ValueError("旋转轴只能是 X、Y 或 Z")
+            raise ValueError("The rotation axis must be X, Y, or Z")
         angle = float(self.angle_degrees)
         if not math.isfinite(angle):
-            raise ValueError("旋转角度必须是有限数值")
+            raise ValueError("The rotation angle must be a finite number")
         if geometry_dimension(self.base) == 2 and normalized_axis != "z":
-            raise ValueError("二维几何只能绕 Z 轴旋转")
+            raise ValueError("2D geometry can only rotate about the Z axis")
         object.__setattr__(self, "axis", normalized_axis)
         object.__setattr__(self, "angle_degrees", angle)
 
@@ -2135,25 +2135,25 @@ class ExtrudedGeometry:
                 BooleanGeometry,
             ),
         ):
-            raise TypeError("拉伸操作需要已有二维几何")
+            raise TypeError("Extrude requires existing 2D geometry")
         if geometry_dimension(self.base) != 2:
-            raise ValueError("只有二维几何可以拉伸")
+            raise ValueError("Only 2D geometry can be extruded")
         height = float(self.height)
         if height <= 0.0 or not math.isfinite(height):
-            raise ValueError("拉伸高度必须大于零")
+            raise ValueError("Extrude height must be greater than zero")
         if isinstance(self.source_face_ids, (str, bytes, bytearray)):
-            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+            raise TypeError("source_face_ids must be an iterable of face logical IDs")
         try:
             requested_ids = tuple(self.source_face_ids)
         except TypeError as error:
             raise TypeError(
-                "source_face_ids 必须是 face logical ID iterable"
+                "source_face_ids must be an iterable of face logical IDs"
             ) from error
         references = tuple(LogicalEntityRef(value) for value in requested_ids)
         if any(reference.kind != "face" for reference in references):
-            raise ValueError("source_face_ids 只能包含 face logical IDs")
+            raise ValueError("source_face_ids can only contain face logical IDs")
         if len(references) != len(set(reference.logical_id for reference in references)):
-            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+            raise ValueError("source_face_ids cannot contain duplicate logical IDs")
         normalized_ids: tuple[str, ...] = ()
         if references:
             from .extrusion_selection import resolve_extrusion_source_faces
@@ -2194,34 +2194,34 @@ class RevolvedGeometry:
                 BooleanGeometry,
             ),
         ):
-            raise TypeError("扫掠操作需要已有二维几何")
+            raise TypeError("Sweep requires existing 2D geometry")
         if geometry_dimension(self.base) != 2:
-            raise ValueError("只有二维几何可以扫掠")
+            raise ValueError("Only 2D geometry can be swept")
         normalized_axis = str(self.axis).lower()
         if normalized_axis not in {"x", "y", "z"}:
-            raise ValueError("扫掠轴只能是 X、Y 或 Z")
+            raise ValueError("The sweep axis must be X, Y, or Z")
         angle = float(self.angle_degrees)
         if (
             not math.isfinite(angle)
             or angle <= 0.0
             or angle > 360.0
         ):
-            raise ValueError("扫掠角度必须大于 0° 且不超过 360°")
+            raise ValueError("The sweep angle must be greater than 0° and no greater than 360°")
         if isinstance(self.source_face_ids, (str, bytes, bytearray)):
-            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+            raise TypeError("source_face_ids must be an iterable of face logical IDs")
         try:
             requested_ids = tuple(self.source_face_ids)
         except TypeError as error:
             raise TypeError(
-                "source_face_ids 必须是 face logical ID iterable"
+                "source_face_ids must be an iterable of face logical IDs"
             ) from error
         references = tuple(LogicalEntityRef(value) for value in requested_ids)
         if any(reference.kind != "face" for reference in references):
-            raise ValueError("source_face_ids 只能包含 face logical IDs")
+            raise ValueError("source_face_ids can only contain face logical IDs")
         if len(references) != len(
             set(reference.logical_id for reference in references)
         ):
-            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+            raise ValueError("source_face_ids cannot contain duplicate logical IDs")
         normalized_ids: tuple[str, ...] = ()
         if references:
             from .extrusion_selection import resolve_extrusion_source_faces
@@ -2262,19 +2262,19 @@ class PathSweptGeometry:
                 BooleanGeometry,
             ),
         ):
-            raise TypeError("路径扫掠需要已有二维几何")
+            raise TypeError("Path sweep requires existing 2D geometry")
         if geometry_dimension(self.base) != 2:
-            raise ValueError("只有二维几何可以沿路径扫掠")
+            raise ValueError("Only 2D geometry can be swept along a path")
         if type(self.path) is not WireGeometry:
-            raise TypeError("路径扫掠 path 必须是 WireGeometry")
+            raise TypeError("The path sweep path must be a WireGeometry")
         degrees = {point.name: 0 for point in self.path.points}
         for member in self.path.members:
             degrees[member.start] += 1
             degrees[member.end] += 1
         if any(degree > 2 for degree in degrees.values()):
-            raise ValueError("路径扫掠首版不支持分支路径")
+            raise ValueError("The initial path sweep implementation does not support branched paths")
         if sorted(degrees.values()).count(1) != 2:
-            raise ValueError("路径扫掠需要一条有两个端点的开放路径")
+            raise ValueError("Path sweep requires an open path with two endpoints")
         if any(
             current.end != following.start
             for current, following in zip(
@@ -2282,33 +2282,33 @@ class PathSweptGeometry:
                 self.path.members[1:],
             )
         ):
-            raise ValueError("路径扫掠 path 必须按连续遍历顺序给出")
+            raise ValueError("The path sweep path must be given in continuous traversal order")
         ordered_points = (
             self.path.members[0].start,
             *(member.end for member in self.path.members),
         )
         if len(ordered_points) != len(set(ordered_points)):
-            raise ValueError("路径扫掠首版只支持开放路径")
+            raise ValueError("The initial path sweep implementation supports only open paths")
         if set(ordered_points) != {point.name for point in self.path.points}:
-            raise ValueError("路径扫掠 path 不得包含未使用的点")
+            raise ValueError("The path sweep path must not contain unused points")
         coordinates = {
             point.name: (point.x, point.y, point.z)
             for point in self.path.points
         }
         traversal = tuple(coordinates[name] for name in ordered_points)
         if len(traversal) != len(set(traversal)):
-            raise ValueError("路径扫掠路径不得重访同一空间点")
+            raise ValueError("The path sweep path must not revisit the same spatial point")
         if _polyline_self_intersects(traversal):
-            raise ValueError("路径扫掠首版不支持自相交路径")
+            raise ValueError("The initial path sweep implementation does not support self-intersecting paths")
         if self.frame_strategy not in {"fixed", "transport"}:
-            raise ValueError("路径扫掠 frame_strategy 必须是 fixed 或 transport")
+            raise ValueError("Path sweep frame_strategy must be fixed or transport")
         if isinstance(self.source_face_ids, (str, bytes, bytearray)):
-            raise TypeError("source_face_ids 必须是 face logical ID iterable")
+            raise TypeError("source_face_ids must be an iterable of face logical IDs")
         references = tuple(LogicalEntityRef(value) for value in self.source_face_ids)
         if any(reference.kind != "face" for reference in references):
-            raise ValueError("source_face_ids 只能包含 face logical IDs")
+            raise ValueError("source_face_ids can only contain face logical IDs")
         if len(references) != len(set(item.logical_id for item in references)):
-            raise ValueError("source_face_ids 不能包含重复 logical IDs")
+            raise ValueError("source_face_ids cannot contain duplicate logical IDs")
         normalized_ids: tuple[str, ...] = ()
         if references:
             from .extrusion_selection import resolve_extrusion_source_faces
@@ -2393,9 +2393,9 @@ class BooleanGeometry:
     def __post_init__(self) -> None:
         normalized_name = str(self.name).strip()
         if not normalized_name:
-            raise ValueError("布尔结果名称不能为空")
+            raise ValueError("Boolean result name cannot be empty")
         if self.operation not in {"fuse", "cut", "fragment"}:
-            raise ValueError("布尔操作只能是合并、切除或分割")
+            raise ValueError("The Boolean operation must be Fuse, Cut, or Fragment")
         supported = (
             *BASE_GEOMETRY_TYPES,
             MovedGeometry,
@@ -2408,13 +2408,13 @@ class BooleanGeometry:
         if not isinstance(self.object_geometry, supported) or not isinstance(
             self.tool_geometry, supported
         ):
-            raise TypeError("布尔操作需要两个已有几何")
+            raise TypeError("A Boolean operation requires two existing geometries")
         object_dimension = geometry_dimension(self.object_geometry)
         tool_dimension = geometry_dimension(self.tool_geometry)
         if object_dimension == 1:
-            raise ValueError("布尔操作不支持一维线框几何")
+            raise ValueError("Boolean operations do not support 1D wire geometry")
         if object_dimension != tool_dimension:
-            raise ValueError("布尔操作的主体和工具体维度必须一致")
+            raise ValueError("The Boolean base and tool geometries must have the same dimension")
         if sum(
             context is not None
             for context in (
@@ -2606,10 +2606,10 @@ class FaceSeedConnectionProof:
         support = LogicalEntityRef(self.support_face_id)
         tool_start = LogicalEntityRef(self.tool_start_face_id)
         if support.kind != "face" or tool_start.kind != "face":
-            raise ValueError("面种子连接证明必须引用两个面")
-        area = _normalize_sketch_scalar(self.overlap_area, "面种子重叠面积")
+            raise ValueError("A face-seed connection proof must reference two faces")
+        area = _normalize_sketch_scalar(self.overlap_area, "Face-seed overlap area")
         if area <= 0.0:
-            raise ValueError("面种子连接证明需要正面积重叠")
+            raise ValueError("A face-seed connection proof requires positive-area overlap")
         object.__setattr__(self, "overlap_area", area)
 
 
@@ -2623,17 +2623,17 @@ class FaceSketchBooleanStepProof:
     connection_proof: FaceSeedConnectionProof | None = None
 
     def __post_init__(self) -> None:
-        profile_id = _normalize_sketch_id(self.profile_id, "轮廓 ID")
+        profile_id = _normalize_sketch_id(self.profile_id, "Profile ID")
         entities = tuple(self.result_entities)
         mappings = tuple(self.topology_mappings)
         if any(type(item) is not BooleanLineageEntity for item in entities):
-            raise TypeError("分步布尔结果必须包含 BooleanLineageEntity")
+            raise TypeError("Sequential Boolean results must contain BooleanLineageEntity")
         if any(type(item) is not BooleanLineageMapping for item in mappings):
-            raise TypeError("分步布尔谱系必须包含 BooleanLineageMapping")
+            raise TypeError("Sequential Boolean lineage must contain BooleanLineageMapping")
         if self.connection_proof is not None and type(
             self.connection_proof
         ) is not FaceSeedConnectionProof:
-            raise TypeError("分步布尔连接证明无效")
+            raise TypeError("Invalid sequential Boolean connection proof")
         object.__setattr__(self, "profile_id", profile_id)
         object.__setattr__(self, "result_entities", entities)
         object.__setattr__(self, "topology_mappings", mappings)
@@ -2659,64 +2659,64 @@ class FaceSketchBooleanGeometry:
 
     def __post_init__(self) -> None:
         if not isinstance(self.base, NATIVE_GEOMETRY_TYPES):
-            raise TypeError("面草图布尔需要已有原生几何")
+            raise TypeError("A face-sketch Boolean requires existing Native geometry")
         if geometry_dimension(self.base) != 3:
-            raise ValueError("面草图布尔的基础几何必须为三维")
+            raise ValueError("The base geometry of a face-sketch Boolean must be 3D")
         if not isinstance(self.base, MultiBodyGeometry) and not is_single_solid_recipe(
             self.base
         ):
-            raise ValueError("面草图布尔的基础几何必须为单实体或显式 MultiBody")
-        feature_id = _normalize_sketch_id(self.feature_id, "特征 ID")
-        name = _normalize_body_name(self.name, "特征名称")
+            raise ValueError("The base geometry of a face-sketch Boolean must be a single solid or explicit MultiBody")
+        feature_id = _normalize_sketch_id(self.feature_id, "Feature ID")
+        name = _normalize_body_name(self.name, "Feature name")
         face_reference = LogicalEntityRef(self.support_face_id)
         if face_reference.kind != "face":
-            raise ValueError("工作面逻辑 ID 必须引用面")
+            raise ValueError("The workplane logical ID must reference a face")
         if type(self.workplane_strategy) is not FaceSketchWorkplaneStrategy:
-            raise TypeError("工作面坐标策略无效")
+            raise TypeError("Invalid workplane coordinate strategy")
         if type(self.sketch) is not SketchGeometry or not self.sketch.is_strict:
-            raise TypeError("面草图布尔必须保存严格平面草图")
+            raise TypeError("A face-sketch Boolean must save a strict planar sketch")
         if type(self.operation) is not FaceSketchBooleanOperation:
-            raise TypeError("拉伸布尔操作无效")
+            raise TypeError("Invalid Extrude Boolean operation")
         if type(self.direction) is not FaceSketchBooleanDirection:
-            raise TypeError("拉伸布尔方向无效")
-        distance = _normalize_sketch_scalar(self.distance, "拉伸距离")
+            raise TypeError("Invalid Extrude Boolean direction")
+        distance = _normalize_sketch_scalar(self.distance, "Extrude distance")
         if distance <= 0.0:
-            raise ValueError("拉伸距离必须为有限正值")
+            raise ValueError("Extrude distance must be finite and positive")
         profile_ids = tuple(
-            _normalize_sketch_id(value, "参与轮廓 ID")
+            _normalize_sketch_id(value, "Participating Profile ID")
             for value in self.participating_profile_ids
         )
         if not profile_ids:
-            raise ValueError("至少需要一个参与轮廓")
+            raise ValueError("At least one participating Profile is required")
         if len(profile_ids) != len(set(profile_ids)):
-            raise ValueError("参与轮廓 ID 不能重复")
+            raise ValueError("Participating Profile IDs cannot be duplicated")
         references = tuple(self.external_references)
         coincidences = tuple(self.external_coincidences)
         proofs = tuple(self.step_proofs)
         if any(type(item) is not SketchExternalReference for item in references):
-            raise TypeError("外部参考集合包含无效值")
+            raise TypeError("The external reference collection contains an invalid value")
         if any(type(item) is not SketchExternalCoincidence for item in coincidences):
-            raise TypeError("外部重合集合包含无效值")
+            raise TypeError("The external coincidence collection contains an invalid value")
         if any(type(item) is not FaceSketchBooleanStepProof for item in proofs):
-            raise TypeError("分步布尔证明集合包含无效值")
+            raise TypeError("The sequential Boolean proof collection contains an invalid value")
         reference_ids = tuple(item.id for item in references)
         if len(reference_ids) != len(set(reference_ids)):
-            raise ValueError("外部参考 ID 不能重复")
+            raise ValueError("External reference IDs cannot be duplicated")
         sketch_point_ids = {point.id for point in self.sketch.points}
         linked_point_ids: set[str] = set()
         for coincidence in coincidences:
             if coincidence.point_id not in sketch_point_ids:
-                raise ValueError("外部重合引用了不存在的草图点")
+                raise ValueError("External coincidence references a nonexistent sketch point")
             if coincidence.reference_id not in set(reference_ids):
-                raise ValueError("外部重合引用了不存在的外部参考")
+                raise ValueError("External coincidence references a nonexistent external reference")
             if coincidence.point_id in linked_point_ids:
-                raise ValueError("每个草图点最多绑定一个外部参考")
+                raise ValueError("Each sketch point can bind to at most one external reference")
             linked_point_ids.add(coincidence.point_id)
         proof_ids = tuple(item.profile_id for item in proofs)
         if len(proof_ids) != len(set(proof_ids)):
-            raise ValueError("分步布尔证明的轮廓 ID 不能重复")
+            raise ValueError("Profile IDs in sequential Boolean proofs cannot be duplicated")
         if not set(proof_ids).issubset(profile_ids):
-            raise ValueError("分步布尔证明只能引用参与轮廓")
+            raise ValueError("Sequential Boolean proofs can only reference participating Profiles")
         object.__setattr__(self, "feature_id", feature_id)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "distance", distance)

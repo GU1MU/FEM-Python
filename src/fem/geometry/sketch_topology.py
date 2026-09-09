@@ -289,7 +289,7 @@ def _migrate_constraints(
             replacements = []
         if not replacements:
             removed.append(constraint.id)
-            diagnostics.append(f"约束 {constraint.id} 因曲线分割后含义歧义而移除")
+            diagnostics.append(f"Constraint {constraint.id} was removed because its meaning became ambiguous after curve splitting")
             continue
         for index, replacement in enumerate(replacements):
             migrated.append(

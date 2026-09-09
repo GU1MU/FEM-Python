@@ -479,9 +479,9 @@ class FaceSketchBooleanUndoRecord:
     def __post_init__(self) -> None:
         normalize_part_id(self.part_id)
         if type(self.feature_id) is not str or not self.feature_id.strip():
-            raise ValueError("面草图撤销记录缺少特征 ID")
+            raise ValueError("The face-sketch undo record is missing a feature ID")
         if self.before_part.id != self.part_id or self.after_part.id != self.part_id:
-            raise ValueError("面草图撤销记录的 Part ID 不一致")
+            raise ValueError("The face-sketch undo record has an inconsistent Part ID")
         for field_name in (
             "before_named_regions",
             "after_named_regions",
@@ -1437,7 +1437,7 @@ class ModelSession:
             allocated_name = draft.name if part_name is None else str(part_name)
         else:
             recipe = draft
-            allocated_name = "部件-1" if part_name is None else str(part_name)
+            allocated_name = "Part-1" if part_name is None else str(part_name)
         if recipe is None:
             raise ValueError("first Part draft must contain geometry")
         part = NativePart(
@@ -2031,7 +2031,7 @@ class ModelSession:
         else:
             recipe = draft
             part_name = (
-                f"部件-{part_id_sort_key(allocated_id)}"
+                f"Part-{part_id_sort_key(allocated_id)}"
                 if name is None
                 else str(name)
             )
@@ -2286,7 +2286,7 @@ class ModelSession:
         """Commit one generation-bound proven face-sketch Boolean atomically."""
 
         if self._session_id != str(expected_session_id):
-            raise SessionStateError("Session 已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The Session has changed; the Extrude Boolean preview is stale")
         self._check_expected(expected_session_revision)
         self._require_native()
         normalized = normalize_part_id(part_id)
@@ -2294,34 +2294,34 @@ class ModelSession:
         if type(recipe) is not FaceSketchBooleanGeometry:
             raise TypeError("recipe must be a FaceSketchBooleanGeometry")
         if int(sketch_revision) != int(expected_sketch_revision):
-            raise SessionStateError("草图已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The sketch has changed; the Extrude Boolean preview is stale")
         if int(preview_generation) != int(expected_preview_generation):
-            raise SessionStateError("精确预览代次已过期，请重新生成预览")
+            raise SessionStateError("The exact preview generation is stale; regenerate the preview")
         if (
             recipe.support_face_id != expected_support_face_id
             or recipe.workplane_strategy != expected_workplane_strategy
         ):
-            raise SessionStateError("工作面已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The workplane has changed; the Extrude Boolean preview is stale")
 
         current = self._require_editable_part(normalized)
         current_recipe = current.geometry_recipe
         if recipe.base != current_recipe:
-            raise SessionStateError("目标 Part 几何已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The target Part geometry has changed; the Extrude Boolean preview is stale")
         current_body_recipe = _face_sketch_target_body_recipe(
             current_recipe,
             target_body_id,
         )
         if current_body_recipe != expected_body_recipe:
-            raise SessionStateError("目标 Body 已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The target Body has changed; the Extrude Boolean preview is stale")
         if tuple(item.profile_id for item in recipe.step_proofs) != (
             recipe.participating_profile_ids
         ):
-            raise ValueError("拉伸布尔逐轮廓拓扑证明不完整，未修改模型")
+            raise ValueError("The Extrude Boolean per-Profile topology proof is incomplete; the model was not modified")
         if any(
             not item.result_entities or not item.topology_mappings
             for item in recipe.step_proofs
         ):
-            raise ValueError("拉伸布尔逐轮廓拓扑证明不完整，未修改模型")
+            raise ValueError("The Extrude Boolean per-Profile topology proof is incomplete; the model was not modified")
 
         feature_id = _next_face_sketch_boolean_feature_id(current_recipe)
         feature_name = _next_face_sketch_boolean_feature_name(
@@ -2329,7 +2329,7 @@ class ModelSession:
             recipe.operation,
         )
         if recipe.feature_id != feature_id or recipe.name != feature_name:
-            raise SessionStateError("特征序号已变化，拉伸布尔预览已过期")
+            raise SessionStateError("The feature sequence number has changed; the Extrude Boolean preview is stale")
         candidate = _committed_face_sketch_boolean_recipe(
             current_recipe,
             target_body_id,
@@ -2429,9 +2429,9 @@ class ModelSession:
         records = source.get(normalized)
         if not records:
             raise SessionStateError(
-                "当前 Part 没有可撤销的面草图特征"
+                "The current Part has no face-sketch feature to undo"
                 if undo
-                else "当前 Part 没有可重做的面草图特征"
+                else "The current Part has no face-sketch feature to redo"
             )
         record = records[-1]
         expected_part = record.after_part if undo else record.before_part
@@ -2448,7 +2448,7 @@ class ModelSession:
             or self._assignments != expected_assignments
             or self._steps != expected_steps
         ):
-            raise SessionStateError("后续编辑与面草图特征状态冲突，无法完整恢复")
+            raise SessionStateError("Subsequent edits conflict with the face-sketch feature state; full restoration is not possible")
 
         replacement = record.before_part if undo else record.after_part
         regions = record.before_named_regions if undo else record.after_named_regions
@@ -2614,7 +2614,7 @@ class ModelSession:
             )
             sibling = NativePart(
                 id=sibling_id,
-                name=f"部件-{part_id_sort_key(sibling_id)}",
+                name=f"Part-{part_id_sort_key(sibling_id)}",
                 geometry_recipe=recipe,
                 mesh_settings=_namespace_part_mesh_settings(
                     sibling_id,
@@ -4815,7 +4815,7 @@ class ModelSession:
             active = active_parts[0]
             return MeshTaskSnapshot(
                 token=token,
-                model_name=str(self._model_name or "模型-1"),
+                model_name=str(self._model_name or "Model-1"),
                 # Compatibility projections are intentionally present on the
                 # detached task, while generate_fem_model consumes Parts.
                 geometry_recipe=deepcopy(active.geometry_recipe),
@@ -4963,7 +4963,7 @@ class ModelSession:
         )
         return MeshTaskSnapshot(
             token=token,
-            model_name=str(self._model_name or "模型-1"),
+            model_name=str(self._model_name or "Model-1"),
             geometry_recipe=deepcopy(active.geometry_recipe),
             mesh_settings=deepcopy(active.mesh_settings),
             parts=deepcopy(candidate_parts),
@@ -7618,11 +7618,11 @@ def _authenticate_native_part_planar_profiles(part: NativePart) -> None:
         return
     diagnostic = next(iter(analysis.blocking_diagnostics), None)
     message = (
-        "严格草图没有可提交的闭合 Profile"
+        "The strict sketch has no closed Profile that can be submitted"
         if diagnostic is None
         else diagnostic.message
     )
-    raise ValueError(f"Part {part.id} 的二维几何 Profile 无效：{message}")
+    raise ValueError(f"Part {part.id} has an invalid 2D geometry Profile: {message}")
 
 
 def _authenticate_native_part_solids(part: NativePart) -> None:
@@ -7634,7 +7634,7 @@ def _authenticate_native_part_solids(part: NativePart) -> None:
 
     if _contains_unproven_boolean(part.geometry_recipe):
         raise ValueError(
-            f"Part {part.id} 的三维布尔几何缺少完整拓扑证明"
+            f"Part {part.id} has no complete topology proof for its 3D Boolean geometry"
         )
     try:
         with geometry_model(
@@ -7645,7 +7645,7 @@ def _authenticate_native_part_solids(part: NativePart) -> None:
             domains = tuple(compiled.domain)
     except Exception as error:
         raise ValueError(
-            f"Part {part.id} 的三维几何无法通过 OCC 单实体认证：{error}"
+            f"Part {part.id} failed OCC single-solid certification for its 3D geometry: {error}"
         ) from error
     ownership_recipe = part.geometry_recipe
     while isinstance(ownership_recipe, FaceSketchBooleanGeometry):
@@ -7660,8 +7660,8 @@ def _authenticate_native_part_solids(part: NativePart) -> None:
         or any(domain.dimension != 3 for domain in domains)
     ):
         raise ValueError(
-            f"Part {part.id} 的三维几何必须精确生成 {expected_count} 个实体；"
-            f"当前生成 {len(domains)} 个"
+            f"The 3D geometry of Part {part.id} must generate exactly {expected_count} solids; "
+            f"currently generated {len(domains)}"
         )
 
 
@@ -7723,13 +7723,13 @@ def _face_sketch_target_body_recipe(
 ) -> object:
     target = LogicalEntityRef(target_body_id)
     if target.kind != "body":
-        raise ValueError("面草图目标必须是 Body")
+        raise ValueError("The face-sketch target must be a Body")
     if isinstance(recipe, MultiBodyGeometry):
         if target.logical_id == "body:domain":
-            raise ValueError("MultiBody 面草图必须指定唯一目标 Body")
+            raise ValueError("A MultiBody face sketch must specify a unique target Body")
         return recipe.body(target.logical_id.removeprefix("body:")).recipe
     if target.logical_id != "body:domain":
-        raise ValueError("单实体 Part 的目标 Body ID 已失效")
+        raise ValueError("The target Body ID for the single-solid Part is stale")
     return recipe
 
 
@@ -7770,9 +7770,9 @@ def _next_face_sketch_boolean_feature_name(
     operation: FaceSketchBooleanOperation,
 ) -> str:
     prefix = (
-        "拉伸合并"
+        "Extrude Fuse"
         if operation is FaceSketchBooleanOperation.FUSE
-        else "拉伸切除"
+        else "Extrude Cut"
     )
     count = sum(
         item.operation is operation
