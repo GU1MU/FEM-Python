@@ -151,7 +151,7 @@ def test_legacy_v1_topology_references_fail_closed_instead_of_remapping(
     if not keep_local_controls:
         payload["mesh_settings"]["local_controls"] = []
 
-    with pytest.raises(ProjectV1DecodeError, match="逻辑拓扑契约版本.*重新选择"):
+    with pytest.raises(ProjectV1DecodeError, match="logical topology contract version.*select them again"):
         decode_project_v1(payload)
 
 
@@ -178,7 +178,7 @@ def test_unknown_logical_topology_version_is_rejected():
     payload = encode_project_v1(_project_snapshot())
     payload["logical_topology_version"] = 999
 
-    with pytest.raises(ProjectV1DecodeError, match="不支持的逻辑拓扑契约版本"):
+    with pytest.raises(ProjectV1DecodeError, match="unsupported logical topology contract version"):
         decode_project_v1(payload)
 
 
@@ -189,7 +189,7 @@ def test_logical_topology_version_requires_a_strict_integer(invalid_version):
 
     with pytest.raises(
         ProjectV1DecodeError,
-        match=r"\$\.logical_topology_version 必须是整数",
+        match=r"\$\.logical_topology_version must be an integer",
     ):
         decode_project_v1(payload)
 
@@ -201,7 +201,7 @@ def test_invalid_detached_decode_leaves_current_session_field_equal():
     payload = encode_project_v1(_project_snapshot())
     payload["steps"][0]["edge_loads"][0]["vector"] = [1.0, float("nan")]
 
-    with pytest.raises(ProjectV1DecodeError, match="有限数值"):
+    with pytest.raises(ProjectV1DecodeError, match="finite number"):
         decode_project_v1(payload)
 
     assert session.snapshot() == before
@@ -347,9 +347,9 @@ def test_json_duplicate_keys_and_non_finite_numbers_are_rejected():
         }
     )
 
-    with pytest.raises(ProjectV1DecodeError, match="重复键"):
+    with pytest.raises(ProjectV1DecodeError, match="duplicate key"):
         loads_project_v1(duplicate)
-    with pytest.raises(ProjectV1DecodeError, match="非有限"):
+    with pytest.raises(ProjectV1DecodeError, match="non-finite"):
         loads_project_v1(non_finite)
 
 
@@ -373,7 +373,7 @@ def test_encoder_blocks_state_v1_cannot_preserve(tmp_path):
         analysis_definitions=base.analysis_definitions,
     )
 
-    with pytest.raises(ProjectV1EncodeError, match="无法由 JSON 无损表示"):
+    with pytest.raises(ProjectV1EncodeError, match="JSON cannot represent losslessly"):
         save_project_v1(target, unsupported_metadata)
 
     assert target.read_text(encoding="utf-8") == "previous"
@@ -398,7 +398,7 @@ def test_explicit_beam_orientation_fails_closed_before_atomic_replace(
 
     with pytest.raises(
         ProjectV1EncodeError,
-        match=r"v1 不支持 Beam orientation",
+        match=r"v1 does not support beam orientation",
     ):
         save_project_v1(target, explicit)
 

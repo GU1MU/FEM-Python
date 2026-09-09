@@ -76,7 +76,7 @@ def loads_project_v11(
         loads_json_strict(
             data,
             error_type=ProjectV11DecodeError,
-            document_label="v11 项目",
+            document_label="v11 project",
         ),
         source_path=source_path,
     )
@@ -94,11 +94,11 @@ def decode_project_v11(
         _exact_keys(root, "$", {"format", "schema", "project"})
         if root["format"] != FORMAT_NAME:
             raise ProjectV11DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV11DecodeError(
-                f"v11 decoder 不能读取 schema {root['schema']!r}"
+                f"v11 decoder cannot read schema {root['schema']!r}"
             )
         project = _mapping(root["project"], "$.project")
         authoring = _mapping(project.get("authoring"), "$.project.authoring")
@@ -109,7 +109,7 @@ def decode_project_v11(
         if not required_records.issubset(authoring):
             missing = sorted(required_records - set(authoring))[0]
             raise ProjectV11DecodeError(
-                f"$.project.authoring 缺少字段 {missing!r}"
+                f"$.project.authoring is missing field {missing!r}"
             )
         undo_records = _decode_record_array(
             authoring["face_sketch_boolean_undo_records"],
@@ -139,7 +139,7 @@ def decode_project_v11(
     except ProjectV11Error:
         raise
     except Exception as error:
-        raise ProjectV11DecodeError(f"schema v11 项目无效：{error}") from error
+        raise ProjectV11DecodeError(f"invalid schema v11 project: {error}") from error
 
 
 def encode_project_v11(
@@ -175,7 +175,7 @@ def encode_project_v11(
         raise
     except Exception as error:
         raise ProjectV11EncodeError(
-            f"snapshot 无法由 v11 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v11: {error}"
         ) from error
 
 
@@ -215,7 +215,7 @@ def save_project_v11(
         semantic_encoder=encode_project_v11,
         expected_semantic=payload,
         error_type=ProjectV11EncodeError,
-        mismatch_message="临时 v11 项目回读后的面草图特征与撤销状态不一致",
+        mismatch_message="face sketch feature and undo states differ after rereading the temporary v11 project",
         checkpoint=checkpoint,
     )
 
@@ -225,7 +225,7 @@ def _decode_record_array(
     path: str,
 ) -> tuple[FaceSketchBooleanUndoRecord, ...]:
     if not isinstance(value, list):
-        raise ProjectV11DecodeError(f"{path} 必须是 array")
+        raise ProjectV11DecodeError(f"{path} must be an array")
     return tuple(
         _decode_record(item, f"{path}[{index}]")
         for index, item in enumerate(value)
@@ -286,7 +286,7 @@ def _encode_record(
 ) -> dict[str, Any]:
     if type(record) is not FaceSketchBooleanUndoRecord:
         raise ProjectV11EncodeError(
-            f"{path} 必须是 FaceSketchBooleanUndoRecord"
+            f"{path} must be FaceSketchBooleanUndoRecord"
         )
     return {
         "feature_id": record.feature_id,
@@ -328,7 +328,7 @@ def _encode_record(
 
 def _decode_regions(value: Any, path: str) -> tuple[Any, ...]:
     if not isinstance(value, list):
-        raise ProjectV11DecodeError(f"{path} 必须是 array")
+        raise ProjectV11DecodeError(f"{path} must be an array")
     return tuple(
         _v7._decode_named_region(item, f"{path}[{index}]")
         for index, item in enumerate(value)
@@ -344,7 +344,7 @@ def _encode_regions(values: tuple[Any, ...], path: str) -> list[Any]:
 
 def _decode_values(value: Any, path: str, decoder: Any) -> tuple[Any, ...]:
     if not isinstance(value, list):
-        raise ProjectV11DecodeError(f"{path} 必须是 array")
+        raise ProjectV11DecodeError(f"{path} must be an array")
     return tuple(
         decoder(item, f"{path}[{index}]", policy=_V11_FIELD_POLICY)
         for index, item in enumerate(value)
@@ -372,12 +372,12 @@ def _validate_face_sketch_state(
         (record.part_id, record.feature_id) for record in redo
     }
     if overlap:
-        raise error_type("同一面草图特征不能同时位于撤销栈和重做栈")
+        raise error_type("the same face sketch feature cannot be in both the undo and redo stacks")
     by_part = {part.id: part for part in snapshot.parts}
     for record in (*undo, *redo):
         if record.part_id not in by_part:
             raise error_type(
-                f"面草图撤销记录引用了不存在的 Part：{record.part_id}"
+                f"face sketch undo record references a nonexistent part: {record.part_id}"
             )
         _validate_record_transition(record, snapshot, encode=encode)
     for part_id, live_part in by_part.items():
@@ -385,10 +385,10 @@ def _validate_face_sketch_state(
         redo_stack = tuple(record for record in redo if record.part_id == part_id)
         for left, right in zip(undo_stack, undo_stack[1:]):
             if left.after_part != right.before_part:
-                raise error_type(f"Part {part_id} 的面草图撤销栈不连续")
+                raise error_type(f"Part {part_id} face sketch undo stack is discontinuous")
         for left, right in zip(redo_stack, redo_stack[1:]):
             if left.before_part != right.after_part:
-                raise error_type(f"Part {part_id} 的面草图重做栈不连续")
+                raise error_type(f"Part {part_id} face sketch redo stack is discontinuous")
         expected = (
             redo_stack[-1].before_part
             if redo_stack
@@ -397,7 +397,7 @@ def _validate_face_sketch_state(
             else None
         )
         if expected is not None and live_part != expected:
-            raise error_type(f"Part {part_id} 的当前状态与面草图撤销栈不一致")
+            raise error_type(f"Part {part_id} current state does not match the face sketch undo stack")
 
 
 def _validate_record_transition(
@@ -414,7 +414,7 @@ def _validate_record_transition(
         or after_features[:-1] != before_features
         or after_features[-1].feature_id != record.feature_id
     ):
-        raise error_type("面草图撤销记录不是单一特征状态转换")
+        raise error_type("face sketch undo record is not a single feature state transition")
     for part in (record.before_part, record.after_part):
         _v7._authenticate_part(part, encode=encode)
     other_parts = tuple(
@@ -442,13 +442,13 @@ def _face_features(recipe: object) -> tuple[FaceSketchBooleanGeometry, ...]:
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV11DecodeError(f"{path} 必须是 object")
+        raise ProjectV11DecodeError(f"{path} must be an object")
     return value
 
 
 def _string(value: Any, path: str) -> str:
     if type(value) is not str or not value.strip() or value != value.strip():
-        raise ProjectV11DecodeError(f"{path} 必须是无首尾空白的非空 string")
+        raise ProjectV11DecodeError(f"{path} must be a non-empty string without leading or trailing whitespace")
     return value
 
 
@@ -456,9 +456,9 @@ def _exact_keys(value: Mapping[str, Any], path: str, expected: set[str]) -> None
     missing = expected - set(value)
     extra = set(value) - expected
     if missing:
-        raise ProjectV11DecodeError(f"{path} 缺少字段 {sorted(missing)[0]!r}")
+        raise ProjectV11DecodeError(f"{path} is missing field {sorted(missing)[0]!r}")
     if extra:
-        raise ProjectV11DecodeError(f"{path} 包含未知字段 {sorted(extra)[0]!r}")
+        raise ProjectV11DecodeError(f"{path} contains unknown field {sorted(extra)[0]!r}")
 
 
 read_project_v11 = load_project_v11

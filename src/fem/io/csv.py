@@ -76,14 +76,14 @@ def read_truss2(
             if row[0].startswith("#"):
                 continue
 
-            # 节点表头
+            # Node headers
             if row[0] == "node_id":
                 if row != _TRUSS2_NODE_HEADER:
                     raise ValueError("Truss2 node header must be node_id,x,y,z")
                 mode = "nodes"
                 continue
 
-            # 单元表头
+            # Element headers
             if row[0] == "elem_id":
                 if row != _TRUSS2_ELEMENT_HEADER:
                     raise ValueError(
@@ -201,14 +201,14 @@ def read_beam2(mesh_path: str) -> Mesh3D:
             if row[0].startswith("#"):
                 continue
 
-            # 表头：节点
+            # Headers: nodes
             if row[0] == "node_id":
                 if row != _BEAM2_NODE_HEADER:
                     raise ValueError("Beam2 node header must be node_id,x,y,z")
                 mode = "nodes"
                 continue
 
-            # 表头：单元
+            # Headers: elements
             if row[0] == "elem_id":
                 if row != _BEAM2_ELEMENT_HEADER:
                     raise ValueError(
@@ -662,12 +662,12 @@ def read_hex8(
             if row[0].startswith("#"):
                 continue
 
-            # 节点表头
+            # Node headers
             if row[0] == "node_id":
                 mode = "nodes"
                 continue
 
-            # 单元表头
+            # Element headers
             if row[0] == "elem_id":
                 mode = "elements"
                 continue

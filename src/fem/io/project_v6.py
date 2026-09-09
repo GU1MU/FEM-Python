@@ -58,7 +58,7 @@ def loads_project_v6(
     payload = loads_json_strict(
         data,
         error_type=ProjectV6DecodeError,
-        document_label="v6 项目",
+        document_label="v6 project",
     )
     return decode_project_v6(payload, source_path=source_path)
 
@@ -76,7 +76,7 @@ def decode_project_v6(
         raise TypeError("decode_project_v6 requires a mapping or JSON data")
     if payload.get("schema") != SCHEMA_VERSION:
         raise ProjectV6DecodeError(
-            f"v6 decoder 不能读取 schema {payload.get('schema')!r}"
+            f"v6 decoder cannot read schema {payload.get('schema')!r}"
         )
     compatible = dict(payload)
     compatible["schema"] = 5
@@ -147,7 +147,7 @@ def save_project_v6(
         expected_semantic=payload,
         error_type=ProjectV6EncodeError,
         mismatch_message=(
-            "临时 v6 项目回读后的 canonical authoring 值与保存 snapshot 不一致"
+            "canonical authoring values differ from the saved snapshot after rereading the temporary v6 project"
         ),
         checkpoint=checkpoint,
     )

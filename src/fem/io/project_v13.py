@@ -44,7 +44,7 @@ def loads_project_v13(
         loads_json_strict(
             data,
             error_type=ProjectV13DecodeError,
-            document_label="v13 项目",
+            document_label="v13 project",
         ),
         source_path=source_path,
     )
@@ -60,14 +60,14 @@ def decode_project_v13(
     try:
         root = dict(payload)
         if set(root) != {"format", "schema", "project"}:
-            raise ProjectV13DecodeError("$ 字段必须精确为 format、schema、project")
+            raise ProjectV13DecodeError("$ fields must be exactly format, schema, project")
         if root["format"] != FORMAT_NAME:
             raise ProjectV13DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV13DecodeError(
-                f"v13 decoder 不能读取 schema {root['schema']!r}"
+                f"v13 decoder cannot read schema {root['schema']!r}"
             )
         v12_payload = deepcopy(root)
         v12_payload["schema"] = 12
@@ -76,7 +76,7 @@ def decode_project_v13(
     except ProjectV13Error:
         raise
     except Exception as error:
-        raise ProjectV13DecodeError(f"schema v13 项目无效：{error}") from error
+        raise ProjectV13DecodeError(f"invalid schema v13 project: {error}") from error
 
 
 def encode_project_v13(
@@ -92,7 +92,7 @@ def encode_project_v13(
         raise
     except Exception as error:
         raise ProjectV13EncodeError(
-            f"snapshot 无法由 v13 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v13: {error}"
         ) from error
 
 
@@ -126,7 +126,7 @@ def save_project_v13(
         semantic_encoder=encode_project_v13,
         expected_semantic=payload,
         error_type=ProjectV13EncodeError,
-        mismatch_message="临时 v13 项目回读后的草图约束状态不一致",
+        mismatch_message="sketch constraint states differ after rereading the temporary v13 project",
         checkpoint=checkpoint,
     )
 

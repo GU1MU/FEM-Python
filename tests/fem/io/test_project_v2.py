@@ -369,7 +369,7 @@ def test_v2_nested_geometry_fields_are_required_without_legacy_defaults():
         ProjectV2DecodeError,
         match=(
             r"\$\.project\.authoring\.geometry "
-            r"缺少必需字段：dz"
+            r"is missing required fields: dz"
         ),
     ):
         decode_project_v2(payload)
@@ -395,7 +395,7 @@ def test_v2_nested_geometry_unknown_fields_are_rejected():
         ProjectV2DecodeError,
         match=(
             r"\$\.project\.authoring\.geometry "
-            r"包含 v2 未知字段：legacy_offset"
+            r"contains v2 unknown fields: legacy_offset"
         ),
     ):
         decode_project_v2(payload)
@@ -580,7 +580,7 @@ def test_v2_schema_owned_definition_fields_are_required(case):
 
     with pytest.raises(
         ProjectV2DecodeError,
-        match=rf"{expected_path} 缺少必需字段：{missing}",
+        match=rf"{expected_path} is missing required fields: {missing}",
     ):
         decode_project_v2(payload)
 
@@ -661,7 +661,7 @@ def test_v2_schema_requires_a_strict_integer(schema):
     payload = encode_project_v2(_snapshot())
     payload["schema"] = schema
 
-    with pytest.raises(ProjectV2DecodeError, match="严格整数"):
+    with pytest.raises(ProjectV2DecodeError, match="strict integer"):
         decode_project_v2(payload)
 
 
@@ -670,9 +670,9 @@ def test_v2_rejects_duplicate_json_keys_and_nonfinite_numbers():
     duplicate = dumped.replace('"schema": 2', '"schema": 2, "schema": 2', 1)
     nonfinite = dumped.replace('"size": 1.0', '"size": NaN', 1)
 
-    with pytest.raises(ProjectV2DecodeError, match="重复键"):
+    with pytest.raises(ProjectV2DecodeError, match="duplicate key"):
         loads_project_v2(duplicate)
-    with pytest.raises(ProjectV2DecodeError, match="非有限"):
+    with pytest.raises(ProjectV2DecodeError, match="non-finite"):
         loads_project_v2(nonfinite)
 
 
@@ -682,7 +682,7 @@ def test_v2_huge_numeric_integer_has_path_aware_decode_error():
 
     with pytest.raises(
         ProjectV2DecodeError,
-        match=r"mesh_settings\.size 必须是有限实数",
+        match=r"mesh_settings\.size must be a finite real number",
     ):
         decode_project_v2(payload)
 
@@ -695,7 +695,7 @@ def test_v2_huge_numeric_integer_has_path_aware_encode_error():
 
     with pytest.raises(
         ProjectV2EncodeError,
-        match=r"snapshot\.mesh_settings\.size 必须是有限实数",
+        match=r"snapshot\.mesh_settings\.size must be a finite real number",
     ):
         encode_project_v2(original)
 
@@ -709,7 +709,7 @@ def test_v2_malformed_named_region_reference_has_item_path_and_cause():
     with pytest.raises(
         ProjectV2DecodeError,
         match=(
-            r"named_regions\[0\]\.references\[0\] 无效：logical_id"
+            r"named_regions\[0\]\.references\[0\] is invalid: logical_id"
         ),
     ) as caught:
         decode_project_v2(payload)
@@ -726,7 +726,7 @@ def test_v2_unknown_named_reference_has_contextual_path_and_cause():
     with pytest.raises(
         ProjectV2DecodeError,
         match=(
-            r"named_regions\[0\]\.references\[0\] 无效："
+            r"named_regions\[0\]\.references\[0\] is invalid: "
             r"unknown logical reference"
         ),
     ) as caught:
@@ -744,7 +744,7 @@ def test_v2_wrong_kind_local_control_has_contextual_path_and_cause():
     with pytest.raises(
         ProjectV2DecodeError,
         match=(
-            r"mesh_settings\.local_controls\[0\]\.target 无效："
+            r"mesh_settings\.local_controls\[0\]\.target is invalid: "
             r"logical reference kind 'body' is not allowed"
         ),
     ) as caught:
@@ -781,7 +781,7 @@ def test_v2_unselectable_named_reference_has_contextual_path_and_cause():
     with pytest.raises(
         ProjectV2DecodeError,
         match=(
-            r"named_regions\[0\]\.references\[0\] 无效："
+            r"named_regions\[0\]\.references\[0\] is invalid: "
             r"logical reference 'face:result' is not selectable"
         ),
     ) as caught:
@@ -796,14 +796,14 @@ def test_v2_unselectable_named_reference_has_contextual_path_and_cause():
         (
             "named_region",
             (
-                r"named_regions\[0\]\.references\[0\] 无效："
+                r"named_regions\[0\]\.references\[0\] is invalid: "
                 r"logical reference 'face:result' is not selectable"
             ),
         ),
         (
             "local_control",
             (
-                r"mesh_settings\.local_controls\[0\]\.target 无效："
+                r"mesh_settings\.local_controls\[0\]\.target is invalid: "
                 r"logical reference 'face:result' is not selectable"
             ),
         ),
@@ -931,33 +931,33 @@ def _geometry_only_snapshot(recipe):
 @pytest.mark.parametrize(
     ("case", "expected"),
     (
-        ("missing-format", r"\$ 缺少必需字段：format"),
-        ("invalid-format", r"\$\.format 必须精确等于"),
-        ("missing-schema", r"\$ 缺少必需字段：schema"),
-        ("schema-zero", r"v2 decoder 不能读取 schema 0"),
-        ("schema-one", r"v2 decoder 不能读取 schema 1"),
-        ("schema-future", r"v2 decoder 不能读取 schema 3"),
-        ("unknown-root", r"\$ 包含 v2 未知字段：legacy"),
+        ("missing-format", r"\$ is missing required fields: format"),
+        ("invalid-format", r"\$\.format must equal exactly"),
+        ("missing-schema", r"\$ is missing required fields: schema"),
+        ("schema-zero", r"v2 decoder cannot read schema 0"),
+        ("schema-one", r"v2 decoder cannot read schema 1"),
+        ("schema-future", r"v2 decoder cannot read schema 3"),
+        ("unknown-root", r"\$ contains unknown v2 fields: legacy"),
         (
             "unknown-project",
-            r"\$\.project 包含 v2 未知字段：legacy",
+            r"\$\.project contains unknown v2 fields: legacy",
         ),
         (
             "unknown-authoring",
-            r"\$\.project\.authoring 包含 v2 未知字段：legacy",
+            r"\$\.project\.authoring contains unknown v2 fields: legacy",
         ),
         (
             "unknown-definitions",
-            r"definitions 包含 v2 未知字段：legacy",
+            r"definitions contains unknown v2 fields: legacy",
         ),
-        ("part-shape", r"authoring\.part 必须是 JSON object"),
-        ("part-name-empty", r"authoring\.part\.name 不能为空"),
-        ("part-name-type", r"authoring\.part\.name 必须是字符串"),
-        ("part-body-empty", r"authoring\.part\.body_name 不能为空"),
-        ("part-body-type", r"authoring\.part\.body_name 必须是字符串"),
+        ("part-shape", r"authoring\.part must be a JSON object"),
+        ("part-name-empty", r"authoring\.part\.name must not be empty"),
+        ("part-name-type", r"authoring\.part\.name must be a string"),
+        ("part-body-empty", r"authoring\.part\.body_name must not be empty"),
+        ("part-body-type", r"authoring\.part\.body_name must be a string"),
         (
             "geometry-discriminator",
-            r"authoring\.geometry\.type 是未知几何类型",
+            r"authoring\.geometry\.type is an unknown geometry type",
         ),
     ),
 )
@@ -1011,15 +1011,15 @@ def _mutate_v2_envelope(payload, case):
     (
         (
             "discriminator",
-            r"beam_orientation\.type 只接受 'local_y_reference'",
+            r"beam_orientation\.type only accepts 'local_y_reference'",
         ),
         (
             "vector-length",
-            r"beam_orientation\.vector 必须恰有三个分量",
+            r"beam_orientation\.vector must have exactly three components",
         ),
         (
             "vector-value",
-            r"beam_orientation\.vector\[1\] 必须是有限实数",
+            r"beam_orientation\.vector\[1\] must be a finite real number",
         ),
     ),
 )
@@ -1046,39 +1046,39 @@ def test_v2_orientation_negative_matrix(case, expected):
 @pytest.mark.parametrize(
     ("case", "expected", "has_cause"),
     (
-        ("contract-bool", r"logical_topology\.contract 必须是严格整数", False),
-        ("contract-float", r"logical_topology\.contract 必须是严格整数", False),
-        ("contract-string", r"logical_topology\.contract 必须是严格整数", False),
-        ("contract-unknown", r"logical_topology\.contract 不支持：999", False),
+        ("contract-bool", r"logical_topology\.contract must be a strict integer", False),
+        ("contract-float", r"logical_topology\.contract must be a strict integer", False),
+        ("contract-string", r"logical_topology\.contract must be a strict integer", False),
+        ("contract-unknown", r"logical_topology\.contract is unsupported: 999", False),
         (
             "topology-unknown",
-            r"logical_topology 包含 v2 未知字段：legacy",
+            r"logical_topology contains unknown v2 fields: legacy",
             False,
         ),
         (
             "signature-missing",
-            r"logical_topology 缺少必需字段：signature",
+            r"logical_topology is missing required fields: signature",
             False,
         ),
         (
             "signature-unknown",
-            r"logical_topology\.signature 包含 v2 未知字段：legacy",
+            r"logical_topology\.signature contains unknown v2 fields: legacy",
             False,
         ),
         (
             "duplicate-entity",
-            r"logical_topology 无效：topology fingerprint contains duplicate",
+            r"logical_topology is invalid: topology fingerprint contains duplicate",
             True,
         ),
         (
             "entity-unknown",
             r"logical_topology\.signature\.entities\[0\] "
-            r"包含 v2 未知字段：legacy",
+            r"contains unknown v2 fields: legacy",
             False,
         ),
         (
             "kind-prefix",
-            r"logical_topology\.signature\.entities\[0\] 无效："
+            r"logical_topology\.signature\.entities\[0\] is invalid: "
             r"fingerprint entity kind",
             True,
         ),
@@ -1119,9 +1119,9 @@ def test_v2_topology_shape_negative_matrix(case, expected, has_cause):
 @pytest.mark.parametrize(
     ("case", "expected"),
     (
-        ("zero-parts", r"必须且只能包含一个 part"),
-        ("multiple-parts", r"必须且只能包含一个 part"),
-        ("imported-source", r"source_kind 本阶段只接受 'native'"),
+        ("zero-parts", r"must contain exactly one part"),
+        ("multiple-parts", r"must contain exactly one part"),
+        ("imported-source", r"source_kind only accepts 'native' at this stage"),
     ),
 )
 def test_v2_encoder_source_and_part_negative_matrix(case, expected):
@@ -1145,18 +1145,18 @@ def test_v2_encoder_source_and_part_negative_matrix(case, expected):
     (
         (
             "duplicate-material",
-            r"definitions\.materials 包含忽略大小写后重复的名称",
+            r"definitions\.materials contains case-insensitive duplicate names",
             False,
         ),
         (
             "broken-material",
-            r"definitions\.sections\[0\]\.material 无效："
+            r"definitions\.sections\[0\]\.material is invalid: "
             r"references missing material",
             True,
         ),
         (
             "broken-section",
-            r"definitions\.assignments\[0\]\.section_name 无效："
+            r"definitions\.assignments\[0\]\.section_name is invalid: "
             r"references missing section",
             True,
         ),
@@ -1184,7 +1184,7 @@ def test_v2_encoder_source_and_part_negative_matrix(case, expected):
         (
             "reserved-orientation",
             r"definitions\.materials\[0\]\.properties"
-            r"\.beam_local_y_reference 无效",
+            r"\.beam_local_y_reference is invalid",
             True,
         ),
     ),
@@ -1270,7 +1270,7 @@ def test_v2_integer_analysis_targets_are_rejected_at_field_path(
     step[collection][0]["target"] = 1
     expected = (
         rf"definitions\.steps\[0\]\.{collection}\[0\]\.target "
-        r"必须是 non-empty stable region name"
+        r"must be a non-empty stable region name"
     )
 
     with pytest.raises(ProjectV2DecodeError, match=expected):
@@ -1282,50 +1282,50 @@ def test_v2_integer_analysis_targets_are_rejected_at_field_path(
     (
         (
             "missing",
-            r"local_controls\[0\] 缺少必需字段：falloff",
+            r"local_controls\[0\] is missing required fields: falloff",
             False,
         ),
         (
             "unknown-reference",
-            r"local_controls\[0\]\.falloff 无效："
+            r"local_controls\[0\]\.falloff is invalid: "
             r"mesh-size falloff reference",
             True,
         ),
         (
             "bool-factor",
-            r"falloff\.start_factor 必须是有限实数",
+            r"falloff\.start_factor must be a finite real number",
             False,
         ),
         (
             "string-factor",
-            r"falloff\.start_factor 必须是有限实数",
+            r"falloff\.start_factor must be a finite real number",
             False,
         ),
         (
             "nonfinite-factor",
-            r"falloff\.start_factor 必须是有限实数",
+            r"falloff\.start_factor must be a finite real number",
             False,
         ),
         (
             "negative-factor",
-            r"local_controls\[0\]\.falloff 无效："
+            r"local_controls\[0\]\.falloff is invalid: "
             r"mesh-size falloff requires 0 <= start_factor < end_factor",
             True,
         ),
         (
             "unordered-range",
-            r"local_controls\[0\]\.falloff 无效："
+            r"local_controls\[0\]\.falloff is invalid: "
             r"mesh-size falloff requires 0 <= start_factor < end_factor",
             True,
         ),
         (
             "duplicate-profile",
-            r"mesh_settings 无效：同一个几何实体和 falloff profile",
+            r"mesh_settings is invalid: Local size cannot be set more than once for the same geometric entity and falloff profile",
             True,
         ),
         (
             "target-radius-noncircle",
-            r"local_controls\[0\]\.target 无效："
+            r"local_controls\[0\]\.target is invalid: "
             r"logical target .* has no proven circular-hole radius",
             True,
         ),
@@ -1366,17 +1366,17 @@ def test_v2_falloff_negative_matrix(case, expected, has_cause):
     (
         (
             "unknown",
-            r"snapshot\.named_regions\[0\]\.references\[0\] 无效："
+            r"snapshot\.named_regions\[0\]\.references\[0\] is invalid: "
             r"unknown logical reference",
         ),
         (
             "wrong-kind",
-            r"snapshot\.mesh_settings\.local_controls\[0\]\.target 无效："
+            r"snapshot\.mesh_settings\.local_controls\[0\]\.target is invalid: "
             r"logical reference kind 'body' is not allowed",
         ),
         (
             "unselectable",
-            r"snapshot\.named_regions\[0\]\.references\[0\] 无效："
+            r"snapshot\.named_regions\[0\]\.references\[0\] is invalid: "
             r"logical reference 'face:result' is not selectable",
         ),
     ),
@@ -1432,11 +1432,11 @@ def test_v2_encode_contextual_reference_paths_and_causes(case, expected):
     (
         (
             "broken-material",
-            r"snapshot\.section_definitions\[0\]\.material 无效",
+            r"snapshot\.section_definitions\[0\]\.material is invalid",
         ),
         (
             "broken-section",
-            r"snapshot\.region_assignments\[0\]\.section_name 无效",
+            r"snapshot\.region_assignments\[0\]\.section_name is invalid",
         ),
         (
             "broken-region",
@@ -1457,7 +1457,7 @@ def test_v2_encode_contextual_reference_paths_and_causes(case, expected):
         (
             "reserved-orientation",
             r"snapshot\.material_definitions\[0\]\.properties"
-            r"\.beam_local_y_reference 无效",
+            r"\.beam_local_y_reference is invalid",
         ),
     ),
 )

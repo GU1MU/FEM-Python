@@ -52,7 +52,7 @@ def loads_project_v12(
         loads_json_strict(
             data,
             error_type=ProjectV12DecodeError,
-            document_label="v12 项目",
+            document_label="v12 project",
         ),
         source_path=source_path,
     )
@@ -70,11 +70,11 @@ def decode_project_v12(
         _exact_keys(root, "$", {"format", "schema", "project"})
         if root["format"] != FORMAT_NAME:
             raise ProjectV12DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV12DecodeError(
-                f"v12 decoder 不能读取 schema {root['schema']!r}"
+                f"v12 decoder cannot read schema {root['schema']!r}"
             )
         v11_payload = deepcopy(dict(root))
         project = _mapping(v11_payload["project"], "$.project")
@@ -97,7 +97,7 @@ def decode_project_v12(
     except ProjectV12Error:
         raise
     except Exception as error:
-        raise ProjectV12DecodeError(f"schema v12 项目无效：{error}") from error
+        raise ProjectV12DecodeError(f"invalid schema v12 project: {error}") from error
 
 
 def encode_project_v12(
@@ -128,7 +128,7 @@ def encode_project_v12(
         raise
     except Exception as error:
         raise ProjectV12EncodeError(
-            f"snapshot 无法由 v12 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v12: {error}"
         ) from error
 
 
@@ -166,7 +166,7 @@ def save_project_v12(
         semantic_encoder=encode_project_v12,
         expected_semantic=payload,
         error_type=ProjectV12EncodeError,
-        mismatch_message="临时 v12 项目回读后的压缩作用域状态不一致",
+        mismatch_message="compact Scope states differ after rereading the temporary v12 project",
         checkpoint=checkpoint,
     )
 
@@ -211,7 +211,7 @@ def _compact_reference_payload(
 ) -> dict[str, Any]:
     kind = references[0]["kind"]
     if any(reference["kind"] != kind for reference in references):
-        raise ProjectV12EncodeError(f"{path} 混用了网格实体类型")
+        raise ProjectV12EncodeError(f"{path} mixes mesh entity types")
     groups: list[dict[str, Any]] = []
     part_ids = sorted(
         {reference.get("part_id") for reference in references},
@@ -248,7 +248,7 @@ def _compact_reference_payload(
                 previous_nodes = topology_rows.get(key)
                 if previous_nodes is not None and previous_nodes != node_ids:
                     raise ProjectV12EncodeError(
-                        f"{path} 在共享拓扑目录中存在冲突引用 {key!r}"
+                        f"{path} has a conflicting reference in the shared topology catalog: {key!r}"
                     )
                 topology_rows[key] = node_ids
             group["identities"] = identities
@@ -268,7 +268,7 @@ def _encode_compact_region(
 ) -> dict[str, Any]:
     references = region.references
     if not isinstance(references, CompressedMeshEntityRefs):
-        raise ProjectV12EncodeError(f"{path} 缺少压缩网格引用")
+        raise ProjectV12EncodeError(f"{path} is missing compact mesh references")
     groups: list[dict[str, Any]] = []
     for part_id, packed in references.compact_groups():
         group: dict[str, Any] = {"part_id": part_id}
@@ -280,7 +280,7 @@ def _encode_compact_region(
             topology = references.topology
             if topology is None:
                 raise ProjectV12EncodeError(
-                    f"{path} 的边/面引用缺少拓扑目录"
+                    f"{path} edge/face references lack a topology catalog"
                 )
             for element_id, local_index in pairs:
                 key = (
@@ -296,7 +296,7 @@ def _encode_compact_region(
                 previous = topology_rows.get(key)
                 if previous is not None and previous != node_ids:
                     raise ProjectV12EncodeError(
-                        f"{path} 在共享拓扑目录中存在冲突引用 {key!r}"
+                        f"{path} has a conflicting reference in the shared topology catalog: {key!r}"
                     )
                 topology_rows[key] = node_ids
         groups.append(group)
@@ -341,13 +341,13 @@ def _inflate_reference_payload(
     data = _mapping(value, path)
     kind = data.get("kind")
     if kind not in {"node", "edge", "face", "element"}:
-        raise ProjectV12DecodeError(f"{path}.kind 不受支持")
+        raise ProjectV12DecodeError(f"{path}.kind is unsupported")
     expected = {"kind", "groups"}
     if kind in {"edge", "face"}:
         expected.add("topology_id")
     _exact_keys(data, path, expected)
     if kind in {"edge", "face"} and data["topology_id"] != _TOPOLOGY_ID:
-        raise ProjectV12DecodeError(f"{path}.topology_id 不存在")
+        raise ProjectV12DecodeError(f"{path}.topology_id does not exist")
     groups = _array(data["groups"], f"{path}.groups")
     references: list[dict[str, Any]] = []
     previous_part_key: str | None = None
@@ -358,10 +358,10 @@ def _inflate_reference_payload(
         _exact_keys(group, group_path, required)
         part_id = group["part_id"]
         if part_id is not None and type(part_id) is not str:
-            raise ProjectV12DecodeError(f"{group_path}.part_id 必须是 string 或 null")
+            raise ProjectV12DecodeError(f"{group_path}.part_id must be a string or null")
         part_key = "" if part_id is None else part_id
         if previous_part_key is not None and previous_part_key >= part_key:
-            raise ProjectV12DecodeError(f"{path}.groups 不是 canonical 顺序")
+            raise ProjectV12DecodeError(f"{path}.groups is not in canonical order")
         previous_part_key = part_key
         if kind in {"node", "element"}:
             last_end: int | None = None
@@ -374,7 +374,7 @@ def _inflate_reference_payload(
                 )
                 if start > end or (last_end is not None and start <= last_end + 1):
                     raise ProjectV12DecodeError(
-                        f"{group_path}.ranges 不是 canonical 区间"
+                        f"{group_path}.ranges contains non-canonical ranges"
                     )
                 for identity in range(start, end + 1):
                     reference = {"kind": kind}
@@ -394,12 +394,12 @@ def _inflate_reference_payload(
                 )
                 if previous_pair is not None and previous_pair >= pair:
                     raise ProjectV12DecodeError(
-                        f"{group_path}.identities 不是 canonical 顺序"
+                        f"{group_path}.identities is not in canonical order"
                     )
                 key = (part_id, kind, *pair)
                 if key not in topology_rows:
                     raise ProjectV12DecodeError(
-                        f"{group_path}.identities 缺少共享拓扑 {key!r}"
+                        f"{group_path}.identities is missing shared topology {key!r}"
                     )
                 reference = {
                     "kind": kind,
@@ -412,7 +412,7 @@ def _inflate_reference_payload(
                 references.append(reference)
                 previous_pair = pair
     if not references:
-        raise ProjectV12DecodeError(f"{path} 必须包含至少一个引用")
+        raise ProjectV12DecodeError(f"{path} must contain at least one reference")
     return references
 
 
@@ -426,19 +426,19 @@ def _decode_compact_region(
     name = data["name"]
     if type(name) is not str or not name.strip() or name != name.strip():
         raise ProjectV12DecodeError(
-            f"{path}.name 必须是无首尾空白的非空 string"
+            f"{path}.name must be a non-empty string without leading or trailing whitespace"
         )
     compact_path = f"{path}.compact_references"
     compact = _mapping(data["compact_references"], compact_path)
     kind = compact.get("kind")
     if kind not in {"node", "edge", "face", "element"}:
-        raise ProjectV12DecodeError(f"{compact_path}.kind 不受支持")
+        raise ProjectV12DecodeError(f"{compact_path}.kind is unsupported")
     expected = {"kind", "groups"}
     if kind in {"edge", "face"}:
         expected.add("topology_id")
     _exact_keys(compact, compact_path, expected)
     if kind in {"edge", "face"} and compact["topology_id"] != _TOPOLOGY_ID:
-        raise ProjectV12DecodeError(f"{compact_path}.topology_id 不存在")
+        raise ProjectV12DecodeError(f"{compact_path}.topology_id does not exist")
     groups: list[tuple[str | None, tuple[int, ...]]] = []
     for index, raw_group in enumerate(
         _array(compact["groups"], f"{compact_path}.groups")
@@ -450,7 +450,7 @@ def _decode_compact_region(
         part_id = group["part_id"]
         if part_id is not None and type(part_id) is not str:
             raise ProjectV12DecodeError(
-                f"{group_path}.part_id 必须是 string 或 null"
+                f"{group_path}.part_id must be a string or null"
             )
         packed = tuple(
             value
@@ -516,7 +516,7 @@ def _decode_topology_directory(
     data = _mapping(value, path)
     _exact_keys(data, path, {"id", "rows"})
     if data["id"] != _TOPOLOGY_ID:
-        raise ProjectV12DecodeError(f"{path}.id 不受支持")
+        raise ProjectV12DecodeError(f"{path}.id is unsupported")
     result: dict[tuple[str | None, str, int, int], tuple[int, ...]] = {}
     for index, raw_row in enumerate(_array(data["rows"], f"{path}.rows")):
         row_path = f"{path}.rows[{index}]"
@@ -528,10 +528,10 @@ def _decode_topology_directory(
         )
         part_id = row["part_id"]
         if part_id is not None and type(part_id) is not str:
-            raise ProjectV12DecodeError(f"{row_path}.part_id 必须是 string 或 null")
+            raise ProjectV12DecodeError(f"{row_path}.part_id must be a string or null")
         kind = row["kind"]
         if kind not in {"edge", "face"}:
-            raise ProjectV12DecodeError(f"{row_path}.kind 只接受 edge/face")
+            raise ProjectV12DecodeError(f"{row_path}.kind only accepts edge/face")
         key = (
             part_id,
             kind,
@@ -545,7 +545,7 @@ def _decode_topology_directory(
             )
         )
         if not node_ids or len(set(node_ids)) != len(node_ids) or key in result:
-            raise ProjectV12DecodeError(f"{row_path} 不是唯一有效的拓扑行")
+            raise ProjectV12DecodeError(f"{row_path} is not a unique valid topology row")
         result[key] = node_ids
     return result
 
@@ -594,28 +594,28 @@ def _share_topology_directory(
 
 def _mapping(value: Any, path: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV12DecodeError(f"{path} 必须是 object")
+        raise ProjectV12DecodeError(f"{path} must be an object")
     if any(type(key) is not str for key in value):
-        raise ProjectV12DecodeError(f"{path} 的字段名必须是 string")
+        raise ProjectV12DecodeError(f"{path} field names must be strings")
     return dict(value)
 
 
 def _array(value: Any, path: str) -> list[Any]:
     if not isinstance(value, list):
-        raise ProjectV12DecodeError(f"{path} 必须是 array")
+        raise ProjectV12DecodeError(f"{path} must be an array")
     return value
 
 
 def _integer(value: Any, path: str) -> int:
     if type(value) is not int:
-        raise ProjectV12DecodeError(f"{path} 必须是严格整数")
+        raise ProjectV12DecodeError(f"{path} must be a strict integer")
     return value
 
 
 def _integer_pair(value: Any, path: str) -> tuple[int, int]:
     items = _array(value, path)
     if len(items) != 2:
-        raise ProjectV12DecodeError(f"{path} 必须包含两个整数")
+        raise ProjectV12DecodeError(f"{path} must contain two integers")
     return _integer(items[0], f"{path}[0]"), _integer(items[1], f"{path}[1]")
 
 
@@ -626,10 +626,10 @@ def _exact_keys(value: Mapping[str, Any], path: str, expected: set[str]) -> None
         extra = sorted(actual - expected)
         details = []
         if missing:
-            details.append(f"缺少 {missing!r}")
+            details.append(f"missing {missing!r}")
         if extra:
-            details.append(f"多出 {extra!r}")
-        raise ProjectV12DecodeError(f"{path} 字段不匹配：{'; '.join(details)}")
+            details.append(f"extra {extra!r}")
+        raise ProjectV12DecodeError(f"{path} fields do not match: {'; '.join(details)}")
 
 
 read_project_v12 = load_project_v12

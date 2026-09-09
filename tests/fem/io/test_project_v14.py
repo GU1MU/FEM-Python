@@ -99,7 +99,7 @@ def test_v14_rejects_mesh_connectivity_to_unknown_node() -> None:
     payload = deepcopy(encode_project_v14(ProjectSnapshot(model=_model_2d())))
     payload["project"]["model_artifact"]["elements"][0]["node_ids"] = [1, 99, 3]
 
-    with pytest.raises(ProjectV14DecodeError, match="不存在的节点"):
+    with pytest.raises(ProjectV14DecodeError, match="nonexistent nodes"):
         decode_project_v14(payload)
 
 

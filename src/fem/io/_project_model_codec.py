@@ -53,7 +53,7 @@ def encode_project_model(model: Any, *, error_type: type[Exception]) -> dict[str
     """Encode one native model as definition-neutral mesh state."""
 
     if type(model) is not FEMModel:
-        raise error_type("snapshot.model 必须是 FEMModel")
+        raise error_type("snapshot.model must be FEMModel")
     mesh = model.mesh
     if type(mesh) is Mesh2D:
         dimension = 2
@@ -64,14 +64,14 @@ def encode_project_model(model: Any, *, error_type: type[Exception]) -> dict[str
         node_type = Node3D
         element_type = Element3D
     else:
-        raise error_type("snapshot.model.mesh 必须是 Mesh2D 或 Mesh3D")
+        raise error_type("snapshot.model.mesh must be Mesh2D or Mesh3D")
 
     nodes = tuple(mesh.nodes)
     elements = tuple(mesh.elements)
     if any(type(node) is not node_type for node in nodes):
-        raise error_type("snapshot.model.mesh.nodes 包含不匹配的节点类型")
+        raise error_type("snapshot.model.mesh.nodes contains mismatched node types")
     if any(type(element) is not element_type for element in elements):
-        raise error_type("snapshot.model.mesh.elements 包含不匹配的单元类型")
+        raise error_type("snapshot.model.mesh.elements contains mismatched element types")
 
     metadata = {
         str(key): value
@@ -182,7 +182,7 @@ def decode_project_model(value: Any, *, error_type: type[Exception]) -> FEMModel
         data["dimension"], "$.project.model_artifact.dimension", error_type
     )
     if dimension not in {2, 3}:
-        raise error_type("$.project.model_artifact.dimension 必须是 2 或 3")
+        raise error_type("$.project.model_artifact.dimension must be 2 or 3")
     dofs_per_node = _positive_integer(
         data["dofs_per_node"],
         "$.project.model_artifact.dofs_per_node",
@@ -190,7 +190,7 @@ def decode_project_model(value: Any, *, error_type: type[Exception]) -> FEMModel
     )
     raw_name = data["name"]
     if raw_name is not None and type(raw_name) is not str:
-        raise error_type("$.project.model_artifact.name 必须是 string 或 null")
+        raise error_type("$.project.model_artifact.name must be a string or null")
 
     nodes = []
     node_ids: set[int] = set()
@@ -200,10 +200,10 @@ def decode_project_model(value: Any, *, error_type: type[Exception]) -> FEMModel
         path = f"$.project.model_artifact.nodes[{index}]"
         row = _array(raw_node, path, error_type)
         if len(row) != dimension + 1:
-            raise error_type(f"{path} 坐标维数与模型不一致")
+            raise error_type(f"{path} coordinate dimension does not match the model")
         node_id = _positive_integer(row[0], f"{path}[0]", error_type)
         if node_id in node_ids:
-            raise error_type(f"{path}[0] 包含重复节点编号")
+            raise error_type(f"{path}[0] contains duplicate node IDs")
         node_ids.add(node_id)
         coordinates = tuple(
             _finite_number(item, f"{path}[{coordinate_index}]", error_type)
@@ -225,7 +225,7 @@ def decode_project_model(value: Any, *, error_type: type[Exception]) -> FEMModel
         _exact_keys(element, {"id", "node_ids", "type", "properties"}, path, error_type)
         element_id = _positive_integer(element["id"], f"{path}.id", error_type)
         if element_id in element_ids:
-            raise error_type(f"{path}.id 包含重复单元编号")
+            raise error_type(f"{path}.id contains duplicate element IDs")
         element_ids.add(element_id)
         connectivity = tuple(
             _positive_integer(item, f"{path}.node_ids[{node_index}]", error_type)
@@ -234,7 +234,7 @@ def decode_project_model(value: Any, *, error_type: type[Exception]) -> FEMModel
             )
         )
         if not connectivity or any(node_id not in node_ids for node_id in connectivity):
-            raise error_type(f"{path}.node_ids 引用了不存在的节点")
+            raise error_type(f"{path}.node_ids references nonexistent nodes")
         properties = _json_object(
             element["properties"], f"{path}.properties", error_type
         )
@@ -323,7 +323,7 @@ def _decode_sets(
         _exact_keys(data, {"name", ids_key}, item_path, error_type)
         name = _nonempty_string(data["name"], f"{item_path}.name", error_type)
         if name in result:
-            raise error_type(f"{item_path}.name 包含重复名称")
+            raise error_type(f"{item_path}.name contains duplicate names")
         identities = tuple(
             _positive_integer(item, f"{item_path}.{ids_key}[{item_index}]", error_type)
             for item_index, item in enumerate(
@@ -331,7 +331,7 @@ def _decode_sets(
             )
         )
         if any(identity not in available for identity in identities):
-            raise error_type(f"{item_path}.{ids_key} 引用了不存在的实体")
+            raise error_type(f"{item_path}.{ids_key} references nonexistent entities")
         result[name] = factory(name, identities)
     return result
 
@@ -354,7 +354,7 @@ def _decode_boundaries(
         _exact_keys(data, {"name", collection_key}, item_path, error_type)
         name = _nonempty_string(data["name"], f"{item_path}.name", error_type)
         if name in result:
-            raise error_type(f"{item_path}.name 包含重复名称")
+            raise error_type(f"{item_path}.name contains duplicate names")
         entries = []
         for entry_index, raw_entry in enumerate(
             _array(data[collection_key], f"{item_path}.{collection_key}", error_type)
@@ -362,7 +362,7 @@ def _decode_boundaries(
             entry_path = f"{item_path}.{collection_key}[{entry_index}]"
             row = _array(raw_entry, entry_path, error_type)
             if len(row) != 3:
-                raise error_type(f"{entry_path} 必须包含单元、局部编号和节点")
+                raise error_type(f"{entry_path} must contain element, local ID and nodes")
             element_id = _positive_integer(row[0], f"{entry_path}[0]", error_type)
             local_index = _nonnegative_integer(
                 row[1],
@@ -378,7 +378,7 @@ def _decode_boundaries(
             if element_id not in available_elements or any(
                 node_id not in available_nodes for node_id in boundary_nodes
             ):
-                raise error_type(f"{entry_path} 引用了不存在的网格实体")
+                raise error_type(f"{entry_path} references nonexistent mesh entities")
             entries.append(item_factory(element_id, local_index, boundary_nodes))
         result[name] = collection_factory(name, entries)
     return result
@@ -403,7 +403,7 @@ def _node_coordinates(
 
 def _json_object(value: Any, path: str, error_type: type[Exception]) -> dict[str, Any]:
     if type(value) is not dict:
-        raise error_type(f"{path} 必须是 JSON object")
+        raise error_type(f"{path} must be a JSON object")
     return _json_value(value, path, error_type)
 
 
@@ -412,7 +412,7 @@ def _json_value(value: Any, path: str, error_type: type[Exception]) -> Any:
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise error_type(f"{path} 必须是有限数值")
+            raise error_type(f"{path} must be a finite number")
         return float(value)
     if type(value) in {list, tuple}:
         return [
@@ -423,21 +423,21 @@ def _json_value(value: Any, path: str, error_type: type[Exception]) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             if type(key) is not str:
-                raise error_type(f"{path} 的键必须是 string")
+                raise error_type(f"{path} keys must be strings")
             result[key] = _json_value(item, f"{path}.{key}", error_type)
         return result
-    raise error_type(f"{path} 的 {type(value).__name__} 无法由 JSON 无损表示")
+    raise error_type(f"{path} has a {type(value).__name__} value that JSON cannot represent losslessly")
 
 
 def _mapping(value: Any, path: str, error_type: type[Exception]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise error_type(f"{path} 必须是 object")
+        raise error_type(f"{path} must be an object")
     return dict(value)
 
 
 def _array(value: Any, path: str, error_type: type[Exception]) -> list[Any]:
     if not isinstance(value, list):
-        raise error_type(f"{path} 必须是 array")
+        raise error_type(f"{path} must be an array")
     return value
 
 
@@ -448,41 +448,41 @@ def _exact_keys(
     error_type: type[Exception],
 ) -> None:
     if set(value) != set(expected):
-        raise error_type(f"{path} 字段不符合 schema")
+        raise error_type(f"{path} fields do not match the schema")
 
 
 def _integer(value: Any, path: str, error_type: type[Exception]) -> int:
     if type(value) is not int:
-        raise error_type(f"{path} 必须是 integer")
+        raise error_type(f"{path} must be an integer")
     return int(value)
 
 
 def _positive_integer(value: Any, path: str, error_type: type[Exception]) -> int:
     result = _integer(value, path, error_type)
     if result <= 0:
-        raise error_type(f"{path} 必须大于零")
+        raise error_type(f"{path} must be greater than zero")
     return result
 
 
 def _nonnegative_integer(value: Any, path: str, error_type: type[Exception]) -> int:
     result = _integer(value, path, error_type)
     if result < 0:
-        raise error_type(f"{path} 必须大于等于零")
+        raise error_type(f"{path} must be greater than or equal to zero")
     return result
 
 
 def _finite_number(value: Any, path: str, error_type: type[Exception]) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise error_type(f"{path} 必须是 number")
+        raise error_type(f"{path} must be a number")
     result = float(value)
     if not math.isfinite(result):
-        raise error_type(f"{path} 必须是有限数值")
+        raise error_type(f"{path} must be a finite number")
     return result
 
 
 def _nonempty_string(value: Any, path: str, error_type: type[Exception]) -> str:
     if type(value) is not str or not value.strip():
-        raise error_type(f"{path} 必须是非空 string")
+        raise error_type(f"{path} must be a non-empty string")
     return value
 
 

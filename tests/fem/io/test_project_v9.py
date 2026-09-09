@@ -78,7 +78,7 @@ def test_a3_v7_and_v8_remain_strict_and_reject_v9_mesh_fields() -> None:
     v7_extended["project"]["authoring"]["parts"][0]["mesh_settings"][
         "auto_level"
     ] = 4
-    with pytest.raises(ProjectV7DecodeError, match="未知字段|字段"):
+    with pytest.raises(ProjectV7DecodeError, match="unknown field|field"):
         decode_project_v7(v7_extended)
 
     v8 = encode_project_v8(session.prepare_project_save())
@@ -90,7 +90,7 @@ def test_a3_v7_and_v8_remain_strict_and_reject_v9_mesh_fields() -> None:
             "strict_cell_shape": True,
         }
     )
-    with pytest.raises(ProjectV8DecodeError, match="无效|未知字段|字段"):
+    with pytest.raises(ProjectV8DecodeError, match="is invalid|unknown field|field"):
         decode_project_v8(v8_extended)
 
 

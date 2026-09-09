@@ -247,7 +247,7 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
     assert not window.document.dirty
     assert source.read_bytes() == original
     upgrade_notice = window.status_panel.state_label.text()
-    assert "下次显式保存" in upgrade_notice
+    assert "next explicit save" in upgrade_notice
     assert "schema 10" in upgrade_notice
     assert "v10" in upgrade_notice
 

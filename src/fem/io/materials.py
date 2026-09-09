@@ -64,7 +64,7 @@ def _get_float_from_material(
     keys: List[str],
 ) -> Optional[float]:
 
-    # 做一个 key.lower() -> 原始 key 的映射，方便大小写不敏感
+    # Map key.lower() to the original key for case-insensitive lookup.
     lower_map = {k.lower(): k for k in mat_row.keys()}
 
     for key in keys:

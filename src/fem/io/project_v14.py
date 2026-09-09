@@ -45,7 +45,7 @@ def loads_project_v14(
         loads_json_strict(
             data,
             error_type=ProjectV14DecodeError,
-            document_label="v14 项目",
+            document_label="v14 project",
         ),
         source_path=source_path,
     )
@@ -61,19 +61,19 @@ def decode_project_v14(
     try:
         root = dict(payload)
         if set(root) != {"format", "schema", "project"}:
-            raise ProjectV14DecodeError("$ 字段必须精确为 format、schema、project")
+            raise ProjectV14DecodeError("$ fields must be exactly format, schema, project")
         if root["format"] != FORMAT_NAME:
-            raise ProjectV14DecodeError(f"$.format 必须精确等于 {FORMAT_NAME!r}")
+            raise ProjectV14DecodeError(f"$.format must equal exactly {FORMAT_NAME!r}")
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV14DecodeError(
-                f"v14 decoder 不能读取 schema {root['schema']!r}"
+                f"v14 decoder cannot read schema {root['schema']!r}"
             )
         project = root["project"]
         if not isinstance(project, Mapping):
-            raise ProjectV14DecodeError("$.project 必须是 object")
+            raise ProjectV14DecodeError("$.project must be an object")
         if set(project) != {"kind", "authoring", "model_artifact"}:
             raise ProjectV14DecodeError(
-                "$.project 字段必须精确为 kind、authoring、model_artifact"
+                "$.project fields must be exactly kind, authoring, model_artifact"
             )
         raw_model = project["model_artifact"]
         v13_payload = {
@@ -97,7 +97,7 @@ def decode_project_v14(
     except ProjectV14Error:
         raise
     except Exception as error:
-        raise ProjectV14DecodeError(f"schema v14 项目无效：{error}") from error
+        raise ProjectV14DecodeError(f"invalid schema v14 project: {error}") from error
 
 
 def encode_project_v14(
@@ -122,7 +122,7 @@ def encode_project_v14(
     except ProjectV14Error:
         raise
     except Exception as error:
-        raise ProjectV14EncodeError(f"snapshot 无法由 v14 无损表示：{error}") from error
+        raise ProjectV14EncodeError(f"snapshot cannot be represented losslessly by v14: {error}") from error
 
 
 def dumps_project_v14(snapshot: ProjectSnapshot | ProjectSaveSnapshot) -> str:
@@ -152,7 +152,7 @@ def save_project_v14(
         path,
         lambda stream: stream.write(serialized),
         error_type=ProjectV14EncodeError,
-        mismatch_message="临时 v14 项目回读后的 UTF-8 字节不一致",
+        mismatch_message="UTF-8 bytes differ after rereading the temporary v14 project",
         checkpoint=checkpoint,
     )
 

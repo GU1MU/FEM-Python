@@ -21,10 +21,10 @@ from fem.io._project_codec import (
 @pytest.mark.parametrize(
     ("document", "message"),
     [
-        ('{"schema": 1, "schema": 2}', "重复键"),
-        ('{"value": NaN}', "非有限数值"),
-        ('{"value": Infinity}', "非有限数值"),
-        ('{"value": 1e9999}', "非有限数值"),
+        ('{"schema": 1, "schema": 2}', "duplicate key"),
+        ('{"value": NaN}', "non-finite number"),
+        ('{"value": Infinity}', "non-finite number"),
+        ('{"value": 1e9999}', "non-finite number"),
     ],
 )
 def test_strict_json_rejects_ambiguous_or_non_finite_documents(
@@ -135,7 +135,7 @@ def test_atomic_writer_compare_failure_preserves_target_and_cleans_temp(
     target = tmp_path / "project.femproj"
     target.write_text("previous", encoding="utf-8")
 
-    with pytest.raises(ProjectEncodeError, match="snapshot 不一致"):
+    with pytest.raises(ProjectEncodeError, match="does not match the saved snapshot"):
         atomic_write_project(
             target,
             '{"schema": 2}\n',

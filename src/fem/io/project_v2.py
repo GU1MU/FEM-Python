@@ -96,7 +96,7 @@ def loads_project_v2(
     payload = loads_json_strict(
         data,
         error_type=ProjectV2DecodeError,
-        document_label="v2 项目",
+        document_label="v2 project",
     )
     return decode_project_v2(payload, source_path=source_path)
 
@@ -120,12 +120,12 @@ def decode_project_v2(
     )
     if _string(root["format"], "$.format", ProjectV2DecodeError) != FORMAT_NAME:
         raise ProjectV2DecodeError(
-            f"$.format 必须精确等于 {FORMAT_NAME!r}"
+            f"$.format must equal exactly {FORMAT_NAME!r}"
         )
     schema = _integer(root["schema"], "$.schema", ProjectV2DecodeError)
     if schema != SCHEMA_VERSION:
         raise ProjectV2DecodeError(
-            f"v2 decoder 不能读取 schema {schema!r}"
+            f"v2 decoder cannot read schema {schema!r}"
         )
 
     project = _mapping(root["project"], "$.project", ProjectV2DecodeError)
@@ -138,7 +138,7 @@ def decode_project_v2(
     )
     if _string(project["kind"], "$.project.kind", ProjectV2DecodeError) != "native":
         raise ProjectV2DecodeError(
-            "$.project.kind 本阶段只接受 'native'"
+            "$.project.kind only accepts 'native' at this stage"
         )
     authoring = _mapping(
         project["authoring"],
@@ -331,7 +331,7 @@ def decode_project_v2(
         raise
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV2DecodeError(
-            f"$.project.authoring 无效：{error}"
+            f"$.project.authoring is invalid: {error}"
         ) from error
 
 
@@ -354,26 +354,26 @@ def encode_project_v2(
         )
         if project.source_kind != "native":
             raise ProjectV2EncodeError(
-                "snapshot.source_kind 本阶段只接受 'native'"
+                "snapshot.source_kind only accepts 'native' at this stage"
             )
         if project.model is not None:
             raise ProjectV2EncodeError(
-                "v2 不持久化 compiled/runtime model"
+                "v2 does not persist compiled/runtime models"
             )
         geometry = project.geometry_recipe
         if geometry is None:
             raise ProjectV2EncodeError(
-                "snapshot.geometry_recipe 不能为空"
+                "snapshot.geometry_recipe must not be empty"
             )
         parts = tuple(project.parts)
         if len(parts) != 1:
             raise ProjectV2EncodeError(
-                "v2 native 项目必须且只能包含一个 part"
+                "v2 Native projects must contain exactly one part"
             )
         expected_history = derive_feature_history(geometry)
         if tuple(project.feature_history) != tuple(expected_history):
             raise ProjectV2EncodeError(
-                "snapshot.feature_history 不是 geometry recipe 的 canonical 派生投影"
+                "snapshot.feature_history is not the canonical derived projection of the geometry recipe"
             )
 
         named_regions = tuple(project.named_regions)
@@ -405,8 +405,7 @@ def encode_project_v2(
             or steps != normalized.steps
         ):
             raise ProjectV2EncodeError(
-                "snapshot definitions 不是 normalize_model_definitions "
-                "产生的 canonical 形式"
+                "snapshot definitions are not in the canonical form produced by normalize_model_definitions"
             )
         _validate_native_project_inputs_v2(
             geometry,
@@ -499,7 +498,7 @@ def encode_project_v2(
         raise
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise ProjectV2EncodeError(
-            f"snapshot 无法由 v2 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v2: {error}"
         ) from error
 
 
@@ -533,7 +532,7 @@ def save_project_v2(
         expected_semantic=payload,
         error_type=ProjectV2EncodeError,
         mismatch_message=(
-            "临时 v2 项目回读后的 canonical authoring 值与保存 snapshot 不一致"
+            "canonical authoring values differ from the saved snapshot after rereading the temporary v2 project"
         ),
     )
 
@@ -589,12 +588,12 @@ def _decode_part(value: Any, path: str) -> NativePart:
             ),
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _encode_part(part: Any, path: str) -> dict[str, Any]:
     if type(part) is not NativePart:
-        raise ProjectV2EncodeError(f"{path} 必须是 NativePart")
+        raise ProjectV2EncodeError(f"{path} must be NativePart")
     return {
         "name": _string(part.name, f"{path}.name", ProjectV2EncodeError),
         "body_name": _string(
@@ -638,7 +637,7 @@ def _decode_named_region(
             references,
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _decode_named_region_reference(
@@ -693,7 +692,7 @@ def _decode_mesh_entity_reference(
             )
         if kind not in {"edge", "face"}:
             raise ProjectV2DecodeError(
-                f"{path}.kind 不支持网格实体类型 {kind!r}"
+                f"{path}.kind does not support mesh entity type {kind!r}"
             )
         _keys(
             value,
@@ -735,7 +734,7 @@ def _decode_mesh_entity_reference(
     except ProjectV2Error:
         raise
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _decode_logical_reference(value: Any, path: str) -> LogicalEntityRef:
@@ -746,7 +745,7 @@ def _decode_logical_reference(value: Any, path: str) -> LogicalEntityRef:
     except ProjectV2Error:
         raise
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _decode_contextual_reference(
@@ -782,7 +781,7 @@ def _validate_contextual_reference(
             require_exact=False,
         )
     except (KeyError, TypeError, ValueError) as error:
-        raise error_type(f"{path} 无效：{error}") from error
+        raise error_type(f"{path} is invalid: {error}") from error
     return reference
 
 
@@ -820,7 +819,7 @@ def _validate_encode_contextual_references(
         try:
             resolve_target_radius(recipe, target)
         except (KeyError, TypeError, ValueError) as error:
-            raise ProjectV2EncodeError(f"{path} 无效：{error}") from error
+            raise ProjectV2EncodeError(f"{path} is invalid: {error}") from error
 
 
 def _validate_definition_links_v2(
@@ -893,7 +892,7 @@ def _raise_v2_context_error(
     message: str,
 ) -> None:
     cause = ValueError(message)
-    raise error_type(f"{path} 无效：{message}") from cause
+    raise error_type(f"{path} is invalid: {message}") from cause
 
 
 def _validate_native_project_inputs_v2(
@@ -935,16 +934,16 @@ def _validate_native_project_inputs_v2(
             )
             message = prefix + message[len("steps") :]
         elif encode:
-            message = f"snapshot 无法由 v2 无损表示：{message}"
+            message = f"snapshot cannot be represented losslessly by v2: {message}"
         else:
-            message = f"$.project.authoring 无效：{message}"
+            message = f"$.project.authoring is invalid: {message}"
         error_type = ProjectV2EncodeError if encode else ProjectV2DecodeError
         raise error_type(message) from error
 
 
 def _encode_named_region(region: Any, path: str) -> dict[str, Any]:
     if type(region) is not NamedRegion:
-        raise ProjectV2EncodeError(f"{path} 必须是 NamedRegion")
+        raise ProjectV2EncodeError(f"{path} must be NamedRegion")
     references = tuple(region.references)
     if all(type(reference) is MeshEntityRef for reference in references):
         canonical = tuple(sorted(references, key=mesh_entity_ref_sort_key))
@@ -962,11 +961,11 @@ def _encode_named_region(region: Any, path: str) -> dict[str, Any]:
         ]
     else:
         raise ProjectV2EncodeError(
-            f"{path}.references 混用了网格与逻辑引用"
+            f"{path}.references mixes mesh and logical references"
         )
     if references != canonical:
         raise ProjectV2EncodeError(
-            f"{path}.references 不是 canonical 顺序"
+            f"{path}.references is not in canonical order"
         )
     return {
         "name": _string(
@@ -983,7 +982,7 @@ def _encode_mesh_entity_reference(
     path: str,
 ) -> dict[str, Any]:
     if type(reference) is not MeshEntityRef:
-        raise ProjectV2EncodeError(f"{path} 必须是 MeshEntityRef")
+        raise ProjectV2EncodeError(f"{path} must be MeshEntityRef")
     if reference.kind == "node":
         return {"kind": "node", "node_id": int(reference.node_id)}
     if reference.kind == "element":
@@ -1044,7 +1043,7 @@ def _decode_mesh_settings(
             local_controls=controls,
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _encode_mesh_settings(
@@ -1054,7 +1053,7 @@ def _encode_mesh_settings(
     if settings is None:
         return None
     if type(settings) is not MeshSettings:
-        raise ProjectV2EncodeError(f"{path} 必须是 MeshSettings 或 null")
+        raise ProjectV2EncodeError(f"{path} must be MeshSettings or null")
     return {
         "size": _number(
             settings.size,
@@ -1128,7 +1127,7 @@ def _decode_local_control(
         raise
     except (TypeError, ValueError) as error:
         raise ProjectV2DecodeError(
-            f"{path}.falloff 无效：{error}"
+            f"{path}.falloff is invalid: {error}"
         ) from error
     target = _decode_contextual_reference(
         data["target"],
@@ -1141,7 +1140,7 @@ def _decode_local_control(
             resolve_target_radius(recipe, target)
         except (KeyError, TypeError, ValueError) as error:
             raise ProjectV2DecodeError(
-                f"{path}.target 无效：{error}"
+                f"{path}.target is invalid: {error}"
             ) from error
     try:
         return LocalMeshControl(
@@ -1156,16 +1155,16 @@ def _decode_local_control(
     except ProjectV2Error:
         raise
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _encode_local_control(control: Any, path: str) -> dict[str, Any]:
     if type(control) is not LocalMeshControl:
-        raise ProjectV2EncodeError(f"{path} 必须是 LocalMeshControl")
+        raise ProjectV2EncodeError(f"{path} must be LocalMeshControl")
     falloff = control.falloff
     if type(falloff) is not MeshSizeFalloff:
         raise ProjectV2EncodeError(
-            f"{path}.falloff 必须是 MeshSizeFalloff"
+            f"{path}.falloff must be MeshSizeFalloff"
         )
     return {
         "target": control.target.logical_id,
@@ -1230,7 +1229,7 @@ def _decode_topology_fingerprint(
     )
     if contract != TOPOLOGY_REFERENCE_CONTRACT:
         raise ProjectV2DecodeError(
-            f"{path}.contract 不支持：{contract!r}"
+            f"{path}.contract is unsupported: {contract!r}"
         )
     signature = _mapping(
         data["signature"],
@@ -1247,7 +1246,7 @@ def _decode_topology_fingerprint(
     exact = signature["exact"]
     if type(exact) is not bool:
         raise ProjectV2DecodeError(
-            f"{path}.signature.exact 必须是 boolean"
+            f"{path}.signature.exact must be a boolean"
         )
     records: list[TopologyFingerprintEntity] = []
     for index, item in enumerate(
@@ -1269,7 +1268,7 @@ def _decode_topology_fingerprint(
         selectable = record["selectable"]
         if type(selectable) is not bool:
             raise ProjectV2DecodeError(
-                f"{record_path}.selectable 必须是 boolean"
+                f"{record_path}.selectable must be a boolean"
             )
         try:
             records.append(
@@ -1294,7 +1293,7 @@ def _decode_topology_fingerprint(
             )
         except (TypeError, ValueError) as error:
             raise ProjectV2DecodeError(
-                f"{record_path} 无效：{error}"
+                f"{record_path} is invalid: {error}"
             ) from error
     try:
         return TopologyFingerprint(
@@ -1308,7 +1307,7 @@ def _decode_topology_fingerprint(
             contract=contract,
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV2DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV2DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _require_matching_topology_fingerprint(
@@ -1322,13 +1321,13 @@ def _require_matching_topology_fingerprint(
     signature_path = f"{path}.signature"
     if stored.dimension != expected.dimension:
         raise ProjectV2DecodeError(
-            f"{signature_path}.dimension 与 geometry 重新计算值 "
-            f"{expected.dimension!r} 不一致（topology fingerprint）"
+            f"{signature_path}.dimension differs from the value recomputed from geometry: "
+            f"{expected.dimension!r} (topology fingerprint)"
         )
     if stored.exact != expected.exact:
         raise ProjectV2DecodeError(
-            f"{signature_path}.exact 与 geometry 重新计算值 "
-            f"{expected.exact!r} 不一致（topology fingerprint）"
+            f"{signature_path}.exact differs from the value recomputed from geometry: "
+            f"{expected.exact!r} (topology fingerprint)"
         )
 
     stored_by_id = {
@@ -1346,8 +1345,8 @@ def _require_matching_topology_fingerprint(
     )
     if missing:
         raise ProjectV2DecodeError(
-            f"{signature_path}.entities 缺少 geometry topology entity "
-            f"{missing[0]!r}（topology fingerprint）"
+            f"{signature_path}.entities is missing geometry topology entity "
+            f"{missing[0]!r} (topology fingerprint)"
         )
     extra = sorted(
         set(stored_by_id) - set(expected_by_id),
@@ -1359,9 +1358,9 @@ def _require_matching_topology_fingerprint(
         logical_id = extra[0]
         index = raw_indices[logical_id]
         raise ProjectV2DecodeError(
-            f"{signature_path}.entities[{index}].logical_id 包含 geometry "
-            f"中不存在的 topology entity {logical_id!r}"
-            "（topology fingerprint）"
+            f"{signature_path}.entities[{index}].logical_id contains a topology entity absent from geometry: "
+            f"{logical_id!r}"
+            " (topology fingerprint)"
         )
 
     for logical_id, expected_entity in expected_by_id.items():
@@ -1370,15 +1369,15 @@ def _require_matching_topology_fingerprint(
         entity_path = f"{signature_path}.entities[{index}]"
         if stored_entity.semantic_role != expected_entity.semantic_role:
             raise ProjectV2DecodeError(
-                f"{entity_path}.semantic_role 与 geometry 重新计算值 "
-                f"{expected_entity.semantic_role!r} 不一致"
-                "（topology fingerprint）"
+                f"{entity_path}.semantic_role differs from the value recomputed from geometry: "
+                f"{expected_entity.semantic_role!r}"
+                " (topology fingerprint)"
             )
         if stored_entity.selectable != expected_entity.selectable:
             raise ProjectV2DecodeError(
-                f"{entity_path}.selectable 与 geometry 重新计算值 "
-                f"{expected_entity.selectable!r} 不一致"
-                "（topology fingerprint）"
+                f"{entity_path}.selectable differs from the value recomputed from geometry: "
+                f"{expected_entity.selectable!r}"
+                " (topology fingerprint)"
             )
 
 
@@ -1419,7 +1418,7 @@ def _decode_definition_v2(kind: str, value: Any, path: str) -> Any:
         decoder = decoders[kind]
     except KeyError as error:
         raise ProjectV2DecodeError(
-            f"{path} 使用未知 definition kind {kind!r}"
+            f"{path} uses unknown definition kind {kind!r}"
         ) from error
     return decoder(value, path, policy=_V2_FIELD_POLICY)
 
@@ -1433,12 +1432,12 @@ def _unique_names(
     for index, value in enumerate(values):
         name = getattr(value, "name", None)
         if type(name) is not str or not name.strip():
-            raise error_type(f"{path}[{index}].name 必须是 non-empty string")
+            raise error_type(f"{path}[{index}].name must be a non-empty string")
         folded = name.casefold()
         if folded in seen:
             raise error_type(
-                f"{path} 包含忽略大小写后重复的名称 "
-                f"{seen[folded]!r} 与 {name!r}"
+                f"{path} contains case-insensitive duplicate names "
+                f"{seen[folded]!r} and {name!r}"
             )
         seen[folded] = name
 
@@ -1454,10 +1453,10 @@ def _keys(
     actual = set(data)
     missing = sorted(required - actual)
     if missing:
-        raise error_type(f"{path} 缺少必需字段：{', '.join(missing)}")
+        raise error_type(f"{path} is missing required fields: {', '.join(missing)}")
     unknown = sorted(actual - required - optional)
     if unknown:
-        raise error_type(f"{path} 包含 v2 未知字段：{', '.join(unknown)}")
+        raise error_type(f"{path} contains unknown v2 fields: {', '.join(unknown)}")
 
 
 def _mapping(
@@ -1466,9 +1465,9 @@ def _mapping(
     error_type: type[Exception],
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise error_type(f"{path} 必须是 JSON object")
+        raise error_type(f"{path} must be a JSON object")
     if any(type(key) is not str for key in value):
-        raise error_type(f"{path} 的键必须是字符串")
+        raise error_type(f"{path} keys must be strings")
     return value
 
 
@@ -1481,7 +1480,7 @@ def _array(
         value,
         Sequence,
     ):
-        raise error_type(f"{path} 必须是 JSON array")
+        raise error_type(f"{path} must be a JSON array")
     return tuple(value)
 
 
@@ -1491,9 +1490,9 @@ def _string(
     error_type: type[Exception],
 ) -> str:
     if type(value) is not str:
-        raise error_type(f"{path} 必须是字符串")
+        raise error_type(f"{path} must be a string")
     if not value.strip():
-        raise error_type(f"{path} 不能为空")
+        raise error_type(f"{path} must not be empty")
     return value
 
 
@@ -1503,7 +1502,7 @@ def _integer(
     error_type: type[Exception],
 ) -> int:
     if type(value) is not int:
-        raise error_type(f"{path} 必须是严格整数")
+        raise error_type(f"{path} must be a strict integer")
     return value
 
 
@@ -1513,13 +1512,13 @@ def _number(
     error_type: type[Exception],
 ) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise error_type(f"{path} 必须是有限实数")
+        raise error_type(f"{path} must be a finite real number")
     try:
         finite = math.isfinite(float(value))
     except OverflowError as error:
-        raise error_type(f"{path} 必须是有限实数") from error
+        raise error_type(f"{path} must be a finite real number") from error
     if not finite:
-        raise error_type(f"{path} 必须是有限实数")
+        raise error_type(f"{path} must be a finite real number")
     return value
 
 

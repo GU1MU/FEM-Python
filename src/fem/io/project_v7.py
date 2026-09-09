@@ -145,7 +145,7 @@ def loads_project_v7(
     payload = loads_json_strict(
         data,
         error_type=ProjectV7DecodeError,
-        document_label="v7 项目",
+        document_label="v7 project",
     )
     return decode_project_v7(payload, source_path=source_path)
 
@@ -165,16 +165,16 @@ def decode_project_v7(
         _keys(root, "$", {"format", "schema", "project"})
         if _string(root["format"], "$.format") != FORMAT_NAME:
             raise ProjectV7DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         if _integer(root["schema"], "$.schema") != SCHEMA_VERSION:
             raise ProjectV7DecodeError(
-                f"v7 decoder 不能读取 schema {root['schema']!r}"
+                f"v7 decoder cannot read schema {root['schema']!r}"
             )
         project = _mapping(root["project"], "$.project")
         _keys(project, "$.project", {"kind", "authoring"})
         if _string(project["kind"], "$.project.kind") != "native":
-            raise ProjectV7DecodeError("$.project.kind 只接受 'native'")
+            raise ProjectV7DecodeError("$.project.kind only accepts 'native'")
         authoring = _mapping(project["authoring"], "$.project.authoring")
         _keys(
             authoring,
@@ -351,7 +351,7 @@ def decode_project_v7(
         raise
     except Exception as error:
         raise ProjectV7DecodeError(
-            f"$.project.authoring 无效：{error}"
+            f"$.project.authoring is invalid: {error}"
         ) from error
 
 
@@ -448,7 +448,7 @@ def encode_project_v7(
         raise
     except Exception as error:
         raise ProjectV7EncodeError(
-            f"snapshot 无法由 v7 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v7: {error}"
         ) from error
 
 
@@ -479,7 +479,7 @@ def _decode_part(
     )
     if not isinstance(recipe, NATIVE_GEOMETRY_TYPES):
         raise ProjectV7DecodeError(
-            f"{path}.geometry 必须是 native recipe"
+            f"{path}.geometry must be a Native recipe"
         )
     stored = _v4._decode_topology_fingerprint_v4(
         data["logical_topology"],
@@ -503,7 +503,7 @@ def _decode_part(
         f"{path}.provenance",
     )
     if type(data["suppressed"]) is not bool:
-        raise ProjectV7DecodeError(f"{path}.suppressed 必须是 bool")
+        raise ProjectV7DecodeError(f"{path}.suppressed must be a bool")
     return NativePart(
         id=part_id,
         name=_string(data["name"], f"{path}.name"),
@@ -521,7 +521,7 @@ def _encode_part(
     field_policy: ProjectFieldCodecPolicy = _V7_FIELD_POLICY,
 ) -> dict[str, Any]:
     if type(part) is not NativePart or part.geometry_recipe is None:
-        raise ProjectV7EncodeError(f"{path} 必须是完整 NativePart")
+        raise ProjectV7EncodeError(f"{path} must be a complete NativePart")
     recipe = legacy_sketches_to_strict(part.geometry_recipe)
     # Legacy and strict SketchGeometry intentionally compare by their common
     # authored shape.  Identity, rather than equality, is therefore required
@@ -579,14 +579,14 @@ def _decode_mesh_settings(
         )
         if part_id_from_logical_id(target.logical_id) != part_id:
             raise ProjectV7DecodeError(
-                f"{item_path}.target 不属于 {part_id}"
+                f"{item_path}.target does not belong to {part_id}"
             )
         local_id = strip_part_logical_id(part_id, target.logical_id)
         try:
             describe_recipe_topology(recipe).entity(local_id)
         except KeyError as error:
             raise ProjectV7DecodeError(
-                f"{item_path}.target 引用了未知几何实体"
+                f"{item_path}.target references an unknown geometry entity"
             ) from error
         falloff_data = _mapping(item["falloff"], f"{item_path}.falloff")
         _keys(
@@ -633,7 +633,7 @@ def _encode_mesh_settings(
     if settings is None:
         return None
     if type(settings) is not MeshSettings:
-        raise ProjectV7EncodeError(f"{path} 必须是 MeshSettings 或 null")
+        raise ProjectV7EncodeError(f"{path} must be MeshSettings or null")
     return {
         "size": settings.size,
         "order": settings.order,
@@ -687,7 +687,7 @@ def _encode_provenance(
         return None
     if type(value) is not PartBooleanProvenance:
         raise ProjectV7EncodeError(
-            f"{path} 必须是 PartBooleanProvenance 或 null"
+            f"{path} must be PartBooleanProvenance or null"
         )
     return {
         "feature_id": value.feature_id,
@@ -724,7 +724,7 @@ def _decode_named_region(value: Any, path: str) -> NamedRegion:
 
 def _encode_named_region(value: NamedRegion, path: str) -> dict[str, Any]:
     if type(value) is not NamedRegion:
-        raise ProjectV7EncodeError(f"{path} 必须是 NamedRegion")
+        raise ProjectV7EncodeError(f"{path} must be NamedRegion")
     compact_encoder = _COMPACT_REGION_ENCODER.get()
     if compact_encoder is not None and isinstance(
         value.references,
@@ -755,11 +755,11 @@ def _encode_named_region(value: NamedRegion, path: str) -> dict[str, Any]:
         encoded = [reference.logical_id for reference in references]
     else:
         raise ProjectV7EncodeError(
-            f"{path}.references 混用了网格与逻辑引用"
+            f"{path}.references mixes mesh and logical references"
         )
     if references != canonical:
         raise ProjectV7EncodeError(
-            f"{path}.references 不是 canonical 顺序"
+            f"{path}.references is not in canonical order"
         )
     return {"name": value.name, "references": encoded}
 
@@ -790,7 +790,7 @@ def _decode_mesh_entity_reference(
         )
     if kind not in {"edge", "face"}:
         raise ProjectV7DecodeError(
-            f"{path}.kind 不支持网格实体类型 {kind!r}"
+            f"{path}.kind does not support mesh entity type {kind!r}"
         )
     _keys(
         data,
@@ -820,7 +820,7 @@ def _encode_mesh_entity_reference(
     path: str,
 ) -> dict[str, Any]:
     if type(reference) is not MeshEntityRef:
-        raise ProjectV7EncodeError(f"{path} 必须是 MeshEntityRef")
+        raise ProjectV7EncodeError(f"{path} must be MeshEntityRef")
     payload: dict[str, Any] = {"kind": reference.kind}
     if reference.part_id is not None:
         payload["part_id"] = reference.part_id
@@ -942,7 +942,7 @@ def _encode_part_boolean_undo_record(
 ) -> dict[str, Any]:
     if type(value) is not PartBooleanUndoRecord:
         raise ProjectV7EncodeError(
-            f"{path} 必须是 PartBooleanUndoRecord"
+            f"{path} must be PartBooleanUndoRecord"
         )
     return {
         "feature_id": value.feature_id,
@@ -1177,13 +1177,13 @@ def _encode_array(
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV7DecodeError(f"{path} 必须是 object")
+        raise ProjectV7DecodeError(f"{path} must be an object")
     return value
 
 
 def _array(value: Any, path: str) -> tuple[Any, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, list):
-        raise ProjectV7DecodeError(f"{path} 必须是 array")
+        raise ProjectV7DecodeError(f"{path} must be an array")
     return tuple(value)
 
 
@@ -1198,38 +1198,38 @@ def _keys(
     extra = actual - required - (set() if optional is None else optional)
     if missing:
         raise ProjectV7DecodeError(
-            f"{path} 缺少字段 {sorted(missing)[0]!r}"
+            f"{path} is missing field {sorted(missing)[0]!r}"
         )
     if extra:
         raise ProjectV7DecodeError(
-            f"{path} 包含未知字段 {sorted(extra)[0]!r}"
+            f"{path} contains unknown field {sorted(extra)[0]!r}"
         )
 
 
 def _string(value: Any, path: str) -> str:
     if type(value) is not str or not value.strip():
-        raise ProjectV7DecodeError(f"{path} 必须是非空 string")
+        raise ProjectV7DecodeError(f"{path} must be a non-empty string")
     if value != value.strip():
-        raise ProjectV7DecodeError(f"{path} 不能包含首尾空白")
+        raise ProjectV7DecodeError(f"{path} must not contain leading or trailing whitespace")
     return value
 
 
 def _integer(value: Any, path: str) -> int:
     if type(value) is not int:
-        raise ProjectV7DecodeError(f"{path} 必须是 integer")
+        raise ProjectV7DecodeError(f"{path} must be an integer")
     return value
 
 
 def _number(value: Any, path: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ProjectV7DecodeError(f"{path} 必须是 number")
+        raise ProjectV7DecodeError(f"{path} must be a number")
     return float(value)
 
 
 def _require_unique_names(values: tuple[Any, ...], path: str) -> None:
     names = tuple(str(value.name) for value in values)
     if len(names) != len(set(names)):
-        raise ProjectV7DecodeError(f"{path} 名称必须唯一")
+        raise ProjectV7DecodeError(f"{path} names must be unique")
 
 
 def dumps_project_v7(
@@ -1269,7 +1269,7 @@ def save_project_v7(
         expected_semantic=payload,
         error_type=ProjectV7EncodeError,
         mismatch_message=(
-            "临时 v7 项目回读后的 canonical Part authoring 与 snapshot 不一致"
+            "canonical part authoring differs from the snapshot after rereading the temporary v7 project"
         ),
         checkpoint=checkpoint,
     )

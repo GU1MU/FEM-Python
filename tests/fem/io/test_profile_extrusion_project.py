@@ -96,7 +96,7 @@ def test_v4_alias_input_is_canonicalized_on_decode() -> None:
     ("logical_id", "path_pattern"),
     (
         ("edge:L1", r"source_face_ids\[0\].*face"),
-        ("face:missing", r"source_face_ids\[0\].*失效"),
+        ("face:missing", r"source_face_ids\[0\].*stale"),
     ),
 )
 def test_v4_bad_source_face_has_path_aware_diagnostic(

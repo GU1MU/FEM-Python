@@ -117,7 +117,7 @@ def loads_project(
     payload = loads_json_strict(
         data,
         error_type=ProjectDecodeError,
-        document_label="项目",
+        document_label="project",
     )
     return decode_project(payload, source_path=source_path)
 
@@ -131,17 +131,17 @@ def decode_project(
 
     if not isinstance(payload, Mapping):
         raise TypeError(
-            "decode_project() 只接受已解析的 mapping；"
-            "文本或 bytes 请使用 loads_project()"
+            "decode_project() only accepts a parsed mapping; "
+            "use loads_project() for text or bytes"
         )
     if "schema" not in payload:
         raise ProjectDecodeError(
-            "$.schema 缺失；项目必须声明受支持的严格整数 schema"
+            "$.schema is missing; projects must declare a supported strict integer schema"
         )
     schema = payload["schema"]
     if type(schema) is not int:
         raise ProjectDecodeError(
-            "$.schema 必须是严格整数；请使用受支持的项目格式"
+            "$.schema must be a strict integer; use a supported project format"
         )
 
     resolved_path = None if source_path is None else Path(source_path)
@@ -224,23 +224,23 @@ def decode_project(
         notices = ()
     else:
         raise UnsupportedProjectSchemaError(
-            f"$.schema={schema!r} 不受支持；"
-            "当前版本可读取 schema 1、2、3、4、5、6、7、8、9、10 和 "
-            f"11、12、13 和 {CURRENT_PROJECT_SCHEMA}"
+            f"$.schema={schema!r} is unsupported; "
+            "this version can read schemas 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "
+            f"11, 12, 13 and {CURRENT_PROJECT_SCHEMA}"
         )
     if schema < 7:
         try:
             snapshot, v5_notices = migrate_project_snapshot_to_v5(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema {CURRENT_PROJECT_SCHEMA}：{error}"
+                f"schema {schema} cannot be atomically migrated to schema {CURRENT_PROJECT_SCHEMA}: {error}"
             ) from error
         notices = (*notices, *v5_notices)
         try:
             snapshot, v7_notices = migrate_project_snapshot_to_v7(snapshot)
         except ProjectV1MigrationError as error:
             raise ProjectDecodeError(
-                f"schema {schema} 无法原子迁移到 schema {CURRENT_PROJECT_SCHEMA}：{error}"
+                f"schema {schema} cannot be atomically migrated to schema {CURRENT_PROJECT_SCHEMA}: {error}"
             ) from error
         notices = (*notices, *v7_notices)
     if schema < CURRENT_PROJECT_SCHEMA:

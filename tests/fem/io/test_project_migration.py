@@ -168,7 +168,7 @@ def test_missing_parts_defaults_but_explicit_zero_or_multiple_rejects() -> None:
     for parts in ([], [{}, {}]):
         payload = _rectangle_payload()
         payload["parts"] = parts
-        with pytest.raises(ProjectV1DecodeError, match=r"\$\.parts.*只包含一个"):
+        with pytest.raises(ProjectV1DecodeError, match=r"\$\.parts.*contain exactly one"):
             decode_project_v1(payload)
 
 
@@ -406,7 +406,7 @@ def test_missing_topology_version_with_integer_reference_rejects(
             ],
         }
 
-    with pytest.raises(ProjectV1DecodeError, match="逻辑拓扑契约版本"):
+    with pytest.raises(ProjectV1DecodeError, match="logical topology contract version"):
         decode_project_v1(payload)
 
 
@@ -414,7 +414,7 @@ def test_unknown_topology_version_rejects() -> None:
     payload = _rectangle_payload()
     payload["logical_topology_version"] = 99
 
-    with pytest.raises(ProjectV1DecodeError, match="不支持的逻辑拓扑契约版本"):
+    with pytest.raises(ProjectV1DecodeError, match="unsupported logical topology contract version"):
         decode_project_v1(payload)
 
 
@@ -471,7 +471,7 @@ def test_local_size_rejects_disk_outer_as_unproven_hole() -> None:
         "local_controls": [],
     }
 
-    with pytest.raises(ProjectV1DecodeError, match="唯一圆孔 target"):
+    with pytest.raises(ProjectV1DecodeError, match="unique circular hole target"):
         decode_project_v1(payload)
 
 
@@ -521,7 +521,7 @@ def test_duplicate_legacy_control_same_size_dedupes_and_conflict_rejects() -> No
 
     conflict = deepcopy(payload)
     conflict["mesh_settings"]["local_controls"][1]["size"] = 0.3
-    with pytest.raises(ProjectV1DecodeError, match="冲突 size"):
+    with pytest.raises(ProjectV1DecodeError, match="conflicting sizes"):
         decode_project_v1(conflict)
 
 
@@ -705,7 +705,7 @@ def test_current_writer_rejects_unsupported_falloff_and_unproven_radius_target()
         )
     )
 
-    with pytest.raises(ProjectV1EncodeError, match="falloff.*无法由 v1"):
+    with pytest.raises(ProjectV1EncodeError, match="falloff.*cannot be represented losslessly by v1"):
         encode_project_v1(unsupported)
     with pytest.raises(ProjectV1EncodeError, match="legacy hole target"):
         encode_project_v1(wrong_target)
@@ -727,7 +727,7 @@ def test_current_writer_rejects_multiple_target_radius_controls() -> None:
         )
     )
 
-    with pytest.raises(ProjectV1EncodeError, match="多个.*target_radius"):
+    with pytest.raises(ProjectV1EncodeError, match="multiple.*target_radius"):
         encode_project_v1(snapshot)
 
 
@@ -756,7 +756,7 @@ def test_current_writer_dedupes_same_control_and_rejects_conflicting_size() -> N
         (first, conflict),
     )
     conflicting = replace(_snapshot(), mesh_settings=conflict_settings)
-    with pytest.raises(ProjectV1EncodeError, match="冲突 size"):
+    with pytest.raises(ProjectV1EncodeError, match="conflicting sizes"):
         encode_project_v1(conflicting)
 
 
@@ -799,11 +799,11 @@ def test_current_v1_writer_rejects_integer_analysis_target(
 def test_current_v1_writer_rejects_parts_runtime_model_and_stale_history() -> None:
     base = _snapshot()
 
-    with pytest.raises(ProjectV1EncodeError, match="恰好包含一个"):
+    with pytest.raises(ProjectV1EncodeError, match="contain exactly one"):
         encode_project_v1(replace(base, parts=()))
-    with pytest.raises(ProjectV1EncodeError, match="恰好包含一个"):
+    with pytest.raises(ProjectV1EncodeError, match="contain exactly one"):
         encode_project_v1(replace(base, parts=(NativePart(), NativePart("P2"))))
-    with pytest.raises(ProjectV1EncodeError, match="模型制品"):
+    with pytest.raises(ProjectV1EncodeError, match="model artifacts"):
         encode_project_v1(replace(base, model=object()))
     with pytest.raises(ProjectV1EncodeError, match="feature_history"):
         encode_project_v1(replace(base, feature_history=()))
@@ -824,7 +824,7 @@ def test_orientation_guard_precedes_native_beam_capability_rejection() -> None:
 
     with pytest.raises(
         ProjectV1EncodeError,
-        match="v1 不支持 Beam orientation",
+        match="v1 does not support beam orientation",
     ):
         encode_project_v1(explicit)
 

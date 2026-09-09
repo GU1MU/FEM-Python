@@ -116,7 +116,7 @@ def test_a5_v9_remains_strict_and_v10_requires_exact_name_fields() -> None:
     widened["project"]["authoring"]["definitions"]["steps"][0][
         "boundaries"
     ][0]["name"] = "位移-固定端"
-    with pytest.raises(ProjectV9DecodeError, match="未知字段|字段"):
+    with pytest.raises(ProjectV9DecodeError, match="unknown field|field"):
         decode_project_v9(widened)
 
     v10 = encode_project_v10(_snapshot(named=True))
@@ -124,14 +124,14 @@ def test_a5_v9_remains_strict_and_v10_requires_exact_name_fields() -> None:
     del missing["project"]["authoring"]["definitions"]["steps"][0][
         "edge_loads"
     ][0]["name"]
-    with pytest.raises(ProjectV10DecodeError, match="缺少字段 'name'"):
+    with pytest.raises(ProjectV10DecodeError, match="is missing field 'name'"):
         decode_project_v10(missing)
 
     unknown = deepcopy(v10)
     unknown["project"]["authoring"]["definitions"]["steps"][0][
         "outputs"
     ][0]["future"] = True
-    with pytest.raises(ProjectV10DecodeError, match="未知字段|包含"):
+    with pytest.raises(ProjectV10DecodeError, match="unknown field|contains"):
         decode_project_v10(unknown)
 
 

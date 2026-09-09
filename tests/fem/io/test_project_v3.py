@@ -196,7 +196,7 @@ def test_v3_continuum_requires_nullable_line_element_type_field() -> None:
 
     broken = deepcopy(payload)
     del broken["project"]["authoring"]["mesh_settings"]["line_element_type"]
-    with pytest.raises(ProjectV3DecodeError, match="缺少必需字段.*line_element_type"):
+    with pytest.raises(ProjectV3DecodeError, match="is missing required fields.*line_element_type"):
         decode_project_v3(broken)
 
 
@@ -205,7 +205,7 @@ def test_v3_rejects_unknown_fields_and_stale_topology_links() -> None:
 
     unknown = deepcopy(payload)
     unknown["project"]["authoring"]["geometry"]["extra"] = True
-    with pytest.raises(ProjectV3DecodeError, match="未知字段.*extra"):
+    with pytest.raises(ProjectV3DecodeError, match="unknown field.*extra"):
         decode_project_v3(unknown)
 
     stale = deepcopy(payload)

@@ -51,7 +51,7 @@ def loads_project_v10(
         loads_json_strict(
             data,
             error_type=ProjectV10DecodeError,
-            document_label="v10 项目",
+            document_label="v10 project",
         ),
         source_path=source_path,
     )
@@ -70,11 +70,11 @@ def decode_project_v10(
         _exact_keys(root, "$", {"format", "schema", "project"})
         if root["format"] != FORMAT_NAME:
             raise ProjectV10DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV10DecodeError(
-                f"v10 decoder 不能读取 schema {root['schema']!r}"
+                f"v10 decoder cannot read schema {root['schema']!r}"
             )
 
         v9_payload = deepcopy(dict(root))
@@ -92,7 +92,7 @@ def decode_project_v10(
                 raw_values = step.get(collection)
                 if not isinstance(raw_values, list):
                     raise ProjectV10DecodeError(
-                        f"{step_path}.{collection} 必须是 array"
+                        f"{step_path}.{collection} must be an array"
                     )
                 collected: list[str] = []
                 for item_index, raw_item in enumerate(raw_values):
@@ -102,7 +102,7 @@ def decode_project_v10(
                     item = _mapping(raw_item, item_path)
                     if "name" not in item:
                         raise ProjectV10DecodeError(
-                            f"{item_path} 缺少字段 'name'"
+                            f"{item_path} is missing field 'name'"
                         )
                     name = item["name"]
                     if (
@@ -111,7 +111,7 @@ def decode_project_v10(
                         or name != name.strip()
                     ):
                         raise ProjectV10DecodeError(
-                            f"{item_path}.name 必须是无首尾空白的非空 string"
+                            f"{item_path}.name must be a non-empty string without leading or trailing whitespace"
                         )
                     collected.append(name)
                     del item["name"]
@@ -127,7 +127,7 @@ def decode_project_v10(
             **decode_options,
         )
         if len(decoded.analysis_definitions) != len(names):
-            raise ProjectV10DecodeError("分析步名称映射数量不匹配")
+            raise ProjectV10DecodeError("Step name mapping count does not match")
         named_steps = deepcopy(tuple(decoded.analysis_definitions))
         for step_index, step in enumerate(named_steps):
             for collection in ANALYSIS_OBJECT_COLLECTIONS:
@@ -135,7 +135,7 @@ def decode_project_v10(
                 collection_names = names[step_index][collection]
                 if len(values) != len(collection_names):
                     raise ProjectV10DecodeError(
-                        f"分析步 {step_index} 的 {collection} 名称数量不匹配"
+                        f"Step {step_index} has a {collection} name count does not match"
                     )
                 setattr(
                     step,
@@ -151,7 +151,7 @@ def decode_project_v10(
         raise
     except Exception as error:
         raise ProjectV10DecodeError(
-            f"schema v10 项目无效：{error}"
+            f"invalid schema v10 project: {error}"
         ) from error
 
 
@@ -187,7 +187,7 @@ def encode_project_v10(
                 source_values = tuple(getattr(source_step, collection))
                 if len(raw_values) != len(source_values):
                     raise ProjectV10EncodeError(
-                        f"分析步 {step_index} 的 {collection} 数量不匹配"
+                        f"Step {step_index} has a {collection} count does not match"
                     )
                 for raw_item, source_item in zip(
                     raw_values,
@@ -197,7 +197,7 @@ def encode_project_v10(
                     name = getattr(source_item, "name", None)
                     if type(name) is not str:
                         raise ProjectV10EncodeError(
-                            f"{collection} 对象缺少稳定名称"
+                            f"{collection} objects lack stable names"
                         )
                     raw_item["name"] = name
         dumps_canonical_json(payload, error_type=ProjectV10EncodeError)
@@ -206,7 +206,7 @@ def encode_project_v10(
         raise
     except Exception as error:
         raise ProjectV10EncodeError(
-            f"snapshot 无法由 v10 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v10: {error}"
         ) from error
 
 
@@ -247,7 +247,7 @@ def save_project_v10(
         expected_semantic=payload,
         error_type=ProjectV10EncodeError,
         mismatch_message=(
-            "临时 v10 项目回读后的分析对象身份与 canonical authoring 不一致"
+            "analysis object identities and canonical authoring differ after rereading the temporary v10 project"
         ),
         checkpoint=checkpoint,
     )
@@ -267,14 +267,14 @@ def _steps(payload: Mapping[str, Any]) -> list[Any]:
     steps = definitions.get("steps")
     if not isinstance(steps, list):
         raise ProjectV10DecodeError(
-            "$.project.authoring.definitions.steps 必须是 array"
+            "$.project.authoring.definitions.steps must be an array"
         )
     return steps
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV10DecodeError(f"{path} 必须是 object")
+        raise ProjectV10DecodeError(f"{path} must be an object")
     return value
 
 
@@ -288,11 +288,11 @@ def _exact_keys(
     extra = actual - expected
     if missing:
         raise ProjectV10DecodeError(
-            f"{path} 缺少字段 {sorted(missing)[0]!r}"
+            f"{path} is missing field {sorted(missing)[0]!r}"
         )
     if extra:
         raise ProjectV10DecodeError(
-            f"{path} 包含未知字段 {sorted(extra)[0]!r}"
+            f"{path} contains unknown field {sorted(extra)[0]!r}"
         )
 
 

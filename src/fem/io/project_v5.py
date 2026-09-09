@@ -101,7 +101,7 @@ def loads_project_v5(
     payload = loads_json_strict(
         data,
         error_type=ProjectV5DecodeError,
-        document_label="v5 项目",
+        document_label="v5 project",
     )
     return decode_project_v5(payload, source_path=source_path)
 
@@ -131,7 +131,7 @@ def decode_project_v5(
             ProjectV5DecodeError,
         ) != FORMAT_NAME:
             raise ProjectV5DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         schema = _v2._integer(
             root["schema"],
@@ -140,7 +140,7 @@ def decode_project_v5(
         )
         if schema != SCHEMA_VERSION:
             raise ProjectV5DecodeError(
-                f"v5 decoder 不能读取 schema {schema!r}"
+                f"v5 decoder cannot read schema {schema!r}"
             )
         project = _mapping_with_keys(
             root["project"],
@@ -152,7 +152,7 @@ def decode_project_v5(
             "$.project.kind",
             ProjectV5DecodeError,
         ) != "native":
-            raise ProjectV5DecodeError("$.project.kind 只接受 'native'")
+            raise ProjectV5DecodeError("$.project.kind only accepts 'native'")
         authoring = _mapping_with_keys(
             project["authoring"],
             "$.project.authoring",
@@ -183,7 +183,7 @@ def decode_project_v5(
         )
         if not isinstance(geometry, NATIVE_GEOMETRY_TYPES):
             raise ProjectV5DecodeError(
-                "$.project.authoring.geometry 不是 native geometry recipe"
+                "$.project.authoring.geometry is not a Native geometry recipe"
             )
         _require_v5_geometry(geometry, encode=False)
         stored_fingerprint = _v4._decode_topology_fingerprint_v4(
@@ -325,7 +325,7 @@ def decode_project_v5(
         raise ProjectV5DecodeError(str(error)) from error
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV5DecodeError(
-            f"$.project.authoring 无效：{error}"
+            f"$.project.authoring is invalid: {error}"
         ) from error
 
 
@@ -343,11 +343,11 @@ def encode_project_v5(
         )
         if project.source_kind != "native":
             raise ProjectV5EncodeError(
-                "snapshot.source_kind 只接受 'native'"
+                "snapshot.source_kind only accepts 'native'"
             )
         if project.model is not None:
             raise ProjectV5EncodeError(
-                "v5 不持久化 compiled/runtime model"
+                "v5 does not persist compiled/runtime models"
             )
         project, _notices = migrate_project_snapshot_to_v5(project)
         geometry = project.geometry_recipe
@@ -356,7 +356,7 @@ def encode_project_v5(
             NATIVE_GEOMETRY_TYPES,
         ):
             raise ProjectV5EncodeError(
-                "snapshot.geometry_recipe 必须是 native geometry"
+                "snapshot.geometry_recipe must be Native geometry"
             )
         geometry = legacy_sketches_to_strict(geometry)
         project = replace(
@@ -369,7 +369,7 @@ def encode_project_v5(
         parts = tuple(project.parts)
         if len(parts) != 1:
             raise ProjectV5EncodeError(
-                "v5 native 项目必须且只能包含一个 part"
+                "v5 Native projects must contain exactly one part"
             )
         named_regions = tuple(project.named_regions)
         materials = tuple(project.material_definitions)
@@ -408,7 +408,7 @@ def encode_project_v5(
             or steps != normalized.steps
         ):
             raise ProjectV5EncodeError(
-                "snapshot definitions 不是 canonical 形式"
+                "snapshot definitions are not in canonical form"
             )
         _require_canonical_v5_references(
             geometry,
@@ -511,7 +511,7 @@ def encode_project_v5(
         raise ProjectV5EncodeError(str(error)) from error
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise ProjectV5EncodeError(
-            f"snapshot 无法由 v5 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v5: {error}"
         ) from error
 
 
@@ -552,7 +552,7 @@ def save_project_v5(
         expected_semantic=payload,
         error_type=ProjectV5EncodeError,
         mismatch_message=(
-            "临时 v5 项目回读后的 canonical authoring 值与保存 snapshot 不一致"
+            "canonical authoring values differ from the saved snapshot after rereading the temporary v5 project"
         ),
         checkpoint=checkpoint,
     )
@@ -591,12 +591,12 @@ def _decode_part_v5(value: Any, path: str) -> NativePart:
             )
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV5DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV5DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _encode_part_v5(part: Any, path: str) -> dict[str, Any]:
     if type(part) is not NativePart:
-        raise ProjectV5EncodeError(f"{path} 必须是 NativePart")
+        raise ProjectV5EncodeError(f"{path} must be NativePart")
     return {
         "name": _v2._string(
             part.name,
@@ -918,7 +918,7 @@ def _require_v5_geometry(recipe: object, *, encode: bool) -> None:
             "$.project.authoring.geometry"
         )
         raise error_type(
-            f"{prefix} 的 3D geometry 必须使用 MultiBodyGeometry"
+            f"{prefix} 3D geometry must use MultiBodyGeometry"
         )
     if isinstance(recipe, MultiBodyGeometry):
         active_ids = {body.id for body in recipe.bodies}
@@ -1180,7 +1180,7 @@ def _validate_inputs(
     except NativeProjectValidationError as error:
         error_type = ProjectV5EncodeError if encode else ProjectV5DecodeError
         prefix = "snapshot" if encode else "$.project.authoring"
-        raise error_type(f"{prefix} 无效：{error}") from error
+        raise error_type(f"{prefix} is invalid: {error}") from error
 
 
 __all__ = [

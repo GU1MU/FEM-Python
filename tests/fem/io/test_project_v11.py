@@ -134,5 +134,5 @@ def test_real_v11_rejects_tampered_face_sketch_replay(
     else:
         geometry["step_proofs"][0]["topology_mappings"] = []
 
-    with pytest.raises(ProjectV11DecodeError, match="工作面|坐标|证明|proof"):
+    with pytest.raises(ProjectV11DecodeError, match="work plane|coordinate|proof"):
         decode_project_v11(payload)

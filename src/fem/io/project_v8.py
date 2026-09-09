@@ -46,7 +46,7 @@ def loads_project_v8(
     payload = loads_json_strict(
         data,
         error_type=ProjectV8DecodeError,
-        document_label="v8 项目",
+        document_label="v8 project",
     )
     return decode_project_v8(payload, source_path=source_path)
 
@@ -65,9 +65,9 @@ def decode_project_v8(
         root = _mapping(payload, "$")
         _exact_keys(root, "$", {"format", "schema", "project"})
         if root["format"] != FORMAT_NAME:
-            raise ProjectV8DecodeError(f"$.format 必须精确等于 {FORMAT_NAME!r}")
+            raise ProjectV8DecodeError(f"$.format must equal exactly {FORMAT_NAME!r}")
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
-            raise ProjectV8DecodeError(f"v8 decoder 不能读取 schema {root['schema']!r}")
+            raise ProjectV8DecodeError(f"v8 decoder cannot read schema {root['schema']!r}")
         project = _mapping(root["project"], "$.project")
         _exact_keys(project, "$.project", {"kind", "authoring"})
         authoring = _mapping(project["authoring"], "$.project.authoring")
@@ -106,7 +106,7 @@ def decode_project_v8(
     except ProjectV8Error:
         raise
     except Exception as error:
-        raise ProjectV8DecodeError(f"$.project.authoring 无效：{error}") from error
+        raise ProjectV8DecodeError(f"$.project.authoring is invalid: {error}") from error
 
 
 def encode_project_v8(
@@ -131,7 +131,7 @@ def encode_project_v8(
     except ProjectV8Error:
         raise
     except Exception as error:
-        raise ProjectV8EncodeError(f"snapshot 无法由 v8 无损表示：{error}") from error
+        raise ProjectV8EncodeError(f"snapshot cannot be represented losslessly by v8: {error}") from error
 
 
 def _decode_unit_context(value: Any, path: str) -> UnitContext | None:
@@ -150,12 +150,12 @@ def _decode_unit_context(value: Any, path: str) -> UnitContext | None:
     try:
         return UnitContext.from_dict(dict(data))
     except (TypeError, ValueError) as error:
-        raise ProjectV8DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV8DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV8DecodeError(f"{path} 必须是 object")
+        raise ProjectV8DecodeError(f"{path} must be an object")
     return value
 
 
@@ -168,9 +168,9 @@ def _exact_keys(
     missing = expected - actual
     extra = actual - expected
     if missing:
-        raise ProjectV8DecodeError(f"{path} 缺少字段 {sorted(missing)[0]!r}")
+        raise ProjectV8DecodeError(f"{path} is missing field {sorted(missing)[0]!r}")
     if extra:
-        raise ProjectV8DecodeError(f"{path} 包含未知字段 {sorted(extra)[0]!r}")
+        raise ProjectV8DecodeError(f"{path} contains unknown field {sorted(extra)[0]!r}")
 
 
 def dumps_project_v8(
@@ -210,7 +210,7 @@ def save_project_v8(
         expected_semantic=payload,
         error_type=ProjectV8EncodeError,
         mismatch_message=(
-            "临时 v8 项目回读后的单位及 canonical Part authoring 与 snapshot 不一致"
+            "units and canonical part authoring differ from the snapshot after rereading the temporary v8 project"
         ),
         checkpoint=checkpoint,
     )

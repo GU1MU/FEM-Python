@@ -223,7 +223,7 @@ def _decode_legacy_v1_payload(
     )
     schema = _integer(root["schema"], "$.schema", error_type=ProjectV1DecodeError)
     if schema != SCHEMA_VERSION:
-        raise ProjectV1DecodeError(f"不支持的项目 schema：{schema!r}")
+        raise ProjectV1DecodeError(f"unsupported project schema: {schema!r}")
     topology_version = (
         None
         if "logical_topology_version" not in root
@@ -235,7 +235,7 @@ def _decode_legacy_v1_payload(
     )
     source_kind = _string(root["source"], "$.source", error_type=ProjectV1DecodeError)
     if source_kind != "native":
-        raise ProjectV1DecodeError("v1 项目只支持 source='native'")
+        raise ProjectV1DecodeError("v1 projects only support source='native'")
 
     geometry = _decode_geometry(root["geometry"], "$.geometry")
     mesh_settings = _decode_mesh_settings(root.get("mesh_settings"), "$.mesh_settings")
@@ -354,11 +354,11 @@ def encode_project_v1(
     project = _unwrap_project_snapshot(snapshot)
     source_kind = _snapshot_attr(project, "source_kind")
     if source_kind != "native":
-        raise ProjectV1EncodeError("v1 项目只支持保存 native Session")
+        raise ProjectV1EncodeError("v1 projects only support saving Native Session")
 
     geometry = _snapshot_attr(project, "geometry_recipe")
     if geometry is None:
-        raise ProjectV1EncodeError("请先创建草图或几何后再保存项目")
+        raise ProjectV1EncodeError("create a sketch or geometry before saving the project")
 
     parts = _snapshot_sequence(project, "parts")
     features = _snapshot_sequence(project, "feature_history")
@@ -375,18 +375,18 @@ def encode_project_v1(
 
     if len(parts) != 1:
         raise ProjectV1EncodeError(
-            "v1 native 项目必须恰好包含一个 NativePart；"
-            f"收到 {len(parts)} 个"
+            "v1 Native projects must contain exactly one NativePart; "
+            f"received {len(parts)}"
         )
     try:
         canonical_history = derive_feature_history(geometry)
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV1EncodeError(
-            f"snapshot.geometry_recipe 无法推导 canonical feature history：{error}"
+            f"snapshot.geometry_recipe cannot derive canonical feature history: {error}"
         ) from error
     if features != canonical_history:
         raise ProjectV1EncodeError(
-            "snapshot.feature_history 必须等于 geometry recipe 的 "
+            "snapshot.feature_history must equal the geometry recipe's "
             "current canonical derivation"
         )
 
@@ -423,7 +423,7 @@ def encode_project_v1(
             or definitions.steps != steps
         ):
             raise ProjectV1EncodeError(
-                "snapshot definitions 不是 current canonical authoring values"
+                "snapshot definitions are not current canonical authoring values"
             )
         _validate_current_native_authoring(
             geometry,
@@ -438,7 +438,7 @@ def encode_project_v1(
         raise
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV1EncodeError(
-            f"snapshot native authoring context 无效：{error}"
+            f"invalid snapshot Native authoring context: {error}"
         ) from error
 
     payload = {
@@ -479,7 +479,7 @@ def encode_project_v1(
         payload,
         indent=None,
         error_type=ProjectV1EncodeError,
-        error_message="项目包含无法无损编码的 JSON 值",
+        error_message="project contains JSON values that cannot be encoded losslessly",
     )
     return payload
 
@@ -495,7 +495,7 @@ def dumps_project_v1(
         encode_project_v1(snapshot),
         indent=indent,
         error_type=ProjectV1EncodeError,
-        error_message="项目包含无法编码的值",
+        error_message="project contains values that cannot be encoded",
     )
 
 
@@ -514,7 +514,7 @@ def save_project_v1(
         expected,
         indent=2,
         error_type=ProjectV1EncodeError,
-        error_message="项目包含无法编码的值",
+        error_message="project contains values that cannot be encoded",
     )
     return atomic_write_project(
         path,
@@ -523,7 +523,7 @@ def save_project_v1(
         semantic_encoder=encode_project_v1,
         expected_semantic=expected,
         error_type=ProjectV1EncodeError,
-        mismatch_message="临时项目文件校验后与保存 snapshot 不一致",
+        mismatch_message="validated temporary project file does not match the saved snapshot",
         replace_func=os.replace,
     )
 
@@ -592,7 +592,7 @@ def _decode_named_region(value: Any, path: str) -> LegacyNamedRegionV1:
         data["entity_kind"], f"{path}.entity_kind", error_type=ProjectV1DecodeError
     )
     if entity_kind not in {"point", "edge", "face", "body"}:
-        raise ProjectV1DecodeError(f"{path}.entity_kind 不是受支持的实体类型")
+        raise ProjectV1DecodeError(f"{path}.entity_kind is not a supported entity type")
     entity_ids = tuple(
         _positive_integer(item, f"{path}.entity_ids[{index}]", ProjectV1DecodeError)
         for index, item in enumerate(
@@ -604,7 +604,7 @@ def _decode_named_region(value: Any, path: str) -> LegacyNamedRegionV1:
         )
     )
     if len(set(entity_ids)) != len(entity_ids):
-        raise ProjectV1DecodeError(f"{path}.entity_ids 包含重复实体编号")
+        raise ProjectV1DecodeError(f"{path}.entity_ids contains duplicate entity IDs")
     return LegacyNamedRegionV1(
         name=_string(data["name"], f"{path}.name", error_type=ProjectV1DecodeError),
         entity_kind=entity_kind,
@@ -625,14 +625,14 @@ def _decode_mesh_settings(value: Any, path: str) -> LegacyMeshSettingsV1 | None:
     )
     size = _number(data["size"], f"{path}.size", ProjectV1DecodeError)
     if size <= 0:
-        raise ProjectV1DecodeError(f"{path}.size 必须大于零")
+        raise ProjectV1DecodeError(f"{path}.size must be greater than zero")
     order = _integer(
         data.get("order", 1),
         f"{path}.order",
         error_type=ProjectV1DecodeError,
     )
     if order not in {1, 2}:
-        raise ProjectV1DecodeError(f"{path}.order 只能是一阶或二阶")
+        raise ProjectV1DecodeError(f"{path}.order must be first or second order")
     cell_shape = _string(
         data.get("cell_shape", "triangle"),
         f"{path}.cell_shape",
@@ -644,7 +644,7 @@ def _decode_mesh_settings(value: Any, path: str) -> LegacyMeshSettingsV1 | None:
         "tetrahedron",
         "hexahedron",
     }:
-        raise ProjectV1DecodeError(f"{path}.cell_shape 不是受支持的网格类型")
+        raise ProjectV1DecodeError(f"{path}.cell_shape is not a supported mesh type")
 
     local_size_value = data.get("local_size")
     local_size = (
@@ -656,7 +656,7 @@ def _decode_mesh_settings(value: Any, path: str) -> LegacyMeshSettingsV1 | None:
         local_size <= 0 or local_size >= size
     ):
         raise ProjectV1DecodeError(
-            f"{path}.local_size 必须大于零且小于全局尺寸"
+            f"{path}.local_size must be greater than zero and less than the global size"
         )
     controls = tuple(
         _decode_local_control(item, f"{path}.local_controls[{index}]")
@@ -672,7 +672,7 @@ def _decode_mesh_settings(value: Any, path: str) -> LegacyMeshSettingsV1 | None:
         if control.size >= size:
             raise ProjectV1DecodeError(
                 f"{path}.local_controls[{index}].size "
-                "必须小于全局尺寸"
+                "must be less than the global size"
             )
     return LegacyMeshSettingsV1(
         size=float(size),
@@ -699,11 +699,11 @@ def _decode_local_control(value: Any, path: str) -> LegacyLocalMeshControlV1:
     )
     if entity_kind not in {"point", "edge", "face"}:
         raise ProjectV1DecodeError(
-            f"{path}.entity_kind 只支持 point、edge 或 face"
+            f"{path}.entity_kind only supports point, edge or face"
         )
     size = _number(data["size"], f"{path}.size", ProjectV1DecodeError)
     if size <= 0:
-        raise ProjectV1DecodeError(f"{path}.size 必须大于零")
+        raise ProjectV1DecodeError(f"{path}.size must be greater than zero")
     return LegacyLocalMeshControlV1(
         entity_kind=entity_kind,
         entity_id=_positive_integer(
@@ -717,7 +717,7 @@ def _decode_local_control(value: Any, path: str) -> LegacyLocalMeshControlV1:
 
 def _encode_part(part: Any, path: str) -> dict[str, Any]:
     if type(part) is not NativePart:
-        raise ProjectV1EncodeError(f"{path} 必须是 NativePart")
+        raise ProjectV1EncodeError(f"{path} must be NativePart")
     if (
         part.geometry_recipe is not None
         or part.mesh_settings is not None
@@ -725,7 +725,7 @@ def _encode_part(part: Any, path: str) -> dict[str, Any]:
         or part.provenance is not None
     ):
         raise ProjectV1EncodeError(
-            f"{path} 包含 v1 无法表示的部件所有权字段"
+            f"{path} contains part ownership fields that v1 cannot represent"
         )
     return {
         "name": _string(part.name, f"{path}.name", error_type=ProjectV1EncodeError),
@@ -763,15 +763,15 @@ def _encode_named_region(
     )
     references = _runtime_sequence(region.references, f"{path}.references")
     if not references:
-        raise ProjectV1EncodeError(f"{path}.references 不能为空")
+        raise ProjectV1EncodeError(f"{path}.references must not be empty")
     if any(type(reference) is not LogicalEntityRef for reference in references):
         raise ProjectV1EncodeError(
-            f"{path}.references 必须只包含 LogicalEntityRef"
+            f"{path}.references must contain only LogicalEntityRef"
         )
     entity_kinds = {reference.kind for reference in references}
     if len(entity_kinds) != 1:
         raise ProjectV1EncodeError(
-            f"{path}.references 不能混合不同实体类型"
+            f"{path}.references must not mix entity types"
         )
     entity_kind = next(iter(entity_kinds))
     entity_ids = [
@@ -783,7 +783,7 @@ def _encode_named_region(
         for index, reference in enumerate(references)
     ]
     if len(set(entity_ids)) != len(entity_ids):
-        raise ProjectV1EncodeError(f"{path}.references 包含重复实体引用")
+        raise ProjectV1EncodeError(f"{path}.references contains duplicate entity references")
     return {
         "name": _string(
             region.name, f"{path}.name", error_type=ProjectV1EncodeError
@@ -816,26 +816,26 @@ def _encode_mesh_settings(
     )
     if settings.line_element_type is not None:
         raise ProjectV1EncodeError(
-            f"{path}.line_element_type 无法由 v1 无损表示"
+            f"{path}.line_element_type cannot be represented losslessly by v1"
         )
     if settings.auto_level is not None:
         raise ProjectV1EncodeError(
-            f"{path}.auto_level 无法由 v1 无损表示"
+            f"{path}.auto_level cannot be represented losslessly by v1"
         )
     if settings.strict_cell_shape:
         raise ProjectV1EncodeError(
-            f"{path}.strict_cell_shape 无法由 v1 无损表示"
+            f"{path}.strict_cell_shape cannot be represented losslessly by v1"
         )
     size = _number(settings.size, f"{path}.size", ProjectV1EncodeError)
     if size <= 0:
-        raise ProjectV1EncodeError(f"{path}.size 必须大于零")
+        raise ProjectV1EncodeError(f"{path}.size must be greater than zero")
     order = _integer(
         settings.order,
         f"{path}.order",
         error_type=ProjectV1EncodeError,
     )
     if order not in {1, 2}:
-        raise ProjectV1EncodeError(f"{path}.order 只能是一阶或二阶")
+        raise ProjectV1EncodeError(f"{path}.order must be first or second order")
     cell_shape = _string(
         settings.cell_shape,
         f"{path}.cell_shape",
@@ -847,7 +847,7 @@ def _encode_mesh_settings(
         "tetrahedron",
         "hexahedron",
     }:
-        raise ProjectV1EncodeError(f"{path}.cell_shape 不是受支持的网格类型")
+        raise ProjectV1EncodeError(f"{path}.cell_shape is not a supported mesh type")
 
     controls = _canonicalize_v1_writer_controls(
         _runtime_sequence(settings.local_controls, f"{path}.local_controls"),
@@ -861,7 +861,7 @@ def _encode_mesh_settings(
         control_path = f"{path}.local_controls[{index}]"
         if control.size >= size:
             raise ProjectV1EncodeError(
-                f"{control_path}.size 必须小于全局尺寸"
+                f"{control_path}.size must be less than the global size"
             )
         if control.falloff == MeshSizeFalloff("global_size", 0.0, 2.0):
             legacy_local_controls.append(
@@ -872,8 +872,8 @@ def _encode_mesh_settings(
             target_radius_count += 1
             if target_radius_count > 1:
                 raise ProjectV1EncodeError(
-                    f"{path}.local_controls 包含多个可见的 "
-                    "target_radius profile，v1 只能表示一个 local_size"
+                    f"{path}.local_controls contains multiple visible "
+                    "target_radius profiles; v1 can only represent one local_size"
                 )
             if legacy_hole_target is None:
                 try:
@@ -885,11 +885,11 @@ def _encode_mesh_settings(
                     TargetRadiusResolutionError,
                 ) as error:
                     raise ProjectV1EncodeError(
-                        f"{control_path} 无法证明 v1 legacy hole target"
+                        f"{control_path} cannot prove a v1 legacy hole target"
                     ) from error
             if control.target != legacy_hole_target:
                 raise ProjectV1EncodeError(
-                    f"{control_path}.target 不是唯一可证明的 v1 "
+                    f"{control_path}.target is not a uniquely provable v1 "
                     "legacy hole target"
                 )
             local_size = _number(
@@ -899,8 +899,8 @@ def _encode_mesh_settings(
             )
             continue
         raise ProjectV1EncodeError(
-            f"{control_path}.falloff 无法由 v1 无损表示；"
-            "只支持 global_size(0.0, 2.0) 或 "
+            f"{control_path}.falloff cannot be represented losslessly by v1; "
+            "only global_size(0.0, 2.0) or "
             "target_radius(0.25, 2.0)"
         )
 
@@ -954,7 +954,7 @@ def _canonicalize_v1_writer_controls(
         )
         if type(control.target) is not LogicalEntityRef:
             raise ProjectV1EncodeError(
-                f"{control_path}.target 必须是 LogicalEntityRef"
+                f"{control_path}.target must be LogicalEntityRef"
             )
         _exact_dataclass(
             control.falloff,
@@ -969,7 +969,7 @@ def _canonicalize_v1_writer_controls(
         )
         if size <= 0:
             raise ProjectV1EncodeError(
-                f"{control_path}.size 必须大于零"
+                f"{control_path}.size must be greater than zero"
             )
         key = (control.target, control.falloff)
         previous = unique.get(key)
@@ -977,9 +977,9 @@ def _canonicalize_v1_writer_controls(
             unique[key] = control
         elif previous.size != control.size:
             raise ProjectV1EncodeError(
-                f"{path}.local_controls 对 target "
-                f"{control.target.logical_id!r} 和 falloff "
-                f"{control.falloff.reference!r} 包含冲突 size"
+                f"{path}.local_controls for target "
+                f"{control.target.logical_id!r} and falloff "
+                f"{control.falloff.reference!r} contains conflicting sizes"
             )
     return tuple(unique.values())
 
@@ -992,17 +992,17 @@ def _reference_to_ordinal(
 ) -> int:
     if type(reference) is not LogicalEntityRef:
         raise ProjectV1EncodeError(
-            f"{path} 必须是 LogicalEntityRef"
+            f"{path} must be LogicalEntityRef"
         )
     try:
         topology = describe_recipe_topology(recipe)
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV1EncodeError(
-            f"{path} 无法读取 geometry topology：{error}"
+            f"{path} cannot read geometry topology: {error}"
         ) from error
     if not topology.exact:
         raise ProjectV1EncodeError(
-            f"{path} 无法反向编码：geometry topology 不是 exact"
+            f"{path} cannot be reverse-encoded: geometry topology is not exact"
         )
     entities = topology.entities_of(reference.kind)
     for ordinal, entity in enumerate(entities, start=1):
@@ -1010,11 +1010,11 @@ def _reference_to_ordinal(
             continue
         if not entity.selectable:
             raise ProjectV1EncodeError(
-                f"{path} 指向不可选择实体 {reference.logical_id!r}"
+                f"{path} points to unselectable entity {reference.logical_id!r}"
             )
         return ordinal
     raise ProjectV1EncodeError(
-        f"{path} 引用了 geometry catalog 中不存在的 logical ID "
+        f"{path} references a logical ID absent from the geometry catalog: "
         f"{reference.logical_id!r}"
     )
 
@@ -1051,8 +1051,8 @@ def _guard_v1_orientations(assignments: Sequence[Any]) -> None:
         if getattr(assignment, "beam_orientation", None) is not None:
             raise ProjectV1EncodeError(
                 "snapshot.region_assignments"
-                f"[{index}].beam_orientation 无法由 .femproj v1 无损表示；"
-                "v1 不支持 Beam orientation"
+                f"[{index}].beam_orientation cannot be represented losslessly by .femproj v1; "
+                "v1 does not support beam orientation"
             )
 
 
@@ -1090,7 +1090,7 @@ def _unwrap_project_snapshot(snapshot: Any) -> ProjectSnapshot:
         error_type=ProjectV1EncodeError,
     )
     if getattr(project, "model", None) is not None:
-        raise ProjectV1EncodeError("v1 不持久化模型制品，当前 snapshot 无法无损保存")
+        raise ProjectV1EncodeError("v1 does not persist model artifacts; the current snapshot cannot be saved losslessly")
     return project
 
 
@@ -1098,7 +1098,7 @@ def _snapshot_attr(snapshot: Any, name: str) -> Any:
     try:
         return getattr(snapshot, name)
     except AttributeError as exc:
-        raise ProjectV1EncodeError(f"ProjectSnapshot 缺少字段 {name!r}") from exc
+        raise ProjectV1EncodeError(f"ProjectSnapshot is missing field {name!r}") from exc
 
 
 def _snapshot_sequence(
@@ -1123,13 +1123,13 @@ def _exact_dataclass(
 ) -> None:
     if type(value) is not expected_type:
         raise ProjectV1EncodeError(
-            f"{path} 必须是 {expected_type.__name__}，收到 {type(value).__name__}"
+            f"{path} must be {expected_type.__name__}, received {type(value).__name__}"
         )
     actual_fields = {item.name for item in fields(expected_type)}
     if actual_fields != expected_fields:
         unsupported = sorted(actual_fields ^ expected_fields)
         raise ProjectV1EncodeError(
-            f"{expected_type.__name__} 与 v1 字段契约不一致，拒绝静默丢失："
+            f"{expected_type.__name__} does not match the v1 field contract; refusing silent loss: "
             f"{unsupported}"
         )
 
@@ -1143,7 +1143,7 @@ def _construct_decode(
     try:
         return constructor(*args, **kwargs)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ProjectV1DecodeError(f"{path} 无效：{exc}") from exc
+        raise ProjectV1DecodeError(f"{path} is invalid: {exc}") from exc
 
 
 def _require_unique_names(
@@ -1161,7 +1161,7 @@ def _require_unique_names(
             error_type=error_type,
         )
         if name in seen:
-            raise error_type(f"{path} 包含重复名称：{name!r}")
+            raise error_type(f"{path} contains duplicate name: {name!r}")
         seen.add(name)
 
 
@@ -1176,10 +1176,10 @@ def _keys(
     actual = set(data)
     missing = sorted(required - actual)
     if missing:
-        raise error_type(f"{path} 缺少必需字段：{', '.join(missing)}")
+        raise error_type(f"{path} is missing required fields: {', '.join(missing)}")
     unknown = sorted(actual - required - optional)
     if unknown:
-        raise error_type(f"{path} 包含 v1 未知字段：{', '.join(unknown)}")
+        raise error_type(f"{path} contains unknown v1 fields: {', '.join(unknown)}")
 
 
 def _mapping(
@@ -1189,9 +1189,9 @@ def _mapping(
     error_type: type[ProjectV1Error],
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise error_type(f"{path} 必须是 JSON object")
+        raise error_type(f"{path} must be a JSON object")
     if any(not isinstance(key, str) for key in value):
-        raise error_type(f"{path} 的所有键必须是字符串")
+        raise error_type(f"{path} keys must all be strings")
     return value
 
 
@@ -1202,7 +1202,7 @@ def _array(
     error_type: type[ProjectV1Error],
 ) -> tuple[Any, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
-        raise error_type(f"{path} 必须是 JSON array")
+        raise error_type(f"{path} must be a JSON array")
     return tuple(value)
 
 
@@ -1210,7 +1210,7 @@ def _runtime_sequence(value: Any, path: str) -> tuple[Any, ...]:
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Sequence
     ):
-        raise ProjectV1EncodeError(f"{path} 必须是有序序列")
+        raise ProjectV1EncodeError(f"{path} must be an ordered sequence")
     return tuple(value)
 
 
@@ -1221,9 +1221,9 @@ def _string(
     error_type: type[ProjectV1Error],
 ) -> str:
     if not isinstance(value, str):
-        raise error_type(f"{path} 必须是字符串")
+        raise error_type(f"{path} must be a string")
     if not value.strip():
-        raise error_type(f"{path} 不能为空")
+        raise error_type(f"{path} must not be empty")
     return value
 
 
@@ -1234,7 +1234,7 @@ def _integer(
     error_type: type[ProjectV1Error],
 ) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise error_type(f"{path} 必须是整数")
+        raise error_type(f"{path} must be an integer")
     return value
 
 
@@ -1245,7 +1245,7 @@ def _positive_integer(
 ) -> int:
     result = _integer(value, path, error_type=error_type)
     if result <= 0:
-        raise error_type(f"{path} 必须大于零")
+        raise error_type(f"{path} must be greater than zero")
     return result
 
 
@@ -1255,9 +1255,9 @@ def _number(
     error_type: type[ProjectV1Error],
 ) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise error_type(f"{path} 必须是数值")
+        raise error_type(f"{path} must be a number")
     if isinstance(value, float) and not math.isfinite(value):
-        raise error_type(f"{path} 必须是有限数值")
+        raise error_type(f"{path} must be a finite number")
     return value
 
 
@@ -1267,9 +1267,9 @@ def _target(
     error_type: type[ProjectV1Error],
 ) -> str | int:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise error_type(f"{path} 必须是名称或整数编号")
+        raise error_type(f"{path} must be a name or integer ID")
     if isinstance(value, str) and not value.strip():
-        raise error_type(f"{path} 不能为空")
+        raise error_type(f"{path} must not be empty")
     return value
 
 
@@ -1277,11 +1277,11 @@ def _stable_encode_target(value: Any, path: str) -> str:
     if type(value) is not str or not value.strip():
         if isinstance(value, int) and not isinstance(value, bool):
             raise ProjectV1EncodeError(
-                f"{path} 不能使用 mesh integer target；"
-                "v1 writer 只接受 non-empty stable region name"
+                f"{path} cannot use a mesh integer target; "
+                "v1 writer only accepts a non-empty stable region name"
             )
         raise ProjectV1EncodeError(
-            f"{path} 必须是 non-empty stable region name"
+            f"{path} must be a non-empty stable region name"
         )
     return value
 
@@ -1308,7 +1308,7 @@ def _json_object(
     error_type: type[ProjectV1Error],
 ) -> dict[str, Any]:
     if type(value) is not dict:
-        raise error_type(f"{path} 必须是普通 JSON object")
+        raise error_type(f"{path} must be a plain JSON object")
     return _json_value(value, path, error_type, set())
 
 
@@ -1322,12 +1322,12 @@ def _json_value(
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise error_type(f"{path} 必须是有限数值")
+            raise error_type(f"{path} must be a finite number")
         return value
     if type(value) is list:
         identity = id(value)
         if identity in ancestors:
-            raise error_type(f"{path} 包含循环 JSON 引用")
+            raise error_type(f"{path} contains a circular JSON reference")
         ancestors.add(identity)
         try:
             return [
@@ -1339,13 +1339,13 @@ def _json_value(
     if type(value) is dict:
         identity = id(value)
         if identity in ancestors:
-            raise error_type(f"{path} 包含循环 JSON 引用")
+            raise error_type(f"{path} contains a circular JSON reference")
         ancestors.add(identity)
         try:
             result: dict[str, Any] = {}
             for key, item in value.items():
                 if not isinstance(key, str):
-                    raise error_type(f"{path} 的 JSON object 键必须是字符串")
+                    raise error_type(f"{path} JSON object keys must be strings")
                 result[key] = _json_value(
                     item, f"{path}.{key}", error_type, ancestors
                 )
@@ -1353,7 +1353,7 @@ def _json_value(
         finally:
             ancestors.remove(identity)
     raise error_type(
-        f"{path} 的 {type(value).__name__} 值无法由 JSON 无损表示"
+        f"{path} has a {type(value).__name__} value that JSON cannot represent losslessly"
     )
 
 

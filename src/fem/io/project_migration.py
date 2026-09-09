@@ -131,7 +131,7 @@ def migrate_project_v1(
         raise TypeError("legacy must be a LegacyProjectV1")
     if legacy.logical_topology_version not in {None, 1}:
         raise ProjectV1MigrationError(
-            "$.logical_topology_version 使用不支持的逻辑拓扑契约版本："
+            "$.logical_topology_version uses an unsupported logical topology contract version: "
             f"{legacy.logical_topology_version!r}"
         )
 
@@ -147,16 +147,16 @@ def migrate_project_v1(
         and explicit_integer_references
     ):
         raise ProjectV1MigrationError(
-            "旧项目缺少逻辑拓扑契约版本，无法安全恢复命名区域或局部网格控制；"
-            "请移除这些实体引用后打开项目并重新选择"
+            "the legacy project lacks a logical topology contract version; named regions or local mesh controls cannot be safely restored; "
+            "remove these entity references, open the project and select them again"
         )
 
     if legacy.parts is None:
         parts = (NativePart(),)
     elif len(legacy.parts) != 1:
         raise ProjectV1MigrationError(
-            "$.parts 必须显式包含且只包含一个 NativePart；"
-            f"收到 {len(legacy.parts)} 个"
+            "$.parts must explicitly contain exactly one NativePart; "
+            f"received {len(legacy.parts)}"
         )
     else:
         parts = legacy.parts
@@ -182,8 +182,8 @@ def migrate_project_v1(
         ProjectMigrationNotice(
             code="project.schema.v1",
             message=(
-                "项目已通过 schema 1 compatibility migration 打开；"
-                "下次显式保存将升级为 schema 10（v10）当前项目格式"
+                "the project was opened through schema 1 compatibility migration; "
+                "the next explicit save will upgrade it to the current schema 10 (v10) project format"
             ),
             path="$.schema",
         )
@@ -193,8 +193,8 @@ def migrate_project_v1(
             ProjectMigrationNotice(
                 code="project.v1.sketch_curve_graph",
                 message=(
-                    "legacy SketchGeometry contours 已迁移为严格 point/curve graph；"
-                    "Profile 材料/孔关系由 loop containment 重新推导"
+                    "legacy SketchGeometry contours were migrated to a strict point/curve graph; "
+                    "profile material/hole relationships were derived again from loop containment"
                 ),
                 path="$.geometry",
             )
@@ -208,8 +208,8 @@ def migrate_project_v1(
             ProjectMigrationNotice(
                 code="project.v1.feature_history_rederived",
                 message=(
-                    "legacy feature_history 是显示缓存，已根据 geometry "
-                    "recipe 重新推导"
+                    "legacy feature_history is a display cache, rederived from the geometry "
+                    "recipe"
                 ),
                 path="$.feature_history",
             )
@@ -248,7 +248,7 @@ def migrate_project_v1(
         raise
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV1MigrationError(
-            f"v1 项目迁移后的 authoring context 无效：{error}"
+            f"invalid authoring context after v1 project migration: {error}"
         ) from error
     return snapshot, tuple(notices)
 
@@ -262,8 +262,8 @@ def _migrate_named_region(
     path = f"$.named_regions[{index}]"
     if not legacy.entity_ids:
         raise ProjectV1MigrationError(
-            f"{path}.entity_ids 不能为空；named region {legacy.name!r} "
-            "无法迁移为有效的 current region"
+            f"{path}.entity_ids must not be empty; named region {legacy.name!r} "
+            "cannot be migrated to a valid current region"
         )
     references = tuple(
         _ordinal_to_reference(
@@ -277,7 +277,7 @@ def _migrate_named_region(
     try:
         return NamedRegion(legacy.name, references)
     except (TypeError, ValueError) as error:
-        raise ProjectV1MigrationError(f"{path} 无法迁移：{error}") from error
+        raise ProjectV1MigrationError(f"{path} cannot be migrated: {error}") from error
 
 
 def _migrate_mesh_settings(
@@ -309,8 +309,8 @@ def _migrate_mesh_settings(
             target = resolve_legacy_hole_target(recipe)
         except (KeyError, TypeError, ValueError, TargetRadiusResolutionError) as error:
             raise ProjectV1MigrationError(
-                "$.mesh_settings.local_size 无法证明唯一圆孔 target；"
-                "请在旧项目中移除该值或重新选择可证明的圆孔边界"
+                "$.mesh_settings.local_size cannot prove a unique circular hole target; "
+                "remove this value from the legacy project or reselect a provable circular hole boundary"
             ) from error
         controls.append(
             LocalMeshControl(
@@ -323,7 +323,7 @@ def _migrate_mesh_settings(
             ProjectMigrationNotice(
                 code="project.v1.local_size_migrated",
                 message=(
-                    "legacy local_size 已迁移为 target_radius "
+                    "legacy local_size was migrated to target_radius "
                     "local mesh control"
                 ),
                 path="$.mesh_settings.local_size",
@@ -346,7 +346,7 @@ def _migrate_mesh_settings(
         )
     except (TypeError, ValueError) as error:
         raise ProjectV1MigrationError(
-            f"$.mesh_settings 无法迁移：{error}"
+            f"$.mesh_settings cannot be migrated: {error}"
         ) from error
 
 
@@ -359,22 +359,22 @@ def _ordinal_to_reference(
 ) -> LogicalEntityRef:
     if entity_kind not in _ENTITY_KINDS:
         raise ProjectV1MigrationError(
-            f"{path} 的 entity kind {entity_kind!r} 不受支持"
+            f"{path} entity kind {entity_kind!r} is unsupported"
         )
     topology = describe_recipe_topology(recipe)
     if not topology.exact:
         raise ProjectV1MigrationError(
-            f"{path} 无法迁移：geometry topology 不是 exact"
+            f"{path} cannot be migrated: geometry topology is not exact"
         )
     entities = topology.entities_of(entity_kind)
     if ordinal <= 0 or ordinal > len(entities):
         raise ProjectV1MigrationError(
-            f"{path} ordinal {ordinal!r} 超出 {entity_kind!r} catalog 范围"
+            f"{path} ordinal {ordinal!r} is outside the {entity_kind!r} catalog"
         )
     entity = entities[ordinal - 1]
     if not entity.selectable:
         raise ProjectV1MigrationError(
-            f"{path} ordinal {ordinal!r} 映射到不可选择实体 "
+            f"{path} ordinal {ordinal!r} maps to an unselectable entity "
             f"{entity.logical_id!r}"
         )
     return LogicalEntityRef(entity.logical_id)
@@ -396,8 +396,8 @@ def _canonicalize_controls(
             unique[key] = control
         elif previous.size != control.size:
             raise ProjectV1MigrationError(
-                f"{path} 对 target {control.target.logical_id!r} 和 "
-                f"falloff {control.falloff.reference!r} 包含冲突 size"
+                f"{path} for target {control.target.logical_id!r} and "
+                f"falloff {control.falloff.reference!r} contains conflicting sizes"
             )
     return tuple(unique.values())
 
@@ -580,7 +580,7 @@ def migrate_project_snapshot_to_v7(
         migrated = _migrate_multi_body_snapshot_to_v7(snapshot, recipe)
     else:
         part_name = (
-            snapshot.parts[0].name if snapshot.parts else "部件-1"
+            snapshot.parts[0].name if snapshot.parts else "Part-1"
         )
         part = NativePart(
             id="P1",
@@ -621,7 +621,7 @@ def migrate_project_snapshot_to_v7(
         (
             ProjectMigrationNotice(
                 "project.schema.v7.native_parts",
-                "旧项目几何已迁移为稳定的原生部件所有权。",
+                "Legacy project geometry was migrated to stable Native part ownership.",
                 "$.project.authoring.parts",
             ),
         ),
@@ -865,8 +865,8 @@ def _migrate_strict_body_boolean_graph(
             part_context=part_context,
         )
         result_name = (
-            f"{'合并' if result_body.recipe.operation == 'fuse' else '切除'}"
-            f"结果-{int(legacy_record.feature_id[2:])}"
+            f"{'Fuse' if result_body.recipe.operation == 'fuse' else 'Cut'}"
+            f" result-{int(legacy_record.feature_id[2:])}"
         )
         result_part = NativePart(
             id=result_id,

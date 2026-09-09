@@ -137,7 +137,7 @@ def loads_json_strict(
     data: str | bytes | bytearray,
     *,
     error_type: type[ProjectDecodeError] = ProjectDecodeError,
-    document_label: str = "项目",
+    document_label: str = "project",
 ) -> Any:
     """Parse one UTF-8 JSON document with strict project-file semantics."""
 
@@ -146,12 +146,12 @@ def loads_json_strict(
             text = bytes(data).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise error_type(
-                f"{document_label}文件不是有效的 UTF-8 文本"
+                f"{document_label} file is not valid UTF-8 text"
             ) from exc
     elif isinstance(data, str):
         text = data
     else:
-        raise TypeError("data 必须是 str、bytes 或 bytearray")
+        raise TypeError("data must be str, bytes or bytearray")
 
     def unique_object(
         pairs: list[tuple[str, Any]],
@@ -160,21 +160,21 @@ def loads_json_strict(
         for key, value in pairs:
             if key in result:
                 raise error_type(
-                    f"{document_label} JSON 包含重复键：{key!r}"
+                    f"{document_label} JSON contains duplicate key: {key!r}"
                 )
             result[key] = value
         return result
 
     def reject_constant(value: str) -> Any:
         raise error_type(
-            f"{document_label} JSON 包含非有限数值：{value}"
+            f"{document_label} JSON contains non-finite number: {value}"
         )
 
     def strict_float(value: str) -> float:
         result = float(value)
         if not math.isfinite(result):
             raise error_type(
-                f"{document_label} JSON 包含非有限数值：{value}"
+                f"{document_label} JSON contains non-finite number: {value}"
             )
         return result
 
@@ -189,7 +189,7 @@ def loads_json_strict(
         raise
     except (json.JSONDecodeError, RecursionError) as exc:
         raise error_type(
-            f"{document_label} JSON 无效：{exc}"
+            f"{document_label} JSON is invalid: {exc}"
         ) from exc
 
 
@@ -201,7 +201,7 @@ def dumps_json(
     final_newline: bool = False,
     separators: tuple[str, str] | None = None,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
-    error_message: str = "项目包含无法编码的值",
+    error_message: str = "project contains values that cannot be encoded",
 ) -> str:
     """Serialize JSON without ASCII escaping or non-finite numbers."""
 
@@ -215,7 +215,7 @@ def dumps_json(
             separators=separators,
         )
     except (TypeError, ValueError, RecursionError) as exc:
-        raise error_type(f"{error_message}：{exc}") from exc
+        raise error_type(f"{error_message}: {exc}") from exc
     if final_newline:
         return serialized + "\n"
     return serialized
@@ -225,7 +225,7 @@ def dumps_canonical_json(
     value: Any,
     *,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
-    error_message: str = "项目包含无法编码的值",
+    error_message: str = "project contains values that cannot be encoded",
 ) -> str:
     """Return canonical current-project JSON with one final LF."""
 
@@ -243,7 +243,7 @@ def dumps_compact_canonical_json(
     value: Any,
     *,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
-    error_message: str = "项目包含无法编码的值",
+    error_message: str = "project contains values that cannot be encoded",
 ) -> str:
     """Return deterministic compact JSON with one final LF."""
 
@@ -272,7 +272,7 @@ def unwrap_project_snapshot(
         )
     except ImportError as exc:
         raise error_type(
-            "fem.application.session 尚未提供项目 snapshot"
+            "fem.application.session does not yet provide a project snapshot"
         ) from exc
 
     if type(snapshot) is ProjectSaveSnapshot:
@@ -281,10 +281,10 @@ def unwrap_project_snapshot(
         project = snapshot
     else:
         raise error_type(
-            "save/encode 需要 ProjectSnapshot 或 ProjectSaveSnapshot"
+            "save/encode requires ProjectSnapshot or ProjectSaveSnapshot"
         )
     if type(project) is not ProjectSnapshot:
-        raise error_type("保存 snapshot 未包含有效的 ProjectSnapshot")
+        raise error_type("save snapshot does not contain a valid ProjectSnapshot")
     return deepcopy(project)
 
 
@@ -302,7 +302,7 @@ def borrow_project_snapshot(
         )
     except ImportError as exc:
         raise error_type(
-            "fem.application.session 尚未提供项目 snapshot"
+            "fem.application.session does not yet provide a project snapshot"
         ) from exc
 
     if type(snapshot) is ProjectSaveSnapshot:
@@ -311,10 +311,10 @@ def borrow_project_snapshot(
         project = snapshot
     else:
         raise error_type(
-            "save/encode 需要 ProjectSnapshot 或 ProjectSaveSnapshot"
+            "save/encode requires ProjectSnapshot or ProjectSaveSnapshot"
         )
     if type(project) is not ProjectSnapshot:
-        raise error_type("保存 snapshot 未包含有效的 ProjectSnapshot")
+        raise error_type("save snapshot does not contain a valid ProjectSnapshot")
     return project
 
 
@@ -326,7 +326,7 @@ def atomic_write_project(
     semantic_encoder: Callable[[_VerifiedT], Any],
     expected_semantic: Any,
     error_type: type[ProjectEncodeError] = ProjectEncodeError,
-    mismatch_message: str = "临时项目文件校验后与保存 snapshot 不一致",
+    mismatch_message: str = "validated temporary project file does not match the saved snapshot",
     checkpoint: Callable[[], Any] | None = None,
     replace_func: Callable[[str | Path, str | Path], Any] | None = None,
     unlink_func: Callable[[Path], Any] | None = None,
@@ -397,7 +397,7 @@ def decode_geometry_field(
 
     data = _field_mapping(value, path, policy.decode_error)
     if "type" not in data:
-        raise policy.decode_error(f"{path} 缺少必需字段：type")
+        raise policy.decode_error(f"{path} is missing required field: type")
     kind = _field_string(data["type"], f"{path}.type", policy.decode_error)
     primitive = _PRIMITIVE_GEOMETRY_TYPES.get(kind)
     if primitive is not None:
@@ -433,8 +433,8 @@ def decode_geometry_field(
     if kind == "WireGeometry":
         if not policy.allow_wire_geometry:
             raise policy.decode_error(
-                f"{path}.type 的几何类型无法由 {policy.version_label} "
-                "无损解码：'WireGeometry'"
+                f"{path}.type geometry cannot be decoded losslessly by {policy.version_label}: "
+                "'WireGeometry'"
             )
         _field_keys(
             data,
@@ -517,8 +517,8 @@ def decode_geometry_field(
             )
         if not policy.allow_strict_sketch:
             raise policy.decode_error(
-                f"{path} 的 curve-based sketch 无法由 "
-                f"{policy.version_label} 解码"
+                f"{path} curve-based sketch cannot be decoded by "
+                f"{policy.version_label}"
             )
         required = {"type", "name", "plane", "points", "curves"}
         if _SKETCH_CONSTRAINT_CODEC.get():
@@ -587,8 +587,8 @@ def decode_geometry_field(
     if kind == "FaceSketchBooleanGeometry":
         if not policy.allow_face_sketch_boolean:
             raise policy.decode_error(
-                f"{path}.type 的几何类型无法由 {policy.version_label} "
-                "无损解码：'FaceSketchBooleanGeometry'"
+                f"{path}.type geometry cannot be decoded losslessly by {policy.version_label}: "
+                "'FaceSketchBooleanGeometry'"
             )
         _field_keys(
             data,
@@ -617,7 +617,7 @@ def decode_geometry_field(
             data["sketch"], f"{path}.sketch", policy=policy
         )
         if type(sketch) is not SketchGeometry or not sketch.is_strict:
-            raise policy.decode_error(f"{path}.sketch 必须是严格平面草图")
+            raise policy.decode_error(f"{path}.sketch must be a strict planar sketch")
         result = _field_construct(
             FaceSketchBooleanGeometry,
             path,
@@ -671,9 +671,9 @@ def decode_geometry_field(
             ),
         )
         if tuple(item.profile_id for item in result.step_proofs) != result.participating_profile_ids:
-            raise policy.decode_error(f"{path}.step_proofs 必须完整覆盖参与轮廓并保持稳定顺序")
+            raise policy.decode_error(f"{path}.step_proofs must fully cover participating contours in stable order")
         if any(not item.result_entities or not item.topology_mappings for item in result.step_proofs):
-            raise policy.decode_error(f"{path}.step_proofs 包含不完整的布尔证明")
+            raise policy.decode_error(f"{path}.step_proofs contains incomplete Boolean proofs")
         return result
     if kind == "MovedGeometry":
         required = {"type", "base", "dx", "dy"}
@@ -788,15 +788,15 @@ def decode_geometry_field(
                     reference = LogicalEntityRef(logical_id)
                 except (TypeError, ValueError) as error:
                     raise policy.decode_error(
-                        f"{item_path} 不是有效 logical ID：{error}"
+                        f"{item_path} is not a valid logical ID: {error}"
                     ) from error
                 if reference.kind != "face":
                     raise policy.decode_error(
-                        f"{item_path} 必须引用 face logical ID"
+                        f"{item_path} must reference a face logical ID"
                     )
                 if logical_id in seen_ids:
                     raise policy.decode_error(
-                        f"{item_path} 与前一项重复：{logical_id!r}"
+                        f"{item_path} duplicates the previous item: {logical_id!r}"
                     )
                 seen_ids.add(logical_id)
                 parsed_ids.append(logical_id)
@@ -812,10 +812,10 @@ def decode_geometry_field(
                 )
             else:
                 error_path = path
-            raise policy.decode_error(f"{error_path} 无效：{error}") from error
+            raise policy.decode_error(f"{error_path} is invalid: {error}") from error
     if kind == "RevolvedGeometry":
         if not policy.allow_revolved_geometry:
-            raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
+            raise policy.decode_error(f"{path}.type is an unknown geometry type: {kind!r}")
         _field_keys(
             data,
             path,
@@ -848,7 +848,7 @@ def decode_geometry_field(
         )
     if kind == "PathSweptGeometry":
         if not policy.allow_path_swept_geometry:
-            raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
+            raise policy.decode_error(f"{path}.type is an unknown geometry type: {kind!r}")
         _field_keys(
             data,
             path,
@@ -863,7 +863,7 @@ def decode_geometry_field(
             data["path"], f"{path}.path", policy=policy,
         )
         if type(path_recipe) is not WireGeometry:
-            raise policy.decode_error(f"{path}.path 必须是 WireGeometry")
+            raise policy.decode_error(f"{path}.path must be WireGeometry")
         return _field_construct(
             PathSweptGeometry,
             path,
@@ -957,7 +957,7 @@ def decode_geometry_field(
     if kind == "MultiBodyGeometry":
         if not policy.allow_multi_body:
             raise policy.decode_error(
-                f"{path}.type 是未知几何类型：{kind!r}"
+                f"{path}.type is an unknown geometry type: {kind!r}"
             )
         _field_keys(
             data,
@@ -1071,7 +1071,7 @@ def decode_geometry_field(
             retired_body_ids,
             retired_feature_ids,
         )
-    raise policy.decode_error(f"{path}.type 是未知几何类型：{kind!r}")
+    raise policy.decode_error(f"{path}.type is an unknown geometry type: {kind!r}")
 
 
 def decode_contour_field(
@@ -1082,7 +1082,7 @@ def decode_contour_field(
 ) -> SketchRectangle | SketchCircle:
     data = _field_mapping(value, path, policy.decode_error)
     if "type" not in data:
-        raise policy.decode_error(f"{path} 缺少必需字段：type")
+        raise policy.decode_error(f"{path} is missing required field: type")
     kind = _field_string(data["type"], f"{path}.type", policy.decode_error)
     if kind == "rectangle":
         _field_keys(
@@ -1164,7 +1164,7 @@ def decode_contour_field(
                 policy=policy,
             ),
         )
-    raise policy.decode_error(f"{path}.type 是未知草图轮廓：{kind!r}")
+    raise policy.decode_error(f"{path}.type is an unknown sketch contour: {kind!r}")
 
 
 def _decode_sketch_plane_field(
@@ -1351,7 +1351,7 @@ def _decode_face_sketch_step_proof(
         policy=policy,
     )
     if lineage is None:
-        raise policy.decode_error(f"{path} 的布尔谱系不能为空")
+        raise policy.decode_error(f"{path} Boolean lineage must not be empty")
     entities_by_id = {item.logical_id: item for item in lineage.result_entities}
     entities = tuple(entities_by_id[item["logical_id"]] for item in raw_entities)
     mappings_by_key = {
@@ -1849,7 +1849,7 @@ def _decode_part_boolean_context(
     except policy.decode_error:
         raise
     except (KeyError, TypeError, ValueError) as error:
-        raise policy.decode_error(f"{path} 无效：{error}") from error
+        raise policy.decode_error(f"{path} is invalid: {error}") from error
 
 
 def _decode_sketch_point_field(
@@ -1978,7 +1978,7 @@ def _decode_sketch_curve_field(
                 policy=policy,
             ),
         )
-    raise policy.decode_error(f"{path}.type 不支持草图曲线：{kind!r}")
+    raise policy.decode_error(f"{path}.type does not support sketch curve: {kind!r}")
 
 
 def _decode_wire_point_field(
@@ -2124,7 +2124,7 @@ _SKETCH_CONSTRAINT_TYPE_NAMES = {
 
 def _field_strict_bool(value: Any, path: str, policy: ProjectFieldCodecPolicy) -> bool:
     if type(value) is not bool:
-        raise policy.decode_error(f"{path} 必须是 bool")
+        raise policy.decode_error(f"{path} must be a bool")
     return value
 
 
@@ -2138,7 +2138,7 @@ def _decode_sketch_constraint_field(
     kind = _field_string(data.get("type"), f"{path}.type", policy.decode_error)
     contract = _SKETCH_CONSTRAINT_WIRE_TYPES.get(kind)
     if contract is None:
-        raise policy.decode_error(f"{path}.type 包含未知草图约束类型：{kind!r}")
+        raise policy.decode_error(f"{path}.type contains an unknown sketch constraint type: {kind!r}")
     constraint_type, string_fields, number_fields = contract
     dimensions = constraint_type in {
         SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension
@@ -2195,7 +2195,7 @@ def _encode_sketch_constraint_field(
 ) -> dict[str, Any]:
     kind = _SKETCH_CONSTRAINT_TYPE_NAMES.get(type(constraint))
     if kind is None:
-        raise policy.encode_error(f"{path} 包含不支持的草图约束类型")
+        raise policy.encode_error(f"{path} contains an unsupported sketch constraint type")
     constraint_type, string_fields, number_fields = _SKETCH_CONSTRAINT_WIRE_TYPES[kind]
     dimensions = constraint_type in {
         SketchDistanceDimension, SketchRadiusDimension, SketchAngleDimension
@@ -2217,7 +2217,7 @@ def _encode_sketch_constraint_field(
         "enabled": constraint.enabled,
     }
     if type(constraint.enabled) is not bool:
-        raise policy.encode_error(f"{path}.enabled 必须是 bool")
+        raise policy.encode_error(f"{path}.enabled must be a bool")
     for field in string_fields:
         result[field] = _field_string(
             getattr(constraint, field), f"{path}.{field}", policy.encode_error
@@ -2231,13 +2231,13 @@ def _encode_sketch_constraint_field(
         )
     if dimensions:
         if type(constraint.driving) is not bool:
-            raise policy.encode_error(f"{path}.driving 必须是 bool")
+            raise policy.encode_error(f"{path}.driving must be a bool")
         result["driving"] = constraint.driving
     if constraint_type is SketchTangentConstraint:
         if isinstance(constraint.branch_hint, bool) or not isinstance(
             constraint.branch_hint, int
         ):
-            raise policy.encode_error(f"{path}.branch_hint 必须是整数")
+            raise policy.encode_error(f"{path}.branch_hint must be an integer")
         result["branch_hint"] = constraint.branch_hint
     return result
 
@@ -2253,7 +2253,7 @@ def encode_geometry_field(
 
     identity = id(recipe)
     if identity in ancestors:
-        raise policy.encode_error(f"{path} 包含循环几何引用")
+        raise policy.encode_error(f"{path} contains a circular geometry reference")
     ancestors.add(identity)
     try:
         primitive = _PRIMITIVE_GEOMETRY_FIELDS.get(type(recipe))
@@ -2292,8 +2292,8 @@ def encode_geometry_field(
         if type(recipe) is WireGeometry:
             if not policy.allow_wire_geometry:
                 raise policy.encode_error(
-                    f"{path} 的几何类型无法由 {policy.version_label} "
-                    "无损编码：WireGeometry"
+                    f"{path} geometry cannot be encoded losslessly by {policy.version_label}: "
+                    "WireGeometry"
                 )
             _field_exact_dataclass(
                 recipe,
@@ -2365,12 +2365,12 @@ def encode_geometry_field(
                     }
             if not policy.allow_strict_sketch:
                 raise policy.encode_error(
-                    f"{path} 的 curve-based sketch 无法由 "
-                    f"{policy.version_label} 编码"
+                    f"{path} curve-based sketch cannot be encoded by "
+                    f"{policy.version_label}"
                 )
             if recipe.constraints and not _SKETCH_CONSTRAINT_CODEC.get():
                 raise policy.encode_error(
-                    f"{path}.constraints 无法由 {policy.version_label} 无损编码"
+                    f"{path}.constraints cannot be encoded losslessly by {policy.version_label}"
                 )
             result = {
                 "type": "SketchGeometry",
@@ -2420,8 +2420,8 @@ def encode_geometry_field(
         if type(recipe) is FaceSketchBooleanGeometry:
             if not policy.allow_face_sketch_boolean:
                 raise policy.encode_error(
-                    f"{path} 的几何类型无法由 {policy.version_label} "
-                    "无损编码：FaceSketchBooleanGeometry"
+                    f"{path} geometry cannot be encoded losslessly by {policy.version_label}: "
+                    "FaceSketchBooleanGeometry"
                 )
             _field_exact_dataclass(
                 recipe,
@@ -2446,10 +2446,10 @@ def encode_geometry_field(
             )
             if tuple(item.profile_id for item in recipe.step_proofs) != recipe.participating_profile_ids:
                 raise policy.encode_error(
-                    f"{path}.step_proofs 必须完整覆盖参与轮廓并保持稳定顺序"
+                    f"{path}.step_proofs must fully cover participating contours in stable order"
                 )
             if any(not item.result_entities or not item.topology_mappings for item in recipe.step_proofs):
-                raise policy.encode_error(f"{path}.step_proofs 包含不完整的布尔证明")
+                raise policy.encode_error(f"{path}.step_proofs contains incomplete Boolean proofs")
             return {
                 "type": "FaceSketchBooleanGeometry",
                 "base": encode_geometry_field(
@@ -2564,8 +2564,8 @@ def encode_geometry_field(
             )
             if recipe.source_face_ids and not policy.extrusion_source_faces:
                 raise policy.encode_error(
-                    f"{path}.source_face_ids 无法由 "
-                    f"{policy.version_label} 无损表示"
+                    f"{path}.source_face_ids cannot be represented losslessly by "
+                    f"{policy.version_label}"
                 )
             encoded = {
                 "type": "ExtrudedGeometry",
@@ -2595,7 +2595,7 @@ def encode_geometry_field(
         if type(recipe) is RevolvedGeometry:
             if not policy.allow_revolved_geometry:
                 raise policy.encode_error(
-                    f"{path} 的几何类型无法由 {policy.version_label} 无损编码"
+                    f"{path} geometry cannot be encoded losslessly by {policy.version_label}"
                 )
             _field_exact_dataclass(
                 recipe,
@@ -2626,7 +2626,7 @@ def encode_geometry_field(
         if type(recipe) is PathSweptGeometry:
             if not policy.allow_path_swept_geometry:
                 raise policy.encode_error(
-                    f"{path} 的几何类型无法由 {policy.version_label} 无损编码"
+                    f"{path} geometry cannot be encoded losslessly by {policy.version_label}"
                 )
             _field_exact_dataclass(
                 recipe,
@@ -2671,24 +2671,24 @@ def encode_geometry_field(
             )
             if recipe.body_context is not None and not policy.allow_multi_body:
                 raise policy.encode_error(
-                    f"{path}.body_context 无法由 "
-                    f"{policy.version_label} 无损表示"
+                    f"{path}.body_context cannot be represented losslessly by "
+                    f"{policy.version_label}"
                 )
             if (
                 recipe.planar_context is not None
                 and not policy.allow_planar_boolean
             ):
                 raise policy.encode_error(
-                    f"{path}.planar_context 无法由 "
-                    f"{policy.version_label} 无损表示"
+                    f"{path}.planar_context cannot be represented losslessly by "
+                    f"{policy.version_label}"
                 )
             if (
                 recipe.part_context is not None
                 and not policy.allow_part_boolean
             ):
                 raise policy.encode_error(
-                    f"{path}.part_context 无法由 "
-                    f"{policy.version_label} 无损表示"
+                    f"{path}.part_context cannot be represented losslessly by "
+                    f"{policy.version_label}"
                 )
             encoded = {
                 "type": "BooleanGeometry",
@@ -2737,8 +2737,8 @@ def encode_geometry_field(
         if type(recipe) is MultiBodyGeometry:
             if not policy.allow_multi_body:
                 raise policy.encode_error(
-                    f"{path} 的几何类型无法由 {policy.version_label} "
-                    "无损编码：MultiBodyGeometry"
+                    f"{path} geometry cannot be encoded losslessly by {policy.version_label}: "
+                    "MultiBodyGeometry"
                 )
             _field_exact_dataclass(
                 recipe,
@@ -2786,8 +2786,8 @@ def encode_geometry_field(
                 ),
             }
         raise policy.encode_error(
-            f"{path} 的几何类型无法由 {policy.version_label} "
-            f"无损编码：{type(recipe).__name__}"
+            f"{path} geometry cannot be encoded losslessly by {policy.version_label}: "
+            f"{type(recipe).__name__}"
         )
     finally:
         ancestors.remove(identity)
@@ -2800,7 +2800,7 @@ def _encode_sketch_plane_field(
     policy: ProjectFieldCodecPolicy,
 ) -> dict[str, Any]:
     if type(plane) is not SketchPlane:
-        raise policy.encode_error(f"{path} 必须是 SketchPlane")
+        raise policy.encode_error(f"{path} must be SketchPlane")
     return {
         "origin": _field_encode_number_array(plane.origin, f"{path}.origin", policy),
         "x_direction": _field_encode_number_array(
@@ -2901,7 +2901,7 @@ def _encode_face_sketch_step_proof(
         policy=policy,
     )
     if lineage is None:
-        raise policy.encode_error(f"{path} 的布尔谱系不能为空")
+        raise policy.encode_error(f"{path} Boolean lineage must not be empty")
     encoded_entities_by_id = {
         item["logical_id"]: item for item in lineage["result_entities"]
     }
@@ -3102,7 +3102,7 @@ def _encode_sketch_point_field(
     policy: ProjectFieldCodecPolicy,
 ) -> dict[str, Any]:
     if type(point) is not SketchPoint:
-        raise policy.encode_error(f"{path} 必须是 SketchPoint")
+        raise policy.encode_error(f"{path} must be SketchPoint")
     return {
         "id": _field_string(point.id, f"{path}.id", policy.encode_error),
         "u": _field_number(point.u, f"{path}.u", policy.encode_error, policy=policy),
@@ -3172,7 +3172,7 @@ def _encode_sketch_curve_field(
                 policy=policy,
             ),
         }
-    raise policy.encode_error(f"{path} 不是可编码的严格草图曲线")
+    raise policy.encode_error(f"{path} is not an encodable strict sketch curve")
 
 
 def encode_contour_field(
@@ -3224,7 +3224,7 @@ def encode_contour_field(
     if type(contour) is SketchCircle:
         if not contour.is_legacy:
             raise policy.encode_error(
-                f"{path} 的严格 circle curve 不能作为旧 contour 编码"
+                f"{path} strict circle curve cannot be encoded as a legacy contour"
             )
         return {
             "type": "circle",
@@ -3253,8 +3253,8 @@ def encode_contour_field(
             ),
         }
     raise policy.encode_error(
-        f"{path} 的草图轮廓类型无法由 {policy.version_label} "
-        f"无损编码：{type(contour).__name__}"
+        f"{path} sketch contour type cannot be encoded losslessly by {policy.version_label}: "
+        f"{type(contour).__name__}"
     )
 
 
@@ -3448,7 +3448,7 @@ def decode_assignment_field(
                 policy.decode_error,
             ) != "local_y_reference":
                 raise policy.decode_error(
-                    f"{orientation_path}.type 只接受 "
+                    f"{orientation_path}.type only accepts "
                     "'local_y_reference'"
                 )
             vector = _field_array(
@@ -3458,7 +3458,7 @@ def decode_assignment_field(
             )
             if len(vector) != 3:
                 raise policy.decode_error(
-                    f"{orientation_path}.vector 必须恰有三个分量"
+                    f"{orientation_path}.vector must have exactly three components"
                 )
             orientation = _field_construct(
                 BeamOrientation,
@@ -3508,8 +3508,8 @@ def encode_assignment_field(
     orientation = assignment.beam_orientation
     if not policy.assignment_orientation and orientation is not None:
         raise policy.encode_error(
-            f"{path}.beam_orientation 无法由 .femproj v1 无损表示；"
-            "v1 不支持 Beam orientation"
+            f"{path}.beam_orientation cannot be represented losslessly by .femproj v1; "
+            "v1 does not support beam orientation"
         )
     if (
         policy.assignment_orientation
@@ -3517,7 +3517,7 @@ def encode_assignment_field(
         and type(orientation) is not BeamOrientation
     ):
         raise policy.encode_error(
-            f"{path}.beam_orientation 必须是 BeamOrientation 或 null"
+            f"{path}.beam_orientation must be BeamOrientation or null"
         )
     result = {
         "section_name": _field_string(
@@ -3764,7 +3764,7 @@ def decode_line_load_field(
     )
     if coordinate_system not in {"global", "local"}:
         raise policy.decode_error(
-            f"{path}.coordinate_system 必须是 'global' 或 'local'"
+            f"{path}.coordinate_system must be 'global' or 'local'"
         )
     return _field_construct(
         LineLoad,
@@ -3927,7 +3927,7 @@ def encode_boundary_field(
         and not policy.displacement_region_targets
     ):
         raise policy.encode_error(
-            f"{path}.target_kind 无法由 {policy.version_label} 无损表示"
+            f"{path}.target_kind cannot be represented losslessly by {policy.version_label}"
         )
     result = {
         "target": _field_target(
@@ -4103,7 +4103,7 @@ def encode_line_load_field(
     )
     if coordinate_system not in {"global", "local"}:
         raise policy.encode_error(
-            f"{path}.coordinate_system 必须是 'global' 或 'local'"
+            f"{path}.coordinate_system must be 'global' or 'local'"
         )
     return {
         "target": _field_target(
@@ -4206,7 +4206,7 @@ def encode_output_field(
     _field_reject_named_analysis_object(output, path, policy)
     if output.source_evidence is not None:
         raise policy.encode_error(
-            f"{path}.source_evidence 不能由 {policy.version_label} 无损表示"
+            f"{path}.source_evidence cannot be represented losslessly by {policy.version_label}"
         )
     try:
         metadata = thaw_json_mapping(
@@ -4215,7 +4215,7 @@ def encode_output_field(
         )
     except (TypeError, ValueError) as error:
         raise policy.encode_error(
-            f"{path}.metadata 不是有效的 immutable JSON mapping：{error}"
+            f"{path}.metadata is not a valid immutable JSON mapping: {error}"
         ) from error
     return {
         "kind": _field_string(
@@ -4357,7 +4357,7 @@ def encode_step_field(
     )
     if not policy.body_force_loads and tuple(step.body_loads):
         raise policy.encode_error(
-            f"{path}.body_loads 无法由 {policy.version_label} 无损表示"
+            f"{path}.body_loads cannot be represented losslessly by {policy.version_label}"
         )
     collection_codecs = {
         name: codecs
@@ -4432,7 +4432,7 @@ def _field_construct(
     try:
         return constructor(*args, **kwargs)
     except (TypeError, ValueError, OverflowError) as error:
-        raise policy.decode_error(f"{path} 无效：{error}") from error
+        raise policy.decode_error(f"{path} is invalid: {error}") from error
 
 
 def _field_reject_named_analysis_object(
@@ -4442,7 +4442,7 @@ def _field_reject_named_analysis_object(
 ) -> None:
     if getattr(value, "name", None) is not None:
         raise policy.encode_error(
-            f"{path}.name 无法由 {policy.version_label} 无损表示"
+            f"{path}.name cannot be represented losslessly by {policy.version_label}"
         )
 
 
@@ -4455,15 +4455,15 @@ def _field_exact_dataclass(
 ) -> None:
     if type(value) is not expected_type:
         raise policy.encode_error(
-            f"{path} 必须是 {expected_type.__name__}，"
-            f"收到 {type(value).__name__}"
+            f"{path} must be {expected_type.__name__}, "
+            f"received {type(value).__name__}"
         )
     actual_fields = {item.name for item in fields(expected_type)}
     if actual_fields != expected_fields:
         unsupported = sorted(actual_fields ^ expected_fields)
         raise policy.encode_error(
-            f"{expected_type.__name__} 与 {policy.version_label} "
-            f"字段契约不一致，拒绝静默丢失：{unsupported}"
+            f"{expected_type.__name__} and {policy.version_label} "
+            f"field contracts differ; refusing silent loss: {unsupported}"
         )
 
 
@@ -4479,11 +4479,11 @@ def _field_keys(
     actual = set(data)
     missing = sorted(required - actual)
     if missing:
-        raise error_type(f"{path} 缺少必需字段：{', '.join(missing)}")
+        raise error_type(f"{path} is missing required fields: {', '.join(missing)}")
     unknown = sorted(actual - required - optional)
     if unknown:
         raise error_type(
-            f"{path} 包含 {policy.version_label} 未知字段："
+            f"{path} contains {policy.version_label} unknown fields: "
             f"{', '.join(unknown)}"
         )
 
@@ -4494,9 +4494,9 @@ def _field_mapping(
     error_type: type[Exception],
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise error_type(f"{path} 必须是 JSON object")
+        raise error_type(f"{path} must be a JSON object")
     if any(type(key) is not str for key in value):
-        raise error_type(f"{path} 的所有键必须是字符串")
+        raise error_type(f"{path} keys must all be strings")
     return value
 
 
@@ -4509,7 +4509,7 @@ def _field_array(
         value,
         Sequence,
     ):
-        raise error_type(f"{path} 必须是 JSON array")
+        raise error_type(f"{path} must be a JSON array")
     return tuple(value)
 
 
@@ -4522,7 +4522,7 @@ def _field_runtime_sequence(
         value,
         Sequence,
     ):
-        raise policy.encode_error(f"{path} 必须是有序序列")
+        raise policy.encode_error(f"{path} must be an ordered sequence")
     return tuple(value)
 
 
@@ -4532,9 +4532,9 @@ def _field_string(
     error_type: type[Exception],
 ) -> str:
     if not isinstance(value, str):
-        raise error_type(f"{path} 必须是字符串")
+        raise error_type(f"{path} must be a string")
     if not value.strip():
-        raise error_type(f"{path} 不能为空")
+        raise error_type(f"{path} must not be empty")
     return value
 
 
@@ -4548,7 +4548,7 @@ def _field_enum(
     try:
         return enum_type(raw)
     except ValueError as error:
-        raise policy.decode_error(f"{path} 包含不支持的枚举值：{raw!r}") from error
+        raise policy.decode_error(f"{path} contains unsupported enum value: {raw!r}") from error
 
 
 def _field_integer(
@@ -4559,8 +4559,8 @@ def _field_integer(
     policy: ProjectFieldCodecPolicy,
 ) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        qualifier = "严格整数" if policy.require_current_fields else "整数"
-        raise error_type(f"{path} 必须是{qualifier}")
+        qualifier = "a strict integer" if policy.require_current_fields else "an integer"
+        raise error_type(f"{path} must be {qualifier}")
     return value
 
 
@@ -4572,17 +4572,17 @@ def _field_number(
     policy: ProjectFieldCodecPolicy,
 ) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        message = "有限实数" if policy.require_current_fields else "数值"
-        raise error_type(f"{path} 必须是{message}")
+        message = "a finite real number" if policy.require_current_fields else "a number"
+        raise error_type(f"{path} must be {message}")
     if policy.require_current_fields:
         try:
             finite = math.isfinite(float(value))
         except OverflowError as error:
-            raise error_type(f"{path} 必须是有限实数") from error
+            raise error_type(f"{path} must be a finite real number") from error
         if not finite:
-            raise error_type(f"{path} 必须是有限实数")
+            raise error_type(f"{path} must be a finite real number")
     elif isinstance(value, float) and not math.isfinite(value):
-        raise error_type(f"{path} 必须是有限数值")
+        raise error_type(f"{path} must be a finite number")
     return value
 
 
@@ -4604,18 +4604,18 @@ def _field_target(
             and not isinstance(value, bool)
         ):
             raise error_type(
-                f"{path} 不能使用 mesh integer target；"
-                "v1 writer 只接受 non-empty stable region name"
+                f"{path} cannot use a mesh integer target; "
+                "v1 writer only accepts a non-empty stable region name"
             )
         if encode and not policy.require_current_fields:
             raise error_type(
-                f"{path} 必须是 non-empty stable region name"
+                f"{path} must be a non-empty stable region name"
             )
-        raise error_type(f"{path} 必须是 non-empty stable region name")
+        raise error_type(f"{path} must be a non-empty stable region name")
     if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise error_type(f"{path} 必须是名称或整数编号")
+        raise error_type(f"{path} must be a name or integer ID")
     if isinstance(value, str) and not value.strip():
-        raise error_type(f"{path} 不能为空")
+        raise error_type(f"{path} must not be empty")
     return value
 
 
@@ -4661,7 +4661,7 @@ def _field_json_object(
     error_type: type[Exception],
 ) -> dict[str, Any]:
     if type(value) is not dict:
-        raise error_type(f"{path} 必须是普通 JSON object")
+        raise error_type(f"{path} must be a plain JSON object")
     return _field_json_value(value, path, error_type, set())
 
 
@@ -4675,12 +4675,12 @@ def _field_json_value(
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
-            raise error_type(f"{path} 必须是有限数值")
+            raise error_type(f"{path} must be a finite number")
         return value
     if type(value) is list:
         identity = id(value)
         if identity in ancestors:
-            raise error_type(f"{path} 包含循环 JSON 引用")
+            raise error_type(f"{path} contains a circular JSON reference")
         ancestors.add(identity)
         try:
             return [
@@ -4697,14 +4697,14 @@ def _field_json_value(
     if type(value) is dict:
         identity = id(value)
         if identity in ancestors:
-            raise error_type(f"{path} 包含循环 JSON 引用")
+            raise error_type(f"{path} contains a circular JSON reference")
         ancestors.add(identity)
         try:
             result: dict[str, Any] = {}
             for key, item in value.items():
                 if not isinstance(key, str):
                     raise error_type(
-                        f"{path} 的 JSON object 键必须是字符串"
+                        f"{path} JSON object keys must be strings"
                     )
                 result[key] = _field_json_value(
                     item,
@@ -4716,7 +4716,7 @@ def _field_json_value(
         finally:
             ancestors.remove(identity)
     raise error_type(
-        f"{path} 的 {type(value).__name__} 值无法由 JSON 无损表示"
+        f"{path} has a {type(value).__name__} value that JSON cannot represent losslessly"
     )
 
 

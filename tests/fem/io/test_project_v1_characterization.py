@@ -86,13 +86,13 @@ def test_static_full_v1_fixture_is_payload_and_file_bytes_golden(
             '{"schema":1,"schema":1,"source":"native",'
             '"geometry":{"type":"RectangleGeometry","name":"R",'
             '"width":1,"height":1}}',
-            "重复键",
+            "duplicate key",
         ),
         (
             '{"schema":1,"source":"native",'
             '"geometry":{"type":"RectangleGeometry","name":"R",'
             '"width":1e9999,"height":1}}',
-            "非有限数值",
+            "non-finite number",
         ),
     ],
 )

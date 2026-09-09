@@ -238,7 +238,7 @@ def test_semantic_compare_mismatch_preserves_old_target_and_cleans_temp(
 ) -> None:
     target = _target_with_old_content(tmp_path)
 
-    with pytest.raises(ProjectEncodeError, match="snapshot 不一致"):
+    with pytest.raises(ProjectEncodeError, match="does not match the saved snapshot"):
         _write_default(
             target,
             expected_semantic={"format": "fem.project", "schema": 1},

@@ -150,22 +150,22 @@ def test_loads_without_source_path_keeps_both_paths_none() -> None:
 
 @pytest.mark.parametrize("schema", [True, 2.0, "2", None])
 def test_router_requires_a_strict_integer_schema(schema: object) -> None:
-    with pytest.raises(ProjectDecodeError, match=r"\$\.schema.*严格整数"):
+    with pytest.raises(ProjectDecodeError, match=r"\$\.schema.*strict integer"):
         decode_project({"schema": schema})
 
 
 def test_router_requires_schema_and_rejects_future_schema() -> None:
-    with pytest.raises(ProjectDecodeError, match=r"\$\.schema.*缺失"):
+    with pytest.raises(ProjectDecodeError, match=r"\$\.schema.*is missing"):
         decode_project({})
     with pytest.raises(
         UnsupportedProjectSchemaError,
-        match=r"\$\.schema=99.*schema 1、2、3、4、5、6、7、8、9、10 和 11、12、13 和 14",
+        match=r"\$\.schema=99.*schemas 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 and 14",
     ):
         decode_project({"schema": 99})
 
 
 def test_router_parses_json_once_and_rejects_duplicate_keys() -> None:
-    with pytest.raises(ProjectDecodeError, match="重复键"):
+    with pytest.raises(ProjectDecodeError, match="duplicate key"):
         loads_project('{"schema": 2, "schema": 1}')
 
 

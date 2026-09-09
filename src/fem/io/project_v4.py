@@ -93,7 +93,7 @@ def loads_project_v4(
     payload = loads_json_strict(
         data,
         error_type=ProjectV4DecodeError,
-        document_label="v4 项目",
+        document_label="v4 project",
     )
     return decode_project_v4(payload, source_path=source_path)
 
@@ -118,11 +118,11 @@ def decode_project_v4(
         )
         if _v2._string(root["format"], "$.format", ProjectV4DecodeError) != FORMAT_NAME:
             raise ProjectV4DecodeError(
-                f"$.format 必须精确等于 {FORMAT_NAME!r}"
+                f"$.format must equal exactly {FORMAT_NAME!r}"
             )
         schema = _v2._integer(root["schema"], "$.schema", ProjectV4DecodeError)
         if schema != SCHEMA_VERSION:
-            raise ProjectV4DecodeError(f"v4 decoder 不能读取 schema {schema!r}")
+            raise ProjectV4DecodeError(f"v4 decoder cannot read schema {schema!r}")
 
         project = _v2._mapping(
             root["project"],
@@ -141,7 +141,7 @@ def decode_project_v4(
             "$.project.kind",
             ProjectV4DecodeError,
         ) != "native":
-            raise ProjectV4DecodeError("$.project.kind 本阶段只接受 'native'")
+            raise ProjectV4DecodeError("$.project.kind only accepts 'native' at this stage")
         authoring = _v2._mapping(
             project["authoring"],
             "$.project.authoring",
@@ -170,7 +170,7 @@ def decode_project_v4(
         )
         if not isinstance(geometry, NATIVE_GEOMETRY_TYPES):
             raise ProjectV4DecodeError(
-                "$.project.authoring.geometry 不是有效的 native geometry recipe"
+                "$.project.authoring.geometry is not a valid Native geometry recipe"
             )
         stored_fingerprint = _decode_topology_fingerprint_v4(
             authoring["logical_topology"],
@@ -329,7 +329,7 @@ def decode_project_v4(
         raise ProjectV4DecodeError(str(error)) from error
     except (KeyError, TypeError, ValueError) as error:
         raise ProjectV4DecodeError(
-            f"$.project.authoring 无效：{error}"
+            f"$.project.authoring is invalid: {error}"
         ) from error
 
 
@@ -351,19 +351,19 @@ def encode_project_v4(
             error_type=ProjectV4EncodeError,
         )
         if project.source_kind != "native":
-            raise ProjectV4EncodeError("snapshot.source_kind 本阶段只接受 'native'")
+            raise ProjectV4EncodeError("snapshot.source_kind only accepts 'native' at this stage")
         if project.model is not None:
-            raise ProjectV4EncodeError("v4 不持久化 compiled/runtime model")
+            raise ProjectV4EncodeError("v4 does not persist compiled/runtime models")
         geometry = project.geometry_recipe
         if geometry is None:
-            raise ProjectV4EncodeError("snapshot.geometry_recipe 不能为空")
+            raise ProjectV4EncodeError("snapshot.geometry_recipe must not be empty")
         if not isinstance(geometry, NATIVE_GEOMETRY_TYPES):
-            raise ProjectV4EncodeError("snapshot.geometry_recipe 不是 native geometry")
+            raise ProjectV4EncodeError("snapshot.geometry_recipe is not Native geometry")
         source_geometry = geometry
         geometry = legacy_sketches_to_strict(geometry)
         parts = tuple(project.parts)
         if len(parts) != 1:
-            raise ProjectV4EncodeError("v4 native 项目必须且只能包含一个 part")
+            raise ProjectV4EncodeError("v4 Native projects must contain exactly one part")
         expected_history = derive_feature_history(geometry)
         source_history = derive_feature_history(source_geometry)
         if (
@@ -371,7 +371,7 @@ def encode_project_v4(
             and tuple(project.feature_history) != tuple(source_history)
         ):
             raise ProjectV4EncodeError(
-                "snapshot.feature_history 不是 geometry recipe 的 canonical 派生投影"
+                "snapshot.feature_history is not the canonical derived projection of the geometry recipe"
             )
 
         named_regions = tuple(project.named_regions)
@@ -403,7 +403,7 @@ def encode_project_v4(
             or steps != normalized.steps
         ):
             raise ProjectV4EncodeError(
-                "snapshot definitions 不是 normalize_model_definitions 产生的 canonical 形式"
+                "snapshot definitions are not in the canonical form produced by normalize_model_definitions"
             )
         _validate_native_project_inputs_v4(
             geometry,
@@ -489,7 +489,7 @@ def encode_project_v4(
         raise ProjectV4EncodeError(str(error)) from error
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise ProjectV4EncodeError(
-            f"snapshot 无法由 v4 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v4: {error}"
         ) from error
 
 
@@ -518,7 +518,7 @@ def save_project_v4(
         expected_semantic=payload,
         error_type=ProjectV4EncodeError,
         mismatch_message=(
-            "临时 v4 项目回读后的 canonical authoring 值与保存 snapshot 不一致"
+            "canonical authoring values differ from the saved snapshot after rereading the temporary v4 project"
         ),
     )
 
@@ -565,9 +565,9 @@ def _validate_native_project_inputs_v4(
             )
             message = prefix + message[len("steps") :]
         elif encode:
-            message = f"snapshot 无法由 v4 无损表示：{message}"
+            message = f"snapshot cannot be represented losslessly by v4: {message}"
         else:
-            message = f"$.project.authoring 无效：{message}"
+            message = f"$.project.authoring is invalid: {message}"
         error_type = ProjectV4EncodeError if encode else ProjectV4DecodeError
         raise error_type(message) from error
 
@@ -628,7 +628,7 @@ def _decode_mesh_settings_v4(
             line_element_type=line_type,
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV4DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV4DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _encode_mesh_settings_v4(
@@ -639,7 +639,7 @@ def _encode_mesh_settings_v4(
     if settings is None:
         return None
     if type(settings) is not MeshSettings:
-        raise ProjectV4EncodeError(f"{path} 必须是 MeshSettings 或 null")
+        raise ProjectV4EncodeError(f"{path} must be MeshSettings or null")
     return {
         "size": _v2._number(settings.size, f"{path}.size", ProjectV4EncodeError),
         "order": _v2._integer(settings.order, f"{path}.order", ProjectV4EncodeError),
@@ -699,7 +699,7 @@ def _decode_topology_fingerprint_v4(
         ProjectV4DecodeError,
     )
     if contract != TOPOLOGY_REFERENCE_CONTRACT:
-        raise ProjectV4DecodeError(f"{path}.contract 不支持：{contract!r}")
+        raise ProjectV4DecodeError(f"{path}.contract is unsupported: {contract!r}")
     signature = _v2._mapping(
         data["signature"],
         f"{path}.signature",
@@ -714,7 +714,7 @@ def _decode_topology_fingerprint_v4(
     )
     exact = signature["exact"]
     if type(exact) is not bool:
-        raise ProjectV4DecodeError(f"{path}.signature.exact 必须是 boolean")
+        raise ProjectV4DecodeError(f"{path}.signature.exact must be a boolean")
     records: list[TopologyFingerprintEntity] = []
     for index, item in enumerate(
         _v2._array(
@@ -740,7 +740,7 @@ def _decode_topology_fingerprint_v4(
         )
         selectable = record["selectable"]
         if type(selectable) is not bool:
-            raise ProjectV4DecodeError(f"{record_path}.selectable 必须是 boolean")
+            raise ProjectV4DecodeError(f"{record_path}.selectable must be a boolean")
         links = tuple(
             _v2._string(
                 link,
@@ -779,7 +779,7 @@ def _decode_topology_fingerprint_v4(
                 )
             )
         except (TypeError, ValueError) as error:
-            raise ProjectV4DecodeError(f"{record_path} 无效：{error}") from error
+            raise ProjectV4DecodeError(f"{record_path} is invalid: {error}") from error
     try:
         return TopologyFingerprint(
             dimension=_v2._integer(
@@ -792,7 +792,7 @@ def _decode_topology_fingerprint_v4(
             contract=contract,
         )
     except (TypeError, ValueError) as error:
-        raise ProjectV4DecodeError(f"{path} 无效：{error}") from error
+        raise ProjectV4DecodeError(f"{path} is invalid: {error}") from error
 
 
 def _require_matching_topology_fingerprint_v4(
@@ -804,13 +804,13 @@ def _require_matching_topology_fingerprint_v4(
     signature_path = f"{path}.signature"
     if stored.dimension != expected.dimension:
         raise ProjectV4DecodeError(
-            f"{signature_path}.dimension 与 geometry 重新计算值 "
-            f"{expected.dimension!r} 不一致（topology fingerprint）"
+            f"{signature_path}.dimension differs from the value recomputed from geometry: "
+            f"{expected.dimension!r} (topology fingerprint)"
         )
     if stored.exact != expected.exact:
         raise ProjectV4DecodeError(
-            f"{signature_path}.exact 与 geometry 重新计算值 "
-            f"{expected.exact!r} 不一致（topology fingerprint）"
+            f"{signature_path}.exact differs from the value recomputed from geometry: "
+            f"{expected.exact!r} (topology fingerprint)"
         )
     stored_ids = tuple(item.logical_id for item in stored.entities)
     if len(stored_ids) != len(set(stored_ids)):
@@ -841,8 +841,8 @@ def _require_matching_topology_fingerprint_v4(
     )
     if missing:
         raise ProjectV4DecodeError(
-            f"{signature_path}.entities 缺少 geometry topology entity "
-            f"{missing[0]!r}（topology fingerprint）"
+            f"{signature_path}.entities is missing geometry topology entity "
+            f"{missing[0]!r} (topology fingerprint)"
         )
     extra = sorted(
         set(stored_by_id) - set(expected_by_id),
@@ -851,8 +851,8 @@ def _require_matching_topology_fingerprint_v4(
     if extra:
         index = raw_indices.get(extra[0], 0)
         raise ProjectV4DecodeError(
-            f"{signature_path}.entities[{index}].logical_id 包含 geometry 中不存在的 "
-            f"topology entity {extra[0]!r}（topology fingerprint）"
+            f"{signature_path}.entities[{index}].logical_id contains an entity absent from geometry: "
+            f"topology entity {extra[0]!r} (topology fingerprint)"
         )
     for logical_id, expected_entity in expected_by_id.items():
         stored_entity = stored_by_id[logical_id]
@@ -861,8 +861,8 @@ def _require_matching_topology_fingerprint_v4(
         for field_name in ("kind", "semantic_role", "selectable", "topology_links"):
             if getattr(stored_entity, field_name) != getattr(expected_entity, field_name):
                 raise ProjectV4DecodeError(
-                    f"{entity_path}.{field_name} 与 geometry 重新计算值不一致 "
-                    "（topology fingerprint）"
+                    f"{entity_path}.{field_name} differs from the value recomputed from geometry "
+                    " (topology fingerprint)"
                 )
 
 

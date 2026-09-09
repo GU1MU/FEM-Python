@@ -61,7 +61,7 @@ def loads_project_v9(
         loads_json_strict(
             data,
             error_type=ProjectV9DecodeError,
-            document_label="v9 项目",
+            document_label="v9 project",
         ),
         source_path=source_path,
     )
@@ -79,16 +79,16 @@ def decode_project_v9(
         root = _mapping(payload, "$")
         _exact_keys(root, "$", {"format", "schema", "project"})
         if root["format"] != FORMAT_NAME:
-            raise ProjectV9DecodeError(f"$.format 必须精确等于 {FORMAT_NAME!r}")
+            raise ProjectV9DecodeError(f"$.format must equal exactly {FORMAT_NAME!r}")
         if type(root["schema"]) is not int or root["schema"] != SCHEMA_VERSION:
             raise ProjectV9DecodeError(
-                f"v9 decoder 不能读取 schema {root['schema']!r}"
+                f"v9 decoder cannot read schema {root['schema']!r}"
             )
         project = _mapping(root["project"], "$.project")
         authoring = _mapping(project.get("authoring"), "$.project.authoring")
         raw_parts = authoring.get("parts")
         if not isinstance(raw_parts, list):
-            raise ProjectV9DecodeError("$.project.authoring.parts 必须是 array")
+            raise ProjectV9DecodeError("$.project.authoring.parts must be an array")
 
         auto_levels: dict[str, int | None] = {}
         strict_shapes: dict[str, bool] = {}
@@ -100,7 +100,7 @@ def decode_project_v9(
             part = _mapping(raw_part, part_path)
             part_id = part.get("id")
             if type(part_id) is not str:
-                raise ProjectV9DecodeError(f"{part_path}.id 必须是 string")
+                raise ProjectV9DecodeError(f"{part_path}.id must be a string")
             raw_settings = part.get("mesh_settings")
             if raw_settings is None:
                 auto_levels[part_id] = None
@@ -113,14 +113,14 @@ def decode_project_v9(
             strict = settings["strict_cell_shape"]
             if type(strict) is not bool:
                 raise ProjectV9DecodeError(
-                    f"{part_path}.mesh_settings.strict_cell_shape 必须是 boolean"
+                    f"{part_path}.mesh_settings.strict_cell_shape must be a boolean"
                 )
             strict_shapes[part_id] = strict
             if mode == "explicit":
                 if level is not None:
                     raise ProjectV9DecodeError(
                         f"{part_path}.mesh_settings.auto_level "
-                        "在 explicit 模式必须为 null"
+                        "must be null in explicit mode"
                     )
                 auto_levels[part_id] = None
             elif mode == "automatic":
@@ -130,12 +130,12 @@ def decode_project_v9(
                     or level not in {1, 2, 3, 4, 5}
                 ):
                     raise ProjectV9DecodeError(
-                        f"{part_path}.mesh_settings.auto_level 必须是 1 到 5"
+                        f"{part_path}.mesh_settings.auto_level must be 1 to 5"
                     )
                 auto_levels[part_id] = level
             else:
                 raise ProjectV9DecodeError(
-                    f"{part_path}.mesh_settings.intent_mode 无效"
+                    f"{part_path}.mesh_settings.intent_mode is invalid"
                 )
             del settings["intent_mode"]
             del settings["auto_level"]
@@ -165,7 +165,7 @@ def decode_project_v9(
                 and settings.auto_level is not None
             ):
                 raise ProjectV9DecodeError(
-                    "schema v9 首轮不允许 Boolean 结果 Part 使用 AutoMesh"
+                    "the initial schema v9 implementation does not allow AutoMesh on Boolean result parts"
                 )
             parts.append(replace(part, mesh_settings=settings))
         active = next(
@@ -184,7 +184,7 @@ def decode_project_v9(
     except ProjectV9Error:
         raise
     except Exception as error:
-        raise ProjectV9DecodeError(f"schema v9 项目无效：{error}") from error
+        raise ProjectV9DecodeError(f"invalid schema v9 project: {error}") from error
 
 
 def encode_project_v9(
@@ -201,7 +201,7 @@ def encode_project_v9(
             for part in project.parts
         ):
             raise ProjectV9EncodeError(
-                "schema v9 首轮不允许 Boolean 结果 Part 使用 AutoMesh"
+                "the initial schema v9 implementation does not allow AutoMesh on Boolean result parts"
             )
         encode_options = (
             {} if _field_policy is None else {"_field_policy": _field_policy}
@@ -217,7 +217,7 @@ def encode_project_v9(
             settings = source.mesh_settings
             if type(settings) is not MeshSettings:
                 raise ProjectV9EncodeError(
-                    f"Part {source.id} mesh_settings 不是 MeshSettings"
+                    f"Part {source.id} mesh_settings is not MeshSettings"
                 )
             encoded_settings["intent_mode"] = (
                 "automatic" if settings.auto_level is not None else "explicit"
@@ -230,7 +230,7 @@ def encode_project_v9(
         raise
     except Exception as error:
         raise ProjectV9EncodeError(
-            f"snapshot 无法由 v9 无损表示：{error}"
+            f"snapshot cannot be represented losslessly by v9: {error}"
         ) from error
 
 
@@ -271,7 +271,7 @@ def save_project_v9(
         expected_semantic=payload,
         error_type=ProjectV9EncodeError,
         mismatch_message=(
-            "临时 v9 项目回读后的 mesh intent 与 canonical authoring 不一致"
+            "mesh intent and canonical authoring differ after rereading the temporary v9 project"
         ),
         checkpoint=checkpoint,
     )
@@ -283,7 +283,7 @@ write_project_v9 = save_project_v9
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise ProjectV9DecodeError(f"{path} 必须是 object")
+        raise ProjectV9DecodeError(f"{path} must be an object")
     return value
 
 
@@ -296,9 +296,9 @@ def _exact_keys(
     missing = expected - actual
     extra = actual - expected
     if missing:
-        raise ProjectV9DecodeError(f"{path} 缺少字段 {sorted(missing)[0]!r}")
+        raise ProjectV9DecodeError(f"{path} is missing field {sorted(missing)[0]!r}")
     if extra:
-        raise ProjectV9DecodeError(f"{path} 包含未知字段 {sorted(extra)[0]!r}")
+        raise ProjectV9DecodeError(f"{path} contains unknown field {sorted(extra)[0]!r}")
 
 
 __all__ = [
