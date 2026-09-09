@@ -241,7 +241,7 @@ def test_non_planar_source_is_rejected_without_mutation() -> None:
     assert non_planar_diagnostic == {
         "code": "profile-transform.source-not-planar",
         "message": non_planar_diagnostic["message"],
-        "operation": "Profile 拉伸",
+        "operation": "Profile extrusion",
         "retryable": False,
         "required_fields": [],
         "preserve_draft": True,

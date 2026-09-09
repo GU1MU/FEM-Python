@@ -127,7 +127,7 @@ def test_session_controller_prepares_strict_line_proposal_without_mutation() -> 
     assert intent_payload["order"] == 1
     assert intent_payload["line_element_type"] == "Beam2"
     assert proposal.display_summary["line_element_type"] == "Beam2"
-    assert "线单元 Beam2" in prepared.data["proposal_view"]["summary"]
+    assert "line elements Beam2" in prepared.data["proposal_view"]["summary"]
     assert session.snapshot() == before
 
 

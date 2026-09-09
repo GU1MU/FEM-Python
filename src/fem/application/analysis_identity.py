@@ -43,23 +43,23 @@ def compatibility_analysis_name(
     if type(index) is not int or index < 0:
         raise ValueError("analysis object index must be a non-negative integer")
     object_type = {
-        "boundaries": "位移",
-        "outputs": "结果请求",
-    }.get(collection, "载荷")
+        "boundaries": "Displacement",
+        "outputs": "Output",
+    }.get(collection, "Load")
     collection_label = {
-        "boundaries": "位移",
-        "cloads": "节点",
-        "edge_loads": "二维边",
-        "surface_loads": "三维面",
-        "line_loads": "线",
-        "body_loads": "体力",
-        "gravity_loads": "重力",
-        "outputs": "输出",
+        "boundaries": "Displacement",
+        "cloads": "Node",
+        "edge_loads": "Edge2D",
+        "surface_loads": "Face3D",
+        "line_loads": "Line",
+        "body_loads": "Body",
+        "gravity_loads": "Gravity",
+        "outputs": "Output",
     }.get(collection)
     if collection_label is None:
         raise ValueError(f"unknown analysis collection {collection!r}")
     step_label = unicodedata.normalize("NFKC", step_name.strip())
-    return f"{object_type}-兼容-{step_label}-{collection_label}-{index + 1}"
+    return f"{object_type}-Legacy-{step_label}-{collection_label}-{index + 1}"
 
 
 def with_compatibility_analysis_names(

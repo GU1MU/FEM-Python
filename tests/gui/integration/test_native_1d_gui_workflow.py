@@ -308,7 +308,7 @@ def test_native_1d_public_gui_workflow_persists_checks_solves_and_displays(
         assert reopened_load.target == local_load.target
         assert reopened_load.vector == local_load.vector
         assert reopened_load.coordinate_system == local_load.coordinate_system
-        assert reopened_load.name == "载荷-兼容-Load-线-1"
+        assert reopened_load.name == "Load-Legacy-Load-Line-1"
 
     model = window.document.model
     assert model is not None

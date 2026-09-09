@@ -199,10 +199,10 @@ def build_eccentric_plate_scopes(
         {"regions": tuple(snapshot.named_regions)}
     )
     names = {
-        "fixed": allocator.allocate("regions", "边", "固定端"),
-        "load": allocator.allocate("regions", "边", "加载端"),
-        "hole": allocator.allocate("regions", "边", "孔边"),
-        "domain": allocator.allocate("regions", "域", "板体"),
+        "fixed": allocator.allocate("regions", "Edge", "Fixed"),
+        "load": allocator.allocate("regions", "Edge", "Loaded"),
+        "hole": allocator.allocate("regions", "Edge", "HoleBoundary"),
+        "domain": allocator.allocate("regions", "Domain", "Plate"),
     }
 
     outer_ref = _part_logical_ref(
@@ -396,12 +396,12 @@ def create_scope_definition_change(
     )
     material_name = allocator.allocate(
         "materials",
-        "材料",
+        "Material",
         material_function,
     )
     section_name = allocator.allocate(
         "sections",
-        "截面",
+        "Section",
         section_function,
     )
     if plane_type not in {"stress", "strain"}:
@@ -427,7 +427,7 @@ def create_scope_definition_change(
     domain_name = next(
         item.name
         for item in scopes.regions
-        if item.name.startswith("域-板体")
+        if item.name.startswith("Domain-Plate")
     )
     definitions = ModelDefinitions(
         tuple(snapshot.materials) + (material,),

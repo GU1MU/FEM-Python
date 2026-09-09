@@ -94,9 +94,9 @@ def test_a5_anonymous_v9_project_migrates_deterministic_names() -> None:
     assert first.boundaries[0].name == second.boundaries[0].name
     assert first.edge_loads[0].name == second.edge_loads[0].name
     assert first.outputs[0].name == second.outputs[0].name
-    assert first.boundaries[0].name.startswith("位移-兼容-")
-    assert first.edge_loads[0].name.startswith("载荷-兼容-")
-    assert first.outputs[0].name.startswith("结果请求-兼容-")
+    assert first.boundaries[0].name.startswith("Displacement-Legacy-")
+    assert first.edge_loads[0].name.startswith("Load-Legacy-")
+    assert first.outputs[0].name.startswith("Output-Legacy-")
 
     saved = encode_project(
         replace(

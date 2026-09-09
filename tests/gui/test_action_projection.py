@@ -70,10 +70,10 @@ def test_closed_and_busy_context_are_projected_without_qt() -> None:
     assert idle[GuiActionKey.OPEN].enabled
     assert not idle[GuiActionKey.DELETE_MODEL].enabled
     assert not idle[GuiActionKey.GEOMETRY_SKETCH].enabled
-    assert "请先新建模型" in idle[GuiActionKey.GEOMETRY_SKETCH].reason
+    assert "Create a model first" in idle[GuiActionKey.GEOMETRY_SKETCH].reason
     assert not idle[GuiActionKey.OUTPUT_CREATE].enabled
     assert not busy[GuiActionKey.OPEN].enabled
-    assert "后台任务" in busy[GuiActionKey.OPEN].reason
+    assert "background task" in busy[GuiActionKey.OPEN].reason
 
 
 def test_startup_model_enables_new_part_actions_before_session_initialization() -> None:
@@ -117,7 +117,7 @@ def test_existing_part_disables_all_new_part_actions() -> None:
         GuiActionKey.GEOMETRY_WIRE,
     ):
         assert not states[key].enabled
-        assert "暂不支持创建多个部件" in states[key].reason
+        assert "creating multiple parts is not supported yet" in states[key].reason
 
 
 def test_delete_model_requires_an_idle_active_model_document() -> None:
@@ -158,7 +158,7 @@ def test_sketch_editor_context_gates_mutating_actions() -> None:
     assert not states[GuiActionKey.GEOMETRY_CREATE].enabled
     assert not states[GuiActionKey.OPEN_PROJECT].enabled
     assert not states[GuiActionKey.MESH_SETTINGS].enabled
-    assert "草图编辑" in states[GuiActionKey.GEOMETRY_CREATE].reason
+    assert "sketch edit" in states[GuiActionKey.GEOMETRY_CREATE].reason
     assert states[GuiActionKey.TOP].enabled
 
 
@@ -237,7 +237,7 @@ def test_five_selection_actions_share_one_contextual_descriptor_group() -> None:
     )
 
     assert [descriptors[key].text for key in keys] == [
-        "选择点", "选择单元", "选择边", "选择面", "选择体",
+        "Select Points", "Select Elements", "Select Edges", "Select Faces", "Select Bodies",
     ]
     assert {descriptors[key].group for key in keys} == {"selection"}
     assert {descriptors[key].handler for key in keys} == {"_set_selection_filter"}
@@ -301,14 +301,14 @@ def test_geometry_selection_projection_disables_elements_and_missing_faces() -> 
         )
     )
     assert not states_1d[GuiActionKey.SELECT_FACE].enabled
-    assert "一维几何" in states_1d[GuiActionKey.SELECT_FACE].reason
+    assert "1D geometry" in states_1d[GuiActionKey.SELECT_FACE].reason
 
 
 def test_result_action_descriptors_use_canonical_export_keys_and_handlers() -> None:
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
 
     assert descriptors[GuiActionKey.FIELD].handler == ("show_result_display_dialog")
-    assert descriptors[GuiActionKey.DISPLAY_SETTINGS].text == "显示设置"
+    assert descriptors[GuiActionKey.DISPLAY_SETTINGS].text == "Display Settings"
     assert (
         descriptors[GuiActionKey.DISPLAY_SETTINGS].handler
         == "show_display_settings_dialog"

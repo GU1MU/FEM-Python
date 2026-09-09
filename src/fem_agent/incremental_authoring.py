@@ -101,7 +101,7 @@ def create_incremental_definition_patch(
         created_names = tuple(item.name for item in scopes.regions)
     elif normalized_action == "create_material":
         _exact_fields(values, {"name", "properties"})
-        name = _controlled_name(values["name"], "material name", "材料")
+        name = _controlled_name(values["name"], "material name", "Material")
         if name in {str(item.name) for item in materials}:
             raise ValueError("material name already exists")
         properties = dict(_mapping(values["properties"], "material properties"))
@@ -122,7 +122,7 @@ def create_incremental_definition_patch(
             raise ValueError(
                 "section requires either planar properties or strict line properties"
             )
-        name = _controlled_name(values["name"], "section name", "截面")
+        name = _controlled_name(values["name"], "section name", "Section")
         material = _nonblank(values["material"], "section material")
         if name in {str(item.name) for item in sections}:
             raise ValueError("section name already exists")
@@ -220,7 +220,7 @@ def create_incremental_definition_patch(
         created_names = (f"{section_name} → {region_name}",)
     elif normalized_action == "create_static_step":
         _exact_fields(values, {"name"})
-        name = _controlled_name(values["name"], "analysis step name", "分析步")
+        name = _controlled_name(values["name"], "analysis step name", "Step")
         if name in {str(item.name) for item in steps}:
             raise ValueError("analysis step name already exists")
         steps = steps + (
@@ -244,7 +244,7 @@ def create_incremental_definition_patch(
                 "value",
             },
         )
-        name = _controlled_name(values["name"], "boundary name", "位移")
+        name = _controlled_name(values["name"], "boundary name", "Displacement")
         step_name = _nonblank(values["step_name"], "analysis step name")
         target_scope = _require_scope(
             regions,
@@ -273,7 +273,7 @@ def create_incremental_definition_patch(
         required = {"name", "step_name", "target_scope", "load_type"}
         allowed = required | {"vector", "magnitude"}
         _allowed_fields(values, allowed, required)
-        name = _controlled_name(values["name"], "load name", "载荷")
+        name = _controlled_name(values["name"], "load name", "Load")
         step_name = _nonblank(values["step_name"], "analysis step name")
         target_scope = _require_scope(regions, values["target_scope"], "edge")
         load_type = _enum(
@@ -315,7 +315,7 @@ def create_incremental_definition_patch(
         name = _controlled_name(
             values["name"],
             "result request name",
-            "结果请求",
+            "Output",
         )
         step_name = _nonblank(values["step_name"], "analysis step name")
         target = _enum(values["target"], "result target", {"node", "element"})
@@ -669,7 +669,7 @@ def _controlled_name(
     object_type: str,
 ) -> str:
     name = NamePolicy().validate(_nonblank(value, label))
-    if not name.startswith(f"{object_type}-"):
+    if not NamePolicy.has_type(name, object_type):
         raise ValueError(f"{label} must use the {object_type}- prefix")
     return name
 

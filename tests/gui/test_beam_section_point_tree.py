@@ -19,27 +19,27 @@ from tests.helpers.beam_section_builders import (
     ("section_type", "dimensions"), _SECTION_CASES,
     ids=["rectangle", "solid-circle", "hollow-circle"],
 )
-def test_archived_section_points_and_resultants_have_chinese_tree_labels(gui_application, section_type, dimensions, tmp_path: Path):
+def test_archived_section_points_and_resultants_have_tree_labels(gui_application, section_type, dimensions, tmp_path: Path):
     application = QApplication.instance() or QApplication([])
     _, provider, outcome = _solve_and_request_stress(section_type, dimensions)
     archive_path = tmp_path / "beam.femres"
     save_result_archive(archive_path, _archive_snapshot(provider, outcome, section_type))
     archived = build_archived_result_provider(load_result_archive(archive_path).snapshot)
     labels = result_provider_section_point_labels(archived)
-    assert labels == ({1: "右上", 2: "左上", 3: "左下", 4: "右下"} if section_type == "rectangle" else {})
+    assert labels == ({1: "upper right", 2: "upper left", 3: "lower left", 4: "lower right"} if section_type == "rectangle" else {})
     tree = ResultTree()
     try:
         tree.set_catalog("Load", archived.catalog(), section_point_labels=labels)
         step = tree.topLevelItem(0).child(0)
         variables = {step.child(index).text(0): step.child(index) for index in range(step.childCount())}
-        stress = variables["应力 S"]
-        expected = ("右上", "左上", "左下", "右下") if section_type == "rectangle" else (
+        stress = variables["Stress S"]
+        expected = ("upper right", "upper left", "lower left", "lower right") if section_type == "rectangle" else (
             "Section point 1", "Section point 2", "Section point 3", "Section point 4",
         )
         assert tuple(stress.child(index).text(0) for index in range(stress.childCount())) == expected
         for label, components in [
-            ("截面力 SF（积分点）", ("N", "Vy", "Vz")),
-            ("截面矩 SM（积分点）", ("T", "My", "Mz")),
+            ("Section Force SF (integration point)", ("N", "Vy", "Vz")),
+            ("Section Moment SM (integration point)", ("T", "My", "Mz")),
         ]:
             item = variables[label]
             assert tuple(item.child(index).text(0) for index in range(item.childCount())) == components

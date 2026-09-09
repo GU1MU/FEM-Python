@@ -289,7 +289,7 @@ def test_multi_profile_proposal_is_atomic_and_commits_independent_parts(
 
     assert prepared.ok, prepared.summary
     assert session.snapshot() == before
-    assert "生成 2 个独立 Part" in prepared.data["proposal_view"]["summary"]
+    assert "creating 2 separate Parts" in prepared.data["proposal_view"]["summary"]
     proposal_id = prepared.data["proposal_id"]
     proposal = bridge._records[proposal_id].proposal
     assert proposal.display_summary["source"] == [first, second]

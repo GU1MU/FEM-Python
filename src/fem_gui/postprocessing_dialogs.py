@@ -543,9 +543,6 @@ class DisplaySettingsDialog(QDialog):
         legend_layout.addWidget(QLabel("Orientation", self.legend_group), 1, 0)
         self.horizontal_orientation = QRadioButton("Horizontal", self.legend_group)
         self.vertical_orientation = QRadioButton("Vertical", self.legend_group)
-        self.horizontal_orientation.setFixedWidth(
-            self.scientific_format.sizeHint().width()
-        )
         self.orientation_buttons = QButtonGroup(self.legend_group)
         self.orientation_buttons.addButton(self.horizontal_orientation)
         self.orientation_buttons.addButton(self.vertical_orientation)
@@ -613,6 +610,29 @@ class DisplaySettingsDialog(QDialog):
         self.button_box.accepted.connect(self.accept_with_apply)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
+        for control in (
+            self.edge_mode,
+            self.scientific_format,
+            self.engineering_format,
+            self.horizontal_orientation,
+            self.vertical_orientation,
+        ):
+            control.ensurePolished()
+        self.edge_mode.setFixedWidth(max(112, self.edge_mode.sizeHint().width()))
+        first_option_width = max(
+            self.scientific_format.sizeHint().width(),
+            self.horizontal_orientation.sizeHint().width(),
+        )
+        self.scientific_format.setFixedWidth(first_option_width)
+        self.horizontal_orientation.setFixedWidth(first_option_width)
+        options_width = max(
+            175,
+            number_format_layout.sizeHint().width(),
+            orientation_layout.sizeHint().width(),
+        )
+        self.number_format_host.setFixedWidth(options_width)
+        self.orientation_host.setFixedWidth(options_width)
+        self.setMinimumWidth(max(620, self.minimumSizeHint().width()))
 
     def settings(self) -> dict[str, Any]:
         edge_mode = str(self.edge_mode.currentData())
@@ -662,7 +682,8 @@ class ContourSettingsDialog(QDialog):
         render_layout = QVBoxLayout(self.render_group)
         render_controls_row = QHBoxLayout()
         render_controls_row.setSpacing(12)
-        render_controls_row.addWidget(QLabel("Mode", self.render_group))
+        mode_label = QLabel("Mode", self.render_group)
+        render_controls_row.addWidget(mode_label)
         self.filled_mode = QRadioButton("Filled", self.render_group)
         self.shaded_mode = QRadioButton("Shaded", self.render_group)
         self.render_mode_buttons = QButtonGroup(self.render_group)
@@ -790,6 +811,17 @@ class ContourSettingsDialog(QDialog):
         self.form.addRow("Threshold", self.averaging_threshold_row)
         render_layout.addLayout(self.form)
         layout.addWidget(self.render_group)
+        render_labels = (
+            mode_label,
+            self.form.labelForField(self.levels_row),
+            self.form.labelForField(self.averaging_threshold_row),
+        )
+        for label in render_labels:
+            label.ensurePolished()
+        label_width = max(label.sizeHint().width() for label in render_labels)
+        for label in render_labels:
+            label.setFixedWidth(label_width)
+        mode_label.setAlignment(self.form.labelAlignment())
 
         self.range_group = QGroupBox("Range", self)
         range_layout = QVBoxLayout(self.range_group)
@@ -852,6 +884,13 @@ class ContourSettingsDialog(QDialog):
         buttons.accepted.connect(self.accept_with_apply)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        for control in (self.filled_mode, self.shaded_mode, self.style):
+            control.ensurePolished()
+        self.render_mode_host.setFixedWidth(
+            max(150, render_mode_layout.sizeHint().width())
+        )
+        self.style.setFixedWidth(max(90, self.style.sizeHint().width()))
+        self.setMinimumWidth(max(560, self.minimumSizeHint().width()))
 
     def settings(self) -> dict[str, Any]:
         return {

@@ -342,7 +342,7 @@ def _create_analysis_child_patch(
     step_name = _controlled_name(
         values.get("step_name"),
         "analysis step name",
-        "分析步",
+        "Step",
     )
     if steps[0].name != step_name:
         raise ValueError("analysis step is missing or ambiguous")
@@ -370,7 +370,7 @@ def _create_analysis_child_patch(
             },
         )
         confirmed = ConfirmedDisplacement(
-            _controlled_name(values["name"], "boundary name", "位移"),
+            _controlled_name(values["name"], "boundary name", "Displacement"),
             step_name,
             _require_scope(
                 snapshot.named_regions.values(),
@@ -470,7 +470,7 @@ def _create_analysis_child_patch(
             )
             target_kind = "node" if entity_type == "node" else entity_type
             confirmed = ConfirmedLoad(
-                _controlled_name(values["name"], "load name", "载荷"),
+                _controlled_name(values["name"], "load name", "Load"),
                 step_name,
                 _require_scope(
                     snapshot.named_regions.values(),
@@ -513,7 +513,7 @@ def _create_analysis_child_patch(
             _controlled_name(
                 values["name"],
                 "result request name",
-                "结果请求",
+                "Output",
             ),
             step_name,
             "field",
@@ -827,7 +827,7 @@ def _confirmed_element_load(
             "distributed element load requires a compatible 2D or 3D model"
         )
     dimension = int(report.spatial_dimension)
-    name = _controlled_name(values["name"], "load name", "载荷")
+    name = _controlled_name(values["name"], "load name", "Load")
     entity_type = _enum(
         values["entity_type"], "entity_type", {"element"}
     )
@@ -1300,17 +1300,17 @@ def _nonblank(value: object, label: str) -> str:
 
 def _controlled_name(value: object, label: str, object_type: str) -> str:
     name = NamePolicy().validate(_nonblank(value, label))
-    if not name.startswith(f"{object_type}-"):
+    if not NamePolicy.has_type(name, object_type):
         raise ValueError(f"{label} must use the {object_type}- prefix")
     return name
 
 
 def _region_name(value: object, mesh_kind: str) -> str:
     object_type = {
-        "node": "点",
-        "edge": "边",
-        "face": "面",
-        "element": "域",
+        "node": "Point",
+        "edge": "Edge",
+        "face": "Face",
+        "element": "Domain",
     }[mesh_kind]
     return _controlled_name(value, "region name", object_type)
 

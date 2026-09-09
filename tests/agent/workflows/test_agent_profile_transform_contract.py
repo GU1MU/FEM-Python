@@ -72,7 +72,7 @@ def test_concentric_ring_catalog_preserves_profile_and_hole_lineage() -> None:
         {
             "feature_id": "Sketch-1",
             "kind": "sketch",
-            "summary": "草图  点=2，曲线=2，Profile=1，孔=1",
+            "summary": "Sketch  Points=2, Curves=2, Profiles=1, Holes=1",
         }
     ]
 

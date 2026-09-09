@@ -62,8 +62,8 @@ class ConfirmedDisplacement:
 
     def __post_init__(self) -> None:
         NamePolicy().validate(self.name)
-        if not self.name.startswith("位移-"):
-            raise AnalysisAuthoringError("displacement name must use type 位移")
+        if not NamePolicy.has_type(self.name, "Displacement"):
+            raise AnalysisAuthoringError("displacement name must use type Displacement")
         _nonblank(self.step_name, "displacement step")
         _nonblank(self.target_scope, "displacement target scope")
         if self.entity_type not in {"node_set", "edge", "surface"}:
@@ -144,8 +144,8 @@ class ConfirmedLoad:
 
     def __post_init__(self) -> None:
         NamePolicy().validate(self.name)
-        if not self.name.startswith("载荷-"):
-            raise AnalysisAuthoringError("load name must use type 载荷")
+        if not NamePolicy.has_type(self.name, "Load"):
+            raise AnalysisAuthoringError("load name must use type Load")
         _nonblank(self.step_name, "load step")
         if self.target_scope is not None:
             _nonblank(self.target_scope, "load target scope")
@@ -330,9 +330,9 @@ class ConfirmedResultRequest:
 
     def __post_init__(self) -> None:
         NamePolicy().validate(self.name)
-        if not self.name.startswith("结果请求-"):
+        if not NamePolicy.has_type(self.name, "Output"):
             raise AnalysisAuthoringError(
-                "result request name must use type 结果请求"
+                "result request name must use type Output"
             )
         _nonblank(self.step_name, "result request step")
         if self.kind != "field":
@@ -389,8 +389,8 @@ class LinearStaticAnalysis:
 
     def __post_init__(self) -> None:
         NamePolicy().validate(self.step_name)
-        if not self.step_name.startswith("分析步-"):
-            raise AnalysisAuthoringError("step name must use type 分析步")
+        if not NamePolicy.has_type(self.step_name, "Step"):
+            raise AnalysisAuthoringError("step name must use type Step")
         if type(self.dimension) is not int or self.dimension not in {2, 3}:
             raise AnalysisAuthoringError(
                 "analysis dimension must be explicitly 2 or 3"
@@ -729,13 +729,13 @@ def _require_names_are_next(
             ),
         }
     )
-    _require_allocated(allocator, "steps", "分析步", analysis.step_name)
+    _require_allocated(allocator, "steps", "Step", analysis.step_name)
     for item in analysis.displacements:
-        _require_allocated(allocator, "boundaries", "位移", item.name)
+        _require_allocated(allocator, "boundaries", "Displacement", item.name)
     for item in analysis.loads:
-        _require_allocated(allocator, "loads", "载荷", item.name)
+        _require_allocated(allocator, "loads", "Load", item.name)
     for item in analysis.results:
-        _require_allocated(allocator, "outputs", "结果请求", item.name)
+        _require_allocated(allocator, "outputs", "Output", item.name)
 
 
 def _require_allocated(

@@ -94,7 +94,7 @@ def test_analysis_job_timestamps_elapsed_and_result_state():
 def test_session_runs_are_case_insensitive_and_cleared_by_model_transitions():
     session = _validated_session()
     first = session.prepare_solve("pull", "Job-1")
-    assert session.next_run_name() == "作业-1"
+    assert session.next_run_name() == "Job-2"
     found = session.find_run("job-1")
     assert found is not None
     assert found.run_id == first.run_id

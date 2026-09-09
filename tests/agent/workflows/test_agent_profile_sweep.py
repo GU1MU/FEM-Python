@@ -64,7 +64,7 @@ def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -
         WirePoint("C", 1.0, 0.0, 1.0),
         WirePoint("D", 1.0, 0.0, 0.0),
     )
-    with pytest.raises(ValueError, match="两个端点"):
+    with pytest.raises(ValueError, match="two endpoints"):
         PathSweptGeometry(
             profile,
             WireGeometry(
@@ -77,7 +77,7 @@ def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -
             ),
             ("face:domain",),
         )
-    with pytest.raises(ValueError, match="分支"):
+    with pytest.raises(ValueError, match="branch"):
         PathSweptGeometry(
             profile,
             WireGeometry(
@@ -97,7 +97,7 @@ def test_path_rejects_disconnected_branch_self_intersection_and_zero_segment() -
         WirePoint("C", -1.0, 1.0, 1.0),
         WirePoint("D", 1.0, 0.0, 0.0),
     )
-    with pytest.raises(ValueError, match="自相交"):
+    with pytest.raises(ValueError, match="self-intersect"):
         PathSweptGeometry(
             profile,
             WireGeometry(

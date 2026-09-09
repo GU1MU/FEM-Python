@@ -233,8 +233,8 @@ def build_solve_summary(
         raise TypeError("max_collection_items must be a positive exact integer")
     clean_step = _require_nonblank(step_name, "step_name")
     clean_job = NamePolicy().validate(job_name)
-    if not clean_job.startswith("作业-"):
-        raise SolveAuthoringError("job_name must use the controlled 作业 type")
+    if not NamePolicy.has_type(clean_job, "Job"):
+        raise SolveAuthoringError("job_name must use the controlled Job type")
     units = snapshot.unit_context
     if type(units) is not UnitContext:
         raise SolveAuthoringError(
@@ -274,7 +274,7 @@ def build_solve_summary(
     facts = record.report.facts
     return SolveSummary(
         model_name=_bounded_text(
-            facts.model_name or snapshot.model_name or "模型-未命名"
+            facts.model_name or snapshot.model_name or "Model-Untitled"
         ),
         step_name=clean_step,
         job_name=clean_job,
@@ -394,8 +394,8 @@ def solve_operation_identity(
         )
     step_name = _require_nonblank(parameters["step_name"], "step_name")
     job_name = NamePolicy().validate(parameters["job_name"])  # type: ignore[arg-type]
-    if not job_name.startswith("作业-"):
-        raise SolveAuthoringError("job_name must use the controlled 作业 type")
+    if not NamePolicy.has_type(job_name, "Job"):
+        raise SolveAuthoringError("job_name must use the controlled Job type")
     artifact_id = _require_nonblank(parameters["artifact_id"], "artifact_id")
     model_revision = parameters["model_revision"]
     if type(model_revision) is not int or model_revision < 0:

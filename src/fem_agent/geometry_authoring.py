@@ -710,7 +710,7 @@ def create_geometry_proposal(
     units = unit_context.to_dict()
     part_name = NameAllocator(
         {"parts": (part.name for part in context.parts)}
-    ).allocate("parts", "部件", part_function)
+    ).allocate("parts", "Part", part_function)
     if binding.source_kind == "blank":
         if project_function is None:
             raise AuthoringContractError(
@@ -718,7 +718,7 @@ def create_geometry_proposal(
             )
         project_name = NameAllocator().allocate(
             "models",
-            "模型",
+            "Model",
             project_function,
         )
         operation = ModelOperation(

@@ -6564,9 +6564,9 @@ class ModelSession:
 
     def next_run_name(self) -> str:
         number = 1
-        while self._find_run_by_name(f"作业-{number}") is not None:
+        while self._find_run_by_name(f"Job-{number}") is not None:
             number += 1
-        return f"作业-{number}"
+        return f"Job-{number}"
 
     def latest_resubmittable_run(self) -> AnalysisRun | None:
         for run in reversed(tuple(self._runs.values())):

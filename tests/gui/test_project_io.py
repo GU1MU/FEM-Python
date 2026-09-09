@@ -153,7 +153,7 @@ def test_main_window_opens_current_fempy_project(gui_application, tmp_path, monk
     assert "Steel" in tree_texts
     assert any(text.startswith("Section-1 (") for text in tree_texts)
     assert "Load" in tree_texts
-    assert any(text.startswith("位移-") for text in tree_texts)
+    assert any(text.startswith("Displacement-") for text in tree_texts)
     assert not window.document.dirty
     assert "compatibility migration" not in (
         window.status_panel.state_label.text()

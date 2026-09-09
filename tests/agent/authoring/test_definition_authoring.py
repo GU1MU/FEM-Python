@@ -38,10 +38,10 @@ def test_plate_scopes_have_four_semantic_aliases_and_exact_evidence() -> None:
     scopes = build_eccentric_plate_scopes(make_meshed_eccentric_plate_session().snapshot())
 
     assert {region.name for region in scopes.regions} == {
-        "边-固定端",
-        "边-加载端",
-        "边-孔边",
-        "域-板体",
+        "Edge-Fixed",
+        "Edge-Loaded",
+        "Edge-HoleBoundary",
+        "Domain-Plate",
     }
     assert {region.entity_kind for region in scopes.regions} == {
         "edge",
@@ -92,10 +92,10 @@ def test_plate_scopes_accept_general_strict_sketch_recipe() -> None:
     scopes = build_eccentric_plate_scopes(session.snapshot())
 
     assert {region.name for region in scopes.regions} == {
-        "边-固定端",
-        "边-加载端",
-        "边-孔边",
-        "域-板体",
+        "Edge-Fixed",
+        "Edge-Loaded",
+        "Edge-HoleBoundary",
+        "Domain-Plate",
     }
 
 
@@ -130,19 +130,19 @@ def test_patch_decodes_to_one_atomic_scoped_definition_batch() -> None:
     assert delta.session_revision == before.session_revision + 1
     assert after.session_revision == before.session_revision + 1
     assert tuple(after.named_regions) == (
-        "边-固定端",
-        "边-加载端",
-        "边-孔边",
-        "域-板体",
+        "Edge-Fixed",
+        "Edge-Loaded",
+        "Edge-HoleBoundary",
+        "Domain-Plate",
     )
     assert [material.name for material in after.materials] == [
-        "材料-结构钢"
+        "Material-结构钢"
     ]
     assert [section.name for section in after.sections] == [
-        "截面-平面应力"
+        "Section-平面应力"
     ]
-    assert after.assignments[0].region_name == "域-板体"
-    assert "域-板体" in after.artifact.model.element_sets
+    assert after.assignments[0].region_name == "Domain-Plate"
+    assert "Domain-Plate" in after.artifact.model.element_sets
 
 
 def test_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
@@ -159,7 +159,7 @@ def test_atomic_failure_and_stale_batch_leave_state_unchanged() -> None:
         batch.regions,
         batch.materials,
         batch.sections,
-        (RegionAssignment("截面-不存在", "域-板体"),),
+        (RegionAssignment("截面-不存在", "Domain-Plate"),),
         batch.steps,
     )
 
@@ -228,18 +228,18 @@ def test_current_schema_round_trip_preserves_scopes_and_definitions() -> None:
     ).snapshot
 
     assert {region.name for region in loaded.named_regions} == {
-        "边-固定端",
-        "边-加载端",
-        "边-孔边",
-        "域-板体",
+        "Edge-Fixed",
+        "Edge-Loaded",
+        "Edge-HoleBoundary",
+        "Domain-Plate",
     }
     assert [material.name for material in loaded.materials] == [
-        "材料-结构钢"
+        "Material-结构钢"
     ]
     assert [section.name for section in loaded.sections] == [
-        "截面-平面应力"
+        "Section-平面应力"
     ]
     assert loaded.assignments == (
         loaded.region_assignments[0],
     )
-    assert loaded.assignments[0].region_name == "域-板体"
+    assert loaded.assignments[0].region_name == "Domain-Plate"

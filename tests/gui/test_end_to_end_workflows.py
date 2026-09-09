@@ -262,6 +262,6 @@ def test_model_check_rejects_an_underconstrained_native_model(gui_application, m
 
     assert not window.check_current_model(show_success=False)
     assert errors
-    assert "约束不足或刚度矩阵奇异" in errors[-1][1]
+    assert "underconstrained or the stiffness matrix is singular" in errors[-1][1]
     assert not window.session.can_submit("Load")
     window.close()

@@ -115,7 +115,7 @@ def test_ordinary_context_rejects_oversize_and_binary_files(tmp_path):
         prepare_workspace_context(
             (_reference(workspace, oversized.name),)
         )
-    with pytest.raises(WorkspaceContextError, match="二进制"):
+    with pytest.raises(WorkspaceContextError, match="Binary"):
         prepare_workspace_context(
             (_reference(workspace, binary.name),)
         )

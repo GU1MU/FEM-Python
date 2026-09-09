@@ -164,10 +164,10 @@ def test_blank_creation_is_atomic_and_refreshes_once_only_after_accept() -> None
     assert receipt.state is ProposalState.SUCCEEDED
     assert accepted.session_revision == before.session_revision + 1
     assert accepted.source_kind == "native"
-    assert accepted.model_name == "模型-偏心孔板"
+    assert accepted.model_name == "Model-偏心孔板"
     assert accepted.unit_context == _application_units()
     assert len(accepted.parts) == 1
-    assert accepted.parts[0].name == "部件-偏心孔板"
+    assert accepted.parts[0].name == "Part-偏心孔板"
     assert accepted.parts[0].mesh_settings is None
     assert refreshes == [accepted.session_revision]
 
@@ -222,7 +222,7 @@ def test_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None
 
     assert receipt.state is ProposalState.SUCCEEDED
     assert after.session_revision == before.session_revision + 1
-    assert [part.name for part in after.parts] == ["部件-板", "部件-圆盘"]
+    assert [part.name for part in after.parts] == ["部件-板", "Part-圆盘"]
     assert refreshes == [after.session_revision]
 
 
@@ -549,6 +549,6 @@ def test_main_window_projects_one_accepted_geometry_refresh(
 
     assert receipt.state is ProposalState.SUCCEEDED
     assert rebuild_count == 1
-    assert [part.name for part in window.document.parts] == ["部件-偏心孔板"]
+    assert [part.name for part in window.document.parts] == ["Part-偏心孔板"]
     assert window.viewport._geometry_preview is not None
     window.close()

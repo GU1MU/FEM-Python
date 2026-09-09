@@ -346,7 +346,7 @@ def test_native_output_request_survives_save_reopen_and_executes(
     assert reopened_request.target == request.target
     assert reopened_request.variables == request.variables
     assert reopened_request.metadata == request.metadata
-    assert reopened_request.name == "结果请求-兼容-Load-输出-1"
+    assert reopened_request.name == "Output-Legacy-Load-Output-1"
 
     _mesh_check_and_solve(
         window,

@@ -208,28 +208,34 @@ def test_name_policy_allocates_normalized_unique_stable_names() -> None:
     allocator = NameAllocator(
         {
             "parts": (
-                "部件-偏心孔板",
-                "部件-偏心孔板-2",
-                "部件-Ａ板",
+                "Part-偏心孔板",
+                "Part-偏心孔板-2",
+                "Part-Ａ板",
             ),
-            "models": ("模型-偏心孔板",),
+            "models": ("Model-偏心孔板",),
         },
         policy=policy,
     )
 
-    assert allocator.allocate("parts", "部件", "偏心孔板") == "部件-偏心孔板-3"
-    assert allocator.allocate("models", "部件", "偏心孔板") == "部件-偏心孔板"
-    assert allocator.allocate("parts", "部件", "A板") == "部件-A板-2"
-    assert policy.compose("边", "固定端") == "边-固定端"
+    assert allocator.allocate("parts", "Part", "偏心孔板") == "Part-偏心孔板-3"
+    assert allocator.allocate("models", "Part", "偏心孔板") == "Part-偏心孔板"
+    assert allocator.allocate("parts", "Part", "A板") == "Part-A板-2"
+    assert policy.compose("Edge", "固定端") == "Edge-固定端"
+
+    assert policy.validate("部件-偏心孔板") == "部件-偏心孔板"
+    legacy_limit_name = "位移-" + "长" * 93
+    assert policy.validate(legacy_limit_name) == legacy_limit_name
+    assert policy.compose("部件", "偏心孔板") == "Part-偏心孔板"
+    assert allocator.require_next("legacy", "Part", "部件-偏心孔板") == "部件-偏心孔板"
 
     with pytest.raises(NamePolicyError):
-        policy.compose("部件", " 偏心孔板")
+        policy.compose("Part", " 偏心孔板")
     with pytest.raises(NamePolicyError):
         policy.compose("未知", "偏心孔板")
     with pytest.raises(NamePolicyError):
-        policy.compose("部件", "Part-1")
+        policy.compose("Part", "Part-1")
     with pytest.raises(NamePolicyError):
-        policy.validate("部件-Ａ板")
+        policy.validate("Part-Ａ板")
 
 
 def test_unit_summary_keeps_explicit_not_applicable_fields() -> None:

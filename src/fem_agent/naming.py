@@ -7,24 +7,24 @@ import re
 from collections.abc import Iterable, Mapping
 
 
-CONTROLLED_OBJECT_TYPES = frozenset(
-    {
-        "模型",
-        "部件",
-        "实体",
-        "点",
-        "边",
-        "面",
-        "域",
-        "材料",
-        "截面",
-        "分析步",
-        "位移",
-        "载荷",
-        "结果请求",
-        "作业",
-    }
-)
+LEGACY_OBJECT_TYPES = {
+    "模型": "Model",
+    "部件": "Part",
+    "实体": "Body",
+    "点": "Point",
+    "边": "Edge",
+    "面": "Face",
+    "域": "Domain",
+    "材料": "Material",
+    "截面": "Section",
+    "分析步": "Step",
+    "位移": "Displacement",
+    "载荷": "Load",
+    "结果请求": "Output",
+    "作业": "Job",
+}
+CONTROLLED_OBJECT_TYPES = frozenset(LEGACY_OBJECT_TYPES.values())
+
 _SYSTEM_NAMES = frozenset(
     {
         "model-1",
@@ -57,8 +57,18 @@ class NamePolicy:
         return unicodedata.normalize("NFKC", value).casefold()
 
     def compose(self, object_type: str, function: str) -> str:
-        if type(object_type) is not str or object_type not in CONTROLLED_OBJECT_TYPES:
+        if type(object_type) is not str:
             raise NamePolicyError("object type is not controlled")
+        object_type = LEGACY_OBJECT_TYPES.get(object_type, object_type)
+        if object_type not in CONTROLLED_OBJECT_TYPES:
+            raise NamePolicyError("object type is not controlled")
+        normalized = self._normalize_function(function)
+        result = f"{object_type}-{normalized}"
+        if len(result) > self.max_name_length:
+            raise NamePolicyError("name is too long")
+        return result
+
+    def _normalize_function(self, function: str) -> str:
         if type(function) is not str:
             raise TypeError("function must be a string")
         if function != function.strip():
@@ -72,10 +82,14 @@ class NamePolicy:
             raise NamePolicyError("function cannot contain control characters")
         if self.canonical_key(normalized) in _SYSTEM_NAMES:
             raise NamePolicyError("function cannot impersonate a system name")
-        result = f"{object_type}-{normalized}"
-        if len(result) > self.max_name_length:
-            raise NamePolicyError("name is too long")
-        return result
+        return normalized
+
+    @staticmethod
+    def has_type(name: str, object_type: str) -> bool:
+        prefix = name.partition("-")[0]
+        return LEGACY_OBJECT_TYPES.get(prefix, prefix) == LEGACY_OBJECT_TYPES.get(
+            object_type, object_type
+        )
 
     def validate(self, name: str) -> str:
         if type(name) is not str:
@@ -85,7 +99,11 @@ class NamePolicy:
         object_type, separator, function = name.partition("-")
         if not separator:
             raise NamePolicyError("name must use {type}-{function}")
-        normalized = self.compose(object_type, function)
+        if LEGACY_OBJECT_TYPES.get(object_type, object_type) not in CONTROLLED_OBJECT_TYPES:
+            raise NamePolicyError("object type is not controlled")
+        normalized = object_type + "-" + self._normalize_function(function)
+        if len(normalized) > self.max_name_length:
+            raise NamePolicyError("name is too long")
         if normalized != name:
             raise NamePolicyError("name is not Unicode-normalized")
         return normalized
@@ -132,7 +150,10 @@ class NameAllocator:
     ) -> str:
         normalized_namespace = self._namespace(namespace)
         base = self.policy.compose(object_type, function)
-        occupied = self._keys.setdefault(normalized_namespace, set())
+        return self._allocate_base(normalized_namespace, base)
+
+    def _allocate_base(self, namespace: str, base: str) -> str:
+        occupied = self._keys.setdefault(namespace, set())
         candidate = base
         suffix = 2
         while self.policy.canonical_key(candidate) in occupied:
@@ -152,13 +173,14 @@ class NameAllocator:
         """Require *name* to be exactly the next stable allocation."""
 
         normalized = self.policy.validate(name)
-        prefix = f"{object_type}-"
-        if not normalized.startswith(prefix):
+        prefix = normalized.partition("-")[0] + "-"
+        if not self.policy.has_type(normalized, object_type):
             raise NamePolicyError("name uses the wrong controlled object type")
         function = normalized[len(prefix) :]
         suffix = re.fullmatch(r"(.+)-([2-9][0-9]*)", function)
         base_function = suffix.group(1) if suffix is not None else function
-        expected = self.allocate(namespace, object_type, base_function)
+        base = prefix + self.policy._normalize_function(base_function)
+        expected = self._allocate_base(self._namespace(namespace), base)
         if normalized != expected:
             raise NamePolicyError(
                 f"name is not the next stable allocation: expected {expected!r}"

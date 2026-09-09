@@ -775,10 +775,10 @@ def _validated_region_edit(
             changes["new_name"],
             "new_name",
             {
-                "node": "点",
-                "edge": "边",
-                "face": "面",
-                "element": "域",
+                "node": "Point",
+                "edge": "Edge",
+                "face": "Face",
+                "element": "Domain",
             }[current.entity_kind],
         )
         updates["name"] = name
@@ -1082,8 +1082,8 @@ def _validated_output_edit(
     if confirmation_fields:
         units = _string_list(changes["units"], "units", max_items=16)
         confirmed = ConfirmedResultRequest(
-            _controlled_name(replacement.name, "result request name", "结果请求"),
-            _controlled_name(target.step_name, "step_name", "分析步"),
+            _controlled_name(replacement.name, "result request name", "Output"),
+            _controlled_name(target.step_name, "step_name", "Step"),
             replacement.kind,
             replacement.target,
             tuple(replacement.variables),
@@ -1155,7 +1155,7 @@ def _validated_boundary_edit(
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
     if "new_name" in changes:
-        name = _controlled_name(changes["new_name"], "new_name", "位移")
+        name = _controlled_name(changes["new_name"], "new_name", "Displacement")
         updates["name"] = name
         normalized["new_name"] = name
     if "target_scope" in changes:
@@ -1186,8 +1186,8 @@ def _validated_boundary_edit(
     dimension = _part_dimension_for_region(snapshot, region)
     units = _require_units(snapshot)
     confirmed = ConfirmedDisplacement(
-        _controlled_name(replacement.name, "boundary name", "位移"),
-        _controlled_name(target.step_name, "step_name", "分析步"),
+        _controlled_name(replacement.name, "boundary name", "Displacement"),
+        _controlled_name(target.step_name, "step_name", "Step"),
         str(replacement.target),
         str(replacement.target_kind),
         int(replacement.first_component),
@@ -1290,7 +1290,7 @@ def _validated_load_edit(
     updates: dict[str, object] = {}
     normalized: dict[str, object] = {}
     if "new_name" in changes:
-        name = _controlled_name(changes["new_name"], "new_name", "载荷")
+        name = _controlled_name(changes["new_name"], "new_name", "Load")
         updates["name"] = name
         normalized["new_name"] = name
     if "target_scope" in changes:
@@ -1542,8 +1542,8 @@ def _confirmed_load_after_edit(
         raise ValueError("load target scope has the wrong mesh entity kind")
     load_type = _required_text(changes["load_type"], "load_type")
     confirmed = ConfirmedLoad(
-        _controlled_name(replacement.name, "load name", "载荷"),
-        _controlled_name(target.step_name, "step_name", "分析步"),
+        _controlled_name(replacement.name, "load name", "Load"),
+        _controlled_name(target.step_name, "step_name", "Step"),
         scope_name,
         entity_type,
         load_type,
@@ -2008,7 +2008,7 @@ def _controlled_name(
     object_type: str,
 ) -> str:
     name = NamePolicy().validate(_required_text(value, field_name))
-    if not name.startswith(f"{object_type}-"):
+    if not NamePolicy.has_type(name, object_type):
         raise ValueError(
             f"{field_name} must use the {object_type}- prefix"
         )

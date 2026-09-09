@@ -38,6 +38,7 @@ from .authoring import (
 )
 from .diagnostics import DiagnosticCode, make_diagnostic
 from .geometry_authoring import geometry_feature_catalog_tool_schema
+from .naming import LEGACY_OBJECT_TYPES
 from .providers.base import ToolDefinition
 from .result_authoring import (
     ANALYSIS_RUN_CATALOG_TOOL_NAME,
@@ -2494,12 +2495,20 @@ def _exact_schema(
 
 
 def _controlled_name_schema(*prefixes: str) -> dict[str, object]:
-    alternatives = "|".join(re.escape(prefix) for prefix in prefixes)
+    accepted = (
+        *prefixes,
+        *(old for old, new in LEGACY_OBJECT_TYPES.items() if new in prefixes),
+    )
+    alternatives = "|".join(re.escape(prefix) for prefix in accepted)
     return {
         "type": "string",
         "pattern": f"^({alternatives})-.+$",
         "minLength": 3,
         "maxLength": 96,
+        "description": (
+            "Use " + ", ".join(prefixes)
+            + " prefixes for new names; preserve existing names."
+        ),
     }
 
 
@@ -2523,7 +2532,7 @@ def _one_of_object_schema(
 
 _UNIT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 64}
 _CONFIRMED_SCHEMA = {"type": "boolean", "const": True}
-_STEP_NAME_SCHEMA = _controlled_name_schema("分析步")
+_STEP_NAME_SCHEMA = _controlled_name_schema("Step")
 _LOGICAL_IDS_SCHEMA = {
     "type": "array",
     "items": {
@@ -2561,7 +2570,7 @@ def _boundary_parameters(
 ) -> dict[str, object]:
     return _exact_schema(
         {
-            "name": _controlled_name_schema("位移"),
+            "name": _controlled_name_schema("Displacement"),
             "step_name": _STEP_NAME_SCHEMA,
             "target_scope": _controlled_name_schema(scope_prefix),
             "target_kind": {"type": "string", "const": target_kind},
@@ -2596,7 +2605,7 @@ def _load_parameters(
 ) -> dict[str, object]:
     return _exact_schema(
         {
-            "name": _controlled_name_schema("载荷"),
+            "name": _controlled_name_schema("Load"),
             "step_name": _STEP_NAME_SCHEMA,
             "target_scope": _controlled_name_schema(scope_prefix),
             "entity_type": {"type": "string", "const": entity_type},
@@ -2618,7 +2627,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="node",
         load_type="nodal",
-        scope_prefix="点",
+        scope_prefix="Point",
         component={"type": "integer", "const": component},
         vector=_NULL_SCHEMA,
         magnitude=_NUMBER_SCHEMA,
@@ -2637,7 +2646,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="edge",
         load_type="edge_traction",
-        scope_prefix="边",
+        scope_prefix="Edge",
         component=_NULL_SCHEMA,
         vector={
             "type": "array",
@@ -2652,7 +2661,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="edge",
         load_type="edge_pressure",
-        scope_prefix="边",
+        scope_prefix="Edge",
         component=_NULL_SCHEMA,
         vector=_NULL_SCHEMA,
         magnitude=_NUMBER_SCHEMA,
@@ -2662,7 +2671,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="edge",
         load_type="edge_pressure",
-        scope_prefix="边",
+        scope_prefix="Edge",
         component=_NULL_SCHEMA,
         vector=_NULL_SCHEMA,
         magnitude=_NUMBER_SCHEMA,
@@ -2672,7 +2681,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="surface",
         load_type="surface_traction",
-        scope_prefix="面",
+        scope_prefix="Face",
         component=_NULL_SCHEMA,
         vector={
             "type": "array",
@@ -2687,7 +2696,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="surface",
         load_type="surface_pressure",
-        scope_prefix="面",
+        scope_prefix="Face",
         component=_NULL_SCHEMA,
         vector=_NULL_SCHEMA,
         magnitude=_NUMBER_SCHEMA,
@@ -2697,7 +2706,7 @@ _LOAD_PARAMETER_SCHEMAS = [
     _load_parameters(
         entity_type="surface",
         load_type="surface_pressure",
-        scope_prefix="面",
+        scope_prefix="Face",
         component=_NULL_SCHEMA,
         vector=_NULL_SCHEMA,
         magnitude=_NUMBER_SCHEMA,
@@ -2706,9 +2715,9 @@ _LOAD_PARAMETER_SCHEMAS = [
     ),
     _exact_schema(
         {
-            "name": _controlled_name_schema("载荷"),
+            "name": _controlled_name_schema("Load"),
             "step_name": _STEP_NAME_SCHEMA,
-            "target_scope": _controlled_name_schema("域"),
+            "target_scope": _controlled_name_schema("Domain"),
             "entity_type": {"type": "string", "const": "element"},
             "load_type": {"type": "string", "const": "line"},
             "vector": {
@@ -2728,9 +2737,9 @@ _LOAD_PARAMETER_SCHEMAS = [
     ),
     _exact_schema(
         {
-            "name": _controlled_name_schema("载荷"),
+            "name": _controlled_name_schema("Load"),
             "step_name": _STEP_NAME_SCHEMA,
-            "target_scope": _controlled_name_schema("域"),
+            "target_scope": _controlled_name_schema("Domain"),
             "entity_type": {"type": "string", "const": "element"},
             "load_type": {"type": "string", "const": "body"},
             "vector": {
@@ -2747,12 +2756,12 @@ _LOAD_PARAMETER_SCHEMAS = [
     ),
     _exact_schema(
         {
-            "name": _controlled_name_schema("载荷"),
+            "name": _controlled_name_schema("Load"),
             "step_name": _STEP_NAME_SCHEMA,
             "target_scope": {
                 "oneOf": [
                     {"type": "null"},
-                    _controlled_name_schema("域"),
+                    _controlled_name_schema("Domain"),
                 ]
             },
             "entity_type": {"type": "string", "const": "element"},
@@ -2788,10 +2797,10 @@ _APPLY_DEFINITION = _tool(
                 "create_named_region",
                 _one_of_object_schema(
                     [
-                        _named_region_parameters("node", "点"),
-                        _named_region_parameters("edge", "边"),
-                        _named_region_parameters("face", "面"),
-                        _named_region_parameters("element", "域"),
+                        _named_region_parameters("node", "Point"),
+                        _named_region_parameters("edge", "Edge"),
+                        _named_region_parameters("face", "Face"),
+                        _named_region_parameters("element", "Domain"),
                     ]
                 ),
             ),
@@ -2799,7 +2808,7 @@ _APPLY_DEFINITION = _tool(
                 "create_material",
                 _exact_schema(
                     {
-                        "name": _controlled_name_schema("材料"),
+                        "name": _controlled_name_schema("Material"),
                         "properties": _exact_schema(
                             {
                                 "E": {
@@ -2827,8 +2836,8 @@ _APPLY_DEFINITION = _tool(
                     [
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "plane_type": {
                                     "type": "string",
                                     "enum": ["stress", "strain"],
@@ -2842,8 +2851,8 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "section_type": {
                                     "type": "string",
                                     "const": "solid",
@@ -2853,8 +2862,8 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "section_type": {
                                     "type": "string",
                                     "const": "truss",
@@ -2871,8 +2880,8 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "section_type": {
                                     "type": "string",
                                     "const": "rectangle",
@@ -2883,16 +2892,14 @@ _APPLY_DEFINITION = _tool(
                                             "type": "number",
                                             "exclusiveMinimum": 0,
                                             "description": (
-                                                "矩形截面沿梁局部 z（Abaqus n2）"
-                                                "方向的高度"
+                                                "Rectangular section height along beam local z (Abaqus n2)"
                                             ),
                                         },
                                         "width": {
                                             "type": "number",
                                             "exclusiveMinimum": 0,
                                             "description": (
-                                                "矩形截面沿梁局部 y（Abaqus n1）"
-                                                "方向的宽度"
+                                                "Rectangular section width along beam local y (Abaqus n1)"
                                             ),
                                         },
                                     }
@@ -2901,8 +2908,8 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "section_type": {
                                     "type": "string",
                                     "const": "solid_circle",
@@ -2919,8 +2926,8 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("截面"),
-                                "material": _controlled_name_schema("材料"),
+                                "name": _controlled_name_schema("Section"),
+                                "material": _controlled_name_schema("Material"),
                                 "section_type": {
                                     "type": "string",
                                     "const": "hollow_circle",
@@ -2948,14 +2955,14 @@ _APPLY_DEFINITION = _tool(
                     [
                         _exact_schema(
                             {
-                                "section_name": _controlled_name_schema("截面"),
-                                "region_name": _controlled_name_schema("域"),
+                                "section_name": _controlled_name_schema("Section"),
+                                "region_name": _controlled_name_schema("Domain"),
                             }
                         ),
                         _exact_schema(
                             {
-                                "section_name": _controlled_name_schema("截面"),
-                                "region_name": _controlled_name_schema("域"),
+                                "section_name": _controlled_name_schema("Section"),
+                                "region_name": _controlled_name_schema("Domain"),
                                 "local_y_reference": {
                                     "type": "array",
                                     "items": {"type": "number"},
@@ -2975,9 +2982,9 @@ _APPLY_DEFINITION = _tool(
                 "create_boundary_condition",
                 _one_of_object_schema(
                     [
-                        _boundary_parameters("node_set", "点"),
-                        _boundary_parameters("edge", "边"),
-                        _boundary_parameters("surface", "面"),
+                        _boundary_parameters("node_set", "Point"),
+                        _boundary_parameters("edge", "Edge"),
+                        _boundary_parameters("surface", "Face"),
                     ]
                 ),
             ),
@@ -2991,7 +2998,7 @@ _APPLY_DEFINITION = _tool(
                     [
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("结果请求"),
+                                "name": _controlled_name_schema("Output"),
                                 "step_name": _STEP_NAME_SCHEMA,
                                 "target": {
                                     "type": "string",
@@ -3018,7 +3025,7 @@ _APPLY_DEFINITION = _tool(
                         ),
                         _exact_schema(
                             {
-                                "name": _controlled_name_schema("结果请求"),
+                                "name": _controlled_name_schema("Output"),
                                 "step_name": _STEP_NAME_SCHEMA,
                                 "target": {
                                     "type": "string",

@@ -2865,7 +2865,7 @@ class SessionGeometryAuthoringPort:
             {"parts": (part.name for part in snapshot.parts)}
         ).require_next(
             "parts",
-            "部件",
+            "Part",
             str(parameters["part_name"]),
         )
         raw_units = parameters.get("unit_context")
@@ -2882,7 +2882,7 @@ class SessionGeometryAuthoringPort:
             self._session.create_native_project_with_first_part(
                 NameAllocator().require_next(
                     "models",
-                    "模型",
+                    "Model",
                     str(parameters["project_name"]),
                 ),
                 units,

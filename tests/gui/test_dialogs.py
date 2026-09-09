@@ -85,12 +85,15 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings(gui_application)
     assert contour.settings()["style"] == "continuous"
     assert contour.layout().itemAt(0).widget() is contour.render_group
     assert contour.layout().itemAt(1).widget() is contour.range_group
-    assert contour.render_group.title() == "渲染"
-    assert contour.style.currentText() == "连续"
-    assert contour.render_group.layout().itemAt(0).layout().itemAt(0).widget().text() == "模式"
-    assert contour.render_group.layout().itemAt(0).layout().itemAt(3).widget().text() == "样式"
-    assert contour.render_group.layout().itemAt(0).layout().itemAt(6).widget().text() == "色带"
-    assert contour.style.width() == 90
+    assert contour.render_group.title() == "Rendering"
+    assert contour.style.currentText() == "Continuous"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(0).widget().text() == "Mode"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(3).widget().text() == "Style"
+    assert contour.render_group.layout().itemAt(0).layout().itemAt(6).widget().text() == "Palette"
+    assert contour.style.width() >= contour.style.sizeHint().width()
+    assert contour.render_mode_host.width() >= (
+        contour.render_mode_host.layout().sizeHint().width()
+    )
     assert contour.colormap.width() == 120
     assert not contour.levels_row.isEnabled()
     assert contour.minimum.value() == -2.5
@@ -99,8 +102,8 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings(gui_application)
     assert not contour.maximum.isEnabled()
     assert contour.show_minimum.parent() is contour.range_group
     assert contour.show_maximum.parent() is contour.range_group
-    assert contour.show_minimum.text() == "显示"
-    assert contour.show_maximum.text() == "显示"
+    assert contour.show_minimum.text() == "Show"
+    assert contour.show_maximum.text() == "Show"
     assert contour.minimum.width() == 110
     assert contour.maximum.width() == 110
     contour.maximum.setValue(0.001139735919)
@@ -137,9 +140,11 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings(gui_application)
         label.text() for label in display.findChildren(QLabel)
     }
     assert all("：" not in text and ":" not in text for text in display_labels)
-    assert "线条" in display_labels
-    assert "轮廓" not in display_labels
-    assert display.edge_mode.width() == 112
+    assert "Lines" in display_labels
+    assert "Outline" not in display_labels
+    assert display.edge_mode.width() >= display.edge_mode.sizeHint().width()
+    for host in (display.number_format_host, display.orientation_host):
+        assert host.width() >= host.layout().sizeHint().width()
     assert display.edge_style.width() == 112
     assert display.edge_width.width() == 60
     assert display.edge_width.suffix() == ""
@@ -170,15 +175,15 @@ def test_contour_display_and_symbol_dialogs_round_trip_settings(gui_application)
         label.text() for label in contour.findChildren(QLabel)
     }
     assert all("：" not in text and ":" not in text for text in labels)
-    assert "阈值" in labels
-    assert "级数" in labels
-    assert "样式" in labels
-    assert "色带" in labels
-    assert "模式" in labels
-    assert "云图样式：" not in labels
-    assert "渲染模式：" not in labels
-    assert "色带级数：" not in labels
-    assert "节点平均阈值：" not in labels
+    assert "Threshold" in labels
+    assert "Levels" in labels
+    assert "Style" in labels
+    assert "Palette" in labels
+    assert "Mode" in labels
+    assert "Contour style:" not in labels
+    assert "Render mode:" not in labels
+    assert "Color levels:" not in labels
+    assert "Nodal averaging threshold:" not in labels
     assert contour.levels_slider.orientation() == Qt.Orientation.Horizontal
     assert contour.levels.minimum() == 4
     assert contour.levels.maximum() == 48
@@ -244,7 +249,7 @@ def test_contour_dialog_defaults_to_abaqus_rainbow(gui_application):
     _application()
     contour = ContourSettingsDialog({})
 
-    assert contour.colormap.currentText() == "彩虹"
+    assert contour.colormap.currentText() == "Rainbow"
     assert contour.settings()["colormap"] == ABAQUS_RAINBOW
     assert contour.auto_range.isChecked()
     assert contour.shaded_mode.isChecked()
@@ -287,7 +292,7 @@ def test_contour_and_display_dialogs_split_render_and_edge_modes(gui_application
     assert display.settings()["edge_mode"] == CONTOUR_EDGE_FEATURE
     assert display.edge_mode.itemText(
         display.edge_mode.findData(CONTOUR_EDGE_GEOMETRY)
-    ) == "几何边"
+    ) == "Geometry edges"
     assert display.settings()["edges"]
 
 
@@ -297,7 +302,7 @@ def test_viewport_background_dialog_supports_presets_and_live_preview(gui_applic
     previews = []
     dialog.previewRequested.connect(previews.append)
 
-    dialog.preset_combo.setCurrentText("白色")
+    dialog.preset_combo.setCurrentText("White")
 
     assert dialog.settings().style == "solid"
     assert dialog.settings().bottom_color == "#ffffff"
