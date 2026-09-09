@@ -754,7 +754,7 @@ def test_edge_load_editor_refreshes_only_after_dialog_construction(
     )
 
     assert refresh_states == [(True, "edge")]
-    assert dialog.windowTitle() == "编辑载荷"
+    assert dialog.windowTitle() == "Edit Load"
     dialog.close()
 
 
@@ -815,7 +815,7 @@ def test_load_dialog_exposes_five_physical_categories_and_builds_body_force(gui_
     assert [
         dialog.kind_combo.itemText(index)
         for index in range(dialog.kind_combo.count())
-    ] == ["节点力", "边力", "面力", "体力", "重力"]
+    ] == ["Nodal Force", "Edge Load", "Surface Load", "Body Force", "Gravity"]
     dialog.kind_combo.setCurrentIndex(
         dialog.kind_combo.findData("body")
     )
@@ -844,7 +844,7 @@ def test_analysis_manager_lists_and_deletes_gravity_loads(gui_application):
     )
 
     assert manager.table.rowCount() == 2
-    assert manager.table.item(1, 0).text() == "重力"
+    assert manager.table.item(1, 0).text() == "Gravity"
     manager.table.selectRow(1)
     manager._delete()
 
@@ -881,7 +881,7 @@ def test_load_dialog_only_shows_parameters_for_the_selected_load_kind(gui_applic
         dialog.load_type_combo.findData("pressure")
     )
     assert dialog.form.isRowVisible(dialog.value_spin)
-    assert dialog.form.labelForField(dialog.value_spin).text() == "压力值"
+    assert dialog.form.labelForField(dialog.value_spin).text() == "Pressure Value"
     assert not dialog.form.isRowVisible(dialog.x_spin)
 
 
@@ -1027,7 +1027,7 @@ def test_load_dialog_validates_region_and_builds_pressure(gui_application):
     edge_regions = _regions("edge", "Loaded")
     missing_region = LoadDialog(["Load"], [], edge_regions, [], 2)
     missing_region.region_combo.clear()
-    with pytest.raises(ValueError, match="载荷作用域"):
+    with pytest.raises(ValueError, match="load scope"):
         missing_region.definition()
 
     dialog = LoadDialog(["Load"], [], edge_regions, [], 2)
@@ -1053,13 +1053,13 @@ def test_load_dialog_rejects_zero_distributed_loads(gui_application):
         2,
     )
 
-    with pytest.raises(ValueError, match="非零分量"):
+    with pytest.raises(ValueError, match="nonzero component"):
         dialog.definition()
 
     dialog.load_type_combo.setCurrentIndex(
         dialog.load_type_combo.findData("pressure")
     )
-    with pytest.raises(ValueError, match="压力值不能为 0"):
+    with pytest.raises(ValueError, match="Pressure must be nonzero"):
         dialog.definition()
 
 
@@ -1073,7 +1073,7 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection(gui_applicat
     assert not displacement.buttons.button(
         QDialogButtonBox.StandardButton.Ok
     ).isEnabled()
-    assert displacement.scope_pick_button.text() == "创建"
+    assert displacement.scope_pick_button.text() == "Create"
     assert displacement.scope_pick_button.toolTip() == ""
     displacement.scope_pick_button.click()
     assert displacement.requested_scope_kind() == "node"
@@ -1112,7 +1112,7 @@ def test_scope_pick_buttons_request_node_edge_and_surface_selection(gui_applicat
     for kind in ("node", "edge", "surface"):
         load.kind_combo.setCurrentIndex(load.kind_combo.findData(kind))
         assert load.scope_pick_button.isEnabled()
-        assert load.scope_pick_button.text() == "创建"
+        assert load.scope_pick_button.text() == "Create"
         assert load.scope_pick_button.toolTip() == ""
         load._scope_selection_request = None
         load.scope_pick_button.click()
@@ -1271,10 +1271,10 @@ def test_analysis_manager_uses_readable_definition_summaries(gui_application):
         2,
     )
 
-    assert manager.table.item(0, 3).text() == "线性静力"
+    assert manager.table.item(0, 3).text() == "Linear Static"
     assert manager.table.item(1, 3).text() == "U1 = 0"
-    assert manager.table.item(2, 0).text() == "输出"
-    assert manager.table.item(2, 2).text() == "节点"
+    assert manager.table.item(2, 0).text() == "Output"
+    assert manager.table.item(2, 2).text() == "Node"
 
 
 def test_model_tree_boundary_and_load_delete_preserve_other_definitions():

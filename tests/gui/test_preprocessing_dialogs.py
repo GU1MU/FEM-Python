@@ -57,14 +57,14 @@ def _control(
 def test_geometry_creation_dialog_selects_model_dimension(gui_application) -> None:
     dialog = GeometryCreationDialog()
 
-    assert dialog.windowTitle() == "新建部件"
+    assert dialog.windowTitle() == "New Part"
     assert dialog.creation_kind() == "1d"
     assert dialog.sketch_size() == 50.0
     assert dialog.sketch_size_spin.text() == "50"
     assert dialog.dimension_list.count() == 3
     assert {
         label.text() for label in dialog.findChildren(QLabel)
-    } == {"部件名称", "草图尺寸", "建模维度"}
+    } == {"Part Name", "Sketch Size", "Model Dimension"}
 
     dialog.dimension_list.setCurrentRow(1)
     assert dialog.creation_kind() == "2d"
@@ -75,7 +75,7 @@ def test_geometry_creation_dialog_selects_model_dimension(gui_application) -> No
 def test_basic_solid_creation_is_a_separate_choice_dialog(gui_application) -> None:
     dialog = BasicSolidCreationDialog()
 
-    assert dialog.windowTitle() == "创建 3D 基本实体"
+    assert dialog.windowTitle() == "Create 3D Primitive"
     assert dialog.solid_combo.count() == 2
     assert dialog.solid_kind() == "box"
     dialog.solid_combo.setCurrentIndex(1)
@@ -95,7 +95,7 @@ def test_sketch_contour_dialog_only_shows_shape_specific_dimensions(gui_applicat
     assert rectangle.width_spin.value() == 0.0001
     assert rectangle.findChildren(QDialogButtonBox)[0].button(
         QDialogButtonBox.StandardButton.Ok
-    ).text() == "确定"
+    ).text() == "OK"
 
     circle = SketchContourDialog(SketchCircle("cut", 1.0, 2.0, 3.0))
     assert circle.radius_spin.isHidden() is False
@@ -131,8 +131,8 @@ def test_local_mesh_dialog_records_the_viewport_selected_edge(gui_application) -
     assert dialog.control().target == LogicalEntityRef("edge:right")
     assert dialog.control().falloff == _falloff()
     labels = {label.text() for label in dialog.findChildren(QLabel)}
-    assert "已选择 1 个边" in labels
-    assert "边 2" not in labels
+    assert "Selected: 1 Edge" in labels
+    assert "Edge 2" not in labels
 
 
 def test_global_and_local_mesh_sizes_share_adaptive_precision(gui_application) -> None:
@@ -177,14 +177,14 @@ def test_named_region_dialog_and_manager_support_multiple_entities(gui_applicati
     )
     create_dialog = NamedRegionDialog(references)
     assert create_dialog.name_edit.text() == "EdgeSet-1"
-    assert "已选择 3 个边" in {
+    assert "Edge Count: 3" in {
         label.text() for label in create_dialog.findChildren(QLabel)
     }
 
     manager = NamedRegionManagerDialog({
         "Fixed": NamedRegion("Fixed", references),
     })
-    assert manager.table.item(0, 2).text() == "3 个"
+    assert manager.table.item(0, 2).text() == "3"
     manager.name_edit.setText("Support")
     manager._rename()
 
@@ -209,7 +209,7 @@ def test_mesh_control_manager_deletes_only_the_selected_local_control(gui_applic
     assert len(controls) == 1
     assert controls[0].target == LogicalEntityRef("edge:top")
     assert controls[0].size == 0.5
-    assert "边 3" not in dialog.control_list.item(3).text()
+    assert "Edge 3" not in dialog.control_list.item(3).text()
 
 
 def test_mesh_control_manager_edit_preserves_target_radius_falloff(

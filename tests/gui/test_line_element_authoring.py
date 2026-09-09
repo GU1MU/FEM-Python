@@ -112,7 +112,7 @@ def test_line_load_dialog_uses_capability_regions_and_three_components(gui_appli
         for index in range(dialog.coordinate_system_combo.count())
     ] == ["global", "local"]
     assert dialog.coordinate_system_combo.itemText(1) == (
-        "局部（Beam 已解析局部坐标）"
+        "Local (Resolved Beam Coordinates)"
     )
     assert dialog.form.isRowVisible(dialog.coordinate_system_combo)
     assert not dialog.form.isRowVisible(dialog.load_type_combo)
@@ -159,7 +159,7 @@ def test_line_load_dialog_edits_local_load_and_explains_local_axes(gui_applicati
     assert dialog.form.isRowVisible(dialog.local_axis_label)
     assert (
         dialog.local_axis_label.text()
-        == "局部（Beam 已解析局部坐标）"
+        == "Local (Resolved Beam Coordinates)"
     )
     assert not dialog.buttons.button(
         QDialogButtonBox.StandardButton.Ok
@@ -337,13 +337,13 @@ def test_manager_lists_moves_and_deletes_line_loads(gui_application, monkeypatch
     line_row = manager._rows.index(("line_load", 0, 0))
     boundary_row = manager._rows.index(("boundary", 0, 0))
     node_load_row = manager._rows.index(("node_load", 0, 0))
-    assert manager.table.item(line_row, 0).text() == "边力"
+    assert manager.table.item(line_row, 0).text() == "Edge Load"
     assert manager.table.item(line_row, 2).text() == "BEAM-SET"
-    assert manager.table.item(line_row, 3).text() == "全局 = (1, 2, 3)"
+    assert manager.table.item(line_row, 3).text() == "Global = (1, 2, 3)"
     assert manager.table.item(boundary_row, 3).text() == "UR1 = 0"
     assert manager.table.item(node_load_row, 3).text() == "Mx = 2"
     assert all(
-        "新建" not in button.text()
+        "New" not in button.text()
         for button in manager.findChildren(QPushButton)
     )
 
@@ -469,7 +469,7 @@ def test_existing_displacement_output_is_read_only_and_not_deletable(gui_applica
         for index in range(dialog.candidate_list.count())
     ) == ("U", "RF")
     assert manager.select_definition(("output", 0, 0))
-    assert manager.edit_button.text() == "查看"
+    assert manager.edit_button.text() == "View"
     assert not manager.delete_button.isEnabled()
     manager._delete()
     assert manager.values()[0].outputs == (output,)

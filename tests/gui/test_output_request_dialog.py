@@ -256,7 +256,7 @@ def test_output_view_is_read_only_and_preserves_unsupported_request(
     before = manager.values()
 
     assert manager.select_definition(("output", 0, 0))
-    assert manager.edit_button.text() == "查看"
+    assert manager.edit_button.text() == "View"
     assert manager.edit_button.isEnabled()
     assert not manager.delete_button.isEnabled()
     assert not manager.edit_definition(("output", 0, 0))

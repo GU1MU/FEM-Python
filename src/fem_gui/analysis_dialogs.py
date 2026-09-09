@@ -1,4 +1,4 @@
-"""内存分析作业的创建与管理窗口。"""
+"""Dialogs for creating and managing in-memory analysis jobs."""
 
 from __future__ import annotations
 
@@ -27,16 +27,16 @@ from .dialogs import configure_form_layout
 
 
 _STATUS_LABELS = {
-    RunStatus.PENDING: "已创建",
-    RunStatus.RUNNING: "运行中",
-    RunStatus.SUCCEEDED: "已完成",
-    RunStatus.FAILED: "失败",
-    RunStatus.CANCELLED: "已取消",
+    RunStatus.PENDING: "Created",
+    RunStatus.RUNNING: "Running",
+    RunStatus.SUCCEEDED: "Completed",
+    RunStatus.FAILED: "Failed",
+    RunStatus.CANCELLED: "Cancelled",
 }
 
 
 class JobSubmitDialog(QDialog):
-    """收集一个最小的线性静力作业名称和分析步。"""
+    """Collect the name and step for a minimal linear static job."""
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class JobSubmitDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("jobSubmitDialog")
-        self.setWindowTitle("创建分析作业")
+        self.setWindowTitle("Create Job")
         self.setMinimumWidth(390)
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -59,17 +59,17 @@ class JobSubmitDialog(QDialog):
             self.step_combo.addItem(str(name), str(name))
         index = self.step_combo.findData(current_step)
         self.step_combo.setCurrentIndex(index if index >= 0 else 0)
-        solver_type = QLabel("线性静力", self)
-        form.addRow("作业名称：", self.name_edit)
-        form.addRow("分析步：", self.step_combo)
-        form.addRow("求解类型：", solver_type)
+        solver_type = QLabel("Linear Static", self)
+        form.addRow("Job Name:", self.name_edit)
+        form.addRow("Step:", self.step_combo)
+        form.addRow("Solver Type:", solver_type)
         layout.addLayout(form)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
             parent=self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("创建")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -84,7 +84,7 @@ class JobSubmitDialog(QDialog):
 
 
 class JobManagerDialog(QDialog):
-    """显示会话作业、选中作业日志及历史结果操作。"""
+    """Show session jobs, selected job logs, and historical result actions."""
 
     submitRequested = Signal(str)
     terminateRequested = Signal(str)
@@ -94,19 +94,19 @@ class JobManagerDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("jobManagerDialog")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowTitle("作业管理器")
+        self.setWindowTitle("Job Manager")
         self.resize(680, 450)
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 5, self)
         self.table.setObjectName("jobTable")
-        self.table.setHorizontalHeaderLabels(("作业名称", "分析步", "状态", "开始时间", "耗时"))
+        self.table.setHorizontalHeaderLabels(("Job Name", "Step", "Status", "Start Time", "Duration"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.itemSelectionChanged.connect(self._update_selection)
         layout.addWidget(self.table, 1)
-        layout.addWidget(QLabel("日志", self))
+        layout.addWidget(QLabel("Log", self))
         self.log_view = QPlainTextEdit(self)
         self.log_view.setObjectName("jobLogView")
         self.log_view.setReadOnly(True)
@@ -114,10 +114,10 @@ class JobManagerDialog(QDialog):
         self._displayed_job_name: str | None = None
         layout.addWidget(self.log_view)
         buttons = QHBoxLayout()
-        self.submit_button = QPushButton("提交求解", self)
-        self.terminate_button = QPushButton("终止求解", self)
-        self.open_result_button = QPushButton("打开结果", self)
-        close = QPushButton("关闭", self)
+        self.submit_button = QPushButton("Submit", self)
+        self.terminate_button = QPushButton("Terminate", self)
+        self.open_result_button = QPushButton("Open Results", self)
+        close = QPushButton("Close", self)
         self.submit_button.clicked.connect(self._emit_submit)
         self.terminate_button.clicked.connect(self._emit_terminate)
         self.open_result_button.clicked.connect(self._emit_open_result)
@@ -135,7 +135,7 @@ class JobManagerDialog(QDialog):
         self.refresh(jobs)
 
     def refresh(self, jobs: Iterable[AnalysisRun] | None = None) -> None:
-        """刷新表格并保留原选择。"""
+        """Refresh the table and preserve the selection."""
         if jobs is not None:
             self._jobs = list(jobs)
         elif not hasattr(self, "_jobs"):
@@ -148,7 +148,7 @@ class JobManagerDialog(QDialog):
                 job.name,
                 job.step_name,
                 (
-                    "终止中"
+                    "Terminating"
                     if job.cancellation_requested
                     and job.status is RunStatus.RUNNING
                     else _STATUS_LABELS.get(job.status, str(job.status.value))
@@ -183,7 +183,7 @@ class JobManagerDialog(QDialog):
             for candidate in getattr(self, "_jobs", ())
         )
         job_name = job.name if job else None
-        log_text = "\n".join(job.messages) if job else "尚无作业记录"
+        log_text = "\n".join(job.messages) if job else "No job records yet"
         if job_name != self._displayed_job_name or log_text != self.log_view.toPlainText():
             same_job = job_name == self._displayed_job_name
             scroll_bar = self.log_view.verticalScrollBar()

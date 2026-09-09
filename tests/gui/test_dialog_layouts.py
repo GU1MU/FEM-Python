@@ -34,13 +34,13 @@ def test_parameter_dialogs_do_not_force_sparse_content_wide(gui_application):
     )
     section = SectionDefinition("Section-1", "Steel")
     dialogs = (
-        (SectionEditDialog([material], section), 350),
+        (SectionEditDialog([material], section), 400),
         (
             RegionAssignmentDialog(
                 [section],
                 [RegionRef("element_set", "DOMAIN")],
             ),
-            310,
+            320,
         ),
         (
             LoadDialog(
@@ -50,10 +50,10 @@ def test_parameter_dialogs_do_not_force_sparse_content_wide(gui_application):
                 [],
                 2,
             ),
-            360,
+            430,
         ),
         (OutputRequestDialog(["Step-1"]), 340),
-        (SketchContourDialog(), 350),
+        (SketchContourDialog(), 390),
     )
 
     for dialog, maximum in dialogs:

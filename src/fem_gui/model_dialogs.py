@@ -59,13 +59,13 @@ def _signed_number(parent: QDialog, value: float = 0.0) -> QDoubleSpinBox:
 
 
 _SECTION_PRESET_LABELS = {
-    "solid_plane_stress": "平面应力",
-    "solid_plane_strain": "平面应变",
-    "solid": "三维实体",
-    "truss": "桁架（面积）",
-    "rectangle": "梁（矩形）",
-    "solid_circle": "梁（实心圆）",
-    "hollow_circle": "梁（空心圆）",
+    "solid_plane_stress": "Plane Stress",
+    "solid_plane_strain": "Plane Strain",
+    "solid": "3D Solid",
+    "truss": "Truss (Area)",
+    "rectangle": "Beam (Rectangle)",
+    "solid_circle": "Beam (Solid Circle)",
+    "hollow_circle": "Beam (Hollow Circle)",
 }
 _SECTION_PROPERTY_FIELDS = frozenset(
     {
@@ -86,10 +86,10 @@ _SECTION_PROPERTY_FIELDS = frozenset(
     }
 )
 _REGION_KIND_LABELS = {
-    "node_set": "节点集",
-    "element_set": "单元集",
-    "edge": "边",
-    "surface": "面",
+    "node_set": "Node Set",
+    "element_set": "Element Set",
+    "edge": "Edge",
+    "surface": "Face",
 }
 
 
@@ -110,7 +110,7 @@ class ElasticBehaviorDialog(QDialog):
 
     def __init__(self, properties: dict[str, object], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("线弹性")
+        self.setWindowTitle("Linear Elastic")
         has_elastic_modulus = "E" in properties
         self.elastic_spin = _number(
             self,
@@ -130,16 +130,16 @@ class ElasticBehaviorDialog(QDialog):
         self.poisson_spin.setMaximum(0.499999)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("弹性模量 E", self.elastic_spin)
-        form.addRow("泊松比 ν", self.poisson_spin)
+        form.addRow("Elastic Modulus E", self.elastic_spin)
+        form.addRow("Poisson's Ratio ν", self.poisson_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.ok_button.setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.ok_button.setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.elastic_spin.textChanged.connect(self._update_ok_button)
@@ -158,7 +158,7 @@ class ElasticBehaviorDialog(QDialog):
 
     def values(self) -> dict[str, float]:
         if not self.ok_button.isEnabled():
-            raise ValueError("弹性模量和泊松比不能为空")
+            raise ValueError("Elastic modulus and Poisson's ratio are required")
         return {
             "E": self.elastic_spin.value(),
             "nu": self.poisson_spin.value(),
@@ -168,7 +168,7 @@ class ElasticBehaviorDialog(QDialog):
 class DensityBehaviorDialog(QDialog):
     def __init__(self, properties: dict[str, object], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("密度")
+        self.setWindowTitle("Density")
         self.density_spin = _number(
             self,
             float(properties.get("rho", 7850.0)),
@@ -176,14 +176,14 @@ class DensityBehaviorDialog(QDialog):
         )
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("密度 ρ", self.density_spin)
+        form.addRow("Density ρ", self.density_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -198,16 +198,16 @@ class DensityBehaviorDialog(QDialog):
 class MaterialEditDialog(QDialog):
     def __init__(self, material: MaterialDefinition | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("编辑材料" if material else "新建材料")
+        self.setWindowTitle("Edit Material" if material else "New Material")
         current = material or MaterialDefinition("Material-1", {})
         self._properties = dict(current.properties)
         self._row_kinds: list[str] = []
         self.name_edit = QLineEdit(current.name, self)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("名称", self.name_edit)
+        form.addRow("Name", self.name_edit)
         self.behavior_table = QTableWidget(0, 2, self)
-        self.behavior_table.setHorizontalHeaderLabels(("材料行为", "状态"))
+        self.behavior_table.setHorizontalHeaderLabels(("Material Behavior", "Status"))
         self.behavior_table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
@@ -223,11 +223,11 @@ class MaterialEditDialog(QDialog):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.behavior_combo = QComboBox(self)
-        self.behavior_combo.addItem("线弹性", "elastic")
-        self.behavior_combo.addItem("密度", "density")
-        self.add_behavior_button = QPushButton("添加", self)
-        self.edit_behavior_button = QPushButton("编辑参数", self)
-        self.delete_behavior_button = QPushButton("删除", self)
+        self.behavior_combo.addItem("Linear Elastic", "elastic")
+        self.behavior_combo.addItem("Density", "density")
+        self.add_behavior_button = QPushButton("Add", self)
+        self.edit_behavior_button = QPushButton("Edit", self)
+        self.delete_behavior_button = QPushButton("Delete", self)
         self.add_behavior_button.clicked.connect(self._add_behavior)
         self.edit_behavior_button.clicked.connect(self._edit_behavior)
         self.delete_behavior_button.clicked.connect(self._delete_behavior)
@@ -237,16 +237,17 @@ class MaterialEditDialog(QDialog):
         self.behavior_table.itemSelectionChanged.connect(self._update_buttons)
         self.behavior_combo.currentIndexChanged.connect(self._update_buttons)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("添加行为", self))
+        controls.addWidget(QLabel("Behavior", self))
         controls.addWidget(self.behavior_combo)
         controls.addWidget(self.add_behavior_button)
-        controls.addSpacing(12)
-        controls.addWidget(self.edit_behavior_button)
-        controls.addWidget(self.delete_behavior_button)
         controls.addStretch(1)
+        edit_controls = QHBoxLayout()
+        edit_controls.addWidget(self.edit_behavior_button)
+        edit_controls.addWidget(self.delete_behavior_button)
+        edit_controls.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -260,7 +261,7 @@ class MaterialEditDialog(QDialog):
     def material(self) -> MaterialDefinition:
         name = self.name_edit.text().strip()
         if not name:
-            raise ValueError("材料名称不能为空")
+            raise ValueError("Material name is required")
         return MaterialDefinition(name, dict(self._properties))
 
     def _behavior_rows(self) -> list[tuple[str, str, str]]:
@@ -268,14 +269,14 @@ class MaterialEditDialog(QDialog):
         if "E" in self._properties or "nu" in self._properties:
             rows.append((
                 "elastic",
-                "线弹性",
-                "已定义",
+                "Linear Elastic",
+                "Defined",
             ))
         if "rho" in self._properties:
             rows.append((
                 "density",
-                "密度",
-                "已定义",
+                "Density",
+                "Defined",
             ))
         known = {"E", "nu", "rho"}
         unknown = tuple(
@@ -284,8 +285,8 @@ class MaterialEditDialog(QDialog):
         if unknown:
             rows.append((
                 "preserved",
-                "其他属性（来自 INP）",
-                f"已保留 {len(unknown)} 项",
+                "Other Properties (from INP)",
+                f"{len(unknown)} items preserved",
             ))
         return rows
 
@@ -363,14 +364,14 @@ class MaterialManagerDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("材料管理")
+        self.setWindowTitle("Material Manager")
         self.materials: list[MaterialDefinition] = deepcopy(list(materials))
         self._original_names: tuple[str, ...] = tuple(
             material.name for material in self.materials
         )
         self._origins: list[str | None] = list(self._original_names)
         self.table = QTableWidget(0, 2, self)
-        self.table.setHorizontalHeaderLabels(("名称", "材料行为"))
+        self.table.setHorizontalHeaderLabels(("Name", "Material Behavior"))
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -382,9 +383,9 @@ class MaterialManagerDialog(QDialog):
             1, QHeaderView.ResizeMode.Stretch
         )
         self.table.verticalHeader().setVisible(False)
-        self.add_button = QPushButton("新建", self)
-        self.edit_button = QPushButton("编辑", self)
-        self.delete_button = QPushButton("删除", self)
+        self.add_button = QPushButton("New", self)
+        self.edit_button = QPushButton("Edit", self)
+        self.delete_button = QPushButton("Delete", self)
         self.add_button.clicked.connect(self._add)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
@@ -399,8 +400,8 @@ class MaterialManagerDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -429,12 +430,12 @@ class MaterialManagerDialog(QDialog):
         properties = material.properties
         behaviors: list[str] = []
         if "E" in properties or "nu" in properties:
-            behaviors.append("线弹性")
+            behaviors.append("Linear Elastic")
         if "rho" in properties:
-            behaviors.append("密度")
+            behaviors.append("Density")
         if any(key not in {"E", "nu", "rho"} for key in properties):
-            behaviors.append("其他属性")
-        return "、".join(behaviors) or "未定义"
+            behaviors.append("Other Properties")
+        return ", ".join(behaviors) or "Undefined"
 
     def _selected_row(self) -> int:
         return self.table.currentRow()
@@ -442,7 +443,7 @@ class MaterialManagerDialog(QDialog):
     def _store(self, value: MaterialDefinition, row: int | None = None) -> None:
         duplicate = next((index for index, item in enumerate(self.materials) if item.name == value.name and index != row), None)
         if duplicate is not None:
-            raise ValueError(f"材料名称已存在：{value.name}")
+            raise ValueError(f"Material name already exists: {value.name}")
         if row is None:
             self.materials.append(value)
             self._origins.append(None)
@@ -456,7 +457,7 @@ class MaterialManagerDialog(QDialog):
             try:
                 self._store(dialog.material())
             except ValueError as error:
-                QMessageBox.warning(self, "材料", str(error))
+                QMessageBox.warning(self, "Material", str(error))
 
     def _edit(self) -> None:
         row = self._selected_row()
@@ -467,7 +468,7 @@ class MaterialManagerDialog(QDialog):
             try:
                 self._store(dialog.material(), row)
             except ValueError as error:
-                QMessageBox.warning(self, "材料", str(error))
+                QMessageBox.warning(self, "Material", str(error))
 
     def _delete(self) -> None:
         row = self._selected_row()
@@ -511,7 +512,7 @@ class SectionEditDialog(QDialog):
         section_presets: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("编辑截面" if section else "新建截面")
+        self.setWindowTitle("Edit Section" if section else "New Section")
         self.model_dimension = int(model_dimension)
         self.section_presets = _section_presets(
             section_presets,
@@ -557,12 +558,12 @@ class SectionEditDialog(QDialog):
         self.type_combo = QComboBox(self)
         if self._read_only:
             self.type_combo.addItem(
-                f"{self._section_type}（来自 INP）",
+                f"{self._section_type} (from INP)",
                 self._section_type,
             )
             self.type_combo.setEnabled(False)
         elif self._unsupported_new_section:
-            self.type_combo.addItem("当前模型不支持新建截面")
+            self.type_combo.addItem("This model does not support creating sections")
             self.type_combo.setEnabled(False)
         else:
             for preset in self.section_presets:
@@ -618,25 +619,25 @@ class SectionEditDialog(QDialog):
         self.validation_label.setWordWrap(True)
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("名称", self.name_edit)
-        self.form.addRow("材料", self.material_combo)
-        self.form.addRow("类型", self.type_combo)
-        self.form.addRow("厚度", self.thickness_spin)
-        self.form.addRow("面积", self.area_spin)
-        self.form.addRow("高度（局部 z）", self.height_spin)
-        self.form.addRow("宽度（局部 y）", self.width_spin)
-        self.form.addRow("半径", self.radius_spin)
-        self.form.addRow("外半径", self.outer_radius_spin)
-        self.form.addRow("内半径", self.inner_radius_spin)
-        self.form.addRow("限制", self.limitation_label)
+        self.form.addRow("Name", self.name_edit)
+        self.form.addRow("Material", self.material_combo)
+        self.form.addRow("Type", self.type_combo)
+        self.form.addRow("Thickness", self.thickness_spin)
+        self.form.addRow("Area", self.area_spin)
+        self.form.addRow("Height (Local z)", self.height_spin)
+        self.form.addRow("Width (Local y)", self.width_spin)
+        self.form.addRow("Radius", self.radius_spin)
+        self.form.addRow("Outer Radius", self.outer_radius_spin)
+        self.form.addRow("Inner Radius", self.inner_radius_spin)
+        self.form.addRow("Limitations", self.limitation_label)
         self.form.addRow("", self.validation_label)
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -658,11 +659,11 @@ class SectionEditDialog(QDialog):
         if self._read_only and self._original_section is not None:
             return deepcopy(self._original_section)
         if self._unsupported_new_section:
-            raise ValueError("当前模型能力不支持新建截面")
+            raise ValueError("Current model capabilities do not support creating sections")
         name = self.name_edit.text().strip()
         material = self.material_combo.currentText().strip()
         if not name or not material:
-            raise ValueError("截面名称和材料不能为空")
+            raise ValueError("Section name and material are required")
         preset = self._current_preset()
         properties = {
             key: deepcopy(value)
@@ -694,7 +695,7 @@ class SectionEditDialog(QDialog):
             None,
         )
         if selected_material is None:
-            raise ValueError(f"截面引用的材料不存在：{material}")
+            raise ValueError(f"Section material does not exist: {material}")
         resolved = resolve_section_preset_properties(
             preset,
             selected_material.properties,
@@ -775,12 +776,12 @@ class SectionEditDialog(QDialog):
             self.name_edit.setEnabled(False)
             self.material_combo.setEnabled(False)
             self.limitation_label.setText(
-                "该导入截面类型暂不支持编辑，保存时将原样保留。"
+                "This imported section type cannot be edited yet and will be saved unchanged."
             )
             self.form.setRowVisible(self.limitation_label, True)
         elif self._unsupported_new_section:
             self.limitation_label.setText(
-                "当前模型能力未提供可创建的截面预设。"
+                "Current model capabilities provide no section presets for creation."
             )
             self.form.setRowVisible(self.limitation_label, True)
         else:
@@ -796,7 +797,7 @@ class SectionEditDialog(QDialog):
             <= self.inner_radius_spin.value()
         )
         if invalid_hollow:
-            self.validation_label.setText("外半径必须大于内半径。")
+            self.validation_label.setText("Outer radius must exceed inner radius.")
         else:
             self.validation_label.clear()
         self.form.setRowVisible(self.validation_label, invalid_hollow)
@@ -817,7 +818,7 @@ class SectionManagerDialog(QDialog):
         authoring_enabled: bool = True,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("截面管理")
+        self.setWindowTitle("Section Manager")
         self.materials = deepcopy(materials)
         self.sections: list[SectionDefinition] = deepcopy(list(sections))
         self._original_names: tuple[str, ...] = tuple(
@@ -836,7 +837,7 @@ class SectionManagerDialog(QDialog):
             and self.section_presets
         )
         self.table = QTableWidget(0, 3, self)
-        self.table.setHorizontalHeaderLabels(("名称", "材料", "类型"))
+        self.table.setHorizontalHeaderLabels(("Name", "Material", "Type"))
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -846,7 +847,7 @@ class SectionManagerDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
-        self.add_button, self.edit_button, self.delete_button = (QPushButton(text, self) for text in ("新建", "编辑", "删除"))
+        self.add_button, self.edit_button, self.delete_button = (QPushButton(text, self) for text in ("New", "Edit", "Delete"))
         self.add_button.clicked.connect(self._add)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
@@ -865,8 +866,8 @@ class SectionManagerDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -875,11 +876,11 @@ class SectionManagerDialog(QDialog):
         layout.addWidget(buttons)
         self.add_button.setEnabled(self._can_create)
         if not authoring_enabled:
-            self.add_button.setToolTip("当前模型策略不允许新建截面。")
+            self.add_button.setToolTip("Current model policy does not allow creating sections.")
         elif not self.materials:
-            self.add_button.setToolTip("请先创建材料。")
+            self.add_button.setToolTip("Create a material first.")
         elif not self.section_presets:
-            self.add_button.setToolTip("当前模型能力没有可用的截面预设。")
+            self.add_button.setToolTip("Current model capabilities provide no available section presets.")
         self.resize(500, 320)
         self._refresh()
 
@@ -902,14 +903,14 @@ class SectionManagerDialog(QDialog):
     def _section_label(self, section: SectionDefinition) -> str:
         if self.model_dimension == 2 and section.section_type == "solid":
             return {
-                "stress": "平面应力",
-                "strain": "平面应变",
+                "stress": "Plane Stress",
+                "strain": "Plane Strain",
             }.get(
                 str(section.properties.get("plane_type", "stress")).casefold(),
-                "二维实体",
+                "2D Solid",
             )
         if self.model_dimension == 3 and section.section_type == "solid":
-            return "三维实体"
+            return "3D Solid"
         return _SECTION_PRESET_LABELS.get(
             section.section_type,
             section.section_type,
@@ -917,7 +918,7 @@ class SectionManagerDialog(QDialog):
 
     def _store(self, value: SectionDefinition, row: int | None = None) -> None:
         if any(item.name == value.name and index != row for index, item in enumerate(self.sections)):
-            raise ValueError(f"截面名称已存在：{value.name}")
+            raise ValueError(f"Section name already exists: {value.name}")
         if row is None:
             self.sections.append(value)
             self._origins.append(None)
@@ -927,7 +928,7 @@ class SectionManagerDialog(QDialog):
 
     def _add(self) -> None:
         if not self.materials:
-            QMessageBox.warning(self, "截面", "请先创建材料")
+            QMessageBox.warning(self, "Section", "Create a material first")
             return
         if not self._can_create:
             return
@@ -941,7 +942,7 @@ class SectionManagerDialog(QDialog):
             try:
                 self._store(dialog.section())
             except ValueError as error:
-                QMessageBox.warning(self, "截面", str(error))
+                QMessageBox.warning(self, "Section", str(error))
 
     def _edit(self) -> None:
         row = self.table.currentRow()
@@ -958,7 +959,7 @@ class SectionManagerDialog(QDialog):
             try:
                 self._store(dialog.section(), row)
             except ValueError as error:
-                QMessageBox.warning(self, "截面", str(error))
+                QMessageBox.warning(self, "Section", str(error))
 
     def _delete(self) -> None:
         row = self.table.currentRow()
@@ -1014,7 +1015,7 @@ class RegionAssignmentDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(
-            "编辑截面分配" if current is not None else "截面分配"
+            "Edit Section Assignment" if current is not None else "Assign Section"
         )
         self._sections = tuple(deepcopy(sections))
         self._regions = self._normalize_regions(regions)
@@ -1034,7 +1035,7 @@ class RegionAssignmentDialog(QDialog):
             }
         )
         self.section_combo, self.region_combo = QComboBox(self), QComboBox(self)
-        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button = QPushButton("Create", self)
         self.scope_pick_button.setEnabled(bool(allow_scope_selection))
         self.scope_pick_button.clicked.connect(
             self._request_scope_selection
@@ -1045,8 +1046,8 @@ class RegionAssignmentDialog(QDialog):
         region_layout.addWidget(self.region_combo, 1)
         region_layout.addWidget(self.scope_pick_button)
         self.orientation_mode_combo = QComboBox(self)
-        self.orientation_mode_combo.addItem("自动", "automatic")
-        self.orientation_mode_combo.addItem("参考方向", "explicit")
+        self.orientation_mode_combo.addItem("Automatic", "automatic")
+        self.orientation_mode_combo.addItem("Reference Direction", "explicit")
         authored_orientation = (
             None
             if current is None
@@ -1098,20 +1099,20 @@ class RegionAssignmentDialog(QDialog):
             spin.valueChanged.connect(self._update_orientation_fields)
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("截面", self.section_combo)
-        self.form.addRow("单元作用域", region_widget)
-        self.form.addRow("梁截面方向", self.orientation_mode_combo)
-        self.form.addRow("参考方向 X", self.orientation_x_spin)
-        self.form.addRow("参考方向 Y", self.orientation_y_spin)
-        self.form.addRow("参考方向 Z", self.orientation_z_spin)
+        self.form.addRow("Section", self.section_combo)
+        self.form.addRow("Scope", region_widget)
+        self.form.addRow("Beam Orientation", self.orientation_mode_combo)
+        self.form.addRow("Reference X", self.orientation_x_spin)
+        self.form.addRow("Reference Y", self.orientation_y_spin)
+        self.form.addRow("Reference Z", self.orientation_z_spin)
         self.form.addRow(self.orientation_diagnostic_label)
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -1144,10 +1145,10 @@ class RegionAssignmentDialog(QDialog):
     def assignment(self) -> RegionAssignment:
         section_name = self.section_combo.currentText().strip()
         if not section_name:
-            raise ValueError("截面不能为空")
+            raise ValueError("A section is required")
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("没有可分配的兼容单元作用域")
+            raise ValueError("No compatible element scope is available for assignment")
         region_name = require_region_kind(region, "element_set")
         orientation = self.beam_orientation()
         if orientation is None:
@@ -1166,9 +1167,9 @@ class RegionAssignmentDialog(QDialog):
             return None
         reference = self.reference_vector()
         if not all(isfinite(value) for value in reference):
-            raise ValueError("梁截面参考方向必须包含三个有限分量")
+            raise ValueError("Beam reference direction must contain three finite components")
         if not any(value != 0.0 for value in reference):
-            raise ValueError("梁截面参考方向不能为零向量")
+            raise ValueError("Beam reference direction must be nonzero")
         return BeamOrientation(reference)
 
     def reference_vector(self) -> tuple[float, float, float]:
@@ -1208,7 +1209,7 @@ class RegionAssignmentDialog(QDialog):
             candidate = self.assignment()
             decision = self.candidate_decision(candidate)
         except (TypeError, ValueError) as error:
-            QMessageBox.warning(self, "截面分配", str(error))
+            QMessageBox.warning(self, "Assign Section", str(error))
             return
         if not self._decision_enabled(decision):
             self.orientation_diagnostic_label.setText(
@@ -1274,7 +1275,7 @@ class RegionAssignmentDialog(QDialog):
                     region.kind,
                     region.kind,
                 )
-                label = f"{region.name}（{kind_label}）"
+                label = f"{region.name} ({kind_label})"
             self.region_combo.addItem(label, region)
         if isinstance(current_region, RegionRef):
             index = self.region_combo.findData(current_region)
@@ -1330,8 +1331,8 @@ class RegionAssignmentDialog(QDialog):
                 self._conversion_message = ""
                 return
         self._conversion_message = (
-            "当前区域的 compatibility frame 无法无损转换为一个统一的显式参考"
-            "方向；切换可能改变截面方向，请输入并预览后提交。"
+            "The current region's compatibility frame cannot be converted losslessly to a single explicit reference "
+            "direction. Switching may change the section orientation. Enter and preview the direction before submitting."
         )
 
     def _selected_section_is_beam(self) -> bool:
@@ -1378,7 +1379,7 @@ class RegionAssignmentDialog(QDialog):
         if explicit and not reference_valid:
             self.orientation_diagnostic_label.setText(
                 self._conversion_message
-                or "显式参考方向必须是非零的三个有限分量。"
+                or "Explicit reference direction must have three finite components and be nonzero."
             )
         else:
             self.orientation_diagnostic_label.clear()
@@ -1412,7 +1413,7 @@ class RegionAssignmentDialog(QDialog):
             ).strip()
             text = f"[{code}] {message}" if code else message
             if remediation:
-                text += f"\n建议：{remediation}"
+                text += f"\nSuggestion: {remediation}"
             if text:
                 lines.append(text)
-        return "\n".join(lines) or "当前截面分配不能提交。"
+        return "\n".join(lines) or "The current section assignment cannot be submitted."

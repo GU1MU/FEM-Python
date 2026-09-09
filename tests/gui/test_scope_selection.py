@@ -395,7 +395,7 @@ def test_scope_dispatch_offers_dimension_appropriate_semantic_types(
     _application().processEvents()
     assert captured["items"] == ("Set", "Edge", "Surface", "Volume")
     assert fit_calls == []
-    assert window.actions["select_edge"].text() == "选择边"
+    assert window.actions["select_edge"].text() == "Select Edges"
     window._start_edge_scope_selection()
     assert window._pending_scope_kind == "edge"
     assert window.viewport._selection_mode == "geometry_edge"

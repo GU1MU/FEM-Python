@@ -120,8 +120,8 @@ def test_section_dialog_uses_dimension_specific_supported_parameters(gui_applica
     )
     plane_section = plane.section()
 
-    assert plane.type_combo.itemText(0) == "平面应力"
-    assert plane.type_combo.itemText(1) == "平面应变"
+    assert plane.type_combo.itemText(0) == "Plane Stress"
+    assert plane.type_combo.itemText(1) == "Plane Strain"
     assert plane_section.section_type == "solid"
     assert plane_section.properties["plane_type"] == "strain"
     assert plane.form.isRowVisible(plane.thickness_spin)
@@ -133,7 +133,7 @@ def test_section_dialog_uses_dimension_specific_supported_parameters(gui_applica
     )
     solid_section = solid.section()
 
-    assert solid.type_combo.itemText(0) == "三维实体"
+    assert solid.type_combo.itemText(0) == "3D Solid"
     assert not solid.form.isRowVisible(solid.thickness_spin)
     assert solid_section.section_type == "solid"
     assert "plane_type" not in solid_section.properties
@@ -183,7 +183,7 @@ def test_material_editor_preserves_unknown_inp_behaviors_read_only(gui_applicati
     dialog = MaterialEditDialog(original)
 
     assert dialog.behavior_table.rowCount() == 2
-    assert "来自 INP" in dialog.behavior_table.item(1, 0).text()
+    assert "from INP" in dialog.behavior_table.item(1, 0).text()
     dialog.behavior_table.selectRow(1)
     assert not dialog.edit_behavior_button.isEnabled()
     assert not dialog.delete_behavior_button.isEnabled()
@@ -208,7 +208,7 @@ def test_definition_managers_edit_copies_and_use_read_only_tables(gui_applicatio
         == QAbstractItemView.EditTrigger.NoEditTriggers
     )
     assert material_dialog.table.columnCount() == 2
-    assert material_dialog.table.item(0, 1).text() == "线弹性、密度"
+    assert material_dialog.table.item(0, 1).text() == "Linear Elastic, Density"
     material_dialog._delete()
     section_dialog._delete()
 

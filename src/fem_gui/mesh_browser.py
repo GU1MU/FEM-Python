@@ -1,4 +1,4 @@
-"""基于模型/代理模型的只读节点和单元浏览器。"""
+"""Read-only node and element browser for models and proxy models."""
 
 from __future__ import annotations
 
@@ -46,9 +46,9 @@ class _EntityTableModel(QAbstractTableModel):
 
 
 class NodeTableModel(_EntityTableModel):
-    """按需从 InspectionService 读取节点表格值。"""
+    """Read node table values from InspectionService on demand."""
 
-    columns = ("编号", "X", "Y", "Z", "所属节点集")
+    columns = ("ID", "X", "Y", "Z", "Node Sets")
     kind = "node"
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
@@ -64,9 +64,9 @@ class NodeTableModel(_EntityTableModel):
 
 
 class ElementTableModel(_EntityTableModel):
-    """按需从 InspectionService 读取单元表格值。"""
+    """Read element table values from InspectionService on demand."""
 
-    columns = ("编号", "类型", "连接节点预览", "所属单元集", "材料", "截面")
+    columns = ("ID", "Type", "Connectivity Preview", "Element Sets", "Material", "Section")
     kind = "element"
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
@@ -84,7 +84,7 @@ class ElementTableModel(_EntityTableModel):
 
 
 class MeshFilterProxyModel(QSortFilterProxyModel):
-    """组合编号、类型和集合过滤条件。"""
+    """Combine ID, type, and set filters."""
 
     def __init__(self, kind: str, service: InspectionService, parent=None) -> None:
         super().__init__(parent)
@@ -121,7 +121,7 @@ class MeshFilterProxyModel(QSortFilterProxyModel):
 
 
 class MeshBrowserDialog(QDialog):
-    """大网格安全的节点/单元浏览、过滤与定位窗口。"""
+    """Browse, filter, and locate nodes and elements in large meshes."""
 
     entityInformationRequested = Signal(str, object)
     highlightRequested = Signal(str, object)
@@ -131,7 +131,7 @@ class MeshBrowserDialog(QDialog):
         super().__init__(parent)
         self.service = service
         self.setObjectName("meshBrowserDialog")
-        self.setWindowTitle("网格浏览器")
+        self.setWindowTitle("Mesh Browser")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.resize(940, 620)
         layout = QVBoxLayout(self)
@@ -151,8 +151,8 @@ class MeshBrowserDialog(QDialog):
         buttons = QHBoxLayout()
         self.selection_buttons: list[QPushButton] = []
         for text, callback in (
-            ("高亮", self.highlight_current), ("定位", self.locate_current),
-            ("复制编号", self.copy_current_id),
+            ("Highlight", self.highlight_current), ("Locate", self.locate_current),
+            ("Copy ID", self.copy_current_id),
         ):
             button = QPushButton(text, self)
             button.clicked.connect(callback)
@@ -160,7 +160,7 @@ class MeshBrowserDialog(QDialog):
             self.selection_buttons.append(button)
             buttons.addWidget(button)
         buttons.addStretch(1)
-        close = QPushButton("关闭", self)
+        close = QPushButton("Close", self)
         close.clicked.connect(self.close)
         buttons.addWidget(close)
         layout.addLayout(buttons)
@@ -174,18 +174,18 @@ class MeshBrowserDialog(QDialog):
         filters = QHBoxLayout()
         search = QLineEdit(page)
         search.setObjectName("nodeIdSearch")
-        search.setPlaceholderText("按节点编号搜索")
+        search.setPlaceholderText("Search by Node ID")
         search.setMinimumWidth(260)
         search.setMaximumWidth(360)
         node_set = QComboBox(page)
         node_set.setObjectName("nodeSetFilter")
         node_set.setMinimumWidth(150)
-        node_set.addItem("全部节点集", "")
+        node_set.addItem("All Node Sets", "")
         for name in self.service.model.node_sets:
             node_set.addItem(name, name)
-        filters.addWidget(QLabel("编号：", page))
+        filters.addWidget(QLabel("ID:", page))
         filters.addWidget(search)
-        filters.addWidget(QLabel("节点集：", page))
+        filters.addWidget(QLabel("Node Set:", page))
         filters.addWidget(node_set)
         filters.addStretch(1)
         layout.addLayout(filters)
@@ -198,7 +198,7 @@ class MeshBrowserDialog(QDialog):
         layout.addWidget(view, 1)
         search.textChanged.connect(self.node_proxy.set_search)
         node_set.currentIndexChanged.connect(lambda: self.node_proxy.set_set_filter(str(node_set.currentData())))
-        self.tabs.addTab(page, "节点")
+        self.tabs.addTab(page, "Nodes")
         return view
 
     def _build_element_page(self) -> QTableView:
@@ -207,26 +207,26 @@ class MeshBrowserDialog(QDialog):
         filters = QHBoxLayout()
         search = QLineEdit(page)
         search.setObjectName("elementIdSearch")
-        search.setPlaceholderText("按单元编号搜索")
+        search.setPlaceholderText("Search by Element ID")
         search.setMinimumWidth(260)
         search.setMaximumWidth(360)
         element_type = QComboBox(page)
         element_type.setObjectName("elementTypeFilter")
         element_type.setMinimumWidth(135)
-        element_type.addItem("全部类型", "")
+        element_type.addItem("All Types", "")
         for name in sorted({str(element.type) for element in self.service.elements.values()}):
             element_type.addItem(name, name)
         element_set = QComboBox(page)
         element_set.setObjectName("elementSetFilter")
         element_set.setMinimumWidth(155)
-        element_set.addItem("全部单元集", "")
+        element_set.addItem("All Element Sets", "")
         for name in self.service.model.element_sets:
             element_set.addItem(name, name)
-        filters.addWidget(QLabel("编号：", page))
+        filters.addWidget(QLabel("ID:", page))
         filters.addWidget(search)
-        filters.addWidget(QLabel("类型：", page))
+        filters.addWidget(QLabel("Type:", page))
         filters.addWidget(element_type)
-        filters.addWidget(QLabel("单元集：", page))
+        filters.addWidget(QLabel("Element Set:", page))
         filters.addWidget(element_set)
         filters.addStretch(1)
         layout.addLayout(filters)
@@ -242,7 +242,7 @@ class MeshBrowserDialog(QDialog):
         search.textChanged.connect(self.element_proxy.set_search)
         element_type.currentIndexChanged.connect(lambda: self.element_proxy.set_type_filter(str(element_type.currentData())))
         element_set.currentIndexChanged.connect(lambda: self.element_proxy.set_set_filter(str(element_set.currentData())))
-        self.tabs.addTab(page, "单元")
+        self.tabs.addTab(page, "Elements")
         return view
 
     def _make_view(self, model: QSortFilterProxyModel, parent: QWidget) -> QTableView:

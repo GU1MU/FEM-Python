@@ -70,8 +70,8 @@ def _buttons(dialog: QDialog) -> QDialogButtonBox:
         | QDialogButtonBox.StandardButton.Cancel,
         dialog,
     )
-    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     return buttons
@@ -128,17 +128,17 @@ def _authoring_candidate_message(decision: AuthoringCapability) -> str:
             )
             for item in diagnostics
         )
-    return f"当前候选状态为 {decision.status.value}；只有 ENABLED 才可保存。"
+    return f"Current candidate status is {decision.status.value}; only ENABLED candidates can be saved."
 
 
 class StaticStepDialog(QDialog):
     def __init__(self, name: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建静力分析步")
+        self.setWindowTitle("Create Static Step")
         self.name_edit = QLineEdit(name, self)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("分析步名称", self.name_edit)
+        form.addRow("Step Name", self.name_edit)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(_buttons(self))
@@ -146,7 +146,7 @@ class StaticStepDialog(QDialog):
     def step(self):
         name = self.name_edit.text().strip()
         if not name:
-            raise ValueError("分析步名称不能为空")
+            raise ValueError("Step name is required")
         return static(name)
 
 
@@ -180,7 +180,7 @@ class DisplacementDialog(QDialog):
         form_state: DisplacementDialogState | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("位移边界条件")
+        self.setWindowTitle("Displacement BC")
         self._reported_scope: object = _SCOPE_NOT_REPORTED
         supported_scope_kinds = frozenset(
             str(kind)
@@ -214,7 +214,7 @@ class DisplacementDialog(QDialog):
             )
         self.kind_combo = QComboBox(self)
         self.region_combo = QComboBox(self)
-        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button = QPushButton("Create", self)
         self.scope_pick_button.clicked.connect(
             self._request_scope_selection
         )
@@ -225,9 +225,9 @@ class DisplacementDialog(QDialog):
         region_layout.addWidget(self.scope_pick_button)
         self.step_combo = QComboBox(self)
         for kind, label, selection_kind in (
-            ("node_set", "节点集", "node"),
-            ("edge", "边", "edge"),
-            ("surface", "面", "surface"),
+            ("node_set", "Node Set", "node"),
+            ("edge", "Edge", "edge"),
+            ("surface", "Face", "surface"),
         ):
             if self._regions[kind] or selection_kind in supported_scope_kinds:
                 self.kind_combo.addItem(label, kind)
@@ -238,8 +238,8 @@ class DisplacementDialog(QDialog):
         component_widget = QWidget(self)
         component_layout = QGridLayout(component_widget)
         component_layout.setContentsMargins(0, 0, 0, 0)
-        component_layout.addWidget(QLabel("自由度", component_widget), 0, 0)
-        component_layout.addWidget(QLabel("位移值", component_widget), 0, 1)
+        component_layout.addWidget(QLabel("DOF", component_widget), 0, 0)
+        component_layout.addWidget(QLabel("Displacement", component_widget), 0, 1)
         for component in range(1, dimensions + 1):
             if component <= len(component_labels):
                 label = component_labels[component - 1]
@@ -291,11 +291,11 @@ class DisplacementDialog(QDialog):
                 self.component_values[component].setValue(value)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("名称", self.name_edit)
-        form.addRow("作用域类型", self.kind_combo)
-        form.addRow("选择作用域", region_widget)
-        form.addRow("分析步", self.step_combo)
-        form.addRow("约束分量", component_widget)
+        form.addRow("Name", self.name_edit)
+        form.addRow("Scope Type", self.kind_combo)
+        form.addRow("Scope", region_widget)
+        form.addRow("Step", self.step_combo)
+        form.addRow("Constrained Components", component_widget)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         self.buttons = _buttons(self)
@@ -398,19 +398,19 @@ class DisplacementDialog(QDialog):
     def definitions(self) -> tuple[str, tuple[DisplacementConstraint, ...]]:
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("请选择约束作用域")
+            raise ValueError("Select a constraint scope")
         if region.kind not in {"node_set", "edge", "surface"}:
-            raise ValueError("位移边界作用域必须是节点集、边或面")
+            raise ValueError("Displacement BC scope must be a node set, edge, or face")
         step_name = self.step_combo.currentText().strip()
         if not step_name:
-            raise ValueError("请选择分析步")
+            raise ValueError("Select a step")
         selected = [
             (component, self.component_values[component].value())
             for component, check in self.component_checks.items()
             if check.isChecked()
         ]
         if not selected:
-            raise ValueError("至少勾选一个位移自由度")
+            raise ValueError("Select at least one displacement DOF")
         ranges: list[tuple[int, int, float]] = []
         for component, value in selected:
             if (
@@ -492,7 +492,7 @@ class LoadDialog(QDialog):
         form_state: LoadDialogState | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("编辑载荷" if current is not None else "创建载荷")
+        self.setWindowTitle("Edit Load" if current is not None else "Create Load")
         self._reported_scope: object = _SCOPE_NOT_REPORTED
         supported_scope_kinds = frozenset(
             str(kind)
@@ -532,7 +532,7 @@ class LoadDialog(QDialog):
         )
         self.kind_combo = QComboBox(self)
         self.region_combo = QComboBox(self)
-        self.scope_pick_button = QPushButton("创建", self)
+        self.scope_pick_button = QPushButton("Create", self)
         self.scope_pick_button.clicked.connect(
             self._request_scope_selection
         )
@@ -543,27 +543,27 @@ class LoadDialog(QDialog):
         region_layout.addWidget(self.scope_pick_button)
         self.step_combo = QComboBox(self)
         if self._regions["node"] or "node" in supported_scope_kinds:
-            self.kind_combo.addItem("节点力", "node")
+            self.kind_combo.addItem("Nodal Force", "node")
         if self._regions["edge"] or "edge" in supported_scope_kinds:
-            self.kind_combo.addItem("边力", "edge")
+            self.kind_combo.addItem("Edge Load", "edge")
         if self._regions["surface"] or "surface" in supported_scope_kinds:
-            self.kind_combo.addItem("面力", "surface")
+            self.kind_combo.addItem("Surface Load", "surface")
         if resolved_line_regions or "line" in supported_scope_kinds:
-            self.kind_combo.addItem("边力", "line")
+            self.kind_combo.addItem("Edge Load", "line")
         if self._regions["body"] or "body" in supported_scope_kinds:
-            self.kind_combo.addItem("体力", "body")
-        self.kind_combo.addItem("重力", "gravity")
+            self.kind_combo.addItem("Body Force", "body")
+        self.kind_combo.addItem("Gravity", "gravity")
         self._gravity_target = (
             current.target if isinstance(current, GravityLoad) else None
         )
         self.step_combo.addItems(step_names)
         self.load_type_combo = QComboBox(self)
-        self.load_type_combo.addItem("牵引", "traction")
-        self.load_type_combo.addItem("压力", "pressure")
+        self.load_type_combo.addItem("Traction", "traction")
+        self.load_type_combo.addItem("Pressure", "pressure")
         self.coordinate_system_combo = QComboBox(self)
-        self.coordinate_system_combo.addItem("全局坐标系", "global")
+        self.coordinate_system_combo.addItem("Global", "global")
         self.coordinate_system_combo.addItem(
-            "局部（Beam 已解析局部坐标）",
+            "Local (Resolved Beam Coordinates)",
             "local",
         )
         self.component_combo = QComboBox(self)
@@ -594,14 +594,14 @@ class LoadDialog(QDialog):
         self._active_vector_kind: str | None = None
         self.form = QFormLayout()
         configure_form_layout(self.form)
-        self.form.addRow("名称", self.name_edit)
-        self.form.addRow("载荷类别", self.kind_combo)
-        self.form.addRow("选择作用域", self.region_widget)
-        self.form.addRow("分析步", self.step_combo)
-        self.form.addRow("载荷形式", self.load_type_combo)
-        self.form.addRow("坐标系", self.coordinate_system_combo)
+        self.form.addRow("Name", self.name_edit)
+        self.form.addRow("Category", self.kind_combo)
+        self.form.addRow("Scope", self.region_widget)
+        self.form.addRow("Step", self.step_combo)
+        self.form.addRow("Load Type", self.load_type_combo)
+        self.form.addRow("Coordinates", self.coordinate_system_combo)
         self.local_axis_label = QLabel(
-            "局部（Beam 已解析局部坐标）",
+            "Local (Resolved Beam Coordinates)",
             self,
         )
         self.local_axis_label.setWordWrap(True)
@@ -609,8 +609,8 @@ class LoadDialog(QDialog):
         self.candidate_diagnostic_label = QLabel("", self)
         self.candidate_diagnostic_label.setWordWrap(True)
         self.form.addRow(self.candidate_diagnostic_label)
-        self.form.addRow("分量", self.component_combo)
-        self.form.addRow("载荷值", self.value_spin)
+        self.form.addRow("Component", self.component_combo)
+        self.form.addRow("Load Value", self.value_spin)
         self.form.addRow("Fx", self.x_spin)
         self.form.addRow("Fy", self.y_spin)
         self.form.addRow("Fz", self.z_spin)
@@ -874,7 +874,7 @@ class LoadDialog(QDialog):
             kind == "node" or (distributed and pressure),
         )
         self.form.labelForField(self.value_spin).setText(
-            "压力值" if pressure and distributed else "载荷值"
+            "Pressure Value" if pressure and distributed else "Load Value"
         )
         body_load = kind == "body"
         show_vector = (
@@ -980,7 +980,7 @@ class LoadDialog(QDialog):
         try:
             step_name, candidate = self.definition()
         except (TypeError, ValueError) as error:
-            QMessageBox.warning(self, "载荷", str(error))
+            QMessageBox.warning(self, "Load", str(error))
             return
         if (
             isinstance(candidate, LineLoad)
@@ -990,7 +990,7 @@ class LoadDialog(QDialog):
             if not _authoring_candidate_enabled(decision):
                 QMessageBox.warning(
                     self,
-                    "边力",
+                    "Edge Load",
                     _authoring_candidate_message(decision),
                 )
                 return
@@ -1000,7 +1000,7 @@ class LoadDialog(QDialog):
         kind = str(self.kind_combo.currentData())
         step = self.step_combo.currentText().strip()
         if not step:
-            raise ValueError("请选择分析步")
+            raise ValueError("Select a step")
         name = self.name_edit.text().strip() or None
         if kind == "gravity":
             acceleration = (self.x_spin.value(),)
@@ -1015,7 +1015,7 @@ class LoadDialog(QDialog):
             )
         region = self.region_combo.currentData()
         if not isinstance(region, RegionRef):
-            raise ValueError("请选择载荷作用域")
+            raise ValueError("Select a load scope")
         expected_kind = {
             "node": "node_set",
             "edge": "edge",
@@ -1024,12 +1024,12 @@ class LoadDialog(QDialog):
             "body": "element_set",
         }.get(kind)
         if expected_kind is None:
-            raise ValueError("当前没有可用的载荷作用域")
+            raise ValueError("No load scope is currently available")
         target = require_region_kind(region, expected_kind)
         if kind == "node":
             component = self.component_combo.currentData()
             if component is None:
-                raise ValueError("请选择节点力分量")
+                raise ValueError("Select a nodal force component")
             return step, NodalLoad(
                 target,
                 int(component),
@@ -1042,12 +1042,12 @@ class LoadDialog(QDialog):
                 for spin in (self.x_spin, self.y_spin, self.z_spin)
             )
             if len(vector) != 3 or not all(isfinite(value) for value in vector):
-                raise ValueError("梁单元边力必须包含三个有限分量")
+                raise ValueError("Beam edge load must contain three finite components")
             coordinate_system = str(
                 self.coordinate_system_combo.currentData() or ""
             )
             if coordinate_system not in {"global", "local"}:
-                raise ValueError("梁单元边力坐标系只能为 global 或 local")
+                raise ValueError("Beam edge load coordinates must be global or local")
             return step, LineLoad(
                 target,
                 vector,
@@ -1065,14 +1065,14 @@ class LoadDialog(QDialog):
                 isfinite(value) for value in vector
             ):
                 raise ValueError(
-                    "体力必须包含与空间维数一致的有限分量"
+                    "Body force must contain finite components matching the spatial dimension"
                 )
             return step, BodyForce(target, vector, name=name)
         load_type = str(self.load_type_combo.currentData())
         if load_type == "pressure":
             magnitude = self.value_spin.value()
             if magnitude == 0.0:
-                raise ValueError("压力值不能为 0")
+                raise ValueError("Pressure must be nonzero")
             load_class = EdgeLoad if kind == "edge" else SurfaceLoad
             return step, load_class(
                 target,
@@ -1084,7 +1084,7 @@ class LoadDialog(QDialog):
         if self.spatial_dimensions == 3:
             vector += (self.z_spin.value(),)
         if not any(value != 0.0 for value in vector):
-            raise ValueError("牵引载荷至少需要一个非零分量")
+            raise ValueError("Traction requires at least one nonzero component")
         load_class = EdgeLoad if kind == "edge" else SurfaceLoad
         return step, load_class(
             target,
@@ -1153,7 +1153,7 @@ class OutputRequestDialog(QDialog):
             if current is None
             else _compact_output_request(current)
         )
-        self.setWindowTitle("输出请求")
+        self.setWindowTitle("Output Requests")
         self.step_combo = QComboBox(self)
         self.step_combo.addItems(step_names)
         self.candidate_list = QListWidget(self)
@@ -1185,7 +1185,7 @@ class OutputRequestDialog(QDialog):
 
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("分析步", self.step_combo)
+        form.addRow("Step", self.step_combo)
         form.addRow(self.candidate_list)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
@@ -1202,7 +1202,7 @@ class OutputRequestDialog(QDialog):
             )
             buttons.button(
                 QDialogButtonBox.StandardButton.Close
-            ).setText("关闭")
+            ).setText("Close")
             buttons.rejected.connect(self.reject)
             layout.addWidget(buttons)
         self.setMinimumWidth(330)
@@ -1212,7 +1212,7 @@ class OutputRequestDialog(QDialog):
     def definitions(self) -> tuple[str, tuple[OutputRequest, ...]]:
         step_name = self.step_combo.currentText().strip()
         if not step_name:
-            raise ValueError("请选择分析步")
+            raise ValueError("Select a step")
         if self._current is not None:
             return step_name, (deepcopy(self._current),)
         requests = tuple(
@@ -1220,7 +1220,7 @@ class OutputRequestDialog(QDialog):
             for candidate in self._selected_candidates()
         )
         if not requests:
-            raise ValueError("请至少选择一个受支持的输出请求")
+            raise ValueError("Select at least one supported output request")
         if any(type(request) is not OutputRequest for request in requests):
             raise TypeError(
                 "candidate authoring_requests must be exactly OutputRequest"
@@ -1230,7 +1230,7 @@ class OutputRequestDialog(QDialog):
     def definition(self) -> tuple[str, OutputRequest]:
         step_name, requests = self.definitions()
         if len(requests) != 1:
-            raise ValueError("当前选择包含多个输出请求，请使用 definitions()")
+            raise ValueError("The selection contains multiple output requests; use definitions()")
         return step_name, requests[0]
 
     def _sync_existing_selection(self) -> None:
@@ -1269,7 +1269,7 @@ class OutputRequestDialog(QDialog):
                 continue
             index = item.data(Qt.ItemDataRole.UserRole)
             if type(index) is not int or not 0 <= index < len(self._candidates):
-                raise RuntimeError("输出请求列表包含无效候选索引")
+                raise RuntimeError("Output request list contains an invalid candidate index")
             selected.append(self._candidates[index])
         return tuple(selected)
 
@@ -1350,7 +1350,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
         output_delete_capability: AuthoringCapability | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("分析定义管理")
+        self.setWindowTitle("Analysis Definition Manager")
         self.steps = deepcopy(steps)
         self.node_regions = list(_typed_regions(node_regions, "node_set"))
         self.edge_regions = list(_typed_regions(edge_regions, "edge"))
@@ -1419,7 +1419,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
 
         self.table = QTableWidget(0, 4, self)
         self.table.setHorizontalHeaderLabels(
-            ("类型", "分析步", "对象/区域", "参数")
+            ("Type", "Step", "Object/Region", "Parameters")
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1431,8 +1431,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.edit_button = QPushButton("编辑", self)
-        self.delete_button = QPushButton("删除", self)
+        self.edit_button = QPushButton("Edit", self)
+        self.delete_button = QPushButton("Delete", self)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemDoubleClicked.connect(lambda _item: self._edit())
@@ -1455,20 +1455,20 @@ class AnalysisDefinitionManagerDialog(QDialog):
         for step_index, step in enumerate(self.steps):
             self._append_row(
                 (
-                    "分析步",
+                    "Step",
                     step.name,
                     step.name,
-                    "线性静力" if step.procedure == "static" else step.procedure,
+                    "Linear Static" if step.procedure == "static" else step.procedure,
                 ),
                 ("step", step_index, None),
             )
             for item_index, boundary in enumerate(step.boundaries):
                 self._append_row(
                     (
-                        "位移边界",
+                        "Displacement BC",
                         step.name,
                         (
-                            f"{boundary.name} · {boundary.target}"
+                            f"{boundary.name} - {boundary.target}"
                             if boundary.name is not None
                             else str(boundary.target)
                         ),
@@ -1479,10 +1479,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.cloads):
                 self._append_row(
                     (
-                        "节点力",
+                        "Nodal Force",
                         step.name,
                         (
-                            f"{load.name} · {load.target}"
+                            f"{load.name} - {load.target}"
                             if load.name is not None
                             else str(load.target)
                         ),
@@ -1493,10 +1493,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.edge_loads):
                 self._append_row(
                     (
-                        "边力",
+                        "Edge Load",
                         step.name,
                         (
-                            f"{load.name} · {load.edge}"
+                            f"{load.name} - {load.edge}"
                             if load.name is not None
                             else load.edge
                         ),
@@ -1507,10 +1507,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.surface_loads):
                 self._append_row(
                     (
-                        "面力",
+                        "Surface Load",
                         step.name,
                         (
-                            f"{load.name} · {load.surface}"
+                            f"{load.name} - {load.surface}"
                             if load.name is not None
                             else load.surface
                         ),
@@ -1521,10 +1521,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.line_loads):
                 self._append_row(
                     (
-                        "边力",
+                        "Edge Load",
                         step.name,
                         (
-                            f"{load.name} · {load.target}"
+                            f"{load.name} - {load.target}"
                             if load.name is not None
                             else str(load.target)
                         ),
@@ -1535,10 +1535,10 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.body_loads):
                 self._append_row(
                     (
-                        "体力",
+                        "Body Force",
                         step.name,
                         (
-                            f"{load.name} · {load.target}"
+                            f"{load.name} - {load.target}"
                             if load.name is not None
                             else str(load.target)
                         ),
@@ -1549,17 +1549,17 @@ class AnalysisDefinitionManagerDialog(QDialog):
             for item_index, load in enumerate(step.gravity_loads):
                 self._append_row(
                     (
-                        "重力",
+                        "Gravity",
                         step.name,
                         (
-                            "整个模型"
+                            "Whole Model"
                             if load.target is None
                             else str(load.target)
                         )
                         if load.name is None
-                        else f"{load.name} · "
+                        else f"{load.name} - "
                         + (
-                            "整个模型"
+                            "Whole Model"
                             if load.target is None
                             else str(load.target)
                         ),
@@ -1571,21 +1571,21 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 self._append_row(
                     (
                         {
-                            "field": "输出",
-                            "history": "历史输出",
-                        }.get(output.kind, "输出请求"),
+                            "field": "Output",
+                            "history": "History Output",
+                        }.get(output.kind, "Output Requests"),
                         step.name,
                         (
-                            f"{output.name} · "
+                            f"{output.name} - "
                             if output.name is not None
                             else ""
                         )
                         + {
-                            "node": "节点",
-                            "element": "单元",
-                            "preselect": "INP 预选",
+                            "node": "Node",
+                            "element": "Element",
+                            "preselect": "INP Preselect",
                         }.get(output.target, output.target),
-                        "、".join(output.variables),
+                        ", ".join(output.variables),
                     ),
                     ("output", step_index, item_index),
                 )
@@ -1607,26 +1607,26 @@ class AnalysisDefinitionManagerDialog(QDialog):
     @staticmethod
     def _distributed_text(load: EdgeLoad | SurfaceLoad) -> str:
         if load.load_type == "pressure":
-            return f"压力 = {float(load.magnitude or 0.0):g}"
-        return "牵引 = (" + ", ".join(f"{value:g}" for value in load.vector) + ")"
+            return f"Pressure = {float(load.magnitude or 0.0):g}"
+        return "Traction = (" + ", ".join(f"{value:g}" for value in load.vector) + ")"
 
     @staticmethod
     def _gravity_text(load: GravityLoad) -> str:
-        return "加速度 = (" + ", ".join(
+        return "Acceleration = (" + ", ".join(
             f"{value:g}" for value in load.acceleration
         ) + ")"
 
     @staticmethod
     def _body_force_text(load: BodyForce) -> str:
-        return "力密度 = (" + ", ".join(
+        return "Force Density = (" + ", ".join(
             f"{value:g}" for value in load.vector
         ) + ")"
 
     @staticmethod
     def _line_load_text(load: LineLoad) -> str:
         coordinate_system = {
-            "global": "全局",
-            "local": "局部（Beam 已解析局部坐标）",
+            "global": "Global",
+            "local": "Local (Resolved Beam Coordinates)",
         }.get(load.coordinate_system, load.coordinate_system)
         return coordinate_system + " = (" + ", ".join(
             f"{value:g}" for value in load.vector
@@ -1766,7 +1766,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 updated = dialog.step()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(self, "Analysis Definitions", str(error))
                 return
             if any(
                 index != step_index
@@ -1775,8 +1775,8 @@ class AnalysisDefinitionManagerDialog(QDialog):
             ):
                 QMessageBox.warning(
                     self,
-                    "分析定义",
-                    f"分析步名称已存在：{updated.name}",
+                    "Analysis Definitions",
+                    f"Step name already exists: {updated.name}",
                 )
                 return
             step.name = updated.name
@@ -1827,7 +1827,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 target_step, values = dialog.definitions()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(self, "Analysis Definitions", str(error))
                 return
             step.boundaries = tuple(
                 item
@@ -1939,7 +1939,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
             try:
                 target_step, value = dialog.definition()
             except ValueError as error:
-                QMessageBox.warning(self, "分析定义", str(error))
+                QMessageBox.warning(self, "Analysis Definitions", str(error))
                 return
             if (
                 isinstance(value, LineLoad)
@@ -1949,7 +1949,7 @@ class AnalysisDefinitionManagerDialog(QDialog):
                 if not _authoring_candidate_enabled(decision):
                     QMessageBox.warning(
                         self,
-                        "分析定义",
+                        "Analysis Definitions",
                         _authoring_candidate_message(decision),
                     )
                     return
@@ -2087,9 +2087,9 @@ class AnalysisDefinitionManagerDialog(QDialog):
             )
         )
         self.edit_button.setText(
-            "查看"
+            "View"
             if is_output
-            else "编辑"
+            else "Edit"
         )
         self.delete_button.setEnabled(
             selected is not None

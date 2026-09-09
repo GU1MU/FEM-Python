@@ -88,11 +88,11 @@ class GeometryCreationDialog(QDialog):
         self,
         parent=None,
         *,
-        default_part_name: str = "部件-1",
+        default_part_name: str = "Part-1",
     ) -> None:
         super().__init__(parent)
         self.setObjectName("geometryCreationDialog")
-        self.setWindowTitle("新建部件")
+        self.setWindowTitle("New Part")
         self.part_name_edit = QLineEdit(default_part_name, self)
         self.part_name_edit.setObjectName("nativePartNameEdit")
         self.sketch_size_spin = _positive_spin_box(self, 50.0)
@@ -106,9 +106,9 @@ class GeometryCreationDialog(QDialog):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         for label, value in (
-            ("1D 线体草图", "1d"),
-            ("2D 平面草图", "2d"),
-            ("3D 基本实体", "3d"),
+            ("1D Wire Sketch", "1d"),
+            ("2D Planar Sketch", "2d"),
+            ("3D Primitive", "3d"),
         ):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, value)
@@ -121,8 +121,8 @@ class GeometryCreationDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("继续")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         self.dimension_list.itemDoubleClicked.connect(
@@ -132,17 +132,17 @@ class GeometryCreationDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("部件名称", self.part_name_edit)
-        form.addRow("草图尺寸", self.sketch_size_spin)
+        form.addRow("Part Name", self.part_name_edit)
+        form.addRow("Sketch Size", self.sketch_size_spin)
         layout.addLayout(form)
-        layout.addWidget(QLabel("建模维度", self))
+        layout.addWidget(QLabel("Model Dimension", self))
         layout.addWidget(self.dimension_list)
         layout.addWidget(buttons)
 
     def creation_kind(self) -> str:
         item = self.dimension_list.currentItem()
         if item is None:
-            raise RuntimeError("请选择建模维度")
+            raise RuntimeError("Select a model dimension")
         return str(item.data(Qt.ItemDataRole.UserRole))
 
     def part_name(self) -> str:
@@ -164,13 +164,13 @@ class BasicSolidCreationDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("basicSolidCreationDialog")
-        self.setWindowTitle("创建 3D 基本实体")
+        self.setWindowTitle("Create 3D Primitive")
 
         self.solid_combo = QComboBox(self)
         self.solid_combo.setObjectName("basicSolidTypeCombo")
         for label, value in (
-            ("长方体", "box"),
-            ("圆柱体", "cylinder"),
+            ("Box", "box"),
+            ("Cylinder", "cylinder"),
         ):
             self.solid_combo.addItem(label, value)
 
@@ -179,19 +179,19 @@ class BasicSolidCreationDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("继续")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("实体类型", self))
+        layout.addWidget(QLabel("Solid Type", self))
         layout.addWidget(self.solid_combo)
         layout.addWidget(buttons)
 
     def solid_kind(self) -> str:
         if self.solid_combo.currentIndex() < 0:
-            raise RuntimeError("请选择 3D 基本实体")
+            raise RuntimeError("Select a 3D primitive")
         return str(self.solid_combo.currentData())
 
 
@@ -200,18 +200,18 @@ class SketchContourDialog(QDialog):
 
     def __init__(self, contour=None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("草图轮廓")
+        self.setWindowTitle("Sketch Contour")
         current = contour or SketchRectangle("material", 0.0, 0.0, 100.0, 50.0)
 
         self.operation_combo = QComboBox(self)
-        self.operation_combo.addItem("添加材料", "material")
-        self.operation_combo.addItem("切除材料", "cut")
+        self.operation_combo.addItem("Add Material", "material")
+        self.operation_combo.addItem("Cut Material", "cut")
         self.operation_combo.setCurrentIndex(
             0 if current.operation == "material" else 1
         )
         self.shape_combo = QComboBox(self)
-        self.shape_combo.addItem("矩形", "rectangle")
-        self.shape_combo.addItem("圆", "circle")
+        self.shape_combo.addItem("Rectangle", "rectangle")
+        self.shape_combo.addItem("Circle", "circle")
         self.shape_combo.setCurrentIndex(
             0 if isinstance(current, SketchRectangle) else 1
         )
@@ -232,13 +232,13 @@ class SketchContourDialog(QDialog):
 
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("用途", self.operation_combo)
-        form.addRow("形状", self.shape_combo)
+        form.addRow("Operation", self.operation_combo)
+        form.addRow("Shape", self.shape_combo)
         form.addRow("X", self.x_spin)
         form.addRow("Y", self.y_spin)
-        form.addRow("宽度", self.width_spin)
-        form.addRow("高度", self.height_spin)
-        form.addRow("半径", self.radius_spin)
+        form.addRow("Width", self.width_spin)
+        form.addRow("Height", self.height_spin)
+        form.addRow("Radius", self.radius_spin)
         self.width_label = form.labelForField(self.width_spin)
         self.height_label = form.labelForField(self.height_spin)
         self.radius_label = form.labelForField(self.radius_spin)
@@ -247,8 +247,8 @@ class SketchContourDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.shape_combo.currentIndexChanged.connect(self._update_shape_fields)
@@ -300,19 +300,19 @@ class SketchGeometryDialog(QDialog):
         new_contour_operation: str = "material",
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("新建草图" if recipe is None else "编辑草图")
+        self.setWindowTitle("New Sketch" if recipe is None else "Edit Sketch")
         current = recipe or SketchGeometry(
-            "草图-1",
+            "Sketch-1",
             (SketchRectangle("material", 0.0, 0.0, 100.0, 50.0),),
         )
         self.name_edit = QLineEdit(current.name, self)
         self.contours = list(current.contours)
         self.contour_list = QListWidget(self)
 
-        self.add_rectangle_button = QPushButton("添加矩形", self)
-        self.add_circle_button = QPushButton("添加圆", self)
-        self.edit_button = QPushButton("编辑", self)
-        self.delete_button = QPushButton("删除", self)
+        self.add_rectangle_button = QPushButton("Add Rectangle", self)
+        self.add_circle_button = QPushButton("Add Circle", self)
+        self.edit_button = QPushButton("Edit", self)
+        self.delete_button = QPushButton("Delete", self)
         self.add_rectangle_button.clicked.connect(
             lambda: self._add_contour(
                 SketchRectangle(
@@ -337,7 +337,7 @@ class SketchGeometryDialog(QDialog):
 
         name_form = QFormLayout()
         configure_form_layout(name_form)
-        name_form.addRow("名称", self.name_edit)
+        name_form.addRow("Name", self.name_edit)
         contour_buttons = QHBoxLayout()
         for button in (
             self.add_rectangle_button,
@@ -351,15 +351,15 @@ class SketchGeometryDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
         layout = QVBoxLayout(self)
         layout.addLayout(name_form)
-        layout.addWidget(QLabel("轮廓（双击可编辑）", self))
+        layout.addWidget(QLabel("Contours (Double-click to Edit)", self))
         layout.addWidget(self.contour_list)
         layout.addLayout(contour_buttons)
         layout.addWidget(buttons)
@@ -367,14 +367,14 @@ class SketchGeometryDialog(QDialog):
         self._refresh_contours()
 
     def _contour_text(self, contour) -> str:
-        operation = "材料" if contour.operation == "material" else "切除"
+        operation = "Material" if contour.operation == "material" else "Cut"
         if isinstance(contour, SketchRectangle):
             return (
-                f"{operation} · 矩形  X={contour.x:g}, Y={contour.y:g}, "
+                f"{operation} - Rectangle  X={contour.x:g}, Y={contour.y:g}, "
                 f"{contour.width:g} × {contour.height:g}"
             )
         return (
-            f"{operation} · 圆  X={contour.x:g}, Y={contour.y:g}, "
+            f"{operation} - Circle  X={contour.x:g}, Y={contour.y:g}, "
             f"R={contour.radius:g}"
         )
 
@@ -433,7 +433,7 @@ class RectangleGeometryDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建矩形几何")
+        self.setWindowTitle("Create Rectangle")
         current = recipe or RectangleGeometry("Rectangle-1", 100.0, 50.0)
         self.name_edit = QLineEdit(current.name, self)
         self.width_spin = _positive_spin_box(self, current.width)
@@ -441,16 +441,16 @@ class RectangleGeometryDialog(QDialog):
 
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("名称", self.name_edit)
-        form.addRow("宽度", self.width_spin)
-        form.addRow("高度", self.height_spin)
+        form.addRow("Name", self.name_edit)
+        form.addRow("Width", self.width_spin)
+        form.addRow("Height", self.height_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -470,21 +470,21 @@ class DiskGeometryDialog(QDialog):
 
     def __init__(self, recipe: DiskGeometry | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建圆盘几何")
+        self.setWindowTitle("Create Disk")
         current = recipe or DiskGeometry("Disk-1", 25.0)
         self.name_edit = QLineEdit(current.name, self)
         self.radius_spin = _positive_spin_box(self, current.radius)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("名称", self.name_edit)
-        form.addRow("半径", self.radius_spin)
+        form.addRow("Name", self.name_edit)
+        form.addRow("Radius", self.radius_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -500,8 +500,8 @@ class BoxGeometryDialog(QDialog):
 
     def __init__(self, recipe: BoxGeometry | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建长方体几何")
-        current = recipe or BoxGeometry("长方体-1", 100.0, 50.0, 20.0)
+        self.setWindowTitle("Create Box")
+        current = recipe or BoxGeometry("Box-1", 100.0, 50.0, 20.0)
         self.name_edit = QLineEdit(current.name, self)
         self.width_spin = _positive_spin_box(self, current.width)
         self.depth_spin = _positive_spin_box(self, current.depth)
@@ -509,10 +509,10 @@ class BoxGeometryDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         for label, editor in (
-            ("名称", self.name_edit),
-            ("宽度 X", self.width_spin),
-            ("深度 Y", self.depth_spin),
-            ("高度 Z", self.height_spin),
+            ("Name", self.name_edit),
+            ("Width X", self.width_spin),
+            ("Depth Y", self.depth_spin),
+            ("Height Z", self.height_spin),
         ):
             form.addRow(label, editor)
         buttons = QDialogButtonBox(
@@ -520,8 +520,8 @@ class BoxGeometryDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -542,23 +542,23 @@ class CylinderGeometryDialog(QDialog):
 
     def __init__(self, recipe: CylinderGeometry | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建圆柱几何")
-        current = recipe or CylinderGeometry("圆柱-1", 25.0, 50.0)
+        self.setWindowTitle("Create Cylinder")
+        current = recipe or CylinderGeometry("Cylinder-1", 25.0, 50.0)
         self.name_edit = QLineEdit(current.name, self)
         self.radius_spin = _positive_spin_box(self, current.radius)
         self.height_spin = _positive_spin_box(self, current.height)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("名称", self.name_edit)
-        form.addRow("半径", self.radius_spin)
-        form.addRow("高度 Z", self.height_spin)
+        form.addRow("Name", self.name_edit)
+        form.addRow("Radius", self.radius_spin)
+        form.addRow("Height Z", self.height_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -578,7 +578,7 @@ class MoveGeometryDialog(QDialog):
 
     def __init__(self, base: object, parent=None, *, is_3d: bool) -> None:
         super().__init__(parent)
-        self.setWindowTitle("移动几何")
+        self.setWindowTitle("Move Geometry")
         self._base = base
         self.dx_spin = _signed_spin_box(self, 0.0)
         self.dy_spin = _signed_spin_box(self, 0.0)
@@ -586,16 +586,16 @@ class MoveGeometryDialog(QDialog):
         self.dz_spin.setEnabled(is_3d)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("X 方向距离", self.dx_spin)
-        form.addRow("Y 方向距离", self.dy_spin)
-        form.addRow("Z 方向距离", self.dz_spin)
+        form.addRow("Distance X", self.dx_spin)
+        form.addRow("Distance Y", self.dy_spin)
+        form.addRow("Distance Z", self.dz_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -616,26 +616,26 @@ class RotateGeometryDialog(QDialog):
 
     def __init__(self, base: object, parent=None, *, is_3d: bool) -> None:
         super().__init__(parent)
-        self.setWindowTitle("旋转几何")
+        self.setWindowTitle("Rotate Geometry")
         self._base = base
         self.axis_combo = QComboBox(self)
         if is_3d:
-            self.axis_combo.addItem("X 轴", "x")
-            self.axis_combo.addItem("Y 轴", "y")
-        self.axis_combo.addItem("Z 轴", "z")
+            self.axis_combo.addItem("X Axis", "x")
+            self.axis_combo.addItem("Y Axis", "y")
+        self.axis_combo.addItem("Z Axis", "z")
         self.angle_spin = _signed_spin_box(self, 90.0)
         self.angle_spin.setRange(-360000.0, 360000.0)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("旋转轴", self.axis_combo)
-        form.addRow("角度（度）", self.angle_spin)
+        form.addRow("Rotation Axis", self.axis_combo)
+        form.addRow("Angle (Degrees)", self.angle_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -661,7 +661,7 @@ class ExtrudeGeometryDialog(QDialog):
         source_face_ids: tuple[str, ...] = (),
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("拉伸几何")
+        self.setWindowTitle("Extrude Geometry")
         self._base = base
         self._source_face_ids = resolve_extrusion_source_faces(
             base,
@@ -670,15 +670,15 @@ class ExtrudeGeometryDialog(QDialog):
         self.height_spin = _positive_spin_box(self, 10.0)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("方向", QLabel("+Z", self))
-        form.addRow("高度", self.height_spin)
+        form.addRow("Direction", QLabel("+Z", self))
+        form.addRow("Height", self.height_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -704,14 +704,14 @@ class SweepGeometryDialog(QDialog):
         source_face_ids: tuple[str, ...] = (),
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("扫掠几何")
+        self.setWindowTitle("Sweep Geometry")
         self._base = base
         self._source_face_ids = resolve_extrusion_source_faces(
             base,
             source_face_ids,
         ).face_ids
         self.axis_combo = QComboBox(self)
-        for label, axis in (("X 轴", "x"), ("Y 轴", "y"), ("Z 轴", "z")):
+        for label, axis in (("X Axis", "x"), ("Y Axis", "y"), ("Z Axis", "z")):
             self.axis_combo.addItem(label, axis)
         self.angle_spin = CompactDoubleSpinBox(self)
         self.angle_spin.setRange(1.0e-6, 360.0)
@@ -720,15 +720,15 @@ class SweepGeometryDialog(QDialog):
         self.angle_spin.setValue(360.0)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("扫掠轴", self.axis_combo)
-        form.addRow("角度", self.angle_spin)
+        form.addRow("Sweep Axis", self.axis_combo)
+        form.addRow("Angle", self.angle_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -753,10 +753,10 @@ class GeometryManagerDialog(QDialog):
         parent=None,
         *,
         can_edit_base: bool = False,
-        base_label: str = "编辑基础草图",
+        base_label: str = "Edit Base Sketch",
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("几何管理")
+        self.setWindowTitle("Geometry Manager")
         self.setMinimumWidth(400)
         self.operation: str | None = None
         self.feature_list = QListWidget(self)
@@ -765,9 +765,9 @@ class GeometryManagerDialog(QDialog):
         self._can_edit_base = bool(can_edit_base)
         self.selected_row = self.feature_list.currentRow()
         self.edit_button = QPushButton(base_label, self)
-        self.delete_button = QPushButton("删除最后特征", self)
-        self.clear_button = QPushButton("清空几何", self)
-        self.close_button = QPushButton("关闭", self)
+        self.delete_button = QPushButton("Delete Last Feature", self)
+        self.clear_button = QPushButton("Clear Geometry", self)
+        self.close_button = QPushButton("Close", self)
         self.edit_button.clicked.connect(lambda: self._finish("edit"))
         self.delete_button.clicked.connect(lambda: self._finish("delete"))
         self.clear_button.clicked.connect(lambda: self._finish("clear"))
@@ -803,14 +803,14 @@ class MeshControlsDialog(QDialog):
 
     def __init__(self, settings: MeshSettings, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("网格控制管理")
+        self.setWindowTitle("Mesh Control Manager")
         self.resize(480, 330)
         self._settings = settings
         self.local_controls = list(settings.local_controls)
         self.control_list = QListWidget(self)
-        self.edit_button = QPushButton("编辑", self)
-        self.delete_button = QPushButton("删除", self)
-        self.clear_button = QPushButton("清除全部局部控制", self)
+        self.edit_button = QPushButton("Edit", self)
+        self.delete_button = QPushButton("Delete", self)
+        self.clear_button = QPushButton("Clear Local Controls", self)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.clear_button.clicked.connect(self._clear)
@@ -825,8 +825,8 @@ class MeshControlsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        standard.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        standard.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        standard.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        standard.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         standard.accepted.connect(self.accept)
         standard.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -838,33 +838,33 @@ class MeshControlsDialog(QDialog):
     def _refresh(self, selected: int = 0) -> None:
         self.control_list.clear()
         shape_names = {
-            "line": "线网格",
-            "triangle": "三角形",
-            "quadrilateral": "四边形",
-            "tetrahedron": "四面体",
-            "hexahedron": "六面体（结构化）",
+            "line": "Line Mesh",
+            "triangle": "Triangle",
+            "quadrilateral": "Quadrilateral",
+            "tetrahedron": "Tetrahedron",
+            "hexahedron": "Hexahedron (Structured)",
         }
         if self._settings.line_element_type == "Truss2":
             self.control_list.addItem(
-                "Truss2 网格  每个线段固定生成 1 个单元"
+                "Truss2 Mesh  1 element per line segment"
             )
         else:
-            self.control_list.addItem(f"全局尺寸  {self._settings.size:g}")
-        self.control_list.addItem(f"单元阶次  {self._settings.order} 阶")
+            self.control_list.addItem(f"Global Size  {self._settings.size:g}")
+        self.control_list.addItem(f"Element Order  {self._settings.order}")
         self.control_list.addItem(
-            f"网格方法  {shape_names.get(self._settings.cell_shape, self._settings.cell_shape)}"
+            f"Mesh Method  {shape_names.get(self._settings.cell_shape, self._settings.cell_shape)}"
         )
         if self._settings.cell_shape == "line":
             self.control_list.addItem(
-                "单元形式  "
+                "Element Formulation  "
                 f"{self._settings.line_element_type}"
             )
-        kind_names = {"point": "点", "edge": "边", "face": "面"}
+        kind_names = {"point": "Point", "edge": "Edge", "face": "Face"}
         local_offset = 4 if self._settings.cell_shape == "line" else 3
         for index, control in enumerate(self.local_controls, start=1):
             self.control_list.addItem(
-                f"局部控制 {index}  类型={kind_names[control.target.kind]}"
-                f"  尺寸={control.size:g}"
+                f"Local Control {index}  Type={kind_names[control.target.kind]}"
+                f"  Size={control.size:g}"
             )
         if self.local_controls:
             self.control_list.setCurrentRow(
@@ -935,9 +935,9 @@ class LocalMeshControlDialog(QDialog):
         super().__init__(parent)
         if type(target) is not LogicalEntityRef:
             raise TypeError(
-                "局部网格控制对话框只接受 LogicalEntityRef"
+                "Local mesh control dialog accepts only LogicalEntityRef"
             )
-        self.setWindowTitle("设置局部网格")
+        self.setWindowTitle("Set Local Mesh")
         self._target = target
         self._falloff = (
             falloff
@@ -948,7 +948,7 @@ class LocalMeshControlDialog(QDialog):
                 2.0,
             )
         )
-        names = {"point": "点", "edge": "边", "face": "面"}
+        names = {"point": "Point", "edge": "Edge", "face": "Face"}
         self.size_spin = _mesh_size_spin_box(
             self,
             float(current_size)
@@ -959,20 +959,20 @@ class LocalMeshControlDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow(
-            "选择对象",
+            "Selection",
             QLabel(
-                f"已选择 1 个{names.get(target.kind, target.kind)}",
+                f"Selected: 1 {names.get(target.kind, target.kind)}",
                 self,
             ),
         )
-        form.addRow("局部尺寸", self.size_spin)
+        form.addRow("Local Size", self.size_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -998,19 +998,19 @@ class NamedRegionDialog(QDialog):
         suggested_name: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建作用域")
+        self.setWindowTitle("Create Scope")
         names = {
-            "node": "节点",
-            "edge": "边",
-            "face": "面",
-            "element": "单元",
+            "node": "Node",
+            "edge": "Edge",
+            "face": "Face",
+            "element": "Element",
         }
         if any(
             type(reference) is not MeshEntityRef
             for reference in references
         ):
             raise TypeError(
-                "作用域对话框只接受 MeshEntityRef"
+                "Scope dialog accepts only MeshEntityRef"
             )
         canonical_references = tuple(
             sorted(
@@ -1023,13 +1023,13 @@ class NamedRegionDialog(QDialog):
             )
         )
         if not canonical_references:
-            raise ValueError("作用域至少需要一个网格实体")
+            raise ValueError("A scope requires at least one mesh entity")
         kinds = {
             reference.kind
             for reference in canonical_references
         }
         if len(kinds) != 1:
-            raise ValueError("作用域只能包含同一种网格实体")
+            raise ValueError("A scope can contain only one mesh entity type")
         entity_kind = canonical_references[0].kind
         default_names = {
             "node": "NodeSet-1",
@@ -1047,20 +1047,20 @@ class NamedRegionDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         form.addRow(
-            "选择对象",
+            "Selection",
             QLabel(
-                f"已选择 {len(canonical_references)} 个"
-                f"{names.get(entity_kind, entity_kind)}",
+                f"{names.get(entity_kind, entity_kind)} Count: "
+                f"{len(canonical_references)}",
                 self,
             ),
         )
-        form.addRow("作用域名称", self.name_edit)
+        form.addRow("Scope Name", self.name_edit)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -1070,7 +1070,7 @@ class NamedRegionDialog(QDialog):
     def region_name(self) -> str:
         name = self.name_edit.text().strip()
         if not name:
-            raise ValueError("作用域名称不能为空")
+            raise ValueError("Scope name is required")
         return name
 
 
@@ -1083,14 +1083,14 @@ class NamedRegionManagerDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("作用域管理")
+        self.setWindowTitle("Scope Manager")
         self.regions = deepcopy(regions)
         self._original_names: tuple[str, ...] = tuple(regions)
         self._origins: dict[str, str | None] = {
             name: name for name in regions
         }
         self.table = QTableWidget(0, 3, self)
-        self.table.setHorizontalHeaderLabels(("名称", "类型", "实体数量"))
+        self.table.setHorizontalHeaderLabels(("Name", "Type", "Entity Count"))
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1101,13 +1101,13 @@ class NamedRegionManagerDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.name_edit = QLineEdit(self)
-        self.rename_button = QPushButton("改名", self)
-        self.delete_button = QPushButton("删除", self)
+        self.rename_button = QPushButton("Rename", self)
+        self.delete_button = QPushButton("Delete", self)
         self.rename_button.clicked.connect(self._rename)
         self.delete_button.clicked.connect(self._delete)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("作用域名称", self))
+        controls.addWidget(QLabel("Scope Name", self))
         controls.addWidget(self.name_edit, 1)
         controls.addWidget(self.rename_button)
         controls.addWidget(self.delete_button)
@@ -1116,8 +1116,8 @@ class NamedRegionManagerDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -1130,17 +1130,17 @@ class NamedRegionManagerDialog(QDialog):
     def _refresh(self, selected: int = 0) -> None:
         self.table.setRowCount(0)
         type_names = {
-            "node": "节点",
+            "node": "Node",
             "edge": "Edge",
             "face": "Surface",
-            "element": "单元",
+            "element": "Element",
         }
         for row, region in enumerate(self.regions.values()):
             self.table.insertRow(row)
             values = (
                 region.name,
                 type_names.get(region.entity_kind, region.entity_kind),
-                f"{len(region.references)} 个",
+                f"{len(region.references)}",
             )
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
@@ -1223,8 +1223,8 @@ class BooleanGeometryDialog(QDialog):
         is_3d: bool,
     ) -> None:
         super().__init__(parent)
-        operation_names = {"fuse": "合并", "cut": "切除", "fragment": "分割"}
-        self.setWindowTitle(f"几何{operation_names[operation]}")
+        operation_names = {"fuse": "Fuse", "cut": "Cut", "fragment": "Fragment"}
+        self.setWindowTitle(f"{operation_names[operation]} Geometry")
         self._object_geometry = object_geometry
         self._operation = operation
         self._is_3d = is_3d
@@ -1235,11 +1235,11 @@ class BooleanGeometryDialog(QDialog):
         self.tool_name_edit = QLineEdit("Tool-1", self)
         self.tool_combo = QComboBox(self)
         if is_3d:
-            self.tool_combo.addItem("长方体", "box")
-            self.tool_combo.addItem("圆柱", "cylinder")
+            self.tool_combo.addItem("Box", "box")
+            self.tool_combo.addItem("Cylinder", "cylinder")
         else:
-            self.tool_combo.addItem("矩形", "rectangle")
-            self.tool_combo.addItem("圆盘", "disk")
+            self.tool_combo.addItem("Rectangle", "rectangle")
+            self.tool_combo.addItem("Disk", "disk")
         self.x_spin = _signed_spin_box(self, 0.0)
         self.y_spin = _signed_spin_box(self, 0.0)
         self.z_spin = _signed_spin_box(self, 0.0)
@@ -1252,12 +1252,12 @@ class BooleanGeometryDialog(QDialog):
         self.size_c_label = QLabel(self)
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("结果名称", self.name_edit)
-        form.addRow("工具体名称", self.tool_name_edit)
-        form.addRow("工具体类型", self.tool_combo)
-        form.addRow("位置 X", self.x_spin)
-        form.addRow("位置 Y", self.y_spin)
-        form.addRow("位置 Z", self.z_spin)
+        form.addRow("Result Name", self.name_edit)
+        form.addRow("Tool Body Name", self.tool_name_edit)
+        form.addRow("Tool Body Type", self.tool_combo)
+        form.addRow("Position X", self.x_spin)
+        form.addRow("Position Y", self.y_spin)
+        form.addRow("Position Z", self.z_spin)
         form.addRow(self.size_a_label, self.size_a_spin)
         form.addRow(self.size_b_label, self.size_b_spin)
         form.addRow(self.size_c_label, self.size_c_spin)
@@ -1266,8 +1266,8 @@ class BooleanGeometryDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -1298,13 +1298,13 @@ class BooleanGeometryDialog(QDialog):
     def _refresh_dimension_labels(self) -> None:
         tool_type = str(self.tool_combo.currentData())
         if tool_type in {"disk", "cylinder"}:
-            labels = ("半径", "高度 Z", "")
+            labels = ("Radius", "Height Z", "")
             visible = (True, tool_type == "cylinder", False)
         elif tool_type == "box":
-            labels = ("宽度 X", "深度 Y", "高度 Z")
+            labels = ("Width X", "Depth Y", "Height Z")
             visible = (True, True, True)
         else:
-            labels = ("宽度 X", "高度 Y", "")
+            labels = ("Width X", "Height Y", "")
             visible = (True, True, False)
         for label, text, is_visible, editor in zip(
             (self.size_a_label, self.size_b_label, self.size_c_label),
@@ -1367,7 +1367,7 @@ class PlateWithHoleGeometryDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("创建带圆孔矩形板")
+        self.setWindowTitle("Rectangular Plate with Circular Hole")
         current = recipe or PlateWithHoleGeometry(
             "Plate-With-Hole-1",
             100.0,
@@ -1385,12 +1385,12 @@ class PlateWithHoleGeometryDialog(QDialog):
         form = QFormLayout()
         configure_form_layout(form)
         for label, editor in (
-            ("名称", self.name_edit),
-            ("板宽度", self.width_spin),
-            ("板高度", self.height_spin),
-            ("孔中心 X", self.hole_x_spin),
-            ("孔中心 Y", self.hole_y_spin),
-            ("孔半径", self.radius_spin),
+            ("Name", self.name_edit),
+            ("Plate Width", self.width_spin),
+            ("Plate Height", self.height_spin),
+            ("Hole Center X", self.hole_x_spin),
+            ("Hole Center Y", self.hole_y_spin),
+            ("Hole Radius", self.radius_spin),
         ):
             form.addRow(label, editor)
         buttons = QDialogButtonBox(
@@ -1398,8 +1398,8 @@ class PlateWithHoleGeometryDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -1430,7 +1430,7 @@ class MeshSettingsDialog(QDialog):
         suggested_size: float = 5.0,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("网格设置")
+        self.setWindowTitle("Mesh Settings")
         self._mesh_dimension = int(mesh_dimension)
         self._allow_hexahedron = bool(allow_hexahedron)
         current_size = (
@@ -1443,21 +1443,21 @@ class MeshSettingsDialog(QDialog):
                 max(control.size for control in self._local_controls) + 1.0e-9
             )
         self.order_combo = QComboBox(self)
-        self.order_combo.addItem("一阶", 1)
-        self.order_combo.addItem("二阶", 2)
+        self.order_combo.addItem("First Order", 1)
+        self.order_combo.addItem("Second Order", 2)
         self.order_combo.setCurrentIndex(
             0 if settings is None or settings.order == 1 else 1
         )
         self.shape_combo = QComboBox(self)
         if self._mesh_dimension == 1:
-            self.shape_combo.addItem("线网格", "line")
+            self.shape_combo.addItem("Line Mesh", "line")
         elif self._mesh_dimension == 3:
-            self.shape_combo.addItem("四面体", "tetrahedron")
+            self.shape_combo.addItem("Tetrahedron", "tetrahedron")
             if self._allow_hexahedron:
-                self.shape_combo.addItem("六面体", "hexahedron")
+                self.shape_combo.addItem("Hexahedron", "hexahedron")
         else:
-            self.shape_combo.addItem("三角形", "triangle")
-            self.shape_combo.addItem("四边形", "quadrilateral")
+            self.shape_combo.addItem("Triangle", "triangle")
+            self.shape_combo.addItem("Quadrilateral", "quadrilateral")
         current_shape = settings.cell_shape if settings is not None else ""
         shape_index = self.shape_combo.findData(current_shape)
         self.shape_combo.setCurrentIndex(max(0, shape_index))
@@ -1465,7 +1465,7 @@ class MeshSettingsDialog(QDialog):
         if self._mesh_dimension == 1:
             self.formulation_combo = QComboBox(self)
             self.formulation_combo.setObjectName("lineElementFormulationCombo")
-            self.formulation_combo.addItem("请选择单元形式", None)
+            self.formulation_combo.addItem("Select Element Formulation", None)
             self.formulation_combo.addItem("Truss2", "Truss2")
             self.formulation_combo.addItem("Beam2", "Beam2")
             if settings is not None:
@@ -1479,18 +1479,18 @@ class MeshSettingsDialog(QDialog):
             )
         form = QFormLayout()
         configure_form_layout(form)
-        form.addRow("单元类型", self.shape_combo)
-        form.addRow("单元阶次", self.order_combo)
+        form.addRow("Element Type", self.shape_combo)
+        form.addRow("Element Order", self.order_combo)
         if self.formulation_combo is not None:
-            form.addRow("单元形式", self.formulation_combo)
-        form.addRow("全局尺寸", self.size_spin)
+            form.addRow("Element Formulation", self.formulation_combo)
+        form.addRow("Global Size", self.size_spin)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         self._buttons = buttons

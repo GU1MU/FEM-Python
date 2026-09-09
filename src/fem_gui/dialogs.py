@@ -1,4 +1,4 @@
-"""通用只读对象信息弹窗。"""
+"""General read-only object information dialog."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ def show_information(
     title: str,
     rows: Sequence[tuple[str, object]],
 ) -> None:
-    """显示一个只读、可复制的对象信息窗口。"""
+    """Show a read-only object information window with copyable text."""
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
     dialog.setMinimumWidth(330)
@@ -122,13 +122,13 @@ def show_information(
         label = QLabel(_format_value(value), dialog)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setWordWrap(True)
-        form.addRow(f"{name}：", label)
+        form.addRow(f"{name}:", label)
     layout.addLayout(form)
     buttons = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Close,
         parent=dialog,
     )
-    buttons.button(QDialogButtonBox.StandardButton.Close).setText("关闭")
+    buttons.button(QDialogButtonBox.StandardButton.Close).setText("Close")
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
     dialog.exec()
@@ -136,9 +136,9 @@ def show_information(
 
 def _format_value(value: object) -> str:
     if value is None or value == "":
-        return "无"
+        return "None"
     if isinstance(value, Mapping):
-        return "；".join(f"{key}={item}" for key, item in value.items()) or "无"
+        return "; ".join(f"{key}={item}" for key, item in value.items()) or "None"
     if isinstance(value, (list, tuple, set)):
-        return "，".join(str(item) for item in value) or "无"
+        return ", ".join(str(item) for item in value) or "None"
     return str(value)

@@ -59,7 +59,7 @@ def test_job_submit_dialog_uses_a_chinese_default_name_without_description(gui_a
     assert dialog.step_name == "分析步-1"
     buttons = dialog.findChild(QDialogButtonBox)
     assert buttons is not None
-    assert buttons.button(QDialogButtonBox.StandardButton.Ok).text() == "创建"
+    assert buttons.button(QDialogButtonBox.StandardButton.Ok).text() == "Create"
     assert dialog.findChild(QLabel, "jobSessionNotice") is None
     dialog.close()
 
@@ -129,7 +129,7 @@ def test_job_actions_enable_creation_after_model_validation(gui_application, gui
         if button.defaultAction() is not None
     }
     assert window.actions["submit_job"] in ribbon_actions
-    assert window.actions["submit_job"].text() == "创建作业"
+    assert window.actions["submit_job"].text() == "Create Job"
     model = read(gui_inp_path)
     window._model_loaded(gui_inp_path, (model, build_model_geometry(model)))
     assert window.actions["step_info"].isEnabled()
@@ -261,7 +261,7 @@ def test_create_job_waits_for_job_manager_submission(gui_application, gui_inp_pa
     assert not window.task_controller.busy
     manager = window.show_job_manager()
     assert manager is not None
-    assert manager.table.item(0, 2).text() == "已创建"
+    assert manager.table.item(0, 2).text() == "Created"
     assert manager.submit_button.isEnabled()
 
     manager.submit_button.click()
@@ -548,14 +548,14 @@ def test_job_manager_shows_memory_log_and_history_actions(gui_application, gui_i
     manager = window.show_job_manager()
     assert manager is not None
     assert manager.table.rowCount() == 1
-    assert manager.table.item(0, 2).text() == "已完成"
+    assert manager.table.item(0, 2).text() == "Completed"
     assert manager.findChild(QLabel, "jobSessionNotice") is None
     assert all(
         manager.table.item(0, column).textAlignment()
         == Qt.AlignmentFlag.AlignCenter
         for column in range(manager.table.columnCount())
     )
-    assert manager.terminate_button.text() == "终止求解"
+    assert manager.terminate_button.text() == "Terminate"
     assert not manager.terminate_button.isEnabled()
     assert manager.open_result_button.isEnabled()
     assert window.show_job_manager() is manager
@@ -592,7 +592,7 @@ def test_job_manager_terminate_button_tracks_selected_running_job(gui_applicatio
     assert requested == ["Job-1"]
 
     manager.refresh((replace(running, cancellation_requested=True), completed))
-    assert manager.table.item(0, 2).text() == "终止中"
+    assert manager.table.item(0, 2).text() == "Terminating"
     assert not manager.terminate_button.isEnabled()
 
     manager.table.selectRow(1)
@@ -662,7 +662,7 @@ def test_job_manager_terminates_the_selected_active_solve(
         cancelling = window.session.find_run(started.run_id)
         assert cancelling is not None and cancelling.cancellation_requested
         assert window.task_controller.cancel_requested
-        assert manager.table.item(0, 2).text() == "终止中"
+        assert manager.table.item(0, 2).text() == "Terminating"
         assert not manager.terminate_button.isEnabled()
     finally:
         allow_solve_to_finish.set()
@@ -672,7 +672,7 @@ def test_job_manager_terminates_the_selected_active_solve(
     cancelled = window.session.find_run(started.run_id)
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
     assert manager is not None
-    assert manager.table.item(0, 2).text() == "已取消"
+    assert manager.table.item(0, 2).text() == "Cancelled"
     assert "已取消" in window.status_panel.state_label.text()
     manager.close()
     window.close()

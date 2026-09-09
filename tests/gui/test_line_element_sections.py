@@ -252,7 +252,7 @@ def test_region_assignment_can_request_scope_selection(gui_application):
     )
 
     assert dialog.scope_pick_button.isEnabled()
-    assert dialog.scope_pick_button.text() == "创建"
+    assert dialog.scope_pick_button.text() == "Create"
     assert dialog.scope_pick_button.toolTip() == ""
     assert not dialog.buttons.button(
         QDialogButtonBox.StandardButton.Ok
@@ -280,7 +280,7 @@ def test_region_assignment_edits_preserves_and_clears_explicit_orientation(gui_a
         current=current,
     )
 
-    assert dialog.windowTitle() == "编辑截面分配"
+    assert dialog.windowTitle() == "Edit Section Assignment"
     assert dialog.section_combo.currentText() == "Beam"
     assert dialog.region_combo.currentData() == RegionRef(
         "element_set",
@@ -328,7 +328,7 @@ def test_region_assignment_explicit_vector_validation_and_candidate_seam(gui_app
     assert not dialog.buttons.button(
         QDialogButtonBox.StandardButton.Ok
     ).isEnabled()
-    with pytest.raises(ValueError, match="零向量"):
+    with pytest.raises(ValueError, match="nonzero"):
         dialog.assignment()
 
     dialog.orientation_z_spin.setValue(2.0)
