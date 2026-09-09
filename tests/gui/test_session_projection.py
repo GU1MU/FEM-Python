@@ -133,7 +133,7 @@ def test_model_analysis_module_switches_reuse_the_current_viewport_scene(
 
     monkeypatch.setattr(FEMViewport, "set_model", record_rebuild)
 
-    for module_name in ("网格", "模型", "分析", "网格"):
+    for module_name in ("Mesh", "Model", "Analysis", "Mesh"):
         window.ribbon.set_current(module_name)
 
     assert rebuilt == []

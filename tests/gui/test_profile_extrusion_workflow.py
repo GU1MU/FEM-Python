@@ -65,10 +65,10 @@ def test_multi_profile_action_requires_valid_face_selection() -> None:
     )
 
     assert not unselected.enabled
-    assert "多个 Profile" in unselected.reason
+    assert "multiple profiles" in unselected.reason
     assert selected.enabled
     assert not wrong_kind.enabled
-    assert "非面" in wrong_kind.reason
+    assert "not faces" in wrong_kind.reason
 
 
 def test_dialog_hides_source_descriptions_and_builds_selected_recipe(gui_application) -> None:
@@ -85,7 +85,7 @@ def test_dialog_hides_source_descriptions_and_builds_selected_recipe(gui_applica
     recipe = dialog.recipe()
 
     label_texts = {label.text() for label in dialog.findChildren(QLabel)}
-    assert "源 Profiles" not in label_texts
+    assert "Source Profiles" not in label_texts
     assert "+Z（Phase 2）" not in label_texts
     assert "+Z" in label_texts
     assert recipe.height == 4.5
@@ -199,7 +199,7 @@ def test_gui_extrusion_revision_conflict_preserves_face_selection(
     assert window.document.geometry_recipe == sketch
     assert window._selected_geometry_refs == {first_ref}
     assert errors
-    assert errors[0][0] == "编辑几何"
+    assert errors[0][0] == "Edit Geometry"
     window.close()
 
 
@@ -343,5 +343,5 @@ def test_profile_change_preserves_only_surviving_part_regions(gui_application) -
     )
 
     assert set(window.document.named_regions) == {"Body"}
-    assert "选择修改后的几何已创建" in window.status_panel.state_label.text()
+    assert "选择修改后的 geometry created" in window.status_panel.state_label.text()
     window.close()

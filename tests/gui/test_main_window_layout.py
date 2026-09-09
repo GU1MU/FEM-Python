@@ -49,10 +49,10 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar(gui_application
 
     assert not window.main_splitter.opaqueResize()
     assert [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())] == [
-        "项目", "几何", "网格", "模型", "分析", "结果", "视图",
+        "Project", "Geometry", "Mesh", "Model", "Analysis", "Results", "View",
     ]
-    assert "主页" not in [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())]
-    assert [window.navigation.tabs.tabText(i) for i in range(window.navigation.tabs.count())] == ["模型", "结果"]
+    assert "Home" not in [window.ribbon.tab_bar.tabText(i) for i in range(window.ribbon.tab_bar.count())]
+    assert [window.navigation.tabs.tabText(i) for i in range(window.navigation.tabs.count())] == ["Model", "Results"]
     assert window.viewport_panel.toolbar.objectName() == "viewportToolbar"
     assert window.viewport._message.text() == ""
     assert window.findChild(QToolBar, "main_toolbar") is None
@@ -62,15 +62,15 @@ def test_main_window_has_modules_navigation_and_viewport_toolbar(gui_application
     window.resize(800, 600)
     gui_application.processEvents()
     assert window.width() == 800
-    window.ribbon.set_current("结果")
+    window.ribbon.set_current("Results")
     gui_application.processEvents()
     result_group_titles = {
         label.text()
         for label in window.ribbon.stack.currentWidget().findChildren(QLabel)
         if label.objectName() == "ribbonGroupTitle"
     }
-    assert "设置" in result_group_titles
-    assert "显示设置" not in result_group_titles
+    assert "Settings" in result_group_titles
+    assert "Display Settings" not in result_group_titles
     variable_y = window.result_variable_combo.mapTo(
         window.ribbon, window.result_variable_combo.rect().topLeft()
     ).y()
@@ -270,7 +270,7 @@ def test_scope_creation_bar_overlays_viewport_and_cancel_exits_selection(gui_app
     assert bar.geometry().bottom() == (
         host_origin.y() + host.height() - 1
     )
-    assert bar.cancel_button.text() == "取消"
+    assert bar.cancel_button.text() == "Cancel"
 
     bar.cancel_button.click()
     application.processEvents()
@@ -297,9 +297,9 @@ def test_planar_boolean_face_bar_reuses_the_viewport_bottom_overlay(gui_applicat
 
     assert window.viewport.size() == viewport_size
     assert bar.isVisible()
-    assert bar.prompt_label.text() == "请选择目标面"
-    assert bar.cancel_button.text() == "取消"
-    assert bar.confirm_button.text() == "确定"
+    assert bar.prompt_label.text() == "Select the target face"
+    assert bar.cancel_button.text() == "Cancel"
+    assert bar.confirm_button.text() == "OK"
     assert not bar.confirm_button.isEnabled()
     bar.set_selection_ready(True)
     assert bar.confirm_button.isEnabled()
@@ -343,21 +343,21 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions(gui_application):
     project_actions = {
         button.defaultAction()
         for button in window.ribbon.stack.widget(
-            tab_names.index("项目")
+            tab_names.index("Project")
         ).findChildren(QToolButton)
         if button.defaultAction() is not None
     }
     project_action_order = [
         button.defaultAction()
         for button in window.ribbon.stack.widget(
-            tab_names.index("项目")
+            tab_names.index("Project")
         ).findChildren(QToolButton)
         if button.defaultAction() is not None
     ]
     result_actions = {
         button.defaultAction()
         for button in window.ribbon.stack.widget(
-            tab_names.index("结果")
+            tab_names.index("Results")
         ).findChildren(QToolButton)
         if button.defaultAction() is not None
     }
@@ -375,7 +375,7 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions(gui_application):
     project_buttons = {
         button.defaultAction(): button
         for button in window.ribbon.stack.widget(
-            tab_names.index("项目")
+            tab_names.index("Project")
         ).findChildren(QToolButton)
         if button.defaultAction() is not None
     }
@@ -391,10 +391,10 @@ def test_menu_ribbon_and_viewport_toolbar_reuse_actions(gui_application):
     project_group_titles = {
         label.text()
         for label in window.ribbon.stack.widget(
-            tab_names.index("项目")
+            tab_names.index("Project")
         ).findChildren(QLabel, "ribbonGroupTitle")
     }
-    assert project_group_titles == {"文件", "输出"}
+    assert project_group_titles == {"File", "Output"}
     assert window.actions["export_csv"] in result_actions
     assert window.actions["screenshot"] in result_actions
     assert window.actions["export_vtk"] not in result_actions
@@ -430,7 +430,7 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
         window.ribbon.tab_bar.tabText(index)
         for index in range(window.ribbon.tab_bar.count())
     ]
-    model_page = window.ribbon.stack.widget(tab_names.index("模型"))
+    model_page = window.ribbon.stack.widget(tab_names.index("Model"))
     model_actions = {
         button.defaultAction().objectName()
         for button in model_page.findChildren(QToolButton)
@@ -455,8 +455,8 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
         "action_geometry_region",
         "action_geometry_regions",
     }
-    geometry_page = window.ribbon.stack.widget(tab_names.index("几何"))
-    mesh_page = window.ribbon.stack.widget(tab_names.index("网格"))
+    geometry_page = window.ribbon.stack.widget(tab_names.index("Geometry"))
+    mesh_page = window.ribbon.stack.widget(tab_names.index("Mesh"))
     geometry_actions = {
         button.defaultAction()
         for button in geometry_page.findChildren(QToolButton)
@@ -467,11 +467,11 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
         for label in geometry_page.findChildren(QLabel)
         if label.objectName() == "ribbonGroupTitle"
     ]
-    assert geometry_group_titles == ["创建", "特征", "选择"]
+    assert geometry_group_titles == ["Create", "Features", "Selection"]
     feature_title = next(
         label
         for label in geometry_page.findChildren(QLabel)
-        if label.objectName() == "ribbonGroupTitle" and label.text() == "特征"
+        if label.objectName() == "ribbonGroupTitle" and label.text() == "Features"
     )
     feature_actions = {
         button.defaultAction()
@@ -524,8 +524,8 @@ def test_geometry_omits_element_selection_while_model_keeps_all_selection_action
             "geometry_regions",
         )
     }
-    assert window.actions["geometry_region"].text() == "创建作用域"
-    assert window.actions["geometry_regions"].text() == "作用域管理"
+    assert window.actions["geometry_region"].text() == "Create Scope"
+    assert window.actions["geometry_regions"].text() == "Scope Manager"
     window.close()
 
 
@@ -540,12 +540,12 @@ def test_scope_group_is_available_in_mesh_model_and_analysis_pages(gui_applicati
         window.actions["geometry_regions"],
     }
 
-    for page_name in ("网格", "模型", "分析"):
+    for page_name in ("Mesh", "Model", "Analysis"):
         page = window.ribbon.stack.widget(tab_names.index(page_name))
         title = next(
             label
             for label in page.findChildren(QLabel, "ribbonGroupTitle")
-            if label.text() == "作用域"
+            if label.text() == "Scope"
         )
         group_actions = {
             button.defaultAction()
@@ -562,7 +562,7 @@ def test_analysis_page_uses_compact_workflow_groups(gui_application):
     window = FEMMainWindow()
     window.show()
     window.resize(1600, 700)
-    window.ribbon.set_current("分析")
+    window.ribbon.set_current("Analysis")
     application.processEvents()
     page = window.ribbon.stack.currentWidget()
     groups = {
@@ -570,7 +570,7 @@ def test_analysis_page_uses_compact_workflow_groups(gui_application):
         for label in page.findChildren(QLabel, "ribbonGroupTitle")
     }
 
-    assert tuple(groups) == ("分析步", "作用域", "边界条件", "作业")
+    assert tuple(groups) == ("Step", "Scope", "Boundary Conditions", "Jobs")
 
     def action_button(group_name, action_name):
         return next(
@@ -586,47 +586,47 @@ def test_analysis_page_uses_compact_workflow_groups(gui_application):
             if button.defaultAction() is not None
         }
 
-    step_create = action_button("分析步", "step_create")
-    step_info = action_button("分析步", "step_info")
-    output_create = action_button("分析步", "output_create")
-    step_combo = groups["分析步"].findChild(QComboBox, "stepCombo_分析")
+    step_create = action_button("Step", "step_create")
+    step_info = action_button("Step", "step_info")
+    output_create = action_button("Step", "output_create")
+    step_combo = groups["Step"].findChild(QComboBox, "stepCombo_Analysis")
     assert step_combo is not None
-    step_create_pos = step_create.mapTo(groups["分析步"], QPoint(0, 0))
-    step_info_pos = step_info.mapTo(groups["分析步"], QPoint(0, 0))
-    step_combo_pos = step_combo.mapTo(groups["分析步"], QPoint(0, 0))
-    output_pos = output_create.mapTo(groups["分析步"], QPoint(0, 0))
+    step_create_pos = step_create.mapTo(groups["Step"], QPoint(0, 0))
+    step_info_pos = step_info.mapTo(groups["Step"], QPoint(0, 0))
+    step_combo_pos = step_combo.mapTo(groups["Step"], QPoint(0, 0))
+    output_pos = output_create.mapTo(groups["Step"], QPoint(0, 0))
     assert step_create_pos.x() == step_info_pos.x()
     assert step_create_pos.y() < step_info_pos.y()
     assert step_create_pos.x() + step_create.width() < step_combo_pos.x()
     assert step_combo_pos.x() + step_combo.width() < output_pos.x()
-    assert action_names("分析步") == {
+    assert action_names("Step") == {
         "step_create",
         "step_info",
         "output_create",
     }
 
-    boundary = action_button("边界条件", "boundary_create")
-    load = action_button("边界条件", "load_create")
-    boundary_pos = boundary.mapTo(groups["边界条件"], QPoint(0, 0))
-    load_pos = load.mapTo(groups["边界条件"], QPoint(0, 0))
+    boundary = action_button("Boundary Conditions", "boundary_create")
+    load = action_button("Boundary Conditions", "load_create")
+    boundary_pos = boundary.mapTo(groups["Boundary Conditions"], QPoint(0, 0))
+    load_pos = load.mapTo(groups["Boundary Conditions"], QPoint(0, 0))
     assert boundary_pos.x() == load_pos.x()
     assert boundary_pos.y() < load_pos.y()
-    assert action_names("边界条件") == {"boundary_create", "load_create"}
+    assert action_names("Boundary Conditions") == {"boundary_create", "load_create"}
 
-    check = action_button("作业", "check_model")
-    submit = action_button("作业", "submit_job")
-    analysis_manager = action_button("作业", "analysis_manager")
-    job_manager = action_button("作业", "job_manager")
-    check_pos = check.mapTo(groups["作业"], QPoint(0, 0))
-    submit_pos = submit.mapTo(groups["作业"], QPoint(0, 0))
-    analysis_manager_pos = analysis_manager.mapTo(groups["作业"], QPoint(0, 0))
-    job_manager_pos = job_manager.mapTo(groups["作业"], QPoint(0, 0))
+    check = action_button("Jobs", "check_model")
+    submit = action_button("Jobs", "submit_job")
+    analysis_manager = action_button("Jobs", "analysis_manager")
+    job_manager = action_button("Jobs", "job_manager")
+    check_pos = check.mapTo(groups["Jobs"], QPoint(0, 0))
+    submit_pos = submit.mapTo(groups["Jobs"], QPoint(0, 0))
+    analysis_manager_pos = analysis_manager.mapTo(groups["Jobs"], QPoint(0, 0))
+    job_manager_pos = job_manager.mapTo(groups["Jobs"], QPoint(0, 0))
     assert check_pos.x() == submit_pos.x()
     assert check_pos.y() < submit_pos.y()
     assert analysis_manager_pos.x() == job_manager_pos.x()
     assert analysis_manager_pos.y() < job_manager_pos.y()
     assert check_pos.x() < analysis_manager_pos.x()
-    assert action_names("作业") == {
+    assert action_names("Jobs") == {
         "check_model",
         "submit_job",
         "analysis_manager",
@@ -638,13 +638,13 @@ def test_analysis_page_uses_compact_workflow_groups(gui_application):
 
 def test_standard_views_use_abaqus_names(gui_application):
     window = FEMMainWindow()
-    assert window.actions["front"].text() == "前视图"
-    assert window.actions["back"].text() == "后视图"
-    assert window.actions["top"].text() == "俯视图"
-    assert window.actions["bottom"].text() == "仰视图"
-    assert window.actions["left"].text() == "左视图"
-    assert window.actions["right"].text() == "右视图"
-    assert window.actions["iso"].text() == "轴测视图"
+    assert window.actions["front"].text() == "Front View"
+    assert window.actions["back"].text() == "Back View"
+    assert window.actions["top"].text() == "Top View"
+    assert window.actions["bottom"].text() == "Bottom View"
+    assert window.actions["left"].text() == "Left View"
+    assert window.actions["right"].text() == "Right View"
+    assert window.actions["iso"].text() == "Isometric View"
     window.close()
 
 
@@ -684,7 +684,7 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group(gui_appli
     ]
     assert toolbar_actions == list(semantic_names)
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     window._set_native_geometry(RectangleGeometry("toolbar-geometry", 2.0, 1.0), "矩形")
     window.show()
     gui_application.processEvents()
@@ -701,11 +701,11 @@ def test_viewport_toolbar_keeps_one_shared_five_action_selection_group(gui_appli
     assert geometry_face.defaultAction().isEnabled()
     assert model_point is not None and not model_point.isHidden()
     assert not window.actions["select_element"].isEnabled()
-    assert window.actions["select_face"].toolTip() == "选择面"
-    assert window.actions["select_body"].text() == "选择体"
-    assert window.actions["select_body"].toolTip() == "选择体"
+    assert window.actions["select_face"].toolTip() == "Select Faces"
+    assert window.actions["select_body"].text() == "Select Bodies"
+    assert window.actions["select_body"].toolTip() == "Select Bodies"
 
-    window.ribbon.set_current("模型")
+    window.ribbon.set_current("Model")
     assert not geometry_face.isHidden()
     assert not model_point.isHidden()
     assert window._selection_context.space == "mesh"
@@ -719,17 +719,17 @@ def test_module_switch_restores_each_selection_space_filter_without_stale_checks
     groups = {window.actions[name].actionGroup() for name in names}
     assert len(groups) == 1
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     window._set_selection_filter("edge")
     assert window.viewport._selection_mode == "geometry_edge"
 
-    window.ribbon.set_current("模型")
+    window.ribbon.set_current("Model")
     assert window._selection_context.active_filter == "point"
     assert window.viewport._selection_mode == "mesh_node"
     window._set_selection_filter("face")
     assert window.viewport._selection_mode == "mesh_face"
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     assert window._selection_context.active_filter == "edge"
     assert window.viewport._selection_mode == "geometry_edge"
     assert [name for name in names if window.actions[name].isChecked()] == ["select_edge"]

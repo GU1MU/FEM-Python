@@ -266,7 +266,7 @@ def test_agent_gui_save_cancel_failure_and_reject_are_terminal(
     assert (
         failed.status is ProposalViewStatus.FAILED
     ), controller.project_save_record
-    assert controller.project_save_record.message == "保存自主项目失败"
+    assert controller.project_save_record.message == "Failed to save native project"
     assert not target.exists()
     assert controller.stage is AuthoringWorkflowStage.MESH_READY
     window.close()

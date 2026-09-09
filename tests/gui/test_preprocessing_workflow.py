@@ -103,7 +103,7 @@ def test_native_rectangle_mesh_joins_the_existing_model_workflow(gui_application
     assert not window.document.model.element_sets
     assert not window.document.model.edges
     assert not window.document.model.surfaces
-    assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "模型"
+    assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "Model"
     assert window.actions["mesh_generate"].isEnabled()
     assert window.actions["mesh_clear"].isEnabled()
     assert window.actions["mesh_quality"].isEnabled()
@@ -859,7 +859,7 @@ def test_selecting_a_solid_geometry_prepares_tetrahedral_settings_and_preview(gu
         window.model_tree.topLevelItem(0).text(0)
         == window.document.model_name
     )
-    assert "未打开模型" not in window.model_tree.topLevelItem(0).text(0)
+    assert "No Model Open" not in window.model_tree.topLevelItem(0).text(0)
     assert window.actions["mesh_generate"].isEnabled()
     window.close()
 
@@ -884,14 +884,14 @@ def test_renderer_failure_cannot_leave_valid_geometry_actions_disabled(gui_appli
         render_preview(preview, **kwargs)
 
     monkeypatch.setattr(window.viewport, "show_geometry_preview", fail_preview)
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     window._set_native_geometry(
         CylinderGeometry("renderer-failure", 0.5, 1.0),
         "圆柱",
     )
 
     assert calls == 1
-    assert errors == [("编辑几何", "preview backend failed")]
+    assert errors == [("Edit Geometry", "preview backend failed")]
     window._on_geometry_entity_pick(LogicalEntityRef("body:P1/domain"))
     assert window.actions["geometry_move"].isEnabled()
     assert window.actions["select_face"].isEnabled()

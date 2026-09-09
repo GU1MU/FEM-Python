@@ -358,21 +358,21 @@ def test_native_geometry_module_restores_pre_mesh_geometry(gui_application) -> N
     )
 
     assert window.viewport._geometry_preview is not None
-    window.ribbon.set_current("模型")
+    window.ribbon.set_current("Model")
     assert window.viewport._geometry_preview is None
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     preview = window.viewport._geometry_preview
     assert preview is not None
     assert preview.faces
     assert preview.topological_dimension == 2
 
-    for module_name in ("网格", "模型", "分析"):
+    for module_name in ("Mesh", "Model", "Analysis"):
         window.ribbon.set_current(module_name)
         assert window.viewport._geometry_preview is None
         assert window.viewport._result_render_payload is None
         assert window.viewport.artifact_id == window.document.artifact.artifact_id
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     assert window.viewport._geometry_preview == preview
     window.close()
 
@@ -391,7 +391,7 @@ def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
         window.session.accept_generated_model(task.token, model),
         model_geometry=build_model_geometry(model),
     )
-    window.ribbon.set_current("模型")
+    window.ribbon.set_current("Model")
     window._geometry_preview_cache = None
     rebuilds = []
     monkeypatch.setattr(
@@ -407,12 +407,12 @@ def test_geometry_module_rebuilds_uncached_exact_preview_with_persisted_mesh(
         ),
     )
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
 
     assert window.document.artifact is not None
     assert rebuilds == [(window.document.session_id, recipe)]
-    window.ribbon.set_current("模型")
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Model")
+    window.ribbon.set_current("Geometry")
     assert rebuilds == [(window.document.session_id, recipe)]
     window.close()
 

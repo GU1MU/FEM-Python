@@ -293,8 +293,8 @@ def test_gui_large_model_check_defers_copy_and_uses_quick_preflight(
         lambda title, rows: reported.append((title, list(rows))),
     )
     window._show_model_check_report(validation.report)
-    assert dict(reported[0][1])["数值稳定性"] == "已跳过"
-    assert "大模型快速检查" not in str(reported[0][1])
+    assert dict(reported[0][1])["Numerical Stability"] == "Skipped"
+    assert "large model quick check" not in str(reported[0][1])
     assert "model.capability.sampled_large_model" not in str(reported[0][1])
     window.close()
 

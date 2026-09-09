@@ -162,18 +162,18 @@ def test_current_step_information_and_model_check_reuse_existing_services(gui_ap
         lambda _parent, title, rows: reported.append((title, list(rows))),
     )
     assert window.check_current_model()
-    assert reported[0][0] == "模型检查"
+    assert reported[0][0] == "Model Check"
     assert [label for label, _value in reported[0][1]] == [
-        "分析类型",
-        "节点数",
-        "单元数",
-        "总自由度数",
-        "数值稳定性",
-        "警告/限制",
-        "检查结果",
+        "Analysis Type",
+        "Node Count",
+        "Element Count",
+        "Total DOFs",
+        "Numerical Stability",
+        "Warnings / Limitations",
+        "Check Result",
     ]
-    assert ("数值稳定性", "已检查") in reported[0][1]
-    assert ("检查结果", "通过") in reported[0][1]
+    assert ("Numerical Stability", "Checked") in reported[0][1]
+    assert ("Check Result", "Passed") in reported[0][1]
     window.close()
 
 
@@ -233,13 +233,13 @@ def test_model_check_warning_row_hides_internal_diagnostic_names(gui_application
 
     window._show_model_check_report(report)
 
-    warning_text = dict(reported[0][1])["警告/限制"]
+    warning_text = dict(reported[0][1])["Warnings / Limitations"]
     assert warning_text == (
-        "第 2 条输出请求“History Output”（变量：PRESELECT）："
-        "目标“preselect”暂不支持执行\n"
-        "第 2 条输出请求“History Output”（变量：PRESELECT）："
-        "类型“history”暂不支持执行\n"
-        "变量 UNKNOWN 暂不支持执行"
+        "Output request 2 'History Output' (variables: PRESELECT): "
+        "Target 'preselect' is not supported for execution\n"
+        "Output request 2 'History Output' (variables: PRESELECT): "
+        "Type 'history' is not supported for execution\n"
+        "Variables UNKNOWN are not supported for execution"
     )
     assert "；" not in warning_text
     assert "。" not in warning_text
@@ -380,9 +380,9 @@ def test_job_completes_with_primary_results_and_recovers_stress_on_demand(
         element.props
         for element in model.mesh.elements
     ] == original_props
-    assert "模型验证" in job.timings
-    assert "线性方程求解" in job.timings
-    assert "输出请求与初始结果" in job.timings
+    assert "Model validation" in job.timings
+    assert "Linear system solve" in job.timings
+    assert "Output requests and initial results" in job.timings
 
     assert provider.catalog().fields == ()
     assert provider.catalog().default_selection is None
@@ -427,7 +427,7 @@ def test_failed_job_keeps_previous_result(gui_application, monkeypatch, gui_inp_
         window.document.displayed_result_run_id
         == previous_result.provenance.run_id
     )
-    assert shown == [("分析运行失败", "求解故障")]
+    assert shown == [("Analysis run failed", "求解故障")]
     window.close()
 
 
@@ -472,7 +472,7 @@ def test_base_result_provider_failure_marks_run_failed_and_preserves_display(
     assert not failed.has_result
     assert current.provenance.run_id == previous.provenance.run_id
     assert window.document.displayed_result_run_id == previous.provenance.run_id
-    assert shown == [("分析运行失败", "结果基座故障")]
+    assert shown == [("Analysis run failed", "结果基座故障")]
     window.close()
 
 
@@ -496,7 +496,7 @@ def test_solver_defensive_validation_failure_is_reported_by_job(gui_application,
     assert tuple(run.run_id for run in window.document.runs) == (job.run_id,)
     assert job.status is RunStatus.FAILED
     assert job.error == "模型引用错误"
-    assert shown == [("分析运行失败", "模型引用错误")]
+    assert shown == [("Analysis run failed", "模型引用错误")]
     window.close()
 
 
@@ -515,8 +515,8 @@ def test_submit_rejects_busy_empty_and_duplicate_names(gui_application, monkeypa
     assert window._submit_job("Job-2", "Static-1") is None
     wait_for_analysis_task(window, gui_application)
     assert window._submit_job("job-1", "Static-1") is None
-    assert any("作业名称不能为空" in message for _title, message in shown)
-    assert any("作业名称已存在" in message for _title, message in shown)
+    assert any("Job name cannot be empty" in message for _title, message in shown)
+    assert any("Job name already exists" in message for _title, message in shown)
     window.close()
 
 
@@ -673,7 +673,7 @@ def test_job_manager_terminates_the_selected_active_solve(
     assert cancelled is not None and cancelled.status is RunStatus.CANCELLED
     assert manager is not None
     assert manager.table.item(0, 2).text() == "Cancelled"
-    assert "已取消" in window.status_panel.state_label.text()
+    assert "Canceled" in window.status_panel.state_label.text()
     manager.close()
     window.close()
 

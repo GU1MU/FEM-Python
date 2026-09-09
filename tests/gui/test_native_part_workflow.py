@@ -32,7 +32,7 @@ def test_new_part_dialog_collects_name_and_dimension(gui_application) -> None:
     _application()
     dialog = GeometryCreationDialog(default_part_name="部件-2")
 
-    assert dialog.windowTitle() == "新建部件"
+    assert dialog.windowTitle() == "New Part"
     assert dialog.part_name() == "部件-2"
     assert dialog.sketch_size() == 50.0
     assert dialog.creation_kind() == "1d"
@@ -44,7 +44,7 @@ def test_new_part_dialog_collects_name_and_dimension(gui_application) -> None:
 def test_add_body_action_is_absent_from_production_catalog() -> None:
     assert all(
         descriptor.key.value != "geometry_add_body"
-        and descriptor.text != "添加实体"
+        and descriptor.text != "Add Body"
         for descriptor in ACTION_DESCRIPTORS
     )
 

@@ -193,7 +193,7 @@ def test_actions_follow_document_and_result_context(gui_application, gui_inp_pat
     assert window.result_component_combo.isEnabled()
 
     window.close_model(confirm=False)
-    assert "尚无分析结果" == window.result_tree.topLevelItem(0).text(0)
+    assert "No analysis results" == window.result_tree.topLevelItem(0).text(0)
     assert window.status_panel.object_label.text() == "Object: —"
     assert window.status_panel.step_label.text() == "Step: —"
     assert window.status_panel.result_label.text() == "Results: —"
@@ -209,7 +209,7 @@ def test_startup_new_part_command_initializes_model_before_dialog(
 
     class _CancelledCreationDialog:
         def __init__(self, _parent, *, default_part_name):
-            assert default_part_name == "部件-1"
+            assert default_part_name == "Part-1"
 
         def exec(self):
             return False
@@ -345,13 +345,13 @@ def test_delete_model_requires_confirmation_and_removes_active_model(
     assert target.document_id not in window.workspace.models
     assert window.workspace.active_document() is original
     assert len(prompts) == 2
-    assert all(title == "删除模型" for title, *_rest in prompts)
+    assert all(title == "Delete Model" for title, *_rest in prompts)
     assert all(
-        text == "是否删除当前选中的模型“模型-2”？"
+        text == "Delete the selected model '模型-2'?"
         for _title, text, *_rest in prompts
     )
     assert all(
-        (confirm, cancel, default) == ("确定", "取消", "取消")
+        (confirm, cancel, default) == ("OK", "Cancel", "Cancel")
         for _title, _text, confirm, cancel, default in prompts
     )
     new_model_prompts = []
@@ -484,7 +484,7 @@ def test_project_save_ui_follows_can_save_in_all_session_states(
         assert window._confirm_discard_changes()
         assert len(message_boxes) == previous_count + 1
         labels = {text for text, _role, _button in message_boxes[-1].buttons}
-        assert ("保存" in labels) is expected
+        assert ("Save" in labels) is expected
 
     assert_save_ui(False)
 
@@ -833,8 +833,8 @@ def test_geometry_parameter_edits_preserve_topology_references(gui_application, 
         _global_local_control("edge:bottom", 0.1),
     )
     message = window.status_panel.state_label.text()
-    assert "参数修改后的几何已创建" in message
-    assert "旧命名区域已失效" not in message
+    assert "参数修改后的 geometry created" in message
+    assert "previous named regions invalidated" not in message
     window.close()
 
 
@@ -869,8 +869,8 @@ def test_geometry_topology_change_clears_invalid_references(gui_application):
     assert window.document.named_regions == {}
     assert window.document.mesh_settings.local_controls == ()
     message = window.status_panel.state_label.text()
-    assert "矩形几何已创建" in message
-    assert "旧局部网格设置已失效" in message
+    assert "矩形 geometry created" in message
+    assert "previous local mesh settings invalidated" in message
     window.close()
 
 
@@ -904,7 +904,7 @@ def test_geometry_topology_change_preserves_topology_independent_steps(gui_appli
         empty,
         global_gravity,
     )
-    assert "矩形几何已创建" in window.status_panel.state_label.text()
+    assert "矩形 geometry created" in window.status_panel.state_label.text()
     window.close()
 
 
@@ -945,7 +945,7 @@ def test_geometry_topology_change_invalidates_region_target_step(gui_application
     )
 
     assert window.document.steps == ()
-    assert "矩形几何已创建" in window.status_panel.state_label.text()
+    assert "矩形 geometry created" in window.status_panel.state_label.text()
     window.close()
 
 
@@ -987,7 +987,7 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(gui_application,
     assert window._geometry_selection_kind() == "edge"
     assert window._selected_geometry_refs == {bottom, top}
     assert window._canonical_geometry_selection() == (bottom, top)
-    assert window.status_panel.object_label.text() == "Object: 2 个边"
+    assert window.status_panel.object_label.text() == "Object: Edge: 2"
     assert not window.actions["geometry_region"].isEnabled()
 
     window._on_geometry_entity_pick(top)

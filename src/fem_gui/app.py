@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 os.environ.setdefault("QT_API", "pyside6")
 
@@ -34,6 +35,19 @@ def _configure_font(application: QApplication) -> None:
     """Use an available English UI font."""
     preferred = ("Segoe UI", "Noto Sans", "DejaVu Sans")
     installed = set(QFontDatabase.families())
+    if not any(name in installed for name in preferred):
+        # Offscreen Qt may not discover system fonts. Keep CJK fallback for user text.
+        font_directory = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        for path in (
+            font_directory / "segoeui.ttf",
+            font_directory / "msyh.ttc",
+            Path("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        ):
+            if path.is_file():
+                QFontDatabase.addApplicationFont(str(path))
+        installed = set(QFontDatabase.families())
     family = next((name for name in preferred if name in installed), None)
     if family is not None:
         application.setFont(QFont(family, 9))

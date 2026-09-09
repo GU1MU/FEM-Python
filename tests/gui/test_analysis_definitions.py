@@ -38,7 +38,7 @@ import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 
 
-def test_new_static_step_uses_a_chinese_default_name(gui_application, monkeypatch):
+def test_new_static_step_uses_an_english_default_name(gui_application, monkeypatch):
     window = FEMMainWindow()
     window._set_native_geometry(RectangleGeometry("plate", 2.0, 1.0), "矩形")
     names: list[str] = []
@@ -53,7 +53,7 @@ def test_new_static_step_uses_a_chinese_default_name(gui_application, monkeypatc
 
     window.create_static_step()
 
-    assert names == ["分析步-1"]
+    assert names == ["Step-1"]
     window.close()
 
 
@@ -1307,7 +1307,7 @@ def test_model_tree_boundary_and_load_delete_preserve_other_definitions():
     )
 
     assert step.boundaries == (first, second)
-    assert changes[0][0] == "边界条件已删除，模型需要重新检查"
+    assert changes[0][0] == "Boundary conditions deleted; check the model again"
     assert changes[0][1][0].boundaries == (second,)
 
     FEMMainWindow.delete_analysis_definition(
@@ -1315,7 +1315,7 @@ def test_model_tree_boundary_and_load_delete_preserve_other_definitions():
         "cload",
         (0, 0),
     )
-    assert changes[1][0] == "载荷已删除，模型需要重新检查"
+    assert changes[1][0] == "Loads deleted; check the model again"
     assert changes[1][1][0].cloads == (second_load,)
 
     FEMMainWindow.delete_analysis_definition(

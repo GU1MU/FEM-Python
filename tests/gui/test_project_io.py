@@ -151,7 +151,7 @@ def test_main_window_opens_current_fempy_project(gui_application, tmp_path, monk
     root = window.model_tree.roots[window.workspace.active_document_id]
     tree_texts = _tree_texts(root)
     assert "Steel" in tree_texts
-    assert any(text.startswith("Section-1（") for text in tree_texts)
+    assert any(text.startswith("Section-1 (") for text in tree_texts)
     assert "Load" in tree_texts
     assert any(text.startswith("位移-") for text in tree_texts)
     assert not window.document.dirty
@@ -261,7 +261,7 @@ def test_main_window_v1_open_then_save_migrates_to_fempy(
     assert window.document.project_path == target
     assert not window.legacy_project_extension
     assert not window.document.dirty
-    assert save_successes == [("模型", target)]
+    assert save_successes == [("Model", target)]
     window.close()
 
 

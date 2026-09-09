@@ -64,7 +64,7 @@ def test_sweep_dialog_builds_axis_angle_recipe(gui_application) -> None:
 
     recipe = dialog.recipe()
 
-    assert dialog.windowTitle() == "扫掠几何"
+    assert dialog.windowTitle() == "Sweep Geometry"
     assert tuple(
         dialog.axis_combo.itemData(index)
         for index in range(dialog.axis_combo.count())
@@ -83,7 +83,7 @@ def test_sweep_action_commits_beside_extrusion(gui_application, monkeypatch) -> 
     window._update_action_states()
 
     assert window.actions["geometry_sweep"].isEnabled()
-    assert window.actions["geometry_sweep"].text() == "扫掠"
+    assert window.actions["geometry_sweep"].text() == "Sweep"
     assert not window.actions["geometry_sweep"].icon().isNull()
     assert not icon("sweep").pixmap(QSize(32, 32)).isNull()
 

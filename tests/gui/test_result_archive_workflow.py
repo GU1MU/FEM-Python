@@ -69,7 +69,7 @@ def test_result_actions_have_canonical_descriptors_and_visible_layout(gui_applic
     project_index = next(
         index
         for index in range(window.ribbon.tab_bar.count())
-        if window.ribbon.tab_bar.tabText(index) == "项目"
+        if window.ribbon.tab_bar.tabText(index) == "Project"
     )
     project_buttons = [
         button.defaultAction().objectName()
@@ -105,7 +105,7 @@ def test_open_result_path_installs_read_only_document_and_result_module(gui_appl
     assert window.document.result_only
     assert window.document.path == path
     assert "[Read-only Results]" in window.windowTitle()
-    assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "结果"
+    assert window.ribbon.tab_bar.tabText(window.ribbon.tab_bar.currentIndex()) == "Results"
     assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.result_provider is not None and window.result_provider.is_archived
     assert window.result_tree.catalog is not None
@@ -186,11 +186,11 @@ def test_result_archive_switches_between_result_and_mesh_modules(
     window = open_result_archive_window(tmp_path, "module-switch")
     artifact_id = window.document.artifact.artifact_id
 
-    assert window._current_module_name() == "结果"
+    assert window._current_module_name() == "Results"
     assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.viewport._result_render_payload is not None
 
-    for module_name in ("模型", "网格"):
+    for module_name in ("Model", "Mesh"):
         window.ribbon.set_current(module_name)
         assert window._current_module_name() == module_name
         assert window.navigation.tabs.currentWidget() is window.model_tree
@@ -199,7 +199,7 @@ def test_result_archive_switches_between_result_and_mesh_modules(
         assert window.viewport._result_render_payload is None
         assert window.viewport.artifact_id == artifact_id
 
-    window.ribbon.set_current("结果")
+    window.ribbon.set_current("Results")
     assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.viewport._result_render_payload is not None
     assert window.viewport.artifact_id == artifact_id
@@ -216,14 +216,14 @@ def test_open_result_reprojects_when_result_module_is_already_current(
     save_result_archive(path, archive)
     window = FEMMainWindow()
     window._set_selection_filter("face")
-    window.ribbon.set_current("结果")
+    window.ribbon.set_current("Results")
 
     receipt = window.open_result_path(path)
     assert receipt.completion is not None
     assert receipt.completion.result(2.0).state is BackgroundTaskState.SUCCEEDED
     wait_for_result_idle(window)
 
-    assert window._current_module_name() == "结果"
+    assert window._current_module_name() == "Results"
     assert window.navigation.tabs.currentWidget() is window.result_tree
     assert window.viewport._result_render_payload is not None
     assert window.viewport._model is window._result_archive_model_view
@@ -358,7 +358,7 @@ def test_result_dialog_handlers_route_to_archive_workers(gui_application, tmp_pa
     wait_for_result_idle(window)
     assert window.document.result_only
     assert open_calls and open_calls[-1][3] == (
-        "FEM-Python 结果 (*.femres);;所有文件 (*)"
+        "FEM-Python Results (*.femres);;All Files (*)"
     )
 
     save_calls: list[tuple[object, ...]] = []
@@ -387,11 +387,11 @@ def test_result_dialog_handlers_route_to_archive_workers(gui_application, tmp_pa
     assert target.with_suffix(".femres").is_file()
     assert len(save_calls) == 1
     assert save_calls[0][2] == "dialog-source.femres"
-    assert all(call[3] == "FEM-Python 结果 (*.femres)" for call in save_calls)
+    assert all(call[3] == "FEM-Python Results (*.femres)" for call in save_calls)
     assert save_successes == [
-        ("分析结果", source),
-        ("分析结果", target.with_suffix(".femres")),
-        ("分析结果", target.with_suffix(".femres")),
+        ("Analysis Results", source),
+        ("Analysis Results", target.with_suffix(".femres")),
+        ("Analysis Results", target.with_suffix(".femres")),
     ]
     wait_for_result_idle(window)
     window.close()
@@ -629,7 +629,7 @@ def test_result_dialog_cancel_keeps_document_and_advertises_femres_filter(
     assert not window.busy
     assert window.document.source_kind is None
     assert open_calls and open_calls[0][3] == (
-        "FEM-Python 结果 (*.femres);;所有文件 (*)"
+        "FEM-Python Results (*.femres);;All Files (*)"
     )
     wait_for_result_idle(window)
     window.close()
@@ -657,7 +657,7 @@ def test_save_result_as_dialog_cancel_does_not_start_a_task(
     )
     assert not window.save_current_result_as()
     assert not window.busy
-    assert calls and calls[0][3] == "FEM-Python 结果 (*.femres)"
+    assert calls and calls[0][3] == "FEM-Python Results (*.femres)"
     assert result_projection_identity(window) == before
     wait_for_result_idle(window)
     window.close()

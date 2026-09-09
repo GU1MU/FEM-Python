@@ -123,9 +123,9 @@ def test_native_tree_keeps_model_name_and_supports_info_and_renames(
         feature.data(0, ROLE_KEY),
     )
     assert [title for title, _rows in information] == [
-        "模型概况",
-        "部件信息",
-        "特征信息",
+        "Model Overview",
+        "Part Information",
+        "Feature Information",
     ]
 
     names = iter((("Bracket", True), ("Mount", True)))
@@ -183,7 +183,7 @@ def test_native_feature_information_uses_tree_labels_without_summary(
     )
 
     assert information == [
-        ("特征信息", [("名称", "Cut-1"), ("类型", "Cut")])
+        ("Feature Information", [("Name", "Cut-1"), ("Type", "Cut")])
     ]
     window.close()
 

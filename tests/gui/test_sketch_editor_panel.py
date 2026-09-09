@@ -1500,7 +1500,7 @@ def test_main_window_commits_strict_sketch_only_on_finish(gui_application, monke
     window.start_sketch_geometry()
     controller = window._sketch_editor_controller
     assert controller is not None
-    assert prompts == [("新建二维草图", "部件名称：", "部件-1")]
+    assert prompts == [("New 2D Sketch", "Part name:", "Part-1")]
     assert window.document.geometry_recipe is None
     assert window.document.parts == ()
     assert window.sketch_editor_panel.isHidden() is False
@@ -1579,7 +1579,7 @@ def test_new_sketch_appends_part_without_replacing_existing(
     window.finish_sketch_geometry()
 
     assert tuple(part.name for part in window.document.parts) == (
-        "部件-1",
+        "Part-1",
         "Part-2",
     )
     assert window.document.parts[0].geometry_recipe == original
@@ -1618,7 +1618,7 @@ def test_unified_create_command_routes_2d_to_sketch_editor(
 
     class _CreationDialog:
         def __init__(self, _parent, *, default_part_name) -> None:
-            assert default_part_name == "部件-1"
+            assert default_part_name == "Part-1"
 
         def exec(self) -> bool:
             return True
@@ -1658,7 +1658,7 @@ def test_unified_create_command_routes_size_to_wire_editor(
 
     class _CreationDialog:
         def __init__(self, _parent, *, default_part_name) -> None:
-            assert default_part_name == "部件-1"
+            assert default_part_name == "Part-1"
 
         def exec(self) -> bool:
             return True
@@ -1722,7 +1722,7 @@ def test_unified_create_command_opens_separate_3d_solid_chooser(
     class _CreationDialog:
         def __init__(self, _parent, *, default_part_name) -> None:
             events.append("dimension")
-            assert default_part_name == "部件-1"
+            assert default_part_name == "Part-1"
 
         def exec(self) -> bool:
             return True

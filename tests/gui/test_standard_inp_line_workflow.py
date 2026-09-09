@@ -193,7 +193,7 @@ def _open_check_solve(
     assert provider.catalog().default_selection is None
     assert window.actions["deformed"].isEnabled()
     assert not window.actions["query"].isEnabled()
-    assert window.result_tree.topLevelItem(0).text(0) != "尚无分析结果"
+    assert window.result_tree.topLevelItem(0).text(0) != "No analysis results"
     return errors
 
 
@@ -501,7 +501,7 @@ def test_notices_survive_edit_check_solve_stale_and_failed_import(
         _wait_for_task(window)
 
         assert errors[-1] == (
-            "模型加载失败",
+            "Failed to load model",
             "invalid imported input",
         )
         assert window.document.artifact.artifact_id == artifact_id

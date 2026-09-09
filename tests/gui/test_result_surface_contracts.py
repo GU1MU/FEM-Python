@@ -32,14 +32,14 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces(gui_appl
         GuiActionKey.SAVE_RESULT_AS,
         GuiActionKey.OPEN_RESULT,
     )
-    assert descriptors[GuiActionKey.SAVE_PROJECT_AS].text == "模型另存为..."
+    assert descriptors[GuiActionKey.SAVE_PROJECT_AS].text == "Save Model As..."
     assert descriptors[GuiActionKey.SAVE_PROJECT_AS].icon_name is None
-    assert descriptors[GuiActionKey.SAVE_RESULT].text == "保存结果"
+    assert descriptors[GuiActionKey.SAVE_RESULT].text == "Save Results"
     assert descriptors[GuiActionKey.SAVE_RESULT].handler == "save_current_result"
     assert descriptors[GuiActionKey.SAVE_RESULT].icon_name == "save_result"
-    assert descriptors[GuiActionKey.SAVE_RESULT_AS].text == "结果另存为..."
+    assert descriptors[GuiActionKey.SAVE_RESULT_AS].text == "Save Results As..."
     assert descriptors[GuiActionKey.SAVE_RESULT_AS].icon_name is None
-    assert descriptors[GuiActionKey.OPEN_RESULT].text == "打开结果"
+    assert descriptors[GuiActionKey.OPEN_RESULT].text == "Open Results"
     assert descriptors[GuiActionKey.OPEN_RESULT].handler == "open_result_file"
     assert descriptors[GuiActionKey.OPEN_RESULT].icon_name == "open_result"
 
@@ -53,7 +53,7 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces(gui_appl
         )
     }
     assert not states[GuiActionKey.SAVE_RESULT].enabled
-    assert "没有可保存" in states[GuiActionKey.SAVE_RESULT].reason
+    assert "No successful results are available to save" in states[GuiActionKey.SAVE_RESULT].reason
     assert not states[GuiActionKey.SAVE_RESULT_AS].enabled
     assert (
         states[GuiActionKey.SAVE_RESULT_AS].reason
@@ -88,12 +88,12 @@ def test_phase0_result_actions_replace_reload_close_in_project_surfaces(gui_appl
         [
             window.ribbon.tab_bar.tabText(index)
             for index in range(window.ribbon.tab_bar.count())
-        ].index("项目")
+        ].index("Project")
     )
     file_label = next(
         label
         for label in project_page.findChildren(QLabel)
-        if label.objectName() == "ribbonGroupTitle" and label.text() == "文件"
+        if label.objectName() == "ribbonGroupTitle" and label.text() == "File"
     )
     file_group = file_label.parent()
     assert [

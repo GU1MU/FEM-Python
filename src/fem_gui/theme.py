@@ -205,7 +205,7 @@ QFrame#ribbonGroup {{ background: {COLORS['chrome']}; border: none; border-right
 QLabel#ribbonGroupTitle {{ background: transparent; color: {COLORS['muted']}; font-size: 8pt; min-height: 14px; }}
 QToolButton#ribbonLargeButton {{ min-width: 64px; min-height: 52px; padding: 1px 6px; }}
 QToolButton#ribbonSmallButton {{ min-height: 23px; padding: 0 5px; text-align: left; }}
-QToolButton#ribbonCompactButton {{ min-width: 0; max-width: 128px; min-height: 25px; padding: 0 5px; text-align: left; }}
+QToolButton#ribbonCompactButton {{ min-height: 25px; padding: 0 5px; text-align: left; }}
 QWidget#navigationPanel {{ background: white; border-right: 1px solid {COLORS['border']}; }}
 QTabWidget#navigationTabs::pane {{ background: white; border: none; border-top: 1px solid {COLORS['border']}; }}
 QTabWidget#navigationTabs QTabBar::tab {{ background: {COLORS['chrome']}; border: none; border-right: 1px solid {COLORS['border']}; min-width: 72px; height: 25px; padding: 0 8px; }}

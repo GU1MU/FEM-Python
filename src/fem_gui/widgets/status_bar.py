@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QStatusBar
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QSizePolicy, QStatusBar
 
 
 class CAEStatusBar(QStatusBar):
@@ -58,6 +58,8 @@ class CAEStatusBar(QStatusBar):
         label.setObjectName(name)
         label.setMinimumWidth(0)
         label.setMaximumWidth(maximum)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        label.setToolTip(text)
         self.addWidget(label, stretch)
         self._field_count += 1
         return label
@@ -94,16 +96,21 @@ class CAEStatusBar(QStatusBar):
             "mesh_body": "Bodies",
         }
         self.selection_label.setText(f"Selection: {labels.get(mode, 'Nodes')}")
+        self.selection_label.setToolTip(self.selection_label.text())
 
     def set_object(self, text: str = "—", coordinates: str = "—") -> None:
         self.object_label.setText(f"Object: {text}")
         self.coordinate_label.setText(f"Coordinates: {coordinates}")
+        self.object_label.setToolTip(self.object_label.text())
+        self.coordinate_label.setToolTip(self.coordinate_label.text())
 
     def set_step(self, step_name: str | None) -> None:
         self.step_label.setText(f"Step: {step_name or '—'}")
+        self.step_label.setToolTip(self.step_label.text())
 
     def set_result(self, text: str = "—") -> None:
         self.result_label.setText(f"Results: {text}")
+        self.result_label.setToolTip(self.result_label.text())
 
     def reset_document(self) -> None:
         self.set_state("Ready")

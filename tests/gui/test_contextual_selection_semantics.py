@@ -107,7 +107,7 @@ def test_mesh_modules_defer_and_share_imported_topology_inference(
         record_inference,
     )
 
-    for module_name in ("网格", "模型", "分析"):
+    for module_name in ("Mesh", "Model", "Analysis"):
         window.ribbon.set_current(module_name)
 
     assert calls == []
@@ -160,7 +160,7 @@ def test_large_mesh_topology_is_prepared_before_enabling_edge_picks(
 
     window._set_selection_filter("edge")
 
-    assert task["task_name"] == "准备网格选择拓扑"
+    assert task["task_name"] == "Prepare Mesh Selection Topology"
     assert window._scope_selection_topology_cache is None
     assert window._mesh_selection_topology_cache is None
     assert window.viewport._selection_mode != "mesh_edge"
@@ -325,7 +325,7 @@ def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
     )
     window._on_mesh_scope_entity_pick(whole_edge[0])
     assert window._selected_mesh_scope_refs == set(whole_edge)
-    assert window.status_panel.object_label.text() == "Object: 1 个拓扑边"
+    assert window.status_panel.object_label.text() == "Object: Topology Edge: 1"
 
     monkeypatch.setattr(
         window,
@@ -346,7 +346,7 @@ def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
         MeshEntityRef.element(10, part_id="P2"),
         MeshEntityRef.element(11, part_id="P2"),
     )
-    assert window.status_panel.object_label.text() == "Object: 1 个部件"
+    assert window.status_panel.object_label.text() == "Object: Part: 1"
     window._set_selection_filter("element")
     assert not window._selected_mesh_scope_refs
     window._on_mesh_scope_entity_pick(MeshEntityRef.element(10))

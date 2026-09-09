@@ -294,8 +294,8 @@ def test_save_success_dialog_reports_selected_path(monkeypatch) -> None:
     assert calls == [
         (
             owner,
-            "保存成功",
-            f"CSV 文件已保存成功\n\n{Path('exports') / 'selected.csv'}",
+            "Saved Successfully",
+            f"CSV 文件 saved successfully\n\n{Path('exports') / 'selected.csv'}",
         )
     ]
 
@@ -359,9 +359,9 @@ def test_export_flow_passes_options_and_keeps_success_feedback(monkeypatch) -> N
             },
         )
     ]
-    assert harness.status_calls == [("视口图片保存完成", 5000)]
+    assert harness.status_calls == [("Viewport image saved", 5000)]
     assert harness.errors == []
-    assert harness.successes == [("视口图片", "viewport.jpg")]
+    assert harness.successes == [("Viewport Image", "viewport.jpg")]
 
 
 def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
@@ -388,7 +388,7 @@ def test_export_flow_keeps_existing_error_feedback(monkeypatch) -> None:
 
     FEMMainWindow.export_viewport_image(harness)
 
-    assert harness.errors == [("导出视口图片失败", "capture failed")]
+    assert harness.errors == [("Failed to export viewport image", "capture failed")]
     assert harness.status_calls == []
     assert harness.successes == []
 

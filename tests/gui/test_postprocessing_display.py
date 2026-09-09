@@ -124,7 +124,7 @@ def test_shape_and_contour_are_independent_for_all_four_states(gui_application, 
                 window.viewport._result_render_payload.topology.selection
                 == window.result_selection
             )
-            assert ("无云图" not in window.status_panel.result_label.text()) is contour_enabled
+            assert ("No Contour" not in window.status_panel.result_label.text()) is contour_enabled
     window.close()
 
 
@@ -188,24 +188,24 @@ def test_ribbon_modules_switch_between_result_contour_and_mesh(
 
     assert window.ribbon.tab_bar.tabText(
         window.ribbon.tab_bar.currentIndex()
-    ) == "结果"
+    ) == "Results"
     assert window.viewport._result_render_payload is not None
     assert window.viewport._display.contour_enabled
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["symbols"].isEnabled()
     assert not window.viewport._symbols_visible
 
-    for module_name in ("分析", "模型", "网格"):
+    for module_name in ("Analysis", "Model", "Mesh"):
         window.ribbon.set_current(module_name)
         assert window.viewport._result_render_payload is None
         assert window.viewport._geometry_preview is None
         assert window.viewport.artifact_id == window.document.artifact.artifact_id
-        if module_name == "分析":
+        if module_name == "Analysis":
             assert window.actions["symbols"].isChecked()
             assert window.actions["symbols"].isEnabled()
             assert window.viewport._symbols_visible
 
-    window.ribbon.set_current("结果")
+    window.ribbon.set_current("Results")
     assert window.viewport._result_render_payload is not None
     assert window.viewport._display.contour_enabled
     assert not window.actions["symbols"].isChecked()
@@ -214,24 +214,24 @@ def test_ribbon_modules_switch_between_result_contour_and_mesh(
     window._update_action_states()
     assert not window.actions["symbols"].isEnabled()
 
-    window.ribbon.set_current("分析")
+    window.ribbon.set_current("Analysis")
     assert window.actions["symbols"].isChecked()
     assert window.actions["symbols"].isEnabled()
     assert window.viewport._symbols_visible
 
-    window.ribbon.set_current("几何")
+    window.ribbon.set_current("Geometry")
     assert not window.actions["symbols"].isChecked()
     assert not window.actions["symbols"].isEnabled()
     assert not window.viewport._symbols_visible
     window._update_action_states()
     assert not window.actions["symbols"].isEnabled()
 
-    window.ribbon.set_current("分析")
+    window.ribbon.set_current("Analysis")
     assert window.actions["symbols"].isChecked()
     assert window.actions["symbols"].isEnabled()
     assert window.viewport._symbols_visible
 
-    window.ribbon.set_current("结果")
+    window.ribbon.set_current("Results")
     assert (
         window.viewport._result_render_payload.topology.selection
         == window.result_selection

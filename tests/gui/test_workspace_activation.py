@@ -101,7 +101,7 @@ def test_activation_native_preview_projection_passes_render_and_reset_false(
         )
         window._workspace_activation = True
         window._project_viewport_for_module(
-            "几何",
+            "Geometry",
             render=False,
             reset_camera=False,
         )

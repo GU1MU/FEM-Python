@@ -128,7 +128,7 @@ def test_panel_reenables_inputs_after_running_preview_is_cancelled(gui_applicati
     assert panel.clear_target_button.isEnabled()
     assert panel.delete_tool_button.isEnabled()
     assert all(
-        label.text() != "预览与诊断"
+        label.text() != "Preview and Diagnostics"
         for label in panel.findChildren(QLabel)
     )
     panel.set_preview_running(True)
@@ -439,7 +439,7 @@ def test_automatic_finish_commits_without_reopening_a_panel(gui_application, mon
     assert len(commits) == 1
     recipe, label, kwargs = commits[0]
     assert recipe == source
-    assert label == "二维布尔后的"
+    assert label == "2D Boolean Result"
     assert kwargs["base_session_revision"] == controller.base_session_revision
     assert kwargs["preserve_editor"] is True
     assert kwargs["geometry_preview"].face_logical_ids == ("face:P1/domain",)

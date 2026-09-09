@@ -327,5 +327,5 @@ def test_csv_action_exports_dialog_selection_without_changing_viewport_field(
         provider.snapshot.generation
     )
     assert window.result_selection == displayed
-    assert successes == [("CSV 文件", tmp_path / "selected-field.csv")]
+    assert successes == [("CSV File", tmp_path / "selected-field.csv")]
     window.close()

@@ -20,7 +20,7 @@ def test_shell_has_localized_menus_and_no_placeholder_copy(gui_application):
     window = FEMMainWindow()
     text = _visible_text(window)
 
-    assert [action.text() for action in window.menuBar().actions()] == ["文件", "编辑", "视图", "分析", "结果", "帮助"]
+    assert [action.text() for action in window.menuBar().actions()] == ["File", "Edit", "View", "Analysis", "Results", "Help"]
     assert all(action.text() for action in window.actions.values())
     for forbidden in ("Planned", "Coming Soon", "Placeholder", "暂未实现", "后续支持"):
         assert forbidden not in text

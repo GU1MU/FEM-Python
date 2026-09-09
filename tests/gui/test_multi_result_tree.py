@@ -453,6 +453,6 @@ def test_main_window_run_route_is_owned_by_document(gui_application, monkeypatch
         )
         window._activate_routed_result_run(context.document_id, "run-B")
         assert calls == ["run-B"]
-        assert ribbon_calls == ["结果"]
+        assert ribbon_calls == ["Results"]
     finally:
         window.close()

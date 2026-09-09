@@ -328,7 +328,7 @@ class PreparedSystem:
             else:
                 selection = _resolve_selection(self._model, step, steps)
                 _validate_selection(self._model, selection.steps)
-            _record_timing(timings, "模型验证", started)
+            _record_timing(timings, "Model validation", started)
         return self._solve_selection(selection, name, timings)
 
     def _solve_selection(
@@ -376,11 +376,11 @@ def prepare(
 
     started = perf_counter()
     materials.apply_sections(owned_model)
-    _record_timing(timings, "分析准备", started)
+    _record_timing(timings, "Analysis preparation", started)
 
     started = perf_counter()
     base_stiffness = assemble_global_stiffness_sparse(owned_model.mesh)
-    _record_timing(timings, "刚度矩阵装配", started)
+    _record_timing(timings, "Stiffness matrix assembly", started)
     return PreparedSystem._from_owned(owned_model, base_stiffness)
 
 
@@ -441,7 +441,7 @@ def solve(
         else:
             selection = _resolve_selection(model, step, steps)
             _validate_selection(model, selection.steps)
-        _record_timing(timings, "模型验证", started)
+        _record_timing(timings, "Model validation", started)
 
     prepared = (
         prepare(
@@ -579,7 +579,7 @@ def _solve_prepared_step(
         load,
         base_stiffness.shape[0],
     )
-    _record_timing(timings, "载荷与边界条件", started)
+    _record_timing(timings, "Loads and boundary conditions", started)
 
     started = perf_counter()
     displacement, free_dofs = factor_cache.solve(
@@ -587,7 +587,7 @@ def _solve_prepared_step(
         constrained_pattern,
         constrained_values,
     )
-    _record_timing(timings, "线性方程求解", started)
+    _record_timing(timings, "Linear system solve", started)
 
     started = perf_counter()
     reactions = base_stiffness @ displacement - load
@@ -599,7 +599,7 @@ def _solve_prepared_step(
         reactions,
         name=name,
     )
-    _record_timing(timings, "反力与结果封装", started)
+    _record_timing(timings, "Reactions and result packaging", started)
     return result
 
 

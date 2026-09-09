@@ -27,8 +27,8 @@ from fem_gui.visualization.model_adapter import build_model_geometry
 
 
 _RELOAD_LOSS_MESSAGE = (
-    "此修改只保留在当前 Session；"
-    "重新加载原 INP 后会恢复源文件中的输出请求。"
+    "This change is retained only in the current Session; "
+    "reloading the original INP restores the source output requests."
 )
 
 
@@ -155,7 +155,7 @@ def test_imported_create_uses_catalog_candidate_and_reload_restores_source(
     assert created[-1] == published
     assert window.document.session_revision == before_revision + 1
     assert not window.document.can_save
-    assert warnings == [("输出请求", _RELOAD_LOSS_MESSAGE)]
+    assert warnings == [("Output Request", _RELOAD_LOSS_MESSAGE)]
     assert gui_inp_path.read_bytes() == source_bytes
 
     _install_imported(window, gui_inp_path)
@@ -270,7 +270,7 @@ def test_imported_delete_checks_capability_warns_and_reload_restores_source(
     assert tuple(
         _editable_step(window.document.steps).outputs
     ) == original[1:]
-    assert warnings == [("输出请求", _RELOAD_LOSS_MESSAGE)]
+    assert warnings == [("Output Request", _RELOAD_LOSS_MESSAGE)]
     assert gui_inp_path.read_bytes() == source_bytes
 
     _install_imported(window, gui_inp_path)
@@ -366,7 +366,7 @@ def test_delete_rechecks_session_capability_before_mutation_or_warning(
     assert window.document == before
     assert warnings == []
     assert errors == [
-        ("删除输出请求", "output_request.delete"),
+        ("Delete Output Request", "output_request.delete"),
     ]
     window.close()
 
@@ -524,7 +524,7 @@ def test_create_capability_rejection_has_zero_mutation(gui_application, monkeypa
 
     assert window.document == before
     assert errors == [
-        ("创建输出请求", "output_request.create"),
+        ("Create Output Request", "output_request.create"),
     ]
     window.close()
 
@@ -582,7 +582,7 @@ def test_imported_cancelled_or_failed_create_does_not_warn_or_mutate(
     assert window.document == before
     assert warnings == []
     assert errors == [
-        ("创建输出请求", "invalid candidate"),
+        ("Create Output Request", "invalid candidate"),
     ]
     window.close()
 

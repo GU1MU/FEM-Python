@@ -73,7 +73,7 @@ def test_background_import_solve_and_result_state(gui_application, gui_inp_path)
 
     assert window.document.has_model
     assert isinstance(completion, TaskCompletion)
-    assert completion.task_name == "INP 导入"
+    assert completion.task_name == "INP Import"
     assert completion.state is BackgroundTaskState.SUCCEEDED
     assert completion.apply_status is TaskApplyStatus.ACCEPTED
     assert not window.actions["submit_job"].isEnabled()
@@ -199,7 +199,7 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
         staticmethod(
             lambda *_args, **_kwargs: (
                 str(vtk_target),
-                "VTK 文件 (*.vtk)",
+                "VTK Files (*.vtk)",
             )
         ),
     )
@@ -217,7 +217,7 @@ def test_gui_exports_the_current_result_field_as_csv_and_vtk(
     assert len(csv_rows) == len(
         provider.field(selection.field_key).locations
     ) + 1
-    assert successes == [("CSV 文件", csv_target)]
+    assert successes == [("CSV File", csv_target)]
 
     window.actions["export_vtk"].trigger()
     _wait_for_task(window)

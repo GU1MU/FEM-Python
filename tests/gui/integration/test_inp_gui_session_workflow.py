@@ -391,9 +391,9 @@ def test_mixed_plate_import_and_gui_solve_publish_u_rf_and_s() -> None:
         result_step.child(index).text(0)
         for index in range(result_step.childCount())
     } == {
-        "位移 U",
-        "反力 RF",
-        "应力 S",
+        "Displacement U",
+        "Reaction Force RF",
+        "Stress S",
     }
     window.close()
 

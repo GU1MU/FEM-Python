@@ -9,6 +9,9 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTabBar,
     QToolButton,
@@ -47,12 +50,14 @@ class RibbonGroup(QFrame):
         """Add a large button or a two-row small button bound to an existing QAction."""
         button = QToolButton(self)
         button.setDefaultAction(action)
+        button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         if large:
             button.setObjectName("ribbonLargeButton")
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             button.setIconSize(QSize(34, 34))
             button.setFixedHeight(60)
-            button.setMinimumWidth(54)
+            button.ensurePolished()
+            button.setStyleSheet(f"min-width: {max(54, button.sizeHint().width())}px;")
             self._content.addWidget(button)
             # Keep later compact commands in a new run so a large command
             # inserted between two compact runs remains in its declared
@@ -64,7 +69,8 @@ class RibbonGroup(QFrame):
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             button.setIconSize(QSize(24, 24))
             button.setFixedHeight(30)
-            button.setMinimumWidth(72)
+            button.ensurePolished()
+            button.setStyleSheet(f"min-width: {max(72, button.sizeHint().width())}px;")
             # Let each command fit its label and icon.
             if compact:
                 button.setObjectName("ribbonCompactButton")
@@ -94,10 +100,22 @@ class RibbonPage(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ribbonPage")
-        self._layout = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        content = QWidget(scroll)
+        self._layout = QHBoxLayout(content)
+        self._layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self._layout.setContentsMargins(2, 0, 2, 0)
         self._layout.setSpacing(0)
         self._layout.addStretch(1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def add_group(self, title: str) -> RibbonGroup:
         group = RibbonGroup(title, self)
@@ -113,7 +131,7 @@ class RibbonWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ribbonWidget")
-        self.setFixedHeight(110)
+        self.setFixedHeight(128)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
