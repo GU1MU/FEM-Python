@@ -168,7 +168,7 @@ def test_native_feature_information_uses_tree_labels_without_summary(
 
     part = window.model_tree.topLevelItem(0).child(0)
     feature = part.child(part.childCount() - 2)
-    assert feature.text(0) == "切除-1"
+    assert feature.text(0) == "Cut-1"
     assert feature.toolTip(0) == ""
 
     information = []
@@ -183,7 +183,7 @@ def test_native_feature_information_uses_tree_labels_without_summary(
     )
 
     assert information == [
-        ("特征信息", [("名称", "切除-1"), ("类型", "切除")])
+        ("特征信息", [("名称", "Cut-1"), ("类型", "Cut")])
     ]
     window.close()
 

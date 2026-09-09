@@ -1,4 +1,4 @@
-"""使用原生 PySide6 控件构成的紧凑 Ribbon。"""
+"""Compact ribbon built from native PySide6 widgets."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 
 class RibbonGroup(QFrame):
-    """带底部名称的 Ribbon 命令组。"""
+    """Ribbon command group with a title below its controls."""
 
     def __init__(self, title: str, parent=None) -> None:
         super().__init__(parent)
@@ -44,7 +44,7 @@ class RibbonGroup(QFrame):
         large: bool = False,
         compact: bool = False,
     ) -> QToolButton:
-        """添加一个绑定现有 QAction 的大按钮或两行小按钮。"""
+        """Add a large button or a two-row small button bound to an existing QAction."""
         button = QToolButton(self)
         button.setDefaultAction(action)
         if large:
@@ -65,10 +65,7 @@ class RibbonGroup(QFrame):
             button.setIconSize(QSize(24, 24))
             button.setFixedHeight(30)
             button.setMinimumWidth(72)
-            # Commands such as “位移边界条件” need about 125 px with the
-            # application font.  The previous 118 px cap clipped those labels
-            # and even shorter commands such as “导出 CSV”.
-            button.setMaximumWidth(146)
+            # Let each command fit its label and icon.
             if compact:
                 button.setObjectName("ribbonCompactButton")
                 self._content.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -87,12 +84,12 @@ class RibbonGroup(QFrame):
         return button
 
     def add_widget(self, widget: QWidget) -> None:
-        """添加分析步等真实上下文控件。"""
+        """Add contextual controls such as the analysis step selector."""
         self._content.addWidget(widget)
 
 
 class RibbonPage(QWidget):
-    """一个工作流模块对应的 Ribbon 页面。"""
+    """Ribbon page for a workflow module."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -109,7 +106,7 @@ class RibbonPage(QWidget):
 
 
 class RibbonWidget(QWidget):
-    """模块页签与命令页组成的无第三方依赖 Ribbon。"""
+    """Ribbon of module tabs and command pages without third-party dependencies."""
 
     moduleChanged = Signal(str)
 

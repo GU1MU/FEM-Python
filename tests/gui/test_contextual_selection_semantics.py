@@ -325,7 +325,7 @@ def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
     )
     window._on_mesh_scope_entity_pick(whole_edge[0])
     assert window._selected_mesh_scope_refs == set(whole_edge)
-    assert window.status_panel.object_label.text() == "对象：1 个拓扑边"
+    assert window.status_panel.object_label.text() == "Object: 1 个拓扑边"
 
     monkeypatch.setattr(
         window,
@@ -346,7 +346,7 @@ def test_mesh_filters_invalidate_previous_selection_and_group_toggle(
         MeshEntityRef.element(10, part_id="P2"),
         MeshEntityRef.element(11, part_id="P2"),
     )
-    assert window.status_panel.object_label.text() == "对象：1 个部件"
+    assert window.status_panel.object_label.text() == "Object: 1 个部件"
     window._set_selection_filter("element")
     assert not window._selected_mesh_scope_refs
     window._on_mesh_scope_entity_pick(MeshEntityRef.element(10))

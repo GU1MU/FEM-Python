@@ -70,15 +70,15 @@ def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_applicatio
     kinds = [item.data(0, ROLE_KIND) for item in items]
 
     assert text[0] == model.name
-    assert "网格" in text
-    assert "节点集 (2)" in text
-    assert "单元集 (1)" in text
-    assert "材料 (1)" in text
-    assert "截面 (1)" in text
-    assert "分析 (2)" in text
+    assert 'Mesh' in text
+    assert 'Node Sets (2)' in text
+    assert 'Element Sets (1)' in text
+    assert 'Materials (1)' in text
+    assert 'Sections (1)' in text
+    assert 'Analysis (2)' in text
     assert "node" not in kinds
     assert "element" not in kinds
-    assert not any(value.startswith(("节点 1", "单元 1")) for value in text)
+    assert not any(value.startswith(('Nodes 1', 'Elements 1')) for value in text)
     assert not tree.topLevelItem(0).icon(0).isNull()
     mesh = next(item for item in items if item.data(0, ROLE_KIND) == "mesh")
     assert not mesh.icon(0).isNull()
@@ -89,7 +89,7 @@ def test_model_tree_is_compact_and_keeps_real_engineering_objects(gui_applicatio
         item for item in items
         if item.data(0, ROLE_KIND) == "section"
     )
-    assert section.text(0) == "截面 1（平面应力）"
+    assert section.text(0) == 'Section 1 (Plane Stress)'
 
 
 def test_model_tree_rebuild_preserves_navigation_state(gui_application, gui_inp_path):
@@ -103,13 +103,13 @@ def test_model_tree_rebuild_preserves_navigation_state(gui_application, gui_inp_
         item
         for item in items
         if item.data(0, ROLE_KIND) == "category"
-        and item.text(0).startswith("分析 (")
+        and item.text(0).startswith('Analysis (')
     )
     step = next(item for item in items if item.data(0, ROLE_KIND) == "step")
     boundaries = next(
         step.child(index)
         for index in range(step.childCount())
-        if step.child(index).text(0).startswith("边界条件 (")
+        if step.child(index).text(0).startswith('Boundary Conditions (')
     )
     material = next(
         item for item in items if item.data(0, ROLE_KIND) == "material"
@@ -133,7 +133,7 @@ def test_model_tree_rebuild_preserves_navigation_state(gui_application, gui_inp_
         item
         for item in refreshed
         if item.data(0, ROLE_KIND) == "category"
-        and item.text(0).startswith("分析 (")
+        and item.text(0).startswith('Analysis (')
     ).isExpanded()
     refreshed_step = next(
         item
@@ -144,7 +144,7 @@ def test_model_tree_rebuild_preserves_navigation_state(gui_application, gui_inp_
     assert next(
         refreshed_step.child(index)
         for index in range(refreshed_step.childCount())
-        if refreshed_step.child(index).text(0).startswith("边界条件 (")
+        if refreshed_step.child(index).text(0).startswith('Boundary Conditions (')
     ).isExpanded()
     assert tree.currentItem().data(0, ROLE_KIND) == "material"
     assert tree.currentItem().data(0, ROLE_KEY) == material_key
@@ -230,7 +230,7 @@ def test_boundary_and_load_context_menus_emit_delete_request(
             return action
 
         def exec(self, _position):
-            return self.actions["删除"]
+            return self.actions['Delete']
 
     deleted = []
     tree.deleteRequested.connect(
@@ -245,14 +245,14 @@ def test_boundary_and_load_context_menus_emit_delete_request(
 
     tree._show_context_menu(QPoint())
 
-    assert action_labels == ["编辑", "删除", "查看信息"]
+    assert action_labels == ['Edit', 'Delete', 'Information']
     assert deleted == [("boundary", boundary.data(0, ROLE_KEY))]
 
     selected[0] = load
     action_labels.clear()
     tree._show_context_menu(QPoint())
 
-    assert action_labels == ["高亮", "编辑", "删除", "查看信息"]
+    assert action_labels == ['Highlight', 'Edit', 'Delete', 'Information']
     assert deleted[-1] == ("cload", load.data(0, ROLE_KEY))
 
 
@@ -272,18 +272,18 @@ def test_runnable_steps_show_boundaries_inherited_from_every_previous_step(gui_a
     boundary_root = next(
         step.child(index)
         for index in range(step.childCount())
-        if step.child(index).text(0).startswith("边界条件")
+        if step.child(index).text(0).startswith('Boundary Conditions')
     )
 
-    assert boundary_root.text(0) == "边界条件 (3)"
+    assert boundary_root.text(0) == 'Boundary Conditions (3)'
     inherited = tuple(
         boundary_root.child(index)
         for index in range(boundary_root.childCount())
     )
     assert [item.text(0) for item in inherited] == [
-        "位移约束 1",
-        "位移约束 2",
-        "位移约束 1",
+        'Displacement Constraint 1',
+        'Displacement Constraint 2',
+        'Displacement Constraint 1',
     ]
     assert all(item.data(0, ROLE_INHERITED) is True for item in inherited)
     assert all(
@@ -333,7 +333,7 @@ def test_line_load_is_a_regular_load_tree_item(gui_application):
         item for item in _items(tree)
         if item.data(0, ROLE_KIND) == "line_load"
     )
-    assert line_load.text(0) == "边力 1"
+    assert line_load.text(0) == 'Edge Traction 1'
     assert not line_load.icon(0).isNull()
 
 
@@ -376,7 +376,7 @@ def test_output_request_tree_items_show_only_variables(gui_application):
     output_category = next(
         item
         for item in _items(tree)
-        if item.text(0) == "输出请求 (4)"
+        if item.text(0) == 'Output Requests (4)'
     )
     assert output_category.childCount() == 4
 
@@ -405,7 +405,7 @@ def test_model_tree_hides_output_requests_without_executable_projection(
     output_category = next(
         item
         for item in _items(tree)
-        if item.text(0) == "输出请求 (0)"
+        if item.text(0) == 'Output Requests (0)'
     )
     assert output_category.childCount() == 0
     assert not any(
@@ -439,8 +439,8 @@ def test_section_tree_uses_cae_labels_instead_of_backend_identifiers(gui_applica
         for item in _items(tree)
         if item.data(0, ROLE_KIND) == "section"
     ]
-    assert "截面 1（三维实体）" in sections
-    assert "截面 2（梁截面）" in sections
+    assert 'Section 1 (3D Solid)' in sections
+    assert 'Section 2 (Beam Section)' in sections
 
 
 def test_native_geometry_tree_is_shallow_model_part_feature_history(gui_application):
@@ -458,7 +458,7 @@ def test_native_geometry_tree_is_shallow_model_part_feature_history(gui_applicat
     assert root.text(0) == "模型-1"
     assert part.text(0) == "部件-1"
     assert [part.child(index).text(0) for index in range(part.childCount())] == [
-        "草图-1", "拉伸-1", "切除-1",
+        'Sketch-1', 'Extrude-1', 'Cut-1',
     ]
     assert len(_items(tree)) == 5
 
@@ -478,7 +478,7 @@ def test_native_model_part_and_feature_menus_omit_highlight_and_route_actions(
     part = root.child(0)
     feature = part.child(0)
     selected = [root]
-    requested_action = ["重命名"]
+    requested_action = ['Rename']
     action_labels: list[str] = []
 
     class Menu:
@@ -514,21 +514,21 @@ def test_native_model_part_and_feature_menus_omit_highlight_and_route_actions(
     )
 
     tree._show_context_menu(QPoint())
-    assert action_labels == ["重命名", "查看信息"]
+    assert action_labels == ['Rename', 'Information']
     assert renamed == [("model", None)]
 
     selected[0] = part
     action_labels.clear()
     tree._show_context_menu(QPoint())
-    assert action_labels == ["重命名", "查看信息"]
+    assert action_labels == ['Rename', 'Information']
     assert renamed[-1] == ("part", None)
 
     selected[0] = feature
-    requested_action[0] = "查看信息"
+    requested_action[0] = 'Information'
     action_labels.clear()
     tree._show_context_menu(QPoint())
     tree._on_clicked(feature)
-    assert action_labels == ["查看信息"]
+    assert action_labels == ['Information']
     assert informed == [("feature", "Sketch-1")]
     assert highlighted == []
 
@@ -552,7 +552,7 @@ def test_gravity_is_a_regular_load_tree_item(gui_application, gui_inp_path):
         for item in _items(tree)
         if item.data(0, ROLE_KIND) == "gravity_load"
     )
-    assert gravity.text(0) == "重力 1"
+    assert gravity.text(0) == 'Gravity 1'
     assert not gravity.icon(0).isNull()
 
 
@@ -570,10 +570,10 @@ def test_native_meshed_tree_keeps_the_part_feature_history(gui_application, gui_
     mesh = root.child(1)
     assert part.text(0) == "部件-1"
     assert [part.child(index).text(0) for index in range(part.childCount())] == [
-        "草图-1",
-        "拉伸-1",
+        'Sketch-1',
+        'Extrude-1',
     ]
-    assert mesh.text(0) == "网格"
+    assert mesh.text(0) == 'Mesh'
     assert not mesh.isExpanded()
 
 
@@ -622,7 +622,7 @@ def test_assignment_nodes_show_orientation_and_route_edit_by_index(gui_applicati
         item
         for item in items
         if item.data(0, ROLE_KIND) == "category"
-        and item.text(0) == "截面分配 (2)"
+        and item.text(0) == 'Section Assignments (2)'
     )
     section_assign_icon_key = model_tree_module.icon("section_assign").cacheKey()
     assert assignment_category.icon(0).cacheKey() == section_assign_icon_key

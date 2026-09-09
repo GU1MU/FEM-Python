@@ -422,7 +422,7 @@ class ModelIterationService:
 
     def _next_model_name(self, source_model_name: str) -> str:
         base = _text(source_model_name, "source_model_name")
-        preferred = f"{base}-迭代"
+        preferred = f"{base}-Iteration"
         existing = {
             str(document.projection.model_name or document.display_name).casefold()
             for document in self._workspace.models.values()

@@ -83,19 +83,19 @@ def _global_local_control(
 def test_actions_follow_document_and_result_context(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
-    assert window.actions["new_native"].text() == "新建模型"
-    assert window.actions["delete_model"].text() == "删除模型"
-    assert window.actions["open_project"].text() == "打开模型"
-    assert window.actions["save_project"].text() == "保存模型"
-    assert window.actions["save_project_as"].text() == "模型另存为..."
-    assert window.actions["open"].text() == "打开 INP"
-    assert window.actions["submit_job"].text() == "创建作业"
-    assert window.actions["save_result_as"].text() == "结果另存为..."
-    assert window.actions["export_csv"].text() == "导出 CSV"
-    assert window.actions["export_vtk"].text() == "导出 VTK"
-    assert window.actions["screenshot"].text() == "导出视口"
-    assert window.actions["load_create"].text() == "载荷边界条件"
-    assert window.actions["job_manager"].text() == "作业管理"
+    assert window.actions["new_native"].text() == "New Model"
+    assert window.actions["delete_model"].text() == "Delete Model"
+    assert window.actions["open_project"].text() == "Open Model"
+    assert window.actions["save_project"].text() == "Save Model"
+    assert window.actions["save_project_as"].text() == "Save Model As..."
+    assert window.actions["open"].text() == "Open INP"
+    assert window.actions["submit_job"].text() == "Create Job"
+    assert window.actions["save_result_as"].text() == "Save Results As..."
+    assert window.actions["export_csv"].text() == "Export CSV"
+    assert window.actions["export_vtk"].text() == "Export VTK"
+    assert window.actions["screenshot"].text() == "Export Viewport"
+    assert window.actions["load_create"].text() == "Load BC"
+    assert window.actions["job_manager"].text() == "Job Manager"
     assert "export" not in window.actions
 
     decorated = [
@@ -109,9 +109,9 @@ def test_actions_follow_document_and_result_context(gui_application, gui_inp_pat
 
     assert window.actions["open"].isEnabled()
     assert window.actions["geometry_create"].isEnabled()
-    assert window.actions["geometry_create"].toolTip() == "新建部件"
+    assert window.actions["geometry_create"].toolTip() == "New Part"
     assert window.actions["geometry_sketch"].isEnabled()
-    assert window.actions["geometry_sketch"].toolTip() == "新建草图"
+    assert window.actions["geometry_sketch"].toolTip() == "New Sketch"
     assert window.actions["geometry_wire"].isEnabled()
     assert not window.actions["material_manager"].isEnabled()
     assert not window.actions["geometry_undo"].isEnabled()
@@ -194,9 +194,9 @@ def test_actions_follow_document_and_result_context(gui_application, gui_inp_pat
 
     window.close_model(confirm=False)
     assert "尚无分析结果" == window.result_tree.topLevelItem(0).text(0)
-    assert window.status_panel.object_label.text() == "对象：—"
-    assert window.status_panel.step_label.text() == "Step：—"
-    assert window.status_panel.result_label.text() == "结果：—"
+    assert window.status_panel.object_label.text() == "Object: —"
+    assert window.status_panel.step_label.text() == "Step: —"
+    assert window.status_panel.result_label.text() == "Results: —"
     assert not window.actions["submit_job"].isEnabled()
     window.close()
 
@@ -227,7 +227,7 @@ def test_startup_new_part_command_initializes_model_before_dialog(
     window.create_geometry()
 
     assert window.document.source_kind == "native"
-    assert window.document.model_name == "模型-1"
+    assert window.document.model_name == "Model-1"
     assert window.document.parts == ()
     assert window.actions["geometry_create"].isEnabled()
     window.close()
@@ -277,7 +277,7 @@ def test_new_model_dialog_commits_entered_model_name_and_cancel_is_safe(
 
     window.new_native_model()
 
-    assert prompts == [("新建模型", "模型名称：", "模型-2")]
+    assert prompts == [("New Model", "Model name:", "Model-2")]
     assert window.document.model_name == "支架模型"
     assert window.document.parts == ()
     assert window.document.active_part_id is None
@@ -366,7 +366,7 @@ def test_delete_model_requires_confirmation_and_removes_active_model(
         cancel_new_model,
     )
     window.new_native_model()
-    assert new_model_prompts == [("新建模型", "模型名称：", "模型-2")]
+    assert new_model_prompts == [("New Model", "Model name:", "Model-2")]
     window.close()
 
 
@@ -534,7 +534,7 @@ def test_load_action_uses_the_same_dimension_filtered_regions_as_dialog(gui_appl
     window._update_action_states()
 
     assert not window.actions["load_create"].isEnabled()
-    assert window.actions["load_create"].toolTip() == "载荷边界条件"
+    assert window.actions["load_create"].toolTip() == "Load BC"
     window.close()
 
 
@@ -639,7 +639,7 @@ def test_native_scope_dependent_actions_require_meshing(gui_application):
     assert not window.actions["boundary_create"].isEnabled()
     assert not window.actions["load_create"].isEnabled()
     assert window.actions["output_create"].isEnabled()
-    assert window.actions["output_create"].toolTip() == "输出请求"
+    assert window.actions["output_create"].toolTip() == "Output Requests"
     assert window.actions["analysis_manager"].isEnabled()
     assert window.actions["close"].isEnabled()
     assert window.actions["model_info"].isEnabled()
@@ -674,7 +674,7 @@ def test_truss_member_policy_disables_only_local_mesh_control(gui_application):
     assert window.actions["mesh_generate"].isEnabled()
     assert window.actions["mesh_controls"].isEnabled()
     assert not window.actions["mesh_local_control"].isEnabled()
-    assert window.actions["mesh_local_control"].toolTip() == "局部网格"
+    assert window.actions["mesh_local_control"].toolTip() == "Local Mesh"
 
     window._apply_session_delta(
         window.session.replace_mesh_settings(
@@ -689,7 +689,7 @@ def test_truss_member_policy_disables_only_local_mesh_control(gui_application):
         )
     )
     assert not window.actions["mesh_generate"].isEnabled()
-    assert window.actions["mesh_generate"].toolTip() == "生成网格"
+    assert window.actions["mesh_generate"].toolTip() == "Generate Mesh"
     assert window.actions["mesh_controls"].isEnabled()
     window.close()
 
@@ -697,10 +697,10 @@ def test_truss_member_policy_disables_only_local_mesh_control(gui_application):
 def test_window_title_shows_source_and_unsaved_state(gui_application, gui_inp_path):
     _application()
     window = FEMMainWindow()
-    assert window.windowTitle() == "有限元分析"
+    assert window.windowTitle() == "Finite Element Analysis"
 
     window._apply_session_delta(window.session.new_native_project())
-    assert "[自主]" in window.windowTitle()
+    assert "[Native]" in window.windowTitle()
     assert not window.windowTitle().endswith("*")
 
     window._set_native_geometry(
@@ -987,7 +987,7 @@ def test_geometry_ctrl_selection_accumulates_same_kind_entities(gui_application,
     assert window._geometry_selection_kind() == "edge"
     assert window._selected_geometry_refs == {bottom, top}
     assert window._canonical_geometry_selection() == (bottom, top)
-    assert window.status_panel.object_label.text() == "对象：2 个边"
+    assert window.status_panel.object_label.text() == "Object: 2 个边"
     assert not window.actions["geometry_region"].isEnabled()
 
     window._on_geometry_entity_pick(top)
@@ -1061,7 +1061,7 @@ def test_switching_mesh_selection_filter_invalidates_previous_scope(
 
     assert window.viewport._selection_mode == "mesh_face"
     assert window._selected_mesh_scope_refs == set()
-    assert window.status_panel.object_label.text() == "对象：—"
+    assert window.status_panel.object_label.text() == "Object: —"
     window.close()
 
 

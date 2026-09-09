@@ -724,7 +724,7 @@ class FEMMainWindow(QMainWindow):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("有限元分析")
+        self.setWindowTitle("Finite Element Analysis")
         self.resize(1280, 800)
         # Phase 1 keeps the visible GUI single-document while moving ownership
         # of the Session and its task controller into a workspace context.
@@ -744,7 +744,7 @@ class FEMMainWindow(QMainWindow):
         self._active_context = self.workspace.add_model(
             session=self._session_alias,
             projection=self._document_alias,
-            display_name="模型-1",
+            display_name="Model-1",
             task_controller=self._task_controller_alias,
         )
         self.workspace.activate(self._active_context)
@@ -4250,7 +4250,7 @@ class FEMMainWindow(QMainWindow):
             return Path(path).name
         recipe = self.document.geometry_recipe
         if recipe is not None:
-            return str(getattr(recipe, "name", "") or "模型-1")
+            return str(getattr(recipe, "name", "") or "Model-1")
         model = self.document.model
         return str(getattr(model, "name", "") or "模型")
 
@@ -5849,22 +5849,22 @@ class FEMMainWindow(QMainWindow):
         """Keep source and save state visible without duplicating workflow state."""
         source_kind = self.document.source_kind
         if source_kind is None:
-            self.setWindowTitle("有限元分析")
+            self.setWindowTitle("Finite Element Analysis")
             return
         if source_kind == "imported":
             name = (
                 self.document.path.name
                 if self.document.path is not None
-                else str(getattr(self.document.model, "name", "") or "模型")
+                else str(getattr(self.document.model, "name", "") or "Model")
             )
             source_label = "INP"
         elif source_kind == "result":
             name = (
                 self.document.source_path.name
                 if self.document.source_path is not None
-                else "结果"
+                else "Results"
             )
-            self.setWindowTitle(f"有限元分析 — {name} [结果只读]")
+            self.setWindowTitle(f"Finite Element Analysis — {name} [Read-only Results]")
             return
         else:
             recipe_name = str(
@@ -5873,12 +5873,12 @@ class FEMMainWindow(QMainWindow):
             name = (
                 self.document.project_path.name
                 if self.document.project_path is not None
-                else recipe_name or "模型-1"
+                else recipe_name or "Model-1"
             )
-            source_label = "自主"
+            source_label = "Native"
         dirty_marker = " *" if self.document.dirty else ""
         self.setWindowTitle(
-            f"有限元分析 — {name} [{source_label}]{dirty_marker}"
+            f"Finite Element Analysis — {name} [{source_label}]{dirty_marker}"
         )
 
     def _set_action_available(self, name: str, available: bool, _reason: str) -> None:
@@ -6102,7 +6102,7 @@ class FEMMainWindow(QMainWindow):
             return False
         receipt = self.new_native_project(
             NewNativeProjectCommand(
-                str(context.display_name or "模型-1"),
+                str(context.display_name or "Model-1"),
                 expected_session_revision=self.document.session_revision,
             )
         )
@@ -10040,7 +10040,7 @@ class FEMMainWindow(QMainWindow):
             return
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
-        self.setWindowTitle(f"有限元分析 — {recipe.name}（几何）")
+        self.setWindowTitle(f"Finite Element Analysis — {recipe.name} (Geometry)")
         self.status_panel.set_state(
             "网格已清除，相关定义已失效",
             5000,
@@ -10461,20 +10461,20 @@ class FEMMainWindow(QMainWindow):
             return
         model_name, accepted = QInputDialog.getText(
             self,
-            "新建模型",
-            "模型名称：",
-            text=f"模型-{self.workspace.next_model_number}",
+            "New Model",
+            "Model name:",
+            text=f"Model-{self.workspace.next_model_number}",
         )
         if not accepted:
             return
         model_name = model_name.strip()
         if not model_name:
-            self._show_error("新建模型", "模型名称不能为空。")
+            self._show_error("New Model", "Model name cannot be empty.")
             return
         if self.workspace.model_name_exists(model_name):
             self._show_error(
-                "新建模型",
-                f"模型名称已存在：{model_name}",
+                "New Model",
+                f"Model name already exists: {model_name}",
             )
             return
         # New models are appended as independent workspace documents; the
@@ -10663,7 +10663,7 @@ class FEMMainWindow(QMainWindow):
         if requested_name is not None and type(requested_name) is not str:
             raise TypeError("model name must be a string or None")
         model_name = (
-            f"模型-{self.workspace.next_model_number}"
+            f"Model-{self.workspace.next_model_number}"
             if requested_name is None
             else requested_name.strip()
         )
@@ -10735,7 +10735,7 @@ class FEMMainWindow(QMainWindow):
             default_name = (
                 Path(path).with_suffix(MODEL_FILE_SUFFIX).name
                 if path is not None
-                else f"{self.document.model_name or '模型-1'}{MODEL_FILE_SUFFIX}"
+                else f"{self.document.model_name or 'Model-1'}{MODEL_FILE_SUFFIX}"
             )
             filename, _filter = QFileDialog.getSaveFileName(
                 self,
@@ -11053,7 +11053,7 @@ class FEMMainWindow(QMainWindow):
                 model_name=str(
                     target_context.display_name
                     if target_context is not None
-                    else target_document.model_name or "模型-1"
+                    else target_document.model_name or "Model-1"
                 ),
                 scope_names=frozenset(target_document.named_regions),
                 native_parts=tuple(target_document.parts),
@@ -11439,7 +11439,7 @@ class FEMMainWindow(QMainWindow):
             ", ".join(f"{name}={seconds:.3f}s" for name, seconds in timings.items()),
             sum(timings.values()),
         )
-        self.setWindowTitle(f"有限元分析 — {source_label}")
+        self.setWindowTitle(f"Finite Element Analysis — {source_label}")
         self.status_panel.set_object()
         self.status_panel.set_step(self._current_step_name)
         self.status_panel.set_result()
@@ -14656,19 +14656,19 @@ class FEMMainWindow(QMainWindow):
             action.setChecked(selection_filter == active_filter)
         labels = (
             {
-                "point": "选择点",
-                "element": "选择单元",
-                "edge": "选择边",
-                "face": "选择面",
-                "body": "选择体",
+                "point": "Select Points",
+                "element": "Select Elements",
+                "edge": "Select Edges",
+                "face": "Select Faces",
+                "body": "Select Bodies",
             }
             if self._selection_context.space == "geometry"
             else {
-                "point": "选择点",
-                "element": "选择单元",
-                "edge": "选择边",
-                "face": "选择面",
-                "body": "选择体",
+                "point": "Select Points",
+                "element": "Select Elements",
+                "edge": "Select Edges",
+                "face": "Select Faces",
+                "body": "Select Bodies",
             }
         )
         for selection_filter, label in labels.items():
@@ -17051,7 +17051,7 @@ class FEMMainWindow(QMainWindow):
         self._show_information(
             "关于",
             [
-                ("软件", "有限元分析"),
+                ("软件", "Finite Element Analysis"),
                 ("功能", "Abaqus INP 线性静力分析与结果查看"),
                 ("界面", "PySide6、PyVistaQt、VTK"),
             ],
@@ -17081,7 +17081,7 @@ class FEMMainWindow(QMainWindow):
             self._show_information("部件信息", [
                 ("名称", part.name),
                 ("稳定标识", part.id),
-                ("所属模型", self.document.model_name or "模型-1"),
+                ("所属模型", self.document.model_name or "Model-1"),
                 ("特征数量", len(part.feature_history)),
                 ("维度", f"{part.dimension}D"),
                 ("状态", "已抑制" if part.suppressed else "活动"),
@@ -17158,7 +17158,7 @@ class FEMMainWindow(QMainWindow):
         analysis_key: tuple[int, int] | None = None
         original_name: str | None
         if kind == "model":
-            current = str(self.document.model_name or "模型-1")
+            current = str(self.document.model_name or "Model-1")
             original_name = current
             title = "重命名模型"
             prompt = "模型名称："

@@ -1,4 +1,4 @@
-"""左侧模型与结果双页导航区。"""
+"""Left navigation panel with model and result tabs."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .result_tree import ResultTree
 
 
 class NavigationPanel(QWidget):
-    """组合精简模型树和当前结果树。"""
+    """Combine the compact model tree and current result tree."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -21,8 +21,8 @@ class NavigationPanel(QWidget):
         self.tabs.setObjectName("navigationTabs")
         self.model_tree = ModelTree(self.tabs)
         self.result_tree = ResultTree(self.tabs)
-        self.tabs.addTab(self.model_tree, "模型")
-        self.tabs.addTab(self.result_tree, "结果")
+        self.tabs.addTab(self.model_tree, "Model")
+        self.tabs.addTab(self.result_tree, "Results")
         layout.addWidget(self.tabs)
 
     def show_model(self) -> None:

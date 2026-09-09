@@ -110,7 +110,7 @@ def test_unnamed_result_context_uses_result_identity():
     model = workspace.add_model()
 
     assert result.display_name == f"Result-{result.document_id}"
-    assert model.display_name == "模型-1"
+    assert model.display_name == "Model-1"
 
 
 def test_model_default_names_use_model_sequence_across_result_ids():
@@ -119,43 +119,43 @@ def test_model_default_names_use_model_sequence_across_result_ids():
     workspace.add_result()
     second = workspace.add_model()
 
-    assert first.display_name == "模型-1"
-    assert second.display_name == "模型-2"
+    assert first.display_name == "Model-1"
+    assert second.display_name == "Model-2"
 
 
 def test_model_default_number_skips_imported_model_names(
     tmp_path,
 ):
     workspace = FEMWorkspace()
-    workspace.add_model(display_name="模型-1")
+    workspace.add_model(display_name="Model-1")
     workspace.add_model(
-        display_name="模型-2",
+        display_name="Model-2",
         source_path=tmp_path / "imported.fempy",
     )
 
-    assert workspace.model_name_exists(" 模型-2 ")
+    assert workspace.model_name_exists(" Model-2 ")
     assert workspace.next_model_number == 3
 
 
 def test_model_default_number_reuses_a_deleted_gap():
     workspace = FEMWorkspace()
-    workspace.add_model(display_name="模型-1")
-    removed = workspace.add_model(display_name="模型-2")
+    workspace.add_model(display_name="Model-1")
+    removed = workspace.add_model(display_name="Model-2")
     assert workspace.next_model_number == 3
 
     workspace.remove(removed)
 
     assert workspace.next_model_number == 2
     replacement = workspace.add_model()
-    assert replacement.display_name == "模型-2"
+    assert replacement.display_name == "Model-2"
     assert workspace.next_model_number == 3
 
 
 def test_workspace_disambiguates_real_model_and_result_names(tmp_path):
     workspace = FEMWorkspace()
 
-    first_model = workspace.add_model(display_name="模型-1")
-    second_model = workspace.add_model(display_name="模型-1")
+    first_model = workspace.add_model(display_name="Model-1")
+    second_model = workspace.add_model(display_name="Model-1")
     first_result = workspace.add_result(
         display_name="plate",
         source_path=tmp_path / "a" / "plate.femres",
@@ -165,8 +165,8 @@ def test_workspace_disambiguates_real_model_and_result_names(tmp_path):
         source_path=tmp_path / "b" / "plate.femres",
     )
 
-    assert first_model.display_name == "模型-1"
-    assert second_model.display_name == "模型-1(1)"
+    assert first_model.display_name == "Model-1"
+    assert second_model.display_name == "Model-1(1)"
     assert first_result.display_name == "plate"
     assert second_result.display_name == "plate(1)"
 
@@ -174,12 +174,12 @@ def test_workspace_disambiguates_real_model_and_result_names(tmp_path):
 def test_workspace_job_numbers_are_global_and_never_reused():
     workspace = FEMWorkspace()
 
-    assert workspace.next_job_name() == "作业-1"
-    workspace.remember_job_name("作业-1")
-    assert workspace.next_job_name() == "作业-2"
-    assert workspace.job_name_exists("作业-1")
-    workspace.remember_job_name("作业-7")
-    assert workspace.next_job_name() == "作业-8"
+    assert workspace.next_job_name() == "Job-1"
+    workspace.remember_job_name("Job-1")
+    assert workspace.next_job_name() == "Job-2"
+    assert workspace.job_name_exists("Job-1")
+    workspace.remember_job_name("Job-7")
+    assert workspace.next_job_name() == "Job-8"
 
 
 def test_idle_contexts_do_not_create_threads():

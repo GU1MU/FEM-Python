@@ -78,7 +78,7 @@ def test_model_tree_uses_color_for_current_part_without_showing_ids(gui_applicat
     assert root.child(0).data(0, ROLE_KEY) == "P1"
     assert root.child(0).text(0) == "部件-1"
     assert root.child(0).font(0).bold()
-    assert root.child(1).text(0) == "工具部件（已抑制）"
+    assert root.child(1).text(0) == "工具部件 (suppressed)"
     assert tree.currentItem() is root.child(0)
     tree.close()
 
@@ -336,7 +336,7 @@ def test_suppressed_source_parts_can_be_shown_as_unpickable_ghosts(gui_applicati
 
     action = window.actions["suppressed_part_ghosts"]
     assert action.isEnabled()
-    assert action.text() == "显示已抑制源部件"
+    assert action.text() == "Show Suppressed Source Parts"
     action.trigger()
 
     ghost = window.viewport._geometry_ghost_preview

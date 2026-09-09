@@ -1,4 +1,4 @@
-"""三维视口顶部常驻的高频操作工具栏。"""
+"""Persistent toolbar for frequent 3D viewport operations."""
 
 from __future__ import annotations
 
@@ -28,10 +28,10 @@ from .agent_chat import ModelViewportOverlayHost
 
 
 class ViewportToolBar(QToolBar):
-    """仅复用主窗口 QAction 的紧凑视口工具栏。"""
+    """Compact viewport toolbar that reuses main-window actions."""
 
     def __init__(self, actions: Mapping[str, QAction], parent=None) -> None:
-        super().__init__("视口工具", parent)
+        super().__init__("Viewport Tools", parent)
         self._action_widgets: dict[str, QToolButton] = {}
         self.setObjectName("viewportToolbar")
         self.setMovable(False)
@@ -48,14 +48,14 @@ class ViewportToolBar(QToolBar):
         self.setFixedHeight(44)
 
         self._add_group(actions, ("fit", "iso", "top", "front"))
-        views = QMenu("其他标准视角", self)
+        views = QMenu("Other Standard Views", self)
         for key in ("bottom", "back", "left", "right"):
             views.addAction(actions[key])
         view_button = QToolButton(self)
         view_button.setObjectName("viewportMoreViews")
         view_button.setIcon(icon("view_more"))
         view_button.setIconSize(QSize(34, 34))
-        view_button.setToolTip("其他标准视角")
+        view_button.setToolTip("Other Standard Views")
         view_button.setMenu(views)
         view_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.addWidget(view_button)
@@ -109,20 +109,20 @@ class ScopeCreationBar(QWidget):
         self.type_value.setObjectName("scopeCreationType")
         self.name_edit = QLineEdit(self)
         self.name_edit.setObjectName("scopeCreationName")
-        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setObjectName("scopeCreationCancel")
         self.cancel_button.clicked.connect(self.cancelRequested)
-        self.create_button = QPushButton("创建", self)
+        self.create_button = QPushButton("Create", self)
         self.create_button.setObjectName("scopeCreationSubmit")
         self.create_button.setEnabled(False)
         self.create_button.clicked.connect(self.createRequested)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
-        layout.addWidget(QLabel("类型", self))
+        layout.addWidget(QLabel("Type", self))
         layout.addWidget(self.type_value)
         layout.addSpacing(12)
-        layout.addWidget(QLabel("作用域名称", self))
+        layout.addWidget(QLabel("Scope Name", self))
         layout.addWidget(self.name_edit, 1)
         layout.addWidget(self.cancel_button)
         layout.addWidget(self.create_button)
@@ -160,11 +160,11 @@ class PlanarBooleanFaceBar(QWidget):
         self.setAutoFillBackground(True)
         self.prompt_label = QLabel(self)
         self.prompt_label.setObjectName("planarBooleanFacePrompt")
-        self.confirm_button = QPushButton("确定", self)
+        self.confirm_button = QPushButton("OK", self)
         self.confirm_button.setObjectName("planarBooleanFaceConfirm")
         self.confirm_button.setEnabled(False)
         self.confirm_button.clicked.connect(self.confirmRequested)
-        self.cancel_button = QPushButton("取消", self)
+        self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setObjectName("planarBooleanFaceCancel")
         self.cancel_button.clicked.connect(self.cancelRequested)
         layout = QHBoxLayout(self)
@@ -177,8 +177,8 @@ class PlanarBooleanFaceBar(QWidget):
 
     def begin(self, operation: str) -> None:
         if str(operation) not in {"fuse", "cut"}:
-            raise ValueError("布尔操作必须是合并或切除")
-        self.prompt_label.setText("请选择目标面")
+            raise ValueError("Boolean operation must be fuse or cut")
+        self.prompt_label.setText("Select the target face")
         self.confirm_button.setEnabled(False)
         self.activeChanged.emit(True)
 
@@ -192,7 +192,7 @@ class PlanarBooleanFaceBar(QWidget):
 
 
 class ViewportPanel(QWidget):
-    """组合常驻工具栏与有限元三维视口。"""
+    """Combine the persistent toolbar and finite element 3D viewport."""
 
     def __init__(
         self,

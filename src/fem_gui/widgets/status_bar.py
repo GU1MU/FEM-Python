@@ -1,4 +1,4 @@
-"""单行 CAE 上下文状态栏。"""
+"""Single-line CAE context status bar."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QStatusBar
 
 
 class CAEStatusBar(QStatusBar):
-    """分别显示任务、选择、对象、坐标、分析步和结果状态。"""
+    """Display task, selection, object, coordinate, step, and result status."""
 
     cancelRequested = Signal()
 
@@ -19,22 +19,24 @@ class CAEStatusBar(QStatusBar):
         self._field_count = 0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(lambda: self.set_state("就绪"))
+        self._timer.timeout.connect(lambda: self.set_state("Ready"))
         self.state_label = self._add_field(
             "statusState",
-            "状态：就绪",
+            "Status: Ready",
             320,
             stretch=3,
         )
-        self.selection_label = self._add_field("statusSelection", "选择：节点", 90)
-        self.object_label = self._add_field("statusObject", "对象：—", 130)
-        self.coordinate_label = self._add_field("statusCoordinate", "坐标：—", 245)
-        self.step_label = self._add_field("statusStep", "Step：—", 145)
-        self.result_label = self._add_field("statusResult", "结果：—", 180)
-        self.cancel_button = QPushButton("取消", self)
+        self.selection_label = self._add_field("statusSelection", "Selection: Nodes", 120)
+        self.object_label = self._add_field("statusObject", "Object: —", 130)
+        self.coordinate_label = self._add_field("statusCoordinate", "Coordinates: —", 245)
+        self.step_label = self._add_field("statusStep", "Step: —", 145)
+        self.result_label = self._add_field("statusResult", "Results: —", 180)
+        self.cancel_button = QPushButton("Cancel", self)
         self.cancel_button.setObjectName("cancelTaskButton")
-        self.cancel_button.setFixedWidth(48)
-        self.cancel_button.setToolTip("取消当前后台任务")
+        self.cancel_button.setMinimumWidth(
+            self.cancel_button.fontMetrics().horizontalAdvance("Cancelling") + 20
+        )
+        self.cancel_button.setToolTip("Cancel the current background task")
         self.cancel_button.clicked.connect(self.cancelRequested)
         self.cancel_button.hide()
         self.addPermanentWidget(self.cancel_button)
@@ -62,7 +64,7 @@ class CAEStatusBar(QStatusBar):
 
     def set_state(self, text: str, timeout: int = 0) -> None:
         self._timer.stop()
-        self.state_label.setText(f"状态：{text}")
+        self.state_label.setText(f"Status: {text}")
         self.state_label.setToolTip(str(text))
         if timeout > 0:
             self._timer.start(timeout)
@@ -75,36 +77,36 @@ class CAEStatusBar(QStatusBar):
     ) -> None:
         self.cancel_button.setVisible(bool(active))
         self.cancel_button.setEnabled(bool(active) and not cancelling)
-        self.cancel_button.setText("取消中" if cancelling else "取消")
+        self.cancel_button.setText("Cancelling" if cancelling else "Cancel")
 
     def set_selection_mode(self, mode: str) -> None:
         labels = {
-            "node": "节点",
-            "element": "单元",
-            "geometry_point": "点",
-            "geometry_edge": "边",
-            "geometry_face": "面",
-            "geometry_body": "体",
-            "mesh_node": "节点",
-            "mesh_element": "单元",
-            "mesh_edge": "边",
-            "mesh_face": "面",
-            "mesh_body": "体",
+            "node": "Nodes",
+            "element": "Elements",
+            "geometry_point": "Points",
+            "geometry_edge": "Edges",
+            "geometry_face": "Faces",
+            "geometry_body": "Bodies",
+            "mesh_node": "Nodes",
+            "mesh_element": "Elements",
+            "mesh_edge": "Edges",
+            "mesh_face": "Faces",
+            "mesh_body": "Bodies",
         }
-        self.selection_label.setText(f"选择：{labels.get(mode, '节点')}")
+        self.selection_label.setText(f"Selection: {labels.get(mode, 'Nodes')}")
 
     def set_object(self, text: str = "—", coordinates: str = "—") -> None:
-        self.object_label.setText(f"对象：{text}")
-        self.coordinate_label.setText(f"坐标：{coordinates}")
+        self.object_label.setText(f"Object: {text}")
+        self.coordinate_label.setText(f"Coordinates: {coordinates}")
 
     def set_step(self, step_name: str | None) -> None:
-        self.step_label.setText(f"Step：{step_name or '—'}")
+        self.step_label.setText(f"Step: {step_name or '—'}")
 
     def set_result(self, text: str = "—") -> None:
-        self.result_label.setText(f"结果：{text}")
+        self.result_label.setText(f"Results: {text}")
 
     def reset_document(self) -> None:
-        self.set_state("就绪")
+        self.set_state("Ready")
         self.set_object()
         self.set_step(None)
         self.set_result()

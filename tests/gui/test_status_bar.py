@@ -16,7 +16,7 @@ def test_state_field_is_wide_and_keeps_full_status_as_tooltip(gui_application) -
     status_bar.set_state(message)
 
     assert status_bar.state_label.width() > status_bar.selection_label.width() * 2
-    assert status_bar.state_label.text() == f"状态：{message}"
+    assert status_bar.state_label.text() == f"Status: {message}"
     assert status_bar.state_label.toolTip() == message
     assert (
         status_bar.state_label.fontMetrics().horizontalAdvance(
@@ -30,13 +30,13 @@ def test_state_field_is_wide_and_keeps_full_status_as_tooltip(gui_application) -
 @pytest.mark.parametrize(
     ("mode", "label"),
     (
-        ("geometry_point", "点"),
-        ("geometry_edge", "边"),
-        ("geometry_face", "面"),
-        ("geometry_body", "体"),
-        ("mesh_edge", "边"),
-        ("mesh_face", "面"),
-        ("mesh_body", "体"),
+        ("geometry_point", "Points"),
+        ("geometry_edge", "Edges"),
+        ("geometry_face", "Faces"),
+        ("geometry_body", "Bodies"),
+        ("mesh_edge", "Edges"),
+        ("mesh_face", "Faces"),
+        ("mesh_body", "Bodies"),
     ),
 )
 def test_selection_field_uses_semantic_entity_names(
@@ -48,7 +48,7 @@ def test_selection_field_uses_semantic_entity_names(
 
     status_bar.set_selection_mode(mode)
 
-    assert status_bar.selection_label.text() == f"选择：{label}"
+    assert status_bar.selection_label.text() == f"Selection: {label}"
     status_bar.close()
 
 

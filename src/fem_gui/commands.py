@@ -469,10 +469,10 @@ class GuiCommandReceipt:
 class NewNativeProjectCommand:
     """Inputs for the public new-native-project command."""
 
-    name: str = "模型-1"
+    name: str = "Model-1"
     expected_session_revision: int | None = None
-    part_name: str = "部件-1"
-    body_name: str = "实体-1"
+    part_name: str = "Part-1"
+    body_name: str = "Body-1"
 
     def __post_init__(self) -> None:
         object.__setattr__(

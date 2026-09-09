@@ -103,7 +103,7 @@ def test_native_engineering_rows_offer_routed_rename_action(gui_application, mon
             return action
 
         def exec(self, _position):
-            return self.actions["重命名"]
+            return self.actions['Rename']
 
     routed = []
     tree.renameRequested[int, str, object].connect(
@@ -135,7 +135,7 @@ def test_native_engineering_rows_offer_routed_rename_action(gui_application, mon
         selected[0] = rows[kind]
         action_labels.clear()
         tree._show_context_menu(QPoint())
-        assert "重命名" in action_labels
+        assert 'Rename' in action_labels
 
     assert routed == [
         (7, "model", None),
@@ -232,7 +232,7 @@ def test_tree_renames_cascade_engineering_name_references(gui_application, monke
     )
     assert any(
         item.data(0, ROLE_KIND) == "section"
-        and item.text(0).startswith("PlateSection（")
+        and item.text(0).startswith("PlateSection (")
         for item in rows
     )
     assert any(

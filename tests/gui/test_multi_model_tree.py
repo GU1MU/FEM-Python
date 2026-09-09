@@ -141,7 +141,7 @@ def test_model_tree_definition_update_preserves_expanded_target_subtree(gui_appl
         item
         for item in items
         if item.data(0, ROLE_KIND) == "category"
-        and item.text(0).startswith("分析 (")
+        and item.text(0).startswith('Analysis (')
     )
     step = next(
         item for item in items if item.data(0, ROLE_KIND) == "step"
@@ -149,7 +149,7 @@ def test_model_tree_definition_update_preserves_expanded_target_subtree(gui_appl
     boundaries = next(
         step.child(index)
         for index in range(step.childCount())
-        if step.child(index).text(0).startswith("边界条件 (")
+        if step.child(index).text(0).startswith('Boundary Conditions (')
     )
     selected_boundary = boundaries.child(0)
     mesh.setExpanded(False)
@@ -178,7 +178,7 @@ def test_model_tree_definition_update_preserves_expanded_target_subtree(gui_appl
         item
         for item in refreshed
         if item.data(0, ROLE_KIND) == "category"
-        and item.text(0).startswith("分析 (")
+        and item.text(0).startswith('Analysis (')
     ).isExpanded()
     refreshed_step = next(
         item for item in refreshed if item.data(0, ROLE_KIND) == "step"
@@ -187,7 +187,7 @@ def test_model_tree_definition_update_preserves_expanded_target_subtree(gui_appl
     refreshed_boundaries = next(
         refreshed_step.child(index)
         for index in range(refreshed_step.childCount())
-        if refreshed_step.child(index).text(0).startswith("边界条件 (")
+        if refreshed_step.child(index).text(0).startswith('Boundary Conditions (')
     )
     assert refreshed_boundaries.isExpanded()
     assert refreshed_boundaries.childCount() == 3
@@ -362,7 +362,7 @@ def test_imported_default_name_is_skipped_and_duplicate_new_name_is_rejected(
     monkeypatch.setattr(
         main_window_module,
         "load_project",
-        lambda _path: _loaded_project(path, "模型-2"),
+        lambda _path: _loaded_project(path, "Model-2"),
     )
     window = FEMMainWindow()
     prompts = []
@@ -374,7 +374,7 @@ def test_imported_default_name_is_skipped_and_duplicate_new_name_is_rejected(
 
         def duplicate_name(_parent, title, prompt, **options):
             prompts.append((title, prompt, options.get("text")))
-            return "模型-2", True
+            return "Model-2", True
 
         monkeypatch.setattr(
             main_window_module.QInputDialog,
@@ -389,8 +389,8 @@ def test_imported_default_name_is_skipped_and_duplicate_new_name_is_rejected(
 
         window.new_native_model()
 
-        assert prompts == [("新建模型", "模型名称：", "模型-3")]
-        assert errors == [("新建模型", "模型名称已存在：模型-2")]
+        assert prompts == [("New Model", "Model name:", "Model-3")]
+        assert errors == [("New Model", "Model name already exists: Model-2")]
         assert window.workspace.active_document() is imported
         assert len(window.workspace.models) == 2
 
@@ -407,9 +407,9 @@ def test_imported_default_name_is_skipped_and_duplicate_new_name_is_rejected(
         created = window.workspace.active_document()
         assert created is not None
         assert created is not imported
-        assert created.display_name == "模型-3"
-        assert created.projection.model_name == "模型-3"
-        assert window.model_tree.roots[created.document_id].text(0) == "模型-3"
+        assert created.display_name == "Model-3"
+        assert created.projection.model_name == "Model-3"
+        assert window.model_tree.roots[created.document_id].text(0) == "Model-3"
     finally:
         dispose_gui_widget(window)
 
@@ -909,7 +909,7 @@ def test_create_native_models_append_roots_without_global_tree_clear(
         assert {
             context.display_name
             for context in window.workspace.models.values()
-        } == {"模型-1", "Model-2", "Model-3"}
+        } == {"Model-1", "Model-2", "Model-3"}
     finally:
         dispose_gui_widget(window)
 
@@ -942,7 +942,7 @@ def test_agent_creates_additional_model_and_keeps_geometry_tools_available(
         assert created is not None and created is not original
         assert len(window.workspace.models) == 2
         assert original.document_id in window.workspace.models
-        assert created.display_name == "模型-2"
+        assert created.display_name == "Model-2"
         assert result.data["preserved_existing_documents"] is True
         assert result.data["target_document_id"] == str(created.document_id)
         assert runtime.target_identity == (

@@ -157,108 +157,108 @@ def _d(
 
 
 ACTION_DESCRIPTORS: tuple[GuiActionDescriptor, ...] = (
-    _d(GuiActionKey.OPEN, "打开 INP", "open_inp", "open_inp"),
-    _d(GuiActionKey.NEW_NATIVE, "新建模型", "new_native_model", "new_model"),
+    _d(GuiActionKey.OPEN, "Open INP", "open_inp", "open_inp"),
+    _d(GuiActionKey.NEW_NATIVE, "New Model", "new_native_model", "new_model"),
     _d(
         GuiActionKey.DELETE_MODEL,
-        "删除模型",
+        "Delete Model",
         "delete_current_model",
         "geometry_delete",
     ),
-    _d(GuiActionKey.OPEN_PROJECT, "打开模型", "open_native_project", "open_project"),
-    _d(GuiActionKey.SAVE_PROJECT, "保存模型", "save_native_project", "save_project"),
-    _d(GuiActionKey.SAVE_PROJECT_AS, "模型另存为...", "save_native_project_as"),
-    _d(GuiActionKey.RELOAD, "重新加载", "reload_model", "reload"),
-    _d(GuiActionKey.CLOSE, "关闭模型", "close_model", "close"),
-    _d(GuiActionKey.SAVE_RESULT, "保存结果", "save_current_result", "save_result"),
-    _d(GuiActionKey.SAVE_RESULT_AS, "结果另存为...", "save_current_result_as"),
-    _d(GuiActionKey.OPEN_RESULT, "打开结果", "open_result_file", "open_result"),
-    _d(GuiActionKey.EXIT, "退出", "close"),
-    _d(GuiActionKey.MODEL_INFO, "模型概况", "show_model_information", "model_info"),
-    _d(GuiActionKey.MATERIAL_MANAGER, "材料管理", "show_material_manager", "material"),
-    _d(GuiActionKey.SECTION_MANAGER, "截面管理", "show_section_manager", "section"),
-    _d(GuiActionKey.SECTION_ASSIGN, "截面分配", "assign_section_to_region", "section_assign"),
-    _d(GuiActionKey.GEOMETRY_CREATE, "新建部件", "create_geometry", "sketch"),
-    _d(GuiActionKey.GEOMETRY_SKETCH, "新建草图", "create_sketch_geometry", "sketch"),
+    _d(GuiActionKey.OPEN_PROJECT, "Open Model", "open_native_project", "open_project"),
+    _d(GuiActionKey.SAVE_PROJECT, "Save Model", "save_native_project", "save_project"),
+    _d(GuiActionKey.SAVE_PROJECT_AS, "Save Model As...", "save_native_project_as"),
+    _d(GuiActionKey.RELOAD, "Reload", "reload_model", "reload"),
+    _d(GuiActionKey.CLOSE, "Close Model", "close_model", "close"),
+    _d(GuiActionKey.SAVE_RESULT, "Save Results", "save_current_result", "save_result"),
+    _d(GuiActionKey.SAVE_RESULT_AS, "Save Results As...", "save_current_result_as"),
+    _d(GuiActionKey.OPEN_RESULT, "Open Results", "open_result_file", "open_result"),
+    _d(GuiActionKey.EXIT, "Exit", "close"),
+    _d(GuiActionKey.MODEL_INFO, "Model Overview", "show_model_information", "model_info"),
+    _d(GuiActionKey.MATERIAL_MANAGER, "Material Manager", "show_material_manager", "material"),
+    _d(GuiActionKey.SECTION_MANAGER, "Section Manager", "show_section_manager", "section"),
+    _d(GuiActionKey.SECTION_ASSIGN, "Assign Section", "assign_section_to_region", "section_assign"),
+    _d(GuiActionKey.GEOMETRY_CREATE, "New Part", "create_geometry", "sketch"),
+    _d(GuiActionKey.GEOMETRY_SKETCH, "New Sketch", "create_sketch_geometry", "sketch"),
     _d(
         GuiActionKey.GEOMETRY_FACE_SKETCH,
-        "在面上创建草图",
+        "Sketch on Face",
         "start_face_sketch_boolean",
         "sketch",
     ),
-    _d(GuiActionKey.GEOMETRY_WIRE, "新建线体", "start_wire_geometry", "wire"),
-    _d(GuiActionKey.GEOMETRY_MOVE, "移动", "move_geometry", "geometry_move"),
-    _d(GuiActionKey.GEOMETRY_ROTATE, "旋转", "rotate_geometry", "geometry_rotate"),
-    _d(GuiActionKey.GEOMETRY_EXTRUDE, "拉伸", "extrude_geometry", "extrude"),
-    _d(GuiActionKey.GEOMETRY_SWEEP, "扫掠", "sweep_geometry", "sweep"),
-    _d(GuiActionKey.GEOMETRY_FUSE, "合并", "fuse_geometry", "boolean_fuse"),
-    _d(GuiActionKey.GEOMETRY_CUT, "切除", "cut_geometry", "boolean_cut"),
-    _d(GuiActionKey.GEOMETRY_MANAGER, "编辑", "show_geometry_manager", "feature_edit"),
-    _d(GuiActionKey.GEOMETRY_UNDO, "撤销特征", "undo_geometry_feature", "feature_undo"),
-    _d(GuiActionKey.GEOMETRY_DELETE, "删除几何", "delete_geometry", "geometry_delete"),
-    _d(GuiActionKey.GEOMETRY_REGION, "创建作用域", "create_named_geometry_region", "named_region_create"),
-    _d(GuiActionKey.GEOMETRY_REGIONS, "作用域管理", "show_named_region_manager", "named_region_manager"),
-    _d(GuiActionKey.MESH_SETTINGS, "网格设置", "edit_mesh_settings", "mesh_settings"),
-    _d(GuiActionKey.MESH_GENERATE, "生成网格", "generate_native_mesh", "mesh"),
-    _d(GuiActionKey.MESH_CLEAR, "清除网格", "clear_native_mesh", "mesh_clear"),
-    _d(GuiActionKey.MESH_CONTROLS, "控制管理", "show_mesh_controls", "mesh_controls"),
-    _d(GuiActionKey.MESH_LOCAL_CONTROL, "局部网格", "set_local_mesh_control", "mesh_local_control"),
-    _d(GuiActionKey.MESH_STATISTICS, "网格统计", "show_mesh_statistics", "mesh_statistics"),
-    _d(GuiActionKey.MESH_QUALITY, "质量检查", "show_mesh_quality", "mesh_quality"),
-    _d(GuiActionKey.MESH_VERIFY, "检查网格", "show_mesh_verification", "mesh_verify"),
-    _d(GuiActionKey.FIT, "适合窗口", "viewport_fit", "fit"),
-    _d(GuiActionKey.FRONT, "前视图", "viewport.set_view", "front", argument="front"),
-    _d(GuiActionKey.BACK, "后视图", "viewport.set_view", "back", argument="back"),
-    _d(GuiActionKey.TOP, "俯视图", "viewport.set_view", "top", argument="top"),
-    _d(GuiActionKey.BOTTOM, "仰视图", "viewport.set_view", "bottom", argument="bottom"),
-    _d(GuiActionKey.LEFT, "左视图", "viewport.set_view", "left", argument="left"),
-    _d(GuiActionKey.RIGHT, "右视图", "viewport.set_view", "right", argument="right"),
-    _d(GuiActionKey.ISO, "轴测视图", "viewport.set_view", "iso", argument="iso"),
-    _d(GuiActionKey.ORTHOGRAPHIC, "正交投影", "viewport.set_parallel_projection", "orthographic", checkable=True, checked=True, group="projection", argument=True, checked_only=True),
-    _d(GuiActionKey.PERSPECTIVE, "透视投影", "viewport.set_parallel_projection", "perspective", checkable=True, group="projection", argument=False, checked_only=True),
-    _d(GuiActionKey.VIEWPORT_BACKGROUND, "视口背景", "show_viewport_background_dialog", "background"),
-    _d(GuiActionKey.SUPPRESSED_PART_GHOSTS, "显示已抑制源部件", "_toggle_suppressed_part_ghosts", checkable=True),
-    _d(GuiActionKey.EDGES, "显示单元边", "_toggle_edges", "edges", checkable=True, checked=True),
-    _d(GuiActionKey.NODES, "显示节点", "_toggle_nodes", "nodes", checkable=True),
-    _d(GuiActionKey.NODE_LABELS, "显示节点编号", "_toggle_node_labels", "node_ids", checkable=True),
-    _d(GuiActionKey.ELEMENT_LABELS, "显示单元编号", "_toggle_element_labels", "element_ids", checkable=True),
-    _d(GuiActionKey.SYMBOLS, "显示约束和载荷", "_toggle_symbols", "symbols", checkable=True, checked=True),
-    _d(GuiActionKey.SYMBOL_SETTINGS, "符号设置", "show_symbol_settings_dialog", "settings"),
-    _d(GuiActionKey.STEP_INFO, "分析步信息", "show_current_step_information", "step_info"),
-    _d(GuiActionKey.STEP_CREATE, "创建分析步", "create_static_step", "step_create"),
-    _d(GuiActionKey.BOUNDARY_CREATE, "位移边界条件", "create_displacement_boundary", "boundary"),
-    _d(GuiActionKey.LOAD_CREATE, "载荷边界条件", "create_load", "load"),
-    _d(GuiActionKey.OUTPUT_CREATE, "输出请求", "create_output_request", "output"),
-    _d(GuiActionKey.ANALYSIS_MANAGER, "分析管理", "show_analysis_manager", "analysis_manager"),
-    _d(GuiActionKey.CHECK_MODEL, "检查模型", "start_model_check", "check"),
-    _d(GuiActionKey.SUBMIT_JOB, "创建作业", "create_job", "job"),
-    _d(GuiActionKey.RESUBMIT_JOB, "复制作业", "resubmit_job", "resubmit"),
-    _d(GuiActionKey.JOB_MANAGER, "作业管理", "show_job_manager", "job_manager"),
-    _d(GuiActionKey.UNDEFORMED, "未变形形状", "set_shape_mode", "undeformed", checkable=True, checked=True, group="shape", argument="undeformed"),
-    _d(GuiActionKey.DEFORMED, "变形形状", "set_shape_mode", "deformed", checkable=True, group="shape", argument="deformed"),
-    _d(GuiActionKey.CONTOUR, "显示云图", "_toggle_contour", "contour", checkable=True),
-    _d(GuiActionKey.OVERLAY, "叠加未变形轮廓", "_toggle_undeformed_overlay", "overlay", checkable=True),
-    _d(GuiActionKey.FIELD, "结果变量和分量", "show_result_display_dialog", "field"),
-    _d(GuiActionKey.DISPLAY_SETTINGS, "显示设置", "show_display_settings_dialog", "settings"),
-    _d(GuiActionKey.SCALE, "变形比例", "show_result_display_dialog", "scale"),
-    _d(GuiActionKey.CONTOUR_OPTIONS, "云图设置", "show_contour_dialog", "settings"),
+    _d(GuiActionKey.GEOMETRY_WIRE, "New Wire", "start_wire_geometry", "wire"),
+    _d(GuiActionKey.GEOMETRY_MOVE, "Move", "move_geometry", "geometry_move"),
+    _d(GuiActionKey.GEOMETRY_ROTATE, "Rotate", "rotate_geometry", "geometry_rotate"),
+    _d(GuiActionKey.GEOMETRY_EXTRUDE, "Extrude", "extrude_geometry", "extrude"),
+    _d(GuiActionKey.GEOMETRY_SWEEP, "Sweep", "sweep_geometry", "sweep"),
+    _d(GuiActionKey.GEOMETRY_FUSE, "Fuse", "fuse_geometry", "boolean_fuse"),
+    _d(GuiActionKey.GEOMETRY_CUT, "Cut", "cut_geometry", "boolean_cut"),
+    _d(GuiActionKey.GEOMETRY_MANAGER, "Edit", "show_geometry_manager", "feature_edit"),
+    _d(GuiActionKey.GEOMETRY_UNDO, "Undo Feature", "undo_geometry_feature", "feature_undo"),
+    _d(GuiActionKey.GEOMETRY_DELETE, "Delete Geometry", "delete_geometry", "geometry_delete"),
+    _d(GuiActionKey.GEOMETRY_REGION, "Create Scope", "create_named_geometry_region", "named_region_create"),
+    _d(GuiActionKey.GEOMETRY_REGIONS, "Scope Manager", "show_named_region_manager", "named_region_manager"),
+    _d(GuiActionKey.MESH_SETTINGS, "Mesh Settings", "edit_mesh_settings", "mesh_settings"),
+    _d(GuiActionKey.MESH_GENERATE, "Generate Mesh", "generate_native_mesh", "mesh"),
+    _d(GuiActionKey.MESH_CLEAR, "Clear Mesh", "clear_native_mesh", "mesh_clear"),
+    _d(GuiActionKey.MESH_CONTROLS, "Control Manager", "show_mesh_controls", "mesh_controls"),
+    _d(GuiActionKey.MESH_LOCAL_CONTROL, "Local Mesh", "set_local_mesh_control", "mesh_local_control"),
+    _d(GuiActionKey.MESH_STATISTICS, "Mesh Statistics", "show_mesh_statistics", "mesh_statistics"),
+    _d(GuiActionKey.MESH_QUALITY, "Quality Check", "show_mesh_quality", "mesh_quality"),
+    _d(GuiActionKey.MESH_VERIFY, "Verify Mesh", "show_mesh_verification", "mesh_verify"),
+    _d(GuiActionKey.FIT, "Fit to Window", "viewport_fit", "fit"),
+    _d(GuiActionKey.FRONT, "Front View", "viewport.set_view", "front", argument="front"),
+    _d(GuiActionKey.BACK, "Back View", "viewport.set_view", "back", argument="back"),
+    _d(GuiActionKey.TOP, "Top View", "viewport.set_view", "top", argument="top"),
+    _d(GuiActionKey.BOTTOM, "Bottom View", "viewport.set_view", "bottom", argument="bottom"),
+    _d(GuiActionKey.LEFT, "Left View", "viewport.set_view", "left", argument="left"),
+    _d(GuiActionKey.RIGHT, "Right View", "viewport.set_view", "right", argument="right"),
+    _d(GuiActionKey.ISO, "Isometric View", "viewport.set_view", "iso", argument="iso"),
+    _d(GuiActionKey.ORTHOGRAPHIC, "Orthographic", "viewport.set_parallel_projection", "orthographic", checkable=True, checked=True, group="projection", argument=True, checked_only=True),
+    _d(GuiActionKey.PERSPECTIVE, "Perspective", "viewport.set_parallel_projection", "perspective", checkable=True, group="projection", argument=False, checked_only=True),
+    _d(GuiActionKey.VIEWPORT_BACKGROUND, "Viewport Background", "show_viewport_background_dialog", "background"),
+    _d(GuiActionKey.SUPPRESSED_PART_GHOSTS, "Show Suppressed Source Parts", "_toggle_suppressed_part_ghosts", checkable=True),
+    _d(GuiActionKey.EDGES, "Show Element Edges", "_toggle_edges", "edges", checkable=True, checked=True),
+    _d(GuiActionKey.NODES, "Show Nodes", "_toggle_nodes", "nodes", checkable=True),
+    _d(GuiActionKey.NODE_LABELS, "Show Node IDs", "_toggle_node_labels", "node_ids", checkable=True),
+    _d(GuiActionKey.ELEMENT_LABELS, "Show Element IDs", "_toggle_element_labels", "element_ids", checkable=True),
+    _d(GuiActionKey.SYMBOLS, "Show Constraints and Loads", "_toggle_symbols", "symbols", checkable=True, checked=True),
+    _d(GuiActionKey.SYMBOL_SETTINGS, "Symbol Settings", "show_symbol_settings_dialog", "settings"),
+    _d(GuiActionKey.STEP_INFO, "Step Info", "show_current_step_information", "step_info"),
+    _d(GuiActionKey.STEP_CREATE, "Create Step", "create_static_step", "step_create"),
+    _d(GuiActionKey.BOUNDARY_CREATE, "Displacement BC", "create_displacement_boundary", "boundary"),
+    _d(GuiActionKey.LOAD_CREATE, "Load BC", "create_load", "load"),
+    _d(GuiActionKey.OUTPUT_CREATE, "Output Requests", "create_output_request", "output"),
+    _d(GuiActionKey.ANALYSIS_MANAGER, "Analysis Manager", "show_analysis_manager", "analysis_manager"),
+    _d(GuiActionKey.CHECK_MODEL, "Check Model", "start_model_check", "check"),
+    _d(GuiActionKey.SUBMIT_JOB, "Create Job", "create_job", "job"),
+    _d(GuiActionKey.RESUBMIT_JOB, "Copy Job", "resubmit_job", "resubmit"),
+    _d(GuiActionKey.JOB_MANAGER, "Job Manager", "show_job_manager", "job_manager"),
+    _d(GuiActionKey.UNDEFORMED, "Undeformed Shape", "set_shape_mode", "undeformed", checkable=True, checked=True, group="shape", argument="undeformed"),
+    _d(GuiActionKey.DEFORMED, "Deformed Shape", "set_shape_mode", "deformed", checkable=True, group="shape", argument="deformed"),
+    _d(GuiActionKey.CONTOUR, "Show Contours", "_toggle_contour", "contour", checkable=True),
+    _d(GuiActionKey.OVERLAY, "Overlay Undeformed Outline", "_toggle_undeformed_overlay", "overlay", checkable=True),
+    _d(GuiActionKey.FIELD, "Field / Component", "show_result_display_dialog", "field"),
+    _d(GuiActionKey.DISPLAY_SETTINGS, "Display Settings", "show_display_settings_dialog", "settings"),
+    _d(GuiActionKey.SCALE, "Deformation Scale", "show_result_display_dialog", "scale"),
+    _d(GuiActionKey.CONTOUR_OPTIONS, "Contour Settings", "show_contour_dialog", "settings"),
     _d(
         GuiActionKey.QUERY,
-        "查询结果",
+        "Query Results",
         "show_result_query_dialog",
         "query",
     ),
-    _d(GuiActionKey.EXPORT_CSV, "导出 CSV", "export_csv", "export"),
-    _d(GuiActionKey.EXPORT_VTK, "导出 VTK", "export_vtk", "export"),
-    _d(GuiActionKey.SCREENSHOT, "导出视口", "export_viewport_image", "image"),
-    _d(GuiActionKey.ABOUT, "关于", "show_about"),
-    _d(GuiActionKey.SELECT_POINT, "选择点", "_set_selection_filter", "select_geometry_point", checkable=True, checked=True, group="selection", argument="point", checked_only=True),
-    _d(GuiActionKey.SELECT_ELEMENT, "选择单元", "_set_selection_filter", "select_element", checkable=True, group="selection", argument="element", checked_only=True),
-    _d(GuiActionKey.SELECT_EDGE, "选择边", "_set_selection_filter", "select_geometry_edge", checkable=True, group="selection", argument="edge", checked_only=True),
-    _d(GuiActionKey.SELECT_FACE, "选择面", "_set_selection_filter", "select_geometry_face", checkable=True, group="selection", argument="face", checked_only=True),
-    _d(GuiActionKey.SELECT_BODY, "选择体", "_set_selection_filter", "select_geometry_body", checkable=True, group="selection", argument="body", checked_only=True),
-    _d(GuiActionKey.CLEAR_SELECTION, "清除选择", "clear_selection", "clear_selection"),
-    _d(GuiActionKey.SELECTED_INFO, "查看所选信息", "show_selected_information", "inspect"),
+    _d(GuiActionKey.EXPORT_CSV, "Export CSV", "export_csv", "export"),
+    _d(GuiActionKey.EXPORT_VTK, "Export VTK", "export_vtk", "export"),
+    _d(GuiActionKey.SCREENSHOT, "Export Viewport", "export_viewport_image", "image"),
+    _d(GuiActionKey.ABOUT, "About", "show_about"),
+    _d(GuiActionKey.SELECT_POINT, "Select Points", "_set_selection_filter", "select_geometry_point", checkable=True, checked=True, group="selection", argument="point", checked_only=True),
+    _d(GuiActionKey.SELECT_ELEMENT, "Select Elements", "_set_selection_filter", "select_element", checkable=True, group="selection", argument="element", checked_only=True),
+    _d(GuiActionKey.SELECT_EDGE, "Select Edges", "_set_selection_filter", "select_geometry_edge", checkable=True, group="selection", argument="edge", checked_only=True),
+    _d(GuiActionKey.SELECT_FACE, "Select Faces", "_set_selection_filter", "select_geometry_face", checkable=True, group="selection", argument="face", checked_only=True),
+    _d(GuiActionKey.SELECT_BODY, "Select Bodies", "_set_selection_filter", "select_geometry_body", checkable=True, group="selection", argument="body", checked_only=True),
+    _d(GuiActionKey.CLEAR_SELECTION, "Clear Selection", "clear_selection", "clear_selection"),
+    _d(GuiActionKey.SELECTED_INFO, "Inspect Selection", "show_selected_information", "inspect"),
 )
 
 
@@ -382,7 +382,7 @@ def derive_action_availability(
         GuiActionKey.SUPPRESSED_PART_GHOSTS,
         snapshot.source_kind == "native"
         and any(part.suppressed for part in snapshot.parts),
-        "当前没有已抑制源部件",
+        "There are no suppressed source parts",
     )
     editor_active = (
         context.wire_editor_active
@@ -404,52 +404,52 @@ def derive_action_availability(
         }
     )
 
-    set_state(GuiActionKey.OPEN, not busy, "后台任务运行时不能打开 INP")
-    set_state(GuiActionKey.NEW_NATIVE, not busy, "后台任务运行时不能新建项目")
+    set_state(GuiActionKey.OPEN, not busy, "Cannot open an INP file while a background task is running")
+    set_state(GuiActionKey.NEW_NATIVE, not busy, "Cannot create a project while a background task is running")
     set_state(
         GuiActionKey.DELETE_MODEL,
         context.model_document_active and not busy,
         (
-            "后台任务运行时不能删除模型"
+            "Cannot delete a model while a background task is running"
             if busy
-            else "当前没有选中的模型"
+            else "No model is selected"
         ),
     )
-    set_state(GuiActionKey.OPEN_PROJECT, not busy, "后台任务运行时不能打开项目")
+    set_state(GuiActionKey.OPEN_PROJECT, not busy, "Cannot open a project while a background task is running")
     for key in (GuiActionKey.SAVE_PROJECT, GuiActionKey.SAVE_PROJECT_AS):
         set_state(
             key,
             snapshot.can_save and not busy,
-            "请先创建自主部件；INP 模型保持原文件工作流",
+            "Create a native part first; INP models use the original file workflow",
         )
     for key in (GuiActionKey.SAVE_RESULT, GuiActionKey.SAVE_RESULT_AS):
         set_state(
             key,
             has_current_result and result_actions_idle,
             (
-                "后台任务运行时不能保存结果"
+                "Cannot save results while a background task is running"
                 if busy
-                else "当前没有可保存的成功结果"
+                else "No successful results are available to save"
                 if not has_current_result
-                else "当前结果任务正在运行，或结果源已过期"
+                else "A result task is running or the result source is stale"
             ),
         )
     set_state(
         GuiActionKey.OPEN_RESULT,
         not busy and not editor_active,
-        "后台任务运行时不能打开结果"
+        "Cannot open results while a background task is running"
         if busy
-        else "请先完成或取消当前编辑",
+        else "Finish or cancel the current edit first",
     )
     set_state(
         GuiActionKey.RELOAD,
         snapshot.can_reload and not busy,
-        "只有已打开的 INP 模型可以重新加载",
+        "Only an open INP model can be reloaded",
     )
     set_state(
         GuiActionKey.CLOSE,
         snapshot.source_kind is not None and not busy,
-        "当前没有打开的模型或项目",
+        "No model or project is open",
     )
     create_part_model_ready = (
         snapshot.source_kind == "native"
@@ -464,13 +464,13 @@ def derive_action_availability(
         and not busy
     )
     create_part_reason = (
-        "后台任务运行时不能新建部件"
+        "Cannot create a part while a background task is running"
         if busy
-        else "当前模型已存在部件；暂不支持创建多个部件"
+        else "The current model already has a part; creating multiple parts is not supported yet"
         if snapshot.parts
-        else "请先新建模型"
+        else "Create a model first"
         if snapshot.source_kind is None
-        else "INP 模型没有可编辑 CAD；请新建自主模型"
+        else "INP models have no editable CAD; create a native model"
     )
     set_state(
         GuiActionKey.GEOMETRY_CREATE,
@@ -490,9 +490,9 @@ def derive_action_availability(
         and not busy
         and not editor_active,
         (
-            "请先完成当前几何编辑"
+            "Finish the current geometry edit first"
             if editor_active
-            else "请选择当前部件的一个有效实体平面面"
+            else "Select a valid planar solid face on the current part"
         ),
     )
     set_state(
@@ -520,9 +520,9 @@ def derive_action_availability(
                 and not editor_active
             )
             reason = (
-                "请先完成当前几何编辑"
+                "Finish the current geometry edit first"
                 if is_boolean
-                else "请先选择一个实体"
+                else "Select a body first"
             )
             set_state(key, enabled, reason)
             continue
@@ -541,13 +541,13 @@ def derive_action_availability(
             )
             and not busy,
             (
-                "请先完成当前几何编辑"
+                "Finish the current geometry edit first"
                 if editor_active
-                else "合并和切除需要二维面或三维实体"
+                else "Fuse and cut require 2D faces or 3D solids"
             ),
         )
     extrude_enabled = False
-    extrude_reason = "请先创建二维草图或平面几何"
+    extrude_reason = "Create a 2D sketch or planar geometry first"
     if (
         has_native_geometry
         and geometry_dimension(recipe) == 2
@@ -557,7 +557,7 @@ def derive_action_availability(
             reference.kind != "face"
             for reference in context.geometry_selection
         ):
-            extrude_reason = "当前选择包含非面实体"
+            extrude_reason = "The current selection contains entities that are not faces"
         else:
             try:
                 all_sources = resolve_extrusion_source_faces(recipe)
@@ -572,10 +572,10 @@ def derive_action_availability(
             except ExtrusionSourceResolutionError as error:
                 extrude_reason = {
                     "extrude.source-face.topology-unproven": (
-                        "当前二维拓扑无法安全拉伸"
+                        "The current 2D topology cannot be safely extruded"
                     ),
                     "extrude.source-face.unknown": (
-                        "所选 Profile 已失效，请重新选择"
+                        "The selected profile is no longer valid; select it again"
                     ),
                 }.get(error.code, str(error))
             else:
@@ -584,7 +584,7 @@ def derive_action_availability(
                     and requested_sources is None
                 ):
                     extrude_reason = (
-                        "该草图包含多个 Profile，请先选择至少一个二维面"
+                        "This sketch contains multiple profiles; select at least one 2D face first"
                     )
                 else:
                     extrude_enabled = True
@@ -616,24 +616,24 @@ def derive_action_availability(
             )
         )
         and not busy,
-        "当前没有可撤销的几何特征",
+        "No geometry feature is available to undo",
     )
     set_state(
         GuiActionKey.GEOMETRY_REGION,
         has_model and not busy,
-        "请先划分网格",
+        "Generate a mesh first",
     )
     set_state(
         GuiActionKey.GEOMETRY_REGIONS,
         has_model
         and bool(snapshot.named_regions)
         and not busy,
-        "请先划分网格并创建作用域",
+        "Generate a mesh and create a scope first",
     )
     set_state(
         GuiActionKey.MESH_SETTINGS,
         has_native_geometry and not busy,
-        "请先创建自主草图；INP 模型保留已有网格，不能反向编辑 CAD",
+        "Create a native sketch first; INP models retain their existing mesh and cannot be edited as CAD",
     )
     has_mesh_settings = isinstance(snapshot.mesh_settings, MeshSettings)
     body_relations_ready = not (
@@ -661,45 +661,45 @@ def derive_action_availability(
         GuiActionKey.MESH_GENERATE,
         mesh_inputs_ready and not truss_controls_conflict,
         (
-            "桁架单元中每根线体杆件固定生成一个单元，请先在网格控制中删除局部尺寸"
+            "Each wire member uses one truss element; remove local sizes from mesh controls first"
             if truss_controls_conflict
             else (
-                "请先通过布尔运算解决实体重叠或接触"
+                "Resolve overlapping or touching bodies with Boolean operations first"
                 if not body_relations_ready
-                else "请先创建自主几何并设置网格参数"
+                else "Create native geometry and set mesh parameters first"
             )
         ),
     )
     set_state(
         GuiActionKey.MESH_CONTROLS,
         mesh_inputs_ready,
-        "请先创建自主几何并设置网格参数",
+        "Create native geometry and set mesh parameters first",
     )
     set_state(
         GuiActionKey.MESH_LOCAL_CONTROL,
         mesh_inputs_ready and not truss_member_policy,
         (
-            "桁架单元中每根线体杆件固定生成一个单元，不支持局部尺寸控制"
+            "Each wire member uses one truss element; local size controls are not supported"
             if truss_member_policy
-            else "请先创建自主几何并设置网格参数"
+            else "Create native geometry and set mesh parameters first"
         ),
     )
     set_state(
         GuiActionKey.MESH_CLEAR,
         snapshot.source_kind == "native" and has_model and not busy,
-        "当前没有可清除的自主网格",
+        "No native mesh is available to clear",
     )
     for key in (
         GuiActionKey.MESH_STATISTICS,
         GuiActionKey.MESH_QUALITY,
         GuiActionKey.MESH_VERIFY,
     ):
-        set_state(key, has_model and not busy, "请先生成网格或打开 INP 模型")
+        set_state(key, has_model and not busy, "Generate a mesh or open an INP model first")
 
     set_state(
         GuiActionKey.MATERIAL_MANAGER,
         snapshot.source_kind is not None and not busy,
-        "请先新建模型或打开 INP",
+        "Create a model or open an INP file first",
     )
     section_capability = authoring.report.operation("section.create")
     set_state(
@@ -708,7 +708,7 @@ def derive_action_availability(
         and bool(snapshot.materials)
         and (section_capability.can_enter or bool(snapshot.sections))
         and not busy,
-        _capability_reason(section_capability, "请先新建模型或打开 INP，并创建材料"),
+        _capability_reason(section_capability, "Create a model or open an INP file, then create a material"),
     )
     visible_targets = tuple(
         target
@@ -730,14 +730,14 @@ def derive_action_availability(
         and has_model
         and bool(section_targets or snapshot.source_kind == "native")
         and not busy,
-        "请先划分网格或打开 INP，并创建截面",
+        "Generate a mesh or open an INP file, then create a section",
     )
 
     has_step = bool(authoring.step_lifecycle)
     set_state(
         GuiActionKey.STEP_CREATE,
         snapshot.source_kind is not None and not busy,
-        "请先新建模型或打开 INP",
+        "Create a model or open an INP file first",
     )
     boundary_targets = tuple(
         target
@@ -750,7 +750,7 @@ def derive_action_availability(
         and has_model
         and bool(boundary_targets or has_native_geometry)
         and not busy,
-        "请先创建分析步并划分网格",
+        "Create an analysis step and generate a mesh first",
     )
     load_operations = (
         "load.node",
@@ -766,7 +766,7 @@ def derive_action_availability(
         if any(target.operation(name).can_submit for name in load_operations)
     )
     load_reason = (
-        "请先创建分析步"
+        "Create an analysis step first"
         if not has_step
         else _first_target_reason(authoring, load_operations)
     )
@@ -784,25 +784,25 @@ def derive_action_availability(
         output_create.can_submit and not busy,
         _capability_reason(
             output_create,
-            "当前 Session 不允许创建输出请求",
+            "The current session does not allow output requests",
         ),
     )
     set_state(
         GuiActionKey.ANALYSIS_MANAGER,
         bool(snapshot.steps) and not busy,
-        "当前没有可管理的分析定义",
+        "No analysis definitions are available to manage",
     )
-    set_state(GuiActionKey.STEP_INFO, has_step and not busy, "当前没有可查看的分析步")
+    set_state(GuiActionKey.STEP_INFO, has_step and not busy, "No analysis step is available to view")
     lifecycle = authoring.step(context.selected_step_name)
     set_state(
         GuiActionKey.CHECK_MODEL,
         lifecycle is not None and lifecycle.can_check and not busy,
-        lifecycle.check_reason if lifecycle is not None else "当前没有可检查的分析步",
+        lifecycle.check_reason if lifecycle is not None else "No analysis step is available to check",
     )
     set_state(
         GuiActionKey.SUBMIT_JOB,
         lifecycle is not None and lifecycle.can_submit and not busy,
-        lifecycle.submit_reason if lifecycle is not None else "请先通过当前分析步的模型检查",
+        lifecycle.submit_reason if lifecycle is not None else "Pass the model check for the current analysis step first",
     )
     resubmittable = any(
         str(getattr(run.status, "value", run.status)).casefold()
@@ -812,13 +812,13 @@ def derive_action_availability(
     set_state(
         GuiActionKey.RESUBMIT_JOB,
         not busy and resubmittable,
-        "当前没有可复制的历史作业",
+        "No previous job is available to copy",
     )
-    set_state(GuiActionKey.JOB_MANAGER, has_model, "请先生成网格或打开 INP 模型")
+    set_state(GuiActionKey.JOB_MANAGER, has_model, "Generate a mesh or open an INP model first")
     set_state(
         GuiActionKey.MODEL_INFO,
         snapshot.source_kind is not None and not busy,
-        "当前没有打开的模型或项目",
+        "No model or project is open",
     )
     for key in (
         GuiActionKey.EDGES,
@@ -827,14 +827,14 @@ def derive_action_availability(
         GuiActionKey.ELEMENT_LABELS,
         GuiActionKey.SYMBOL_SETTINGS,
     ):
-        set_state(key, has_model, "请先生成网格或打开 INP 模型")
+        set_state(key, has_model, "Generate a mesh or open an INP model first")
     set_state(
         GuiActionKey.SYMBOLS,
         has_model and not context.symbol_display_disabled,
         (
-            "当前功能栏下不能显示约束和载荷"
+            "Constraints and loads cannot be displayed in the current ribbon module"
             if context.symbol_display_disabled
-            else "请先生成网格或打开 INP 模型"
+            else "Generate a mesh or open an INP model first"
         ),
     )
     selection_keys = {
@@ -850,21 +850,21 @@ def derive_action_availability(
         for kind, key in selection_keys.items():
             enabled = geometry_available and kind != "element"
             reason = (
-                "几何选择空间不支持单元"
+                "Geometry selection does not support elements"
                 if kind == "element"
-                else "请先创建自主几何"
+                else "Create native geometry first"
             )
             if kind == "face" and selection_dimension == 1:
                 enabled = False
-                reason = "一维几何没有可选择的面"
+                reason = "1D geometry has no selectable faces"
             set_state(key, enabled, reason)
     else:
         for kind, key in selection_keys.items():
             enabled = has_model and not busy
-            reason = "请先生成网格或打开 INP 模型"
+            reason = "Generate a mesh or open an INP model first"
             if kind == "face" and selection_dimension == 1:
                 enabled = False
-                reason = "当前一维网格没有可选择的拓扑面"
+                reason = "The current 1D mesh has no selectable topology faces"
             set_state(key, enabled, reason)
     for key in (
         GuiActionKey.FIT,
@@ -882,12 +882,12 @@ def derive_action_availability(
         set_state(
             key,
             (has_model or has_native_geometry) and not busy,
-            "请先创建几何、生成网格或打开 INP 模型",
+            "Create geometry, generate a mesh, or open an INP model first",
         )
     set_state(
         GuiActionKey.SELECTED_INFO,
         has_model and context.fem_selection_kind in {"node", "element"},
-        "请先选择节点或单元",
+        "Select nodes or elements first",
     )
     for key in (
         GuiActionKey.UNDEFORMED,
@@ -901,17 +901,17 @@ def derive_action_availability(
         set_state(
             key,
             has_result,
-            "当前没有可查看的分析结果",
+            "No analysis results are available to view",
         )
     set_state(
         GuiActionKey.FIELD,
         has_result_catalog and result_actions_idle,
-        "当前结果目录不可用，或结果任务正在运行",
+        "The current result catalog is unavailable or a result task is running",
     )
     set_state(
         GuiActionKey.QUERY,
         has_result_catalog and result_actions_idle,
-        "当前结果目录不可用，或结果任务正在运行",
+        "The current result catalog is unavailable or a result task is running",
     )
     csv_export_enabled = has_result_catalog and result_actions_idle
     vtk_export_enabled = (
@@ -923,19 +923,19 @@ def derive_action_availability(
     set_state(
         GuiActionKey.EXPORT_CSV,
         csv_export_enabled,
-        "当前结果目录不可用，或结果任务正在运行",
+        "The current result catalog is unavailable or a result task is running",
     )
     set_state(
         GuiActionKey.EXPORT_VTK,
         vtk_export_enabled,
-        "请选择已就绪的当前结果字段，并等待结果任务完成",
+        "Select a ready field from the current results and wait for the result task to finish",
     )
     set_state(
         GuiActionKey.SCREENSHOT,
         context.viewport_scene_available
         and context.display_backend_available
         and not context.viewport_capture_active,
-        "当前视口没有可捕获场景，或截图后端不可用",
+        "The viewport has no scene to capture or the screenshot backend is unavailable",
     )
 
     if editor_active:
@@ -985,9 +985,9 @@ def derive_action_availability(
             GuiActionKey.JOB_MANAGER,
         )
         for key in mutation_keys:
-            set_state(key, False, "请先完成或取消当前草图编辑")
+            set_state(key, False, "Finish or cancel the current sketch edit first")
         for key in selection_keys.values():
-            set_state(key, False, "请先完成或取消当前草图编辑")
+            set_state(key, False, "Finish or cancel the current sketch edit first")
         for key in (
             GuiActionKey.FIT,
             GuiActionKey.TOP,
@@ -1000,10 +1000,10 @@ def derive_action_availability(
             GuiActionKey.ORTHOGRAPHIC,
             GuiActionKey.PERSPECTIVE,
         ):
-            set_state(key, not busy, "后台任务运行时不可操作视图")
+            set_state(key, not busy, "View controls are unavailable while a background task is running")
 
     if snapshot.source_kind == "result":
-        readonly_reason = "结果只读文档不支持建模或分析编辑"
+        readonly_reason = "Read-only result documents do not support modeling or analysis edits"
         for key in (
             GuiActionKey.MATERIAL_MANAGER,
             GuiActionKey.SECTION_MANAGER,
@@ -1046,7 +1046,7 @@ def derive_action_availability(
         except ValueError:
             continue
         if states[key].enabled:
-            set_state(key, False, "该窗口已经打开")
+            set_state(key, False, "This window is already open")
 
     result = tuple(states[descriptor.key] for descriptor in ACTION_DESCRIPTORS)
     if len(result) != len(GuiActionKey) or {item.key for item in result} != set(GuiActionKey):
@@ -1076,7 +1076,7 @@ def _first_target_reason(
     for diagnostic in projection.report.diagnostics:
         if diagnostic.blocking:
             return f"[{diagnostic.code}] {diagnostic.remediation or diagnostic.message}"
-    return "当前 capability report 没有可用的载荷目标区域"
+    return "The current capability report has no available load target regions"
 
 
 __all__ = [

@@ -44,7 +44,7 @@ def test_startup_model_tree_has_no_automatic_part_placeholder(gui_application):
 
     assert document_id is not None
     root = window.model_tree.roots[document_id]
-    assert root.text(0) == "模型-1"
+    assert root.text(0) == "Model-1"
     assert root.childCount() == 0
     assert window.document.parts == ()
 

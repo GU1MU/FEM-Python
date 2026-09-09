@@ -231,7 +231,7 @@ class FEMWorkspace:
         """The next unused default display number for a newly created model."""
 
         self._next_model_number = 1
-        while self.model_name_exists(f"模型-{self._next_model_number}"):
+        while self.model_name_exists(f"Model-{self._next_model_number}"):
             self._next_model_number += 1
         return self._next_model_number
 
@@ -262,9 +262,9 @@ class FEMWorkspace:
     def next_job_name(self) -> str:
         """Return the next workspace-global default job name."""
 
-        while f"作业-{self._next_job_number}".casefold() in self._job_names:
+        while f"Job-{self._next_job_number}".casefold() in self._job_names:
             self._next_job_number += 1
-        return f"作业-{self._next_job_number}"
+        return f"Job-{self._next_job_number}"
 
     def job_name_exists(self, name: str) -> bool:
         """Return whether a job display name was already used in this workspace."""
@@ -281,7 +281,7 @@ class FEMWorkspace:
         if not clean:
             raise ValueError("job name must not be empty")
         self._job_names.add(clean.casefold())
-        prefix = "作业-"
+        prefix = "Job-"
         if clean.startswith(prefix) and clean[len(prefix) :].isdigit():
             self._next_job_number = max(
                 self._next_job_number,
@@ -528,12 +528,12 @@ class FEMWorkspace:
                 name = f"Result-{self._next_result_number}"
                 self._next_result_number += 1
             else:
-                name = f"模型-{self.next_model_number}"
+                name = f"Model-{self.next_model_number}"
                 self._next_model_number += 1
         elif (
             kind == "model"
             and path is None
-            and name == f"模型-{self.next_model_number}"
+            and name == f"Model-{self.next_model_number}"
         ):
             self._next_model_number += 1
         name = self._unique_display_name(kind, name)

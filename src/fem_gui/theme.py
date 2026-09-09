@@ -1,4 +1,4 @@
-"""浅色工业软件主题。"""
+"""Light theme for engineering software."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ _COMBO_DOWN_ARROW = (
 
 
 class FEMStyle(QProxyStyle):
-    """为较难辨认的原生控件提供清晰、稳定的绘制。"""
+    """Provide clear, consistent rendering for native controls."""
 
     CHECKBOX_SIZE = 16
     CHECKBOX_BORDER_WIDTH = 2.0
@@ -169,10 +169,10 @@ class FEMStyle(QProxyStyle):
 
 
 def build_stylesheet() -> str:
-    """返回紧凑的浅色 CAE 风格样式。"""
+    """Return a compact, light CAE stylesheet."""
     return f"""
 QMainWindow, QWidget {{ background: {COLORS['background']}; color: {COLORS['text']};
-  font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif; font-size: 9pt; }}
+  font-family: 'Segoe UI', 'Noto Sans', 'DejaVu Sans', sans-serif; font-size: 9pt; }}
 QMenuBar {{ background: {COLORS['menu']}; border-bottom: 1px solid {COLORS['border']}; padding: 1px 5px; }}
 QMenuBar::item {{ padding: 4px 9px; }}
 QMenuBar::item:selected, QMenu::item:selected {{ background: {COLORS['hover']}; }}

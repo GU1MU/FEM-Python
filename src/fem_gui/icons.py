@@ -1,4 +1,4 @@
-"""PNG 优先、坐标视图矢量优先、内嵌 SVG 后备的图标管理。"""
+"""Icon management with PNG assets, vector view icons, and embedded SVG fallbacks."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _PNG_RENDER_LAYOUT = {
     "select_element": (1.00, 1.00, 0.00, 0.00),
 }
 
-# 保留既有动作键，避免视口相机和 QAction 调用方感知资源命名变化。
+# Keep existing action keys to isolate viewport cameras and QAction callers from asset naming changes.
 _PNG_FILES = {
     "open": "open.png",
     "open_result": "open_result.png",
@@ -168,7 +168,7 @@ _PATHS = {
 
 @lru_cache(maxsize=None)
 def icon(name: str) -> QIcon:
-    """坐标视图使用精确矢量，其余图标优先加载受控 PNG。"""
+    """Use precise vectors for view icons and prefer bundled PNG assets for other icons."""
     png_name = None if name in _VECTOR_VIEW_ICONS else _PNG_FILES.get(name)
     if png_name is not None:
         source = QPixmap(str(_ICON_DIR / png_name))
