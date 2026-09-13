@@ -17,7 +17,7 @@ from fem.io import (
     load_result_archive,
 )
 from fem.application.results.data import FieldData, ResultTopologyProjection
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
 )
@@ -31,7 +31,7 @@ from tests.fem.io.test_result_archive_v1 import (
 
 @pytest.fixture
 def archive_snapshot():
-    return make_result_archive(make_continuum_nodal_semantics_result, "phase5-streaming")
+    return make_result_archive(make_continuum_nodal_semantics_result, "archive-streaming")
 
 
 def test_path_loader_streams_zip_and_matches_bytes_semantics(

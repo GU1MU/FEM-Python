@@ -23,7 +23,7 @@ from fem_agent.schemas import (
 from fem_agent.tools.results import MAX_PROVIDER_SCALARS, query_results
 from tests.helpers.mesh_builders import make_tri3_stiffness_mesh
 from tests.helpers.model_builders import make_simple_truss_mesh
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
 )
 

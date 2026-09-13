@@ -30,7 +30,7 @@ from fem.io import (
 )
 from fem.application.results import project_scalar_field_topology
 from tests.helpers.result_archives import make_result_archive
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,

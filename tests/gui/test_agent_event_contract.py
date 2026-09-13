@@ -725,7 +725,7 @@ def test_fake_event_stream_drives_tool_message_diagnostic_and_confirmation_ui(
     application.processEvents()
 
     state = drawer.event_presentation
-    assert state.session_id == "phase3-preview"
+    assert state.session_id == "agent-preview"
     assert "Model precheck" in state.turns[0].messages[0].text
     assert len(state.turns[0].tool_groups[0].calls) == 3
 

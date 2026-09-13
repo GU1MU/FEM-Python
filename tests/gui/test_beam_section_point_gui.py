@@ -34,7 +34,7 @@ from fem_gui.result_presentation import (
 from fem_gui.visualization.result_renderer import build_result_render_payload
 from fem_gui.widgets.result_tree import ResultTree
 from fem_gui.widgets.viewport import FEMViewport
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
 )
 

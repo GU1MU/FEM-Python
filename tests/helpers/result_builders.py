@@ -144,7 +144,7 @@ def make_session_with_success():
         validation.token,
         passing_preflight_report(validation.token),
     )
-    solve = session.prepare_solve("Step-A", "Phase-0-Job")
+    solve = session.prepare_solve("Step-A", "Successful-Solve-Job")
     session.begin_run(solve.token)
     session.accept_run_succeeded(
         solve.token,

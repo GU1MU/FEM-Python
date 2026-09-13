@@ -137,14 +137,14 @@ def _seed_window(
 
 def _proposal(
     session: ModelSession,
-    proposal_id: str = "proposal-a6",
+    proposal_id: str = "proposal-solve",
     *,
     job_name: str = "作业-静力1",
     target_document_id: str | None = None,
 ) -> AgentProposal:
     proposal = create_solve_proposal(
         proposal_id=proposal_id,
-        agent_session_id="agent-session-a6",
+        agent_session_id="agent-session-solve",
         turn_id=f"turn-{proposal_id}",
         source_tool_call_ids=(f"call-{proposal_id}",),
         snapshot=session.snapshot(),

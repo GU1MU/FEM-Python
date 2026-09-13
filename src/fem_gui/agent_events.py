@@ -1408,7 +1408,7 @@ class FakeAgentEventStream:
     def __init__(
         self,
         *,
-        session_id: str = "phase3-preview",
+        session_id: str = "agent-preview",
         start_sequence: int = 1,
         event_prefix: str = "phase3-event",
     ) -> None:

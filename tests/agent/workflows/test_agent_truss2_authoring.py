@@ -126,7 +126,7 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
         create_definition_change(
             patch_id="patch-component-four",
             proposal_id="proposal-component-four",
-            agent_session_id="agent-phase3",
+            agent_session_id="agent-line-mesh",
             turn_id="turn-component-four",
             source_tool_call_ids=("call-component-four",),
             context=authoring_context_from_snapshot(component_before),

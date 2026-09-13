@@ -37,7 +37,7 @@ from fem.application.results.provider import (
     build_result_provider,
 )
 from fem.core.model import OutputRequest, OutputSourceEvidence
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
 )

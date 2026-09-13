@@ -48,8 +48,8 @@ def make_meshed_line_session(line_element_type: str = "Truss2") -> ModelSession:
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
     proposal = create_mesh_proposal(
-        proposal_id=f"proposal-phase3-{line_element_type}",
-        agent_session_id="agent-phase3",
+        proposal_id=f"proposal-line-mesh-{line_element_type}",
+        agent_session_id="agent-line-mesh",
         turn_id="turn-mesh",
         source_tool_call_ids=("call-mesh",),
         context=authoring_context_from_snapshot(session.snapshot()),

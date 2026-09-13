@@ -46,7 +46,7 @@ def _model() -> FEMModel:
             ),
             dofs_per_node=6,
         ),
-        name="phase4-minimal-oracle",
+        name="section-recovery-oracle",
         steps=(AnalysisStep("Load"),),
     )
 

@@ -102,7 +102,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
     snapshot = session.snapshot()
     patch = create_incremental_definition_patch(
         patch_id="patch-material-notice",
-        agent_session_id="agent-a4",
+        agent_session_id="agent-definition-patch",
         turn_id="turn-material-notice",
         source_tool_call_ids=("call-material-notice",),
         context=authoring_context_from_snapshot(snapshot),
@@ -198,21 +198,21 @@ def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     run = AnalysisRun(
-        "run-a4",
+        "run-definition-patch",
         "作业-旧结果",
         "分析步-旧",
         artifact.artifact_id,
         artifact.model_revision,
         status=RunStatus.SUCCEEDED,
-        result_id="result-a4",
+        result_id="result-definition-patch",
     )
     result_snapshot = replace(snapshot, runs=(run,))
     proposal = create_scope_definition_change(
         patch_id="patch-with-result",
         proposal_id="proposal-with-result",
-        agent_session_id="agent-a4",
-        turn_id="turn-a4",
-        source_tool_call_ids=("call-a4",),
+        agent_session_id="agent-definition-patch",
+        turn_id="turn-definition-patch",
+        source_tool_call_ids=("call-definition-patch",),
         context=authoring_context_from_snapshot(result_snapshot),
         snapshot=result_snapshot,
         draft_revision=4,
@@ -250,13 +250,13 @@ def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
         snapshot,
         runs=(
             AnalysisRun(
-                "run-a4",
+                "run-definition-patch",
                 "作业-旧结果",
                 "分析步-旧",
                 artifact.artifact_id,
                 artifact.model_revision,
                 status=RunStatus.SUCCEEDED,
-                result_id="result-a4",
+                result_id="result-definition-patch",
             ),
         ),
     )

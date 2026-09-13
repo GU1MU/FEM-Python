@@ -74,7 +74,7 @@ def _profile_proposal(kind: str, session: ModelSession, document_id: int, mode: 
     )
     common = {
         "proposal_id": f"proposal-{kind}-{mode}",
-        "agent_session_id": "agent-phase7",
+        "agent_session_id": "agent-geometry-branching",
         "turn_id": f"turn-{kind}-{mode}",
         "source_tool_call_ids": (f"call-{kind}-{mode}",),
         "context": context,
@@ -276,7 +276,7 @@ def test_boolean_operations_branch_without_mutating_source(kind: str) -> None:
     prepared = controller.dispatch(
         "prepare_geometry_edit",
         build_part_boolean_call("fuse") if kind == "part" else build_body_boolean_call("fuse"),
-        ToolExecutionContext("agent-phase7", session.session_revision, kind),
+        ToolExecutionContext("agent-geometry-branching", session.session_revision, kind),
     )
     assert prepared.ok, prepared.summary
     assert prepared.data["geometry_edit_mode"] == "branch"

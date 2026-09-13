@@ -159,10 +159,10 @@ def test_gui_bridge_commits_tet_intent_and_model_atomically(real_gmsh) -> None:
     )
     before = session.snapshot()
     proposal = create_mesh_proposal(
-        proposal_id="proposal-phase5-tet",
-        agent_session_id="agent-phase5",
-        turn_id="turn-phase5",
-        source_tool_call_ids=("call-phase5",),
+        proposal_id="proposal-solid-mesh-tet",
+        agent_session_id="agent-solid-mesh",
+        turn_id="turn-solid-mesh",
+        source_tool_call_ids=("call-solid-mesh",),
         context=authoring_context_from_snapshot(before),
         draft_revision=5,
         part_id="P1",
@@ -253,10 +253,10 @@ def test_unsupported_hex_is_diagnostic_and_session_atomic(
     # The GUI acceptance boundary repeats the same check for a tampered or
     # otherwise externally retained proposal.
     proposal = create_mesh_proposal(
-        proposal_id="proposal-phase5-tampered-hex",
-        agent_session_id="agent-phase5",
-        turn_id="turn-phase5",
-        source_tool_call_ids=("call-phase5",),
+        proposal_id="proposal-solid-mesh-tampered-hex",
+        agent_session_id="agent-solid-mesh",
+        turn_id="turn-solid-mesh",
+        source_tool_call_ids=("call-solid-mesh",),
         context=authoring_context_from_snapshot(before),
         draft_revision=5,
         part_id="P1",

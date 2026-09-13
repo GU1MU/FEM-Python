@@ -53,7 +53,7 @@ from fem.post.fields import (
     make_result_region_signature,
 )
 from fem.post.vtk.cells import vtk_cell_type
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 
@@ -1320,7 +1320,7 @@ def test_fresh_base_only_process_writes_and_reads_with_optional_imports_blocked(
             prepare_result_export_snapshot,
         )
         from fem.io.result_vtk import read_result_vtk, write_result_vtk
-        from tests.helpers.phase8_result_characterization import (
+        from tests.helpers.result_field_fixtures import (
             make_continuum_nodal_semantics_result,
         )
 

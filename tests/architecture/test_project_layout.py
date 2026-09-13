@@ -1866,7 +1866,7 @@ def test_b31_equivalent_normal_resolution_has_no_approximation_notice():
 
 
 def test_production_has_no_beam_slenderness_gate():
-    # Phase 1's Abaqus B31 numerical shear correction is a stiffness owner,
+    # Abaqus B31 numerical shear correction is a stiffness owner,
     # not an aspect-ratio capability gate.  Keep that explicit compensation
     # legal while rejecting names that imply import rejection or formulation
     # switching based on a geometric slenderness threshold.

@@ -50,7 +50,7 @@ from fem.io import (
 from fem.io import result_csv as result_csv_module
 from fem.post.averaging import NodalAveragingPolicy
 from fem.post.fields import encode_result_region_key
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

@@ -28,10 +28,10 @@ _STANDARD_INP_FIXTURES = (
 def _output_deck(tmp_path: Path, *output_lines: str):
     path = write_inp(
         tmp_path,
-        "phase8_output_characterization.inp",
+        "output_request_contract.inp",
         [
             "*Heading",
-            "Phase 8 output characterization",
+            "Output request contract",
             "*Node",
             "1, 0.0, 0.0, 0.0",
             "2, 1.0, 0.0, 0.0",

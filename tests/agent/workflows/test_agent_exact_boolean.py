@@ -162,7 +162,7 @@ def test_schema_closes_intersect_fragment_and_context_diagnoses() -> None:
     context = controller.dispatch(
         "read_geometry_edit_context",
         {"part_id": "P1"},
-        ToolExecutionContext("phase4", 0, "read-boolean"),
+        ToolExecutionContext("exact-boolean", 0, "read-boolean"),
     )
     disabled = context.data["exact_boolean"]["disabled_operations"]
     assert [item["operation"] for item in disabled] == ["intersect", "fragment"]
@@ -200,7 +200,7 @@ def test_real_agent_part_boolean_matrix(target, tool, operation: str) -> None:
     prepared = controller.dispatch(
         "prepare_geometry_edit",
         build_part_boolean_call(operation),
-        ToolExecutionContext("phase4", 0, f"part-{operation}"),
+        ToolExecutionContext("exact-boolean", 0, f"part-{operation}"),
     )
 
     assert prepared.ok, prepared.summary
@@ -240,7 +240,7 @@ def test_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
             "prepare_geometry_edit",
             build_part_boolean_call("cut", result_name=f"Cut {reverse}"),
             ToolExecutionContext(
-                "phase4",
+                "exact-boolean",
                 int(reverse),
                 f"cut-order-{str(reverse).lower()}",
             ),
@@ -251,7 +251,7 @@ def test_cut_target_tool_order_is_persisted_and_not_exchangeable() -> None:
         assert proposal.display_summary["tool_part_id"] == "P2"
         assert bridge.accept_from_gui_control(proposal.proposal_id).state is ProposalState.SUCCEEDED
         recipe = session.snapshot().part("P3").geometry_recipe
-        with model(f"phase4-cut-order-{reverse}", dimension=3) as cad:
+        with model(f"exact-boolean-cut-order-{reverse}", dimension=3) as cad:
             compiled = compile_recipe(cad, recipe)
             volumes.append(cad.volume(compiled.domain[0]))
         assert recipe.part_context.target_part_id == "P1"
@@ -268,7 +268,7 @@ def test_body_boolean_preserves_same_part_target_and_unaffected_body() -> None:
     prepared = controller.dispatch(
         "prepare_geometry_edit",
         build_body_boolean_call("fuse"),
-        ToolExecutionContext("phase4", 0, "body-fuse"),
+        ToolExecutionContext("exact-boolean", 0, "body-fuse"),
     )
 
     assert prepared.ok, prepared.summary
@@ -317,7 +317,7 @@ def test_rejected_boolean_preflight_is_atomic(tool, operation: str, diagnostic: 
     outcome = controller.dispatch(
         "prepare_geometry_edit",
         build_part_boolean_call(operation),
-        ToolExecutionContext("phase4", 0, f"reject-{diagnostic}"),
+        ToolExecutionContext("exact-boolean", 0, f"reject-{diagnostic}"),
     )
 
     assert not outcome.ok
@@ -336,7 +336,7 @@ def test_reject_and_stale_commit_never_mutate_session() -> None:
     rejected = controller.dispatch(
         "prepare_geometry_edit",
         build_part_boolean_call("fuse", result_name="Rejected Result"),
-        ToolExecutionContext("phase4", 0, "reject"),
+        ToolExecutionContext("exact-boolean", 0, "reject"),
     )
     assert bridge.reject_from_gui_control(rejected.data["proposal_id"]).state is ProposalState.REJECTED
     assert session.snapshot() == before
@@ -345,7 +345,7 @@ def test_reject_and_stale_commit_never_mutate_session() -> None:
     stale = controller.dispatch(
         "prepare_geometry_edit",
         build_part_boolean_call("cut", result_name="Stale Result"),
-        ToolExecutionContext("phase4", 0, "stale"),
+        ToolExecutionContext("exact-boolean", 0, "stale"),
     )
     assert stale.ok, stale
     session.rename_native_part("P1", "Changed Target")

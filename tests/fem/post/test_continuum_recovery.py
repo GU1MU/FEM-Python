@@ -7,7 +7,7 @@ from fem.post.averaging import NodalAveragingPolicy, resolve_nodal_stress
 from fem.post.fields import ResultRegionKey, result_region_sort_key
 from fem.post.stress import field as field_module
 from fem.post.stress.field import StressPosition, StressRecovery
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

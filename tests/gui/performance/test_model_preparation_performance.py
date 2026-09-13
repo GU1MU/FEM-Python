@@ -1,8 +1,8 @@
+"""Model preparation measurements and lazy inspection contracts."""
+
 from __future__ import annotations
 
-import argparse
 import gc
-import json
 import tracemalloc
 from collections.abc import Callable
 from time import perf_counter
@@ -60,7 +60,7 @@ def _plate_model(element_count: int) -> FEMModel:
     )
 
 
-def run(element_count: int) -> dict[str, Any]:
+def _measure_model_preparation(element_count: int) -> dict[str, Any]:
     model, model_seconds, model_peak = _measure(
         lambda: _plate_model(element_count)
     )
@@ -102,22 +102,13 @@ def run(element_count: int) -> dict[str, Any]:
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Measure safe import/preflight/topology hotspots without "
-            "assembling or solving the global stiffness matrix."
-        )
-    )
-    parser.add_argument(
-        "--elements",
-        type=int,
-        required=True,
-        choices=(5_000, 20_000, 133_000),
-    )
-    arguments = parser.parse_args()
-    print(json.dumps(run(arguments.elements), ensure_ascii=False))
-
-
-if __name__ == "__main__":
-    main()
+def test_model_preparation_preserves_lazy_inspection(record_property) -> None:
+    metrics = _measure_model_preparation(5_000)
+    for name, value in metrics.items():
+        record_property(name, value)
+    assert metrics["nodes"] == 5_151
+    assert metrics["dofs"] == 10_302
+    assert metrics["geometry_cell_array_bytes"] == 5_000 * 5 * 8
+    assert metrics["inspection_cached_records"] == 0
+    assert metrics["numerical_stability_checked"] is False
+    assert "static.boundary.missing_displacement" in metrics["preflight_diagnostic_codes"]

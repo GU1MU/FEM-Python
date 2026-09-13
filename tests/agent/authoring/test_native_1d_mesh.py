@@ -32,8 +32,8 @@ def _wire() -> WireGeometry:
 def _context(*, dimension: int) -> AuthoringContext:
     return AuthoringContext(
         binding=LocalModelBinding(
-            "document:line-phase2",
-            "session-line-phase2",
+            "document:line-mesh",
+            "session-line-mesh",
             4,
             "native",
             True,
@@ -121,10 +121,10 @@ def test_line_mesh_proposal_retains_formulation_in_summary_and_hash() -> None:
     )
 
     proposal = create_mesh_proposal(
-        proposal_id="proposal-line-phase2",
-        agent_session_id="agent-line-phase2",
-        turn_id="turn-line-phase2",
-        source_tool_call_ids=("call-line-phase2",),
+        proposal_id="proposal-line-mesh",
+        agent_session_id="agent-line-mesh",
+        turn_id="turn-line-mesh",
+        source_tool_call_ids=("call-line-mesh",),
         context=_context(dimension=1),
         draft_revision=1,
         part_id="P1",
@@ -169,11 +169,11 @@ def test_runtime_exposes_dimension_specific_line_mesh_requirements() -> None:
     assert properties["mesh_order"]["enum"] == [1]
     assert properties["line_element_type"]["enum"] == ["Truss2", "Beam2"]
 
-    execution = ToolExecutionContext("agent-line-phase2", 0, "requirements")
+    execution = ToolExecutionContext("agent-line-mesh", 0, "requirements")
     partial = controller.dispatch(
         "set_authoring_requirements",
         {
-            "turn_id": "turn-line-phase2",
+            "turn_id": "turn-line-mesh",
             "requirements": {
                 "mesh_cell_shape": "line",
                 "mesh_order": 1,
@@ -191,10 +191,10 @@ def test_runtime_exposes_dimension_specific_line_mesh_requirements() -> None:
     complete = controller.dispatch(
         "set_authoring_requirements",
         {
-            "turn_id": "turn-line-phase2",
+            "turn_id": "turn-line-mesh",
             "requirements": {"line_element_type": "Truss2"},
         },
-        ToolExecutionContext("agent-line-phase2", 0, "formulation"),
+        ToolExecutionContext("agent-line-mesh", 0, "formulation"),
     )
     assert complete.ok
     assert complete.data["missing_requirements"] == []

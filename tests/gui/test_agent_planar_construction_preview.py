@@ -28,7 +28,7 @@ def _dispatch(controller, arguments, key: str, turn_id: str = "turn-a"):
         "prepare_planar_construction_proposal",
         arguments,
         ToolExecutionContext(
-            "phase5-planar-preview",
+            "planar-construction-preview",
             0,
             key,
             turn_id=turn_id,

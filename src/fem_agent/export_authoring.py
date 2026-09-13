@@ -1,6 +1,6 @@
 """Strict contracts for Agent-authored result exports and display context.
 
-Phase 1 exposes exactly two tools: ``export_accepted_result_csv`` (write the
+This module exposes exactly two tools: ``export_accepted_result_csv`` (write the
 currently accepted READY result table into the user workspace) and the
 read-only ``read_result_display_context`` (enumerate the READY field catalog
 and current display settings).  Both contracts stay fail-closed: every DTO is

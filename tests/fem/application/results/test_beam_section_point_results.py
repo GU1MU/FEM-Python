@@ -26,7 +26,7 @@ from fem.io.result_csv import (
 )
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
 from fem.post.stress import beam
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
 )
 

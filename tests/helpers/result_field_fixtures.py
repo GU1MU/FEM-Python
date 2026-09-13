@@ -1,3 +1,5 @@
+"""Literal continuum, truss, and beam results for field-semantics tests."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -59,7 +61,7 @@ def make_continuum_nodal_semantics_result() -> ModelResult:
     displacement[mesh.global_dof(2, 0)] = 0.1
     displacement[mesh.global_dof(4, 0)] = -0.3
     displacement[mesh.global_dof(6, 0)] = 1.0
-    model = FEMModel(mesh=mesh, name="phase8-continuum-oracle")
+    model = FEMModel(mesh=mesh, name="continuum-nodal-semantics")
     return ModelResult(
         model,
         None,
@@ -85,7 +87,7 @@ def make_truss_field_characterization_result() -> ModelResult:
             )
         ],
     )
-    model = FEMModel(mesh=mesh, name="phase8-truss-oracle")
+    model = FEMModel(mesh=mesh, name="truss-axial-stress")
     return ModelResult(
         model,
         None,
@@ -118,7 +120,7 @@ def make_beam_field_characterization_result() -> ModelResult:
         ],
         dofs_per_node=6,
     )
-    model = FEMModel(mesh=mesh, name="phase8-beam-oracle")
+    model = FEMModel(mesh=mesh, name="beam-axial-and-bending-stress")
     return ModelResult(
         model,
         None,

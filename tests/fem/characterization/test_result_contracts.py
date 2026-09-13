@@ -35,7 +35,7 @@ from fem.io.project import (
 )
 from fem.io.result_csv import read_result_csv, write_result_csv
 from fem.io.result_vtk import read_result_vtk, write_result_vtk
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
@@ -117,12 +117,12 @@ _RESULT_CASES = (
 
 def _source(name: str) -> ResultSourceKey:
     return ResultSourceKey(
-        result_id=f"phase0-result-{name}",
-        session_id="phase0-session",
-        artifact_id="phase0-artifact",
+        result_id=f"result-contract-result-{name}",
+        session_id="result-contract-session",
+        artifact_id="result-contract-artifact",
         model_revision=7,
-        step_name="Phase-0",
-        run_id=f"phase0-run-{name}",
+        step_name="Result contract",
+        run_id=f"result-contract-run-{name}",
     )
 
 
@@ -143,7 +143,7 @@ def _location_identity(location):
     "name,builder,family,canonical_types,dofs,primary_variables,lazy_field_ids",
     _RESULT_CASES,
 )
-def test_phase0_provider_profile_catalog_and_topology_contract(
+def test_provider_profile_catalog_and_topology_contract(
     name,
     builder,
     family,
@@ -216,7 +216,7 @@ def test_phase0_provider_profile_catalog_and_topology_contract(
     "name,builder",
     tuple((case[0], case[1]) for case in _RESULT_CASES),
 )
-def test_phase0_materialization_query_inspection_csv_and_vtk_parity(
+def test_materialization_query_inspection_csv_and_vtk_parity(
     tmp_path: Path,
     name,
     builder,
@@ -321,7 +321,7 @@ def test_phase0_materialization_query_inspection_csv_and_vtk_parity(
     )
 
 
-def test_phase0_session_generation_stale_gate_and_close_lifecycle() -> None:
+def test_session_generation_stale_gate_and_close_lifecycle() -> None:
     session, solve = make_session_with_success()
     initial = session.current_result()
     assert initial is not None
@@ -359,7 +359,7 @@ def _project_snapshot(source_path: Path | None = None):
     from fem.geometry.recipes import RectangleGeometry
     from fem.mesh.settings import MeshSettings
 
-    recipe = RectangleGeometry("Phase-0", 4.0, 2.0)
+    recipe = RectangleGeometry("Result contract", 4.0, 2.0)
     return ProjectSnapshot(
         source_kind="native",
         source_path=source_path,
@@ -370,7 +370,7 @@ def _project_snapshot(source_path: Path | None = None):
     )
 
 
-def test_phase0_schema14_canonical_project_payload_excludes_results() -> None:
+def test_schema14_canonical_project_payload_excludes_results() -> None:
     snapshot = _project_snapshot()
     payload = encode_project(snapshot)
     assert CURRENT_PROJECT_SCHEMA == 14
@@ -383,7 +383,7 @@ def test_phase0_schema14_canonical_project_payload_excludes_results() -> None:
 
 
 @pytest.mark.parametrize("schema", tuple(range(1, 15)))
-def test_phase0_project_router_dispatches_every_supported_schema(
+def test_project_router_dispatches_every_supported_schema(
     monkeypatch: pytest.MonkeyPatch,
     schema: int,
 ) -> None:

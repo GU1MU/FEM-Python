@@ -12,7 +12,7 @@ from fem.application.runs import (
 from fem.core.model import AnalysisStep, FEMModel
 from fem.io import load_result_archive, save_result_archive
 from fem.post.stress import beam
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
 )
 from tests.helpers.preflight_builders import passing_preflight_report
@@ -24,11 +24,11 @@ def _solved_beam_session() -> tuple[ModelSession, str]:
     source = make_beam_field_characterization_result()
     model = FEMModel(
         mesh=deepcopy(source.model.mesh),
-        name="phase6-beam-provenance",
+        name="beam-provenance-provenance",
         steps=(AnalysisStep("Load"),),
     )
     session = ModelSession()
-    imported = session.prepare_import("phase6-beam.inp")
+    imported = session.prepare_import("beam-provenance.inp")
     session.accept_imported_model(imported.token, model)
     validation = session.prepare_validation("Load")
     session.accept_validation(

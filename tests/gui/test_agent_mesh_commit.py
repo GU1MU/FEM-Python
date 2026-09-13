@@ -59,7 +59,7 @@ def _session() -> ModelSession:
 def _proposal(session: ModelSession, proposal_id: str):
     return create_mesh_proposal(
         proposal_id=proposal_id,
-        agent_session_id="agent-session-a3",
+        agent_session_id="agent-mesh-commit",
         turn_id=f"turn-{proposal_id}",
         source_tool_call_ids=(f"call-{proposal_id}",),
         context=authoring_context_from_snapshot(session.snapshot()),
@@ -211,7 +211,7 @@ def test_port_success_calls_atomic_session_accept() -> None:
     )
     assert after.artifact is not None
     assert after.artifact.model.name == "新网格"
-    # A3 projection is owned by the task controller after CAS acceptance.
+    # Mesh projection is owned by the task controller after CAS acceptance.
     assert refreshes == []
 
 

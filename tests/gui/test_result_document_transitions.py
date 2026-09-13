@@ -10,7 +10,7 @@ from fem.io import save_result_archive
 import fem_gui.main_window as main_window_module
 from fem_gui.main_window import FEMMainWindow
 from tests.helpers.result_archives import make_result_archive
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

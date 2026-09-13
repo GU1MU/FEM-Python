@@ -1,4 +1,4 @@
-"""Contract tests for the Phase 1 Agent export DTOs, ports, and schemas."""
+"""Contract tests for the Agent export DTOs, ports, and schemas."""
 
 from __future__ import annotations
 

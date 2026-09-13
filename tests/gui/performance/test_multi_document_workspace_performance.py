@@ -25,7 +25,7 @@ pytestmark = pytest.mark.slow
 
 def test_20k_adapter_warm_activation_gate_is_faster_than_cold_rebuild():
     model = _plate_model(20_000)
-    artifact_id = "phase3-20k-artifact"
+    artifact_id = "workspace-20k-artifact"
 
     def cold_rebuild():
         geometry = replace(

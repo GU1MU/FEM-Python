@@ -8,7 +8,7 @@ from fem.io import inp
 
 
 def _write_b31(path: Path, *, include_preprint: bool) -> None:
-    lines = ["*Heading", "Phase 1 facade test"]
+    lines = ["*Heading", "INP facade contract"]
     if include_preprint:
         lines.append(
             "*Preprint, echo=NO, history=NO, model=NO, contact=NO"
@@ -111,8 +111,8 @@ def test_harmless_keyword_duplicate_options_remain_parse_errors(
     _write_b31(path, include_preprint=False)
     text = path.read_text(encoding="utf-8")
     text = text.replace(
-        "*Heading\nPhase 1 facade test",
-        "*Heading\nPhase 1 facade test\n*Preprint, echo=NO, echo=YES",
+        "*Heading\nINP facade contract",
+        "*Heading\nINP facade contract\n*Preprint, echo=NO, echo=YES",
     )
     path.write_text(text, encoding="utf-8")
 

@@ -59,7 +59,7 @@ def _proposal(
 ):
     return create_mesh_proposal(
         proposal_id=proposal_id,
-        agent_session_id="agent-line-phase2",
+        agent_session_id="agent-line-mesh",
         turn_id=f"turn-{proposal_id}",
         source_tool_call_ids=(f"call-{proposal_id}",),
         context=authoring_context_from_snapshot(session.snapshot()),
@@ -92,7 +92,7 @@ def test_session_controller_prepares_strict_line_proposal_without_mutation() -> 
     recorded = controller.dispatch(
         "set_authoring_requirements",
         {
-            "turn_id": "turn-controller-line-phase2",
+            "turn_id": "turn-controller-line-mesh",
             "requirements": {
                 "mesh_cell_shape": "line",
                 "mesh_order": 1,

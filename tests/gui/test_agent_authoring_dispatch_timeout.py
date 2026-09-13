@@ -1,6 +1,6 @@
 """Deterministic owner-dispatch timeout and whitelist-consistency tests.
 
-Phase 3 (方案 D) of the planar feature-chain plan: an owner-thread dispatch
+An owner-thread dispatch
 deadline must return a structured ``ToolResult`` instead of leaking an
 uncaught ``TimeoutError``, and the high-timeout whitelist must stay in sync
 with the registered dynamic authoring tools.

@@ -37,7 +37,7 @@ def _beam_lines(
 ) -> tuple[str, ...]:
     return (
         "*Heading",
-        "Phase 3 public facade",
+        "B31 orientation import",
         "*Node",
         *nodes,
         "*Element, type=B31, elset=BEAM",
@@ -238,7 +238,7 @@ def _order_invariance_lines(*, permuted: bool) -> tuple[str, ...]:
         beam_set = "10, 20, 30"
     return (
         "*Heading",
-        "Phase 3 order invariance",
+        "B31 order invariance",
         "*Node",
         *nodes,
         "*Element, type=B31",
@@ -366,7 +366,7 @@ def test_b31_canonical_ordering_does_not_change_non_beam_set_order(
         "truss_unsorted_set.inp",
         (
             "*Heading",
-            "Phase 3 non-B31 ordering boundary",
+            "Non-B31 ordering boundary",
             "*Node",
             "1, 0., 0., 0.",
             "2, 1., 0., 0.",
@@ -430,7 +430,7 @@ def test_normal_targeting_non_b31_is_a_public_unsupported_error(
         "normal_non_b31.inp",
         (
             "*Heading",
-            "Phase 3 non-B31 normal",
+            "Non-B31 normal",
             "*Node",
             "1, 0., 0., 0.",
             "2, 1., 0., 0.",

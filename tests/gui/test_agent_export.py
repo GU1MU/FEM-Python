@@ -1,4 +1,4 @@
-"""Phase 1 GUI 侧测试：导出台账、CSV 导出 handler 与聊天回执卡片。"""
+"""GUI 导出测试：导出台账、CSV 导出 handler 与聊天回执卡片。"""
 
 from __future__ import annotations
 
@@ -365,7 +365,7 @@ def test_controller_gates_and_dispatches_export_tools(tmp_path: Path) -> None:
     session, bridge, controller, facade, workspace = _controller_with_export(
         tmp_path
     )
-    context = ToolExecutionContext("export-test", 0, "phase1")
+    context = ToolExecutionContext("export-test", 0, "export")
 
     bridge.bind_snapshot(session.snapshot(), workspace_selected=False)
     controller.observe_binding(bridge.context)

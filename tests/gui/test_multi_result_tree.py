@@ -23,7 +23,7 @@ from fem_gui.widgets.result_tree import (
     ResultTree,
 )
 from tests.helpers.result_archives import make_result_archive
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 from tests.helpers.result_catalogs import make_result_catalog

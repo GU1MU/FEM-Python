@@ -1,4 +1,4 @@
-"""Phase 0 baseline for the multi-document/multi-result workspace plan.
+"""Performance baseline for the multi-document/multi-result workspace.
 
 The benchmark deliberately lives outside production code.  It builds small
 inline meshes and a temporary result archive, then records the existing
@@ -11,7 +11,7 @@ Examples (from the repository root)::
     python tests/gui/performance/benchmark_multi_document_workspace.py
     python tests/gui/performance/benchmark_multi_document_workspace.py --scenario 5000
     python tests/gui/performance/benchmark_multi_document_workspace.py --scenario archive
-    python tests/gui/performance/benchmark_multi_document_workspace.py --output phase0.json
+    python tests/gui/performance/benchmark_multi_document_workspace.py --output tests/workspace-benchmark.json
 
 The default run covers the empty document, 5,000 and 20,000 element models,
 and a medium temporary result archive.  ``--scenario`` selects exactly one
@@ -151,7 +151,7 @@ def _workspace_temp_directory() -> Iterator[Path]:
     remains temporary because this context removes only its generated path.
     """
 
-    directory = _REPOSITORY_ROOT / f".phase0-{uuid.uuid4().hex}"
+    directory = _REPOSITORY_ROOT / "tests" / f".workspace-{uuid.uuid4().hex}"
     directory.mkdir(mode=0o777)
     try:
         yield directory
@@ -206,7 +206,7 @@ def _plate_model(element_count: int) -> FEMModel:
     if type(element_count) is not int or element_count < 0:
         raise ValueError("element_count must be a non-negative integer")
     if element_count == 0:
-        return FEMModel(Mesh2D([], []), name="phase0-empty")
+        return FEMModel(Mesh2D([], []), name="workspace-empty")
 
     columns = max(int(element_count**0.5), 1)
     rows = (element_count + columns - 1) // columns
@@ -237,7 +237,7 @@ def _plate_model(element_count: int) -> FEMModel:
         )
     return FEMModel(
         Mesh2D(nodes, elements),
-        name=f"phase0-plate-{element_count}",
+        name=f"workspace-plate-{element_count}",
         steps=[AnalysisStep("load")],
     )
 
@@ -528,15 +528,15 @@ def _build_archive_snapshot(element_count: int) -> ResultArchiveSnapshot:
         step,
         np.zeros(model.mesh.num_dofs, dtype=float),
         np.zeros(model.mesh.num_dofs, dtype=float),
-        name="phase0-result",
+        name="workspace-result",
     )
     source = ResultSourceKey(
-        result_id="phase0-result",
-        session_id="phase0-session",
-        artifact_id="phase0-artifact",
+        result_id="workspace-result",
+        session_id="workspace-session",
+        artifact_id="workspace-artifact",
         model_revision=1,
         step_name="load",
-        run_id="phase0-run",
+        run_id="workspace-run",
     )
     provider = build_result_provider(source, result)
     outcome = execute_output_requests(
@@ -561,17 +561,17 @@ def _build_archive_snapshot(element_count: int) -> ResultArchiveSnapshot:
         },
     )
     return ResultArchiveSnapshot(
-        archive_id="phase0-archive",
+        archive_id="workspace-archive",
         created_at=_FIXED_TIME,
-        producer_version="phase0-baseline",
+        producer_version="workspace-baseline",
         origin=ResultArchiveOrigin(
-            model_name="phase0-archive-model",
-            source_basename="phase0-model.fempy",
+            model_name="workspace-archive-model",
+            source_basename="workspace-model.fempy",
             model_fingerprint=fingerprint,
             provenance={"run_id": source.run_id},
         ),
         run=ResultArchiveRun(
-            name="phase0-run",
+            name="workspace-run",
             step_name=source.step_name,
             created_at=_FIXED_TIME,
             output_report=outcome.report,
@@ -606,7 +606,7 @@ def _run_archive_scenario(element_count: int) -> dict[str, Any]:
         return result
 
     with _workspace_temp_directory() as directory:
-        path = directory / "phase0-result.femres"
+        path = directory / "workspace-result.femres"
         encoded = _record_measure(
             timings,
             peaks,
@@ -676,12 +676,11 @@ def run(
     *,
     include_archive: bool = True,
 ) -> dict[str, Any]:
-    """Run selected Phase 0 scenarios and return a JSON-serializable record."""
+    """Run selected workspace scenarios and return a JSON-serializable record."""
 
     if _PROJECT_IMPORT_ERROR is not None:
         return {
-            "schema": "phase-0-multi-document-workspace-baseline-v1",
-            "phase": 0,
+            "schema": "multi-document-workspace-baseline-v1",
             "status": "blocked",
             "blocker": _error_text(_PROJECT_IMPORT_ERROR),
             "runtime": _runtime_info(),
@@ -703,8 +702,7 @@ def run(
             _DEFAULT_ARCHIVE_ELEMENTS
         )
     return {
-        "schema": "phase-0-multi-document-workspace-baseline-v1",
-        "phase": 0,
+        "schema": "multi-document-workspace-baseline-v1",
         "runtime": _runtime_info(),
         "hardware": _hardware_info(),
         "scenarios": scenarios,
@@ -717,7 +715,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--scenario",
         choices=("empty", "5000", "20000", "archive", "all"),
         help=(
-            "run exactly one named scenario; 'all' runs every Phase 0 scenario "
+            "run exactly one named scenario; 'all' runs every workspace scenario "
             "(default when no selector is supplied)"
         ),
     )

@@ -29,7 +29,7 @@ from fem.application.results.inspection import (
     inspect_result_snapshot,
 )
 from fem.post.averaging import NodalAveragingPolicy
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

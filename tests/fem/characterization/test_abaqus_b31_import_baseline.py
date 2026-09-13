@@ -1,4 +1,4 @@
-"""Independent Phase 0 characterization of current Abaqus B31 behavior.
+"""Independent characterization of current Abaqus B31 behavior.
 
 These assertions are migration baselines, not permanent rejection contracts.  All
 inputs are deliberately small and are written from inline text into pytest's
@@ -53,7 +53,7 @@ def _write_deck(
     return path
 
 
-def test_phase1_preprint_is_harmless_and_preserves_source_occurrence(
+def test_preprint_is_harmless_and_preserves_source_occurrence(
     tmp_path: Path,
 ) -> None:
     path = _write_deck(

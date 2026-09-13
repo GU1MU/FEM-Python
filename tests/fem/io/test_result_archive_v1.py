@@ -38,7 +38,7 @@ from fem.io import (
     save_result_archive,
 )
 from fem.post.fields import ResultRegionKey, make_result_region_signature
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,

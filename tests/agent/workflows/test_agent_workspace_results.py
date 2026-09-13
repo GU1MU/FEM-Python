@@ -31,7 +31,7 @@ from fem_gui.agent_authoring import (
 from fem_gui.agent_workspace_catalog import FEMWorkspaceCatalogPort
 from fem_gui.workspace import FEMWorkspace
 from tests.helpers.agent_result_fixtures import make_solved_session
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 from tests.helpers.result_archives import make_result_archive
@@ -320,11 +320,11 @@ def test_cross_session_comparison_fails_stale_on_toctou(
 def test_cross_session_comparison_requires_exact_unit_string(tmp_path) -> None:
     baseline_archive = make_result_archive(
         make_continuum_nodal_semantics_result,
-        "phase6-unit-baseline",
+        "workspace-unit-baseline",
     )
     candidate_archive = make_result_archive(
         make_continuum_nodal_semantics_result,
-        "phase6-unit-candidate",
+        "workspace-unit-candidate",
     )
     candidate_archive = replace(
         candidate_archive,
@@ -368,10 +368,10 @@ def test_active_result_only_document_keeps_global_result_reads_available(
     tmp_path,
 ) -> None:
     result_session = ModelSession()
-    archive = make_result_archive(make_continuum_nodal_semantics_result, "phase6-result")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "workspace-result")
     assert result_session.replace_from_result_archive(
         archive,
-        path=tmp_path / "phase6-result.femres",
+        path=tmp_path / "workspace-result.femres",
     ).accepted
     workspace = FEMWorkspace()
     result_document = workspace.add_result(
@@ -421,7 +421,7 @@ def test_active_result_only_document_keeps_global_result_reads_available(
 
 
 def test_result_only_catalog_regions_and_queries_do_not_materialize(tmp_path) -> None:
-    archive = make_result_archive(make_continuum_nodal_semantics_result, "phase6-regions")
+    archive = make_result_archive(make_continuum_nodal_semantics_result, "workspace-regions")
     topology = archive.model_projection.topology
     archive = replace(
         archive,

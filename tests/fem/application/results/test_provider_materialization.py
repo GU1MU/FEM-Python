@@ -27,7 +27,7 @@ from fem.core.result import ModelResult
 from fem.elements import get_element_capabilities, get_element_kernel
 from fem.post.averaging import NodalAveragingPolicy
 from tests.helpers.mesh_builders import make_hex8_stiffness_mesh
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,

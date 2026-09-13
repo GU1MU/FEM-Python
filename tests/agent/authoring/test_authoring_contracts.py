@@ -64,7 +64,7 @@ def _envelope_values(envelope_id: str) -> dict[str, object]:
         "invalidation_impact": {"mesh": False, "results": False},
         "display_summary": {
             "title": "加入偏心孔板",
-            "summary": "A1 静态提案，不修改当前模型",
+            "summary": "静态提案，不修改当前模型",
         },
     }
 

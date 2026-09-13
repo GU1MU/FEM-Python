@@ -29,7 +29,7 @@ from tests.helpers.model_builders import (
     make_simple_truss_mesh,
     make_static_pull_truss_model,
 )
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

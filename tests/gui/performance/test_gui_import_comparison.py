@@ -1,3 +1,5 @@
+"""GUI import results remain equivalent to the reference implementation."""
+
 from __future__ import annotations
 
 from time import perf_counter
@@ -8,7 +10,7 @@ from fem.boundary.step import boundary_for_step
 from fem.post.vtk import cells as vtk_cells
 from fem_gui.inspection_service import InspectionService
 from fem_gui.visualization.model_adapter import build_model_geometry, pyvista_cell_array
-from test_gui_import_performance import _plate_model
+from tests.gui.performance.test_gui_import_performance import _plate_model
 
 
 def _timed(function):
@@ -55,26 +57,34 @@ def _legacy_viewport_connectivity(geometry):
     return np.asarray(values, dtype=np.int64)
 
 
-def run() -> None:
-    print("elements,pressure,stage,before_s,after_s")
+def test_gui_import_matches_reference(record_property) -> None:
     for element_count, pressure in ((10, False), (1_000, False), (50_000, False), (50_000, True)):
+        prefix = f"{element_count}_{'pressure' if pressure else 'unloaded'}"
         model = _plate_model(element_count, pressure)
-        _, old_geometry = _timed(lambda: _legacy_geometry(model))
+        legacy, old_geometry = _timed(lambda: _legacy_geometry(model))
         geometry, new_geometry = _timed(lambda: build_model_geometry(model))
         service, new_inspection = _timed(lambda: InspectionService(model))
-        _, eager_details = _timed(
+        assert service._element_record_cached.cache_info().currsize == 0
+        details, eager_details = _timed(
             lambda: [service.element_record(element.id) for element in model.mesh.elements]
         )
-        print(f"{element_count},{pressure},geometry,{old_geometry:.6f},{new_geometry:.6f}")
-        _, old_refresh = _timed(lambda: _legacy_viewport_connectivity(geometry))
-        _, new_refresh = _timed(lambda: pyvista_cell_array(geometry))
-        print(f"{element_count},{pressure},viewport_connectivity,{old_refresh:.6f},{new_refresh:.6f}")
-        print(f"{element_count},{pressure},inspection,{new_inspection + eager_details:.6f},{new_inspection:.6f}")
+        old_cells, old_refresh = _timed(lambda: _legacy_viewport_connectivity(geometry))
+        new_cells, new_refresh = _timed(lambda: pyvista_cell_array(geometry))
+        np.testing.assert_array_equal(old_cells, new_cells)
+        np.testing.assert_array_equal(legacy[0], geometry.points)
+        np.testing.assert_array_equal(legacy[1], new_cells)
+        np.testing.assert_array_equal(legacy[2], geometry.cell_types)
+        assert len(details) == element_count
+        for stage, before, after in (
+            ("geometry", old_geometry, new_geometry),
+            ("viewport_connectivity", old_refresh, new_refresh),
+            ("inspection", new_inspection + eager_details, new_inspection),
+        ):
+            record_property(f"{prefix}_{stage}_before_seconds", before)
+            record_property(f"{prefix}_{stage}_after_seconds", after)
         if pressure:
             _, old_boundary = _timed(lambda: _legacy_boundary_scan(model))
-            _, new_boundary = _timed(lambda: boundary_for_step(model, "load"))
-            print(f"{element_count},{pressure},pressure_boundary,{old_boundary:.6f},{new_boundary:.6f}")
-
-
-if __name__ == "__main__":
-    run()
+            boundary, new_boundary = _timed(lambda: boundary_for_step(model, "load"))
+            assert len(boundary.edge_tractions) == len(model.edges["TOP"].edges)
+            record_property(f"{prefix}_pressure_boundary_before_seconds", old_boundary)
+            record_property(f"{prefix}_pressure_boundary_after_seconds", new_boundary)

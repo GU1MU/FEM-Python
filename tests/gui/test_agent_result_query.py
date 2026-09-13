@@ -38,7 +38,7 @@ from fem_gui.agent_authoring import SessionResultQueryPort
 from fem_gui.main_window import FEMMainWindow
 
 from tests.helpers.agent_session_fixtures import make_defined_plate_session
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 
@@ -409,12 +409,12 @@ def test_rejects_stale_source_generation_and_keeps_historical_run_addressable() 
         == "result.query.stale"
     )
 
-    solve_task = session.prepare_solve(STATIC_STEP_NAME, "作业-A7-2")
+    solve_task = session.prepare_solve(STATIC_STEP_NAME, "作业-结果查询-2")
     assert session.begin_run(solve_task.token).accepted
     result = static_linear.solve(
         solve_task.model,
         solve_task.step_name,
-        name="作业-A7-2",
+        name="作业-结果查询-2",
     )
     assert session.accept_run_succeeded(
         solve_task.token,

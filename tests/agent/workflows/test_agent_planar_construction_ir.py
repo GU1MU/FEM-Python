@@ -101,7 +101,7 @@ def test_fake_provider_uses_one_card_and_continues_from_new_snapshot(
         ]
     )
     engine = AgentSessionEngine(
-        tmp_path / "phase3-fake-provider",
+        tmp_path / "planar-construction-fake-provider",
         provider,
         dynamic_tools=dynamic,
     )
@@ -170,7 +170,7 @@ def test_invalid_ir_fails_without_a_card_or_model_change() -> None:
     result = controller.dispatch(
         "prepare_planar_construction_proposal",
         arguments,
-        ToolExecutionContext("phase3-planar", 0, "invalid"),
+        ToolExecutionContext("planar-construction", 0, "invalid"),
     )
 
     assert not result.ok

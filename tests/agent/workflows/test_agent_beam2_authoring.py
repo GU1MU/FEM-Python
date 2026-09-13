@@ -304,7 +304,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
     boundary = create_definition_change(
         patch_id="patch-fixed",
         proposal_id="proposal-fixed",
-        agent_session_id="agent-phase4",
+        agent_session_id="agent-beam-authoring",
         turn_id="turn-fixed",
         source_tool_call_ids=("call-fixed",),
         context=authoring_context_from_snapshot(snapshot),
@@ -333,7 +333,7 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
     torque = create_definition_change(
         patch_id="patch-torque",
         proposal_id="proposal-torque",
-        agent_session_id="agent-phase4",
+        agent_session_id="agent-beam-authoring",
         turn_id="turn-torque",
         source_tool_call_ids=("call-torque",),
         context=authoring_context_from_snapshot(snapshot),

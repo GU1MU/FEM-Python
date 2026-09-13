@@ -27,7 +27,7 @@ from fem_gui.visualization.model_adapter import build_result_archive_model_view
 from fem_gui.viewport_image_export_dialog import ViewportImageExportOptions
 from fem_gui.task_controller import BackgroundTaskState
 from tests.helpers.result_archives import make_result_archive
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_beam_field_characterization_result,
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,

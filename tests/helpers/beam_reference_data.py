@@ -1,6 +1,6 @@
 """Frozen beam reference data migrated from existing Abaqus comparison tests.
 
-Values were already recorded in test_abaqus_b31_phase2.py; this move does not
+Values are frozen from Abaqus comparison runs; helper extraction does not
 regenerate them or change their source model or comparison tolerances.
 """
 

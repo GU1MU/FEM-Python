@@ -7,12 +7,7 @@ from fem.core.mesh import Element2D, Mesh2D, Node2D
 from fem.post import vtk
 
 
-FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "helpers" / "fixtures" / "phase8"
-
-
-def _write_utf8_lf(path: Path, text: str) -> Path:
-    path.write_bytes(text.encode("utf-8"))
-    return path
+FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "helpers" / "fixtures" / "vtk"
 
 
 def _parse_legacy_vtk_semantics(path: Path) -> dict[str, object]:
@@ -120,7 +115,7 @@ def _parse_legacy_vtk_semantics(path: Path) -> dict[str, object]:
     }
 
 
-def test_legacy_vtk_from_csv_semantics_match_golden(tmp_path: Path) -> None:
+def test_legacy_vtk_csv_roundtrip_preserves_mesh_and_result_fields(tmp_path: Path) -> None:
     mesh = Mesh2D(
         nodes=[
             Node2D(1, 0.0, 0.0),
@@ -134,9 +129,8 @@ def test_legacy_vtk_from_csv_semantics_match_golden(tmp_path: Path) -> None:
             Element2D(2, [3, 4, 5], "Tri3"),
         ],
     )
-    displacement_path = _write_utf8_lf(
-        tmp_path / "displacement.csv",
-        (
+    csv_inputs = {
+        "displacement.csv": (
             "node_id,x,y,ux,uy\n"
             "1,0,0,0,0\n"
             "2,1,0,1,0\n"
@@ -144,14 +138,8 @@ def test_legacy_vtk_from_csv_semantics_match_golden(tmp_path: Path) -> None:
             "4,-1,0,-1,0\n"
             "5,0,-1,0,-1\n"
         ),
-    )
-    element_path = _write_utf8_lf(
-        tmp_path / "element.csv",
-        "elem_id,sig_x,mises\n1,100,111\n2,200,222\n",
-    )
-    nodal_path = _write_utf8_lf(
-        tmp_path / "nodal.csv",
-        (
+        "element.csv": "elem_id,sig_x,mises\n1,100,111\n2,200,222\n",
+        "nodal.csv": (
             "node_id,x,y,elem_id,local_node,averaged,sig_x,mises\n"
             "1,0,0,1,1,false,0,0\n"
             "2,1,0,1,2,false,1,1\n"
@@ -160,19 +148,21 @@ def test_legacy_vtk_from_csv_semantics_match_golden(tmp_path: Path) -> None:
             "4,-1,0,2,2,false,4,4\n"
             "5,0,-1,2,3,false,5,5\n"
         ),
-    )
+    }
+    for filename, content in csv_inputs.items():
+        (tmp_path / filename).write_text(content, encoding="utf-8", newline="\n")
     vtk_path = tmp_path / "legacy-roundtrip.vtk"
 
     vtk.export.from_csv(
         mesh,
-        displacement_path,
-        element_path,
+        tmp_path / "displacement.csv",
+        tmp_path / "element.csv",
         vtk_path,
-        nodal_path,
+        tmp_path / "nodal.csv",
     )
 
     expected = json.loads(
-        (FIXTURE_ROOT / "legacy_vtk_csv_roundtrip_golden.json").read_text(
+        (FIXTURE_ROOT / "legacy_csv_roundtrip_golden.json").read_text(
             encoding="utf-8"
         )
     )

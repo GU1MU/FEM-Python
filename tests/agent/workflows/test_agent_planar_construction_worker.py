@@ -38,7 +38,7 @@ def _dispatch(controller, construction: dict[str, object], *, key: str):
             "construction": construction,
             "output": "planar",
         },
-        ToolExecutionContext("phase3-worker", 0, key),
+        ToolExecutionContext("planar-construction-worker", 0, key),
     )
 
 

@@ -1,4 +1,4 @@
-"""Focused, data-free checks for the B31 Phase 0 validation oracle."""
+"""Focused, data-free checks for the B31 snapshot and ODB comparison oracle."""
 
 from __future__ import annotations
 
@@ -44,12 +44,12 @@ def _selection_args(**overrides):
 
 
 def _write_cantilever(tmp_path: Path) -> Path:
-    path = tmp_path / "phase0_minimal_b31.inp"
+    path = tmp_path / "minimal_b31.inp"
     path.write_text(
         "\n".join(
             (
                 "*Heading",
-                "Independent Phase 0 cantilever",
+                "Independent B31 cantilever",
                 "*Node",
                 "1, 0.0, 0.0, 0.0",
                 "2, 1.0, 0.0, 0.0",

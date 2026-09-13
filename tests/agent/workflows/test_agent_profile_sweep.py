@@ -142,7 +142,7 @@ def test_dedicated_path_prepare_preserves_atomic_proposal(monkeypatch) -> None:
             },
             "frame_strategy": "fixed",
         },
-        ToolExecutionContext("phase3-dedicated", before.session_revision, "path"),
+        ToolExecutionContext("profile-sweep-dedicated", before.session_revision, "path"),
     )
     assert prepared.ok, prepared.summary
     assert session.snapshot() == before
@@ -175,7 +175,7 @@ def test_agent_path_proposal_is_atomic_revision_bound() -> None:
             },
             "frame_strategy": "transport",
         },
-        ToolExecutionContext("phase3", 0, "path-sweep"),
+        ToolExecutionContext("profile-sweep", 0, "path-sweep"),
     )
 
     assert prepared.ok, prepared.summary
@@ -204,7 +204,7 @@ def test_stale_path_proposal_does_not_mutate() -> None:
             "axis": "x",
             "angle_degrees": 180.0,
         },
-        ToolExecutionContext("phase3", 0, "revolve"),
+        ToolExecutionContext("profile-sweep", 0, "revolve"),
     )
     session.rename_native_part("P1", "Changed")
     stale_state = session.snapshot()
@@ -237,7 +237,7 @@ def test_preflight_failure_and_gui_reject_are_atomic() -> None:
             },
             "frame_strategy": "fixed",
         },
-        ToolExecutionContext("phase3", 0, "invalid-start"),
+        ToolExecutionContext("profile-sweep", 0, "invalid-start"),
     )
 
     assert not failed.ok
@@ -252,7 +252,7 @@ def test_preflight_failure_and_gui_reject_are_atomic() -> None:
             "axis": "x",
             "angle_degrees": 180.0,
         },
-        ToolExecutionContext("phase3", 0, "reject-revolve"),
+        ToolExecutionContext("profile-sweep", 0, "reject-revolve"),
     )
     receipt = bridge.reject_from_gui_control(prepared.data["proposal_id"])
 

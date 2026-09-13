@@ -35,7 +35,7 @@ def _create_step(controller: object, session: object, name: str) -> None:
         session,
         "apply_model_definition",
         {"action": "create_static_step", "parameters": {"name": name}},
-        "phase8-step",
+        "distributed-load-step",
     )
     assert result.ok, result.to_json()
 

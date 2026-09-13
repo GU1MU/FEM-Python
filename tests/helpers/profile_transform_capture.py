@@ -1,6 +1,6 @@
 from tests.helpers.agent_provider_fixtures import text_response
 
-"""A privacy-safe Provider request capture for Phase 0 evidence.
+"""A privacy-safe Provider request capture for profile transform contract tests.
 
 Unlike ``FakeProvider``, this helper intentionally retains no messages or
 tool objects.  Each call keeps only redacted system-context strings, the

@@ -33,7 +33,7 @@ def _deck(
 ) -> tuple[str, ...]:
     return (
         "*Heading",
-        "Phase 4 public facade",
+        "B31 normal resolution",
         "*Node",
         *nodes,
         "*Element, type=B31, elset=BEAMS",
@@ -115,7 +115,7 @@ def _covariance_lines(
 ) -> tuple[str, ...]:
     return (
         "*Heading",
-        "Phase 4 covariance",
+        "B31 normal covariance",
         "*Node",
         "1, 0., 0., 0.",
         "2, 2., 0., 0.",

@@ -257,7 +257,7 @@ def test_main_window_open_appends_two_models_and_duplicate_path_activates(
     dispose_gui_widget,
 ):
     _application()
-    paths = (Path("C:/phase2-a.fempy"), Path("C:/phase2-b.fempy"))
+    paths = (Path("C:/multi-model-a.fempy"), Path("C:/multi-model-b.fempy"))
     loaded = {
         paths[0]: _loaded_project(paths[0], "Model-A"),
         paths[1]: _loaded_project(paths[1], "Model-B"),
@@ -299,7 +299,7 @@ def test_main_window_failed_open_does_not_add_root_or_change_active(
     dispose_gui_widget,
 ):
     _application()
-    path = Path("C:/phase2-broken.fempy")
+    path = Path("C:/multi-model-broken.fempy")
 
     def decode(_path):
         raise ValueError("broken project")
@@ -851,7 +851,7 @@ def test_active_artifact_delta_installs_tree_once_without_extra_refresh(
     model = make_static_pull_truss_model()
     geometry = build_model_geometry(model)
     try:
-        task = window.session.prepare_import(Path("phase2-first.inp"))
+        task = window.session.prepare_import(Path("multi-model-first.inp"))
         first_delta = window.session.accept_imported_model(
             task.token,
             model,
@@ -862,7 +862,7 @@ def test_active_artifact_delta_installs_tree_once_without_extra_refresh(
         )
 
         replacement_task = window.session.prepare_import(
-            Path("phase2-second.inp")
+            Path("multi-model-second.inp")
         )
         replacement_delta = window.session.accept_imported_model(
             replacement_task.token,

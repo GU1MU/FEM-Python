@@ -144,7 +144,7 @@ def test_proposal_summary_exposes_feature_contract_and_invalidation() -> None:
     units = UnitContextSummary("mm", "N", "MPa")
 
     proposal = create_geometry_proposal(
-        proposal_id="phase1-summary",
+        proposal_id="native-feature-summary",
         agent_session_id="agent",
         turn_id="turn",
         source_tool_call_ids=("call",),

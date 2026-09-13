@@ -21,7 +21,7 @@ def _refusal() -> ProviderResponse:
     return text_response("拉伸不受支持；必须先生成网格。")
 
 
-def _session_controller(recipe, *, name: str = "Phase 6 native"):
+def _session_controller(recipe, *, name: str = "Native profile transform"):
     session = ModelSession()
     session.create_native_project_with_first_part(
         name,
@@ -83,7 +83,7 @@ def test_fake_provider_guard_prepare_accept_continuation_uses_new_snapshot(
         ]
     )
     engine = AgentSessionEngine(
-        tmp_path / "phase6-fake-provider",
+        tmp_path / "profile-transform-fake-provider",
         provider,
         dynamic_tools=dynamic,
     )

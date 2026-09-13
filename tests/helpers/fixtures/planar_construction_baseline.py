@@ -1,3 +1,5 @@
+"""H-slot plate construction and independent boundary expectations."""
+
 from __future__ import annotations
 
 

@@ -3496,7 +3496,7 @@ class AgentChatDrawer(_BoundaryFrame):
             self._show_preview_notice(
                 receipt.message
                 or (
-                    "Proposal accepted through GUI controls; A1 Fake Port did not modify the model"
+                    "Proposal accepted through GUI controls; Fake Port did not modify the model"
                     if receipt.state.value == "accepted"
                     else (
                         (

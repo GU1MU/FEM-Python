@@ -3,8 +3,8 @@
 Freezes the golden facts, the structural recipe fingerprint and the
 whole-call instrumented counts of the reconstructed
 ``plate_300x100_slot_shu`` IR (see tests/helpers/fixtures/planar_feature_chain_baseline.py)
-so the incremental-compilation plan phases can prove semantic equivalence.
-After Phase 2 the chain build is O(N) and IS the whole call (7 cuts / 7
+to verify semantic equivalence across compiler changes.
+The incremental chain build is O(N) and covers the whole call (7 cuts / 7
 lineage proofs / 14 evidence captures); the final proof reuses the last-step
 live carrier instead of replaying the recipe, giving 7/7/14 for the whole
 ``compile_planar_feature_recipe`` call.  No timing assertions: CI wall clocks
@@ -191,7 +191,7 @@ def test_instrumented_counts_match_incremental_window(real_gmsh) -> None:
     run = _feature_run()
     counts = run["counts"]
 
-    # Phase-2 whole-call window for the N=7 chain: the call IS the chain
+    # Whole-call window for the N=7 chain: the call IS the chain
     # build (7 incremental cuts / 7 lineage proofs / 14 evidence captures =
     # the plan's O(N) targets 7/7/<=14).  The final proof reuses the last-step
     # live carrier, so it adds no replayed cuts/proofs (evidence = 2x lineage).
@@ -200,7 +200,7 @@ def test_instrumented_counts_match_incremental_window(real_gmsh) -> None:
     assert counts["evidence"] == BASELINE_EVIDENCE_COUNT
     assert counts["cut"] == BASELINE_CHAINED_CUT_COUNT
 
-    # Phase 2 opens only the shared chain model for the feature chain; the
+    # Compilation opens only the shared chain model for the feature chain; the
     # final proof reuses the live carrier instead of opening a proof model.
     # (Flatten sub-compilations open their own planar-construction models and
     # are deliberately not counted here.)

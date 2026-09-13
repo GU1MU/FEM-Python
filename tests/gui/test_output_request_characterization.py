@@ -8,11 +8,11 @@ from fem_gui.analysis_definition_dialogs import (
 )
 
 
-def test_existing_output_view_acceptance_preserves_exact_dto_phase8_oracle(
+def test_output_view_acceptance_preserves_exact_dto(
     monkeypatch: pytest.MonkeyPatch,
     gui_application,
 ) -> None:
-    # Superseded by the Phase 8 typed read-only view contract: accepting a
+    # The typed read-only view contract: accepting a
     # viewer must not rebuild, normalize, or replace the saved request.
     application = gui_application
     original = OutputRequest(

@@ -30,13 +30,13 @@ from tests.helpers.agent_provider_fixtures import text_response
 def _context(revision: int = 4) -> AuthoringContext:
     return AuthoringContext(
         binding=LocalModelBinding(
-            "document:phase1",
-            "native-phase1",
+            "document:profile-transform",
+            "native-profile-transform",
             revision,
             "native",
             True,
         ),
-        model_name="phase1-model",
+        model_name="profile-transform-model",
         active_part_id="part-profile",
         parts=(
             PartSummary(
@@ -67,8 +67,8 @@ def test_snapshot_binds_revision_and_preserves_owner_cache() -> None:
     assert snapshot.available
     assert snapshot.source_kind == "native"
     assert snapshot.workflow_stage == controller.stage.value
-    assert snapshot.document_id == "document:phase1"
-    assert snapshot.session_id == "native-phase1"
+    assert snapshot.document_id == "document:profile-transform"
+    assert snapshot.session_id == "native-profile-transform"
     assert snapshot.session_revision == 4
     assert snapshot.active_part_id == "part-profile"
     assert snapshot.active_part_dimension == 2
@@ -134,8 +134,8 @@ def test_snapshot_is_bounded_and_deterministically_clipped() -> None:
         available=True,
         source_kind="native",
         workflow_stage="geometry_ready",
-        document_id="document:phase1",
-        session_id="native-phase1",
+        document_id="document:profile-transform",
+        session_id="native-profile-transform",
         session_revision=4,
         active_part_id="part-profile",
         active_part_dimension=2,
@@ -151,8 +151,8 @@ def test_snapshot_is_bounded_and_deterministically_clipped() -> None:
         available=True,
         source_kind="native",
         workflow_stage="geometry_ready",
-        document_id="document:phase1",
-        session_id="native-phase1",
+        document_id="document:profile-transform",
+        session_id="native-profile-transform",
         session_revision=4,
         active_part_id="part-profile",
         active_part_dimension=2,
@@ -434,6 +434,6 @@ def test_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
         next(item for item in request.tools if item.name == dynamic_names[0])
     )
     encoded = json.dumps(audit, ensure_ascii=False)
-    assert "phase1-model" not in encoded
-    assert "document:phase1" not in encoded
+    assert "profile-transform-model" not in encoded
+    assert "document:profile-transform" not in encoded
     assert "Current local state" not in encoded

@@ -32,9 +32,9 @@ from fem_agent.result_authoring import (
 
 
 def _second_success(session: ModelSession):
-    task = session.prepare_solve(STATIC_STEP_NAME, "作业-stage1-2")
+    task = session.prepare_solve(STATIC_STEP_NAME, "作业-运行目录")
     assert session.begin_run(task.token).accepted
-    result = static_linear.solve(task.model, task.step_name, name="作业-stage1-2")
+    result = static_linear.solve(task.model, task.step_name, name="作业-运行目录")
     assert session.accept_run_succeeded(
         task.token,
         build_solve_result_bundle(task, result),

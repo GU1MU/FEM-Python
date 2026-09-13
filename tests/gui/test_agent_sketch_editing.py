@@ -330,7 +330,7 @@ def test_invalid_freeform_profile_returns_actionable_diagnostics_atomically(
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            f"phase10-invalid-{expected_code.replace('.', '-')}",
+            f"sketch-edit-invalid-{expected_code.replace('.', '-')}",
         ),
     )
 
@@ -366,7 +366,7 @@ def test_freeform_edit_creates_one_nonconvex_cutout() -> None:
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-freeform-read-before",
+            "sketch-edit-freeform-read-before",
         ),
     )
     assert context.ok
@@ -390,7 +390,7 @@ def test_freeform_edit_creates_one_nonconvex_cutout() -> None:
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-freeform-prepare",
+            "sketch-edit-freeform-prepare",
         ),
     )
     assert prepared.ok, prepared.summary
@@ -403,7 +403,7 @@ def test_freeform_edit_creates_one_nonconvex_cutout() -> None:
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-freeform-read-after",
+            "sketch-edit-freeform-read-after",
         ),
     )
 
@@ -447,7 +447,7 @@ def test_path_slot_edit_builds_one_connected_s_cutout_and_enforces_topology() ->
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-path-slot-prepare",
+            "sketch-edit-path-slot-prepare",
         ),
     )
 
@@ -478,7 +478,7 @@ def test_path_slot_edit_builds_one_connected_s_cutout_and_enforces_topology() ->
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-path-slot-outside",
+            "sketch-edit-path-slot-outside",
         ),
     )
     assert not rejected.ok
@@ -562,7 +562,7 @@ def test_path_slot_adds_s_beside_existing_h_cutout_and_preserves_four_holes() ->
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-h-plus-s-prepare",
+            "sketch-edit-h-plus-s-prepare",
         ),
     )
 
@@ -620,7 +620,7 @@ def test_planar_fuse_and_extrusion_append_native_features_in_order() -> None:
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-planar-fuse",
+            "sketch-edit-planar-fuse",
         ),
     )
     assert fused.ok, fused.summary
@@ -651,7 +651,7 @@ def test_planar_fuse_and_extrusion_append_native_features_in_order() -> None:
         ToolExecutionContext(
             session.session_id,
             session.session_revision,
-            "phase10-feature-extrusion",
+            "sketch-edit-feature-extrusion",
         ),
     )
     assert extruded.ok, extruded.summary

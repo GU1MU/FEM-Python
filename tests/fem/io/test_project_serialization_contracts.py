@@ -26,10 +26,10 @@ from fem.io.project_v1 import (
 )
 
 
-FIXTURES = Path(__file__).parents[2] / "helpers" / "fixtures" / "femproj" / "v1"
+FIXTURES = Path(__file__).parents[2] / "helpers" / "fixtures" / "femproj"
 
 
-def test_static_minimal_v1_fixture_uses_legacy_defaults() -> None:
+def test_minimal_project_fixture_uses_legacy_defaults() -> None:
     path = FIXTURES / "minimal_rectangle.femproj"
 
     snapshot = load_project_v1(path)
@@ -41,7 +41,7 @@ def test_static_minimal_v1_fixture_uses_legacy_defaults() -> None:
     assert snapshot.named_regions == ()
 
 
-def test_static_full_v1_fixture_is_payload_and_file_bytes_golden(
+def test_canonical_project_roundtrip_preserves_payload_and_exact_bytes(
     tmp_path,
 ) -> None:
     fixture = FIXTURES / "full_rectangle_canonical.femproj"
@@ -96,19 +96,19 @@ def test_static_full_v1_fixture_is_payload_and_file_bytes_golden(
         ),
     ],
 )
-def test_v1_loader_uses_shared_strict_parser(document, message) -> None:
+def test_project_loader_uses_shared_strict_parser(document, message) -> None:
     with pytest.raises(ProjectV1DecodeError, match=message):
         loads_project_v1(document)
 
 
-def test_v1_errors_preserve_legacy_and_generic_catch_contracts() -> None:
+def test_project_errors_preserve_legacy_and_generic_catch_contracts() -> None:
     assert issubclass(ProjectV1DecodeError, ProjectV1Error)
     assert issubclass(ProjectV1DecodeError, ProjectDecodeError)
     assert issubclass(ProjectV1EncodeError, ProjectV1Error)
     assert issubclass(ProjectV1EncodeError, ProjectEncodeError)
 
 
-def test_v1_missing_output_variables_migrates_to_empty_owned_tuple() -> None:
+def test_project_missing_output_variables_migrates_to_empty_owned_tuple() -> None:
     payload = loads_json_strict(
         (FIXTURES / "full_rectangle_canonical.femproj").read_bytes()
     )
@@ -121,7 +121,7 @@ def test_v1_missing_output_variables_migrates_to_empty_owned_tuple() -> None:
     assert request.source_evidence is None
 
 
-def test_v1_writer_rejects_source_evidence_without_touching_target(
+def test_project_writer_rejects_source_evidence_without_touching_target(
     tmp_path,
 ) -> None:
     snapshot = load_project_v1(FIXTURES / "full_rectangle_canonical.femproj")

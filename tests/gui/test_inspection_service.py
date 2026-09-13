@@ -40,7 +40,7 @@ from fem.core.model import (
 )
 from fem.post.averaging import NodalAveragingPolicy
 from fem_gui.inspection_service import InspectionService
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

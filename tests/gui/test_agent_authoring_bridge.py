@@ -104,7 +104,7 @@ def _proposal(
         },
         display_summary={
             "title": "加入偏心孔板",
-            "summary": "A1 静态提案，不修改真实 ModelSession",
+            "summary": "静态提案，不修改真实 ModelSession",
         },
     )
 
@@ -409,7 +409,7 @@ def _proposal_payload(proposal_id: str, proposal_hash: str) -> dict[str, object]
         "proposal_kind": "geometry",
         "title": "加入偏心孔板",
         "summary": "本地生成的有界摘要",
-        "impact": "新增一个部件；A1 不修改模型",
+        "impact": "新增一个部件；提案不修改模型",
         "confirm_label": "加入模型",
         "target_document_id": "document:session-1",
         "target_session_id": "session-1",
@@ -607,7 +607,7 @@ def test_minimal_gui_card_binds_and_only_buttons_authorize(gui_application) -> N
         "agentChatProposalAcceptButton",
     )
     assert accept is not None and not accept.isEnabled()
-    assert "A1 Fake Port" in drawer.composer_hint.text()
+    assert "Fake Port" in drawer.composer_hint.text()
     drawer.close()
 
 

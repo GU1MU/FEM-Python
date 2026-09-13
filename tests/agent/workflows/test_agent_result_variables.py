@@ -121,7 +121,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
                     "confirmed": True,
                 },
             },
-            f"phase9-{target}",
+            f"result-variables-{target}",
         )
         assert outcome.ok, outcome.to_json()
 
@@ -139,7 +139,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
                 "confirmed": True,
             },
         },
-        "phase9-edit-node-output",
+        "result-variables-edit-node-output",
     )
     assert edited.ok, edited.to_json()
     revision = beam.session_revision
@@ -157,7 +157,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
                 "confirmed": True,
             },
         },
-        "phase9-edit-wrong-unit",
+        "result-variables-edit-wrong-unit",
     )
     assert not rejected_edit.ok
     assert beam.session_revision == revision
@@ -171,7 +171,7 @@ def test_plate_result_requests_reject_unsupported_variables() -> None:
         plate,
         "apply_model_definition",
         {"action": "create_static_step", "parameters": {"name": "分析步-静力"}},
-        "phase9-plate-step",
+        "result-variables-plate-step",
     )
     assert step.ok
     revision = plate.session_revision
@@ -191,7 +191,7 @@ def test_plate_result_requests_reject_unsupported_variables() -> None:
                     "confirmed": True,
                 },
             },
-            f"phase9-reject-{variable.casefold()}",
+            f"result-variables-reject-{variable.casefold()}",
         )
         assert not rejected.ok
         assert plate.session_revision == revision
@@ -218,7 +218,7 @@ def test_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
                 "units": units,
                 "confirmed": True,
             },
-            f"phase9-solve-{target}",
+            f"result-variables-solve-{target}",
         )
     solve_authoring_session(controller, bridge, session)
 
@@ -266,7 +266,7 @@ def test_truss_le_catalog_and_centroid_query() -> None:
             "units": ["1"],
             "confirmed": True,
         },
-        "phase9-le",
+        "result-variables-le",
     )
     solve_authoring_session(controller, bridge, session)
 

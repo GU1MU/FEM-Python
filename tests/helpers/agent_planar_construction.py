@@ -12,7 +12,7 @@ from fem_gui.agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 
-from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
+from tests.helpers.fixtures.planar_construction_baseline import EXPECTED_H_CONSTRUCTION
 
 
 def make_planar_authoring_controller(session: ModelSession):
@@ -65,9 +65,9 @@ def build_rectangle_arguments() -> dict[str, object]:
     }
 
 
-def dispatch_planar_construction(controller, *, key: str = "phase3", arguments=None):
+def dispatch_planar_construction(controller, *, key: str = "prepare-planar-construction", arguments=None):
     return controller.dispatch(
         "prepare_planar_construction_proposal",
         build_planar_arguments() if arguments is None else arguments,
-        ToolExecutionContext("phase3-planar", 0, key),
+        ToolExecutionContext("planar-construction", 0, key),
     )

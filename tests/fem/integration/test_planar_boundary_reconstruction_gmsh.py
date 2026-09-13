@@ -15,7 +15,7 @@ from fem.geometry import (
     SketchPoint,
     analyze_sketch_profiles,
 )
-from tests.helpers.fixtures.planar_construction_phase0 import (
+from tests.helpers.fixtures.planar_construction_baseline import (
     EXPECTED_PLATE_PROFILE_ROLES,
     H_SLOT_AREA,
     H_SLOT_BOUNDARY_LINE_COUNT,
@@ -176,20 +176,20 @@ def _h_loop(real_gmsh, model_name: str) -> tuple[Point2D, ...]:
 
 
 @pytest.mark.gmsh
-def test_phase0_h_boundary_materializes_and_recompiles_equivalently(
+def test_h_boundary_materializes_and_recompiles_equivalently(
     real_gmsh,
 ) -> None:
     session = ModelSession()
     initial_snapshot = session.snapshot()
-    first_loop = _h_loop(real_gmsh, "phase0-h-boundary-first")
-    second_loop = _h_loop(real_gmsh, "phase0-h-boundary-second")
+    first_loop = _h_loop(real_gmsh, "boundary-reconstruction-h-boundary-first")
+    second_loop = _h_loop(real_gmsh, "boundary-reconstruction-h-boundary-second")
     assert first_loop == second_loop
 
     h_sketch = _line_loop_sketch("H region", (first_loop,))
     h_analysis = analyze_sketch_profiles(h_sketch)
     assert h_analysis.valid
     assert [profile.role for profile in h_analysis.profiles] == ["outer"]
-    with geometry.model("phase0-h-recompile", dimension=2) as cad:
+    with geometry.model("boundary-reconstruction-h-recompile", dimension=2) as cad:
         compiled_h = compile_recipe(cad, h_sketch)
         assert len(compiled_h.domain) == 1
         assert cad.area(compiled_h.domain[0]) == pytest.approx(H_SLOT_AREA)
@@ -203,7 +203,7 @@ def test_phase0_h_boundary_materializes_and_recompiles_equivalently(
         EXPECTED_PLATE_PROFILE_ROLES
     )
 
-    with geometry.model("phase0-h-cut-native", dimension=2) as cad:
+    with geometry.model("boundary-reconstruction-h-cut-native", dimension=2) as cad:
         plate = cad.rectangle(0.0, 0.0, 300.0, 100.0)
         h_surface = _h_surface(cad)
         native_cut = cad.cut((plate,), (h_surface,)).of_dimension(2)
@@ -212,7 +212,7 @@ def test_phase0_h_boundary_materializes_and_recompiles_equivalently(
         native_boundary_count = len(cad.boundary(native_cut))
         assert _loop_count(real_gmsh, native_cut[0].tag) == 2
 
-    with geometry.model("phase0-h-cut-recompile", dimension=2) as cad:
+    with geometry.model("boundary-reconstruction-h-cut-recompile", dimension=2) as cad:
         compiled = compile_recipe(cad, plate_sketch)
         assert len(compiled.domain) == 1
         assert cad.area(compiled.domain[0]) == pytest.approx(native_area)
@@ -247,10 +247,10 @@ def _circle_center_from_samples(samples) -> Point2D:
 
 
 @pytest.mark.gmsh
-def test_phase0_circle_boolean_recovers_full_circle_arc_and_line_parameters(
+def test_circle_boolean_recovers_full_circle_arc_and_line_parameters(
     real_gmsh,
 ) -> None:
-    with geometry.model("phase0-contained-circle", dimension=2) as cad:
+    with geometry.model("boundary-reconstruction-contained-circle", dimension=2) as cad:
         plate = cad.rectangle(0.0, 0.0, 4.0, 3.0)
         disk = cad.disk(2.0, 1.5, 0.5)
         surface = cad.cut((plate,), (disk,)).of_dimension(2)[0]
@@ -274,7 +274,7 @@ def test_phase0_circle_boolean_recovers_full_circle_arc_and_line_parameters(
         )
         assert cad.length(cad.entity(1, full_circle)) == pytest.approx(math.pi)
 
-    with geometry.model("phase0-circle-arc", dimension=2) as cad:
+    with geometry.model("boundary-reconstruction-circle-arc", dimension=2) as cad:
         rectangle = cad.rectangle(0.0, 0.0, 3.0, 2.0)
         disk = cad.disk(3.0, 1.0, 0.6)
         surface = cad.fuse((rectangle,), (disk,)).of_dimension(2)[0]

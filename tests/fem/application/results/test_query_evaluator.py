@@ -22,7 +22,7 @@ from fem.post.fields import (
     ResultRegionKey,
     make_result_region_signature,
 )
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

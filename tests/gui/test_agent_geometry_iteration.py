@@ -235,7 +235,7 @@ def test_main_window_geometry_edit_uses_in_place_then_automatic_branch(gui_appli
     )
     in_place = create_geometry_edit_proposal(
         proposal_id="proposal-in-place",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-in-place",
         source_tool_call_ids=("call-in-place",),
         context=authoring_context_from_snapshot(
@@ -273,7 +273,7 @@ def test_main_window_geometry_edit_uses_in_place_then_automatic_branch(gui_appli
     )
     branch = create_geometry_edit_proposal(
         proposal_id="proposal-branch",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-branch",
         source_tool_call_ids=("call-branch",),
         context=authoring_context_from_snapshot(
@@ -336,7 +336,7 @@ def test_branch_preserves_source_result_without_result_loss_confirmation(gui_app
     )
     proposal = create_geometry_edit_proposal(
         proposal_id="proposal-result-branch",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-result-branch",
         source_tool_call_ids=("call-result-branch",),
         context=authoring_context_from_snapshot(
@@ -396,7 +396,7 @@ def test_branch_activation_failure_restores_workspace_window_and_agent(
     )
     proposal = create_geometry_edit_proposal(
         proposal_id="proposal-activation-failure",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-activation-failure",
         source_tool_call_ids=("call-activation-failure",),
         context=authoring_context_from_snapshot(
@@ -449,7 +449,7 @@ def test_latest_iteration_report_is_owned_and_document_bound() -> None:
     )
     proposal = create_geometry_edit_proposal(
         proposal_id="proposal-report-ownership",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-report-ownership",
         source_tool_call_ids=("call-report-ownership",),
         context=authoring_context_from_snapshot(session.snapshot(), document_id=1),
@@ -538,7 +538,7 @@ def test_partial_agent_port_bind_failure_restores_every_binding(
     )
     proposal = create_geometry_edit_proposal(
         proposal_id="proposal-partial-bind-failure",
-        agent_session_id="agent-phase5",
+        agent_session_id="agent-geometry-iteration",
         turn_id="turn-partial-bind-failure",
         source_tool_call_ids=("call-partial-bind-failure",),
         context=authoring_context_from_snapshot(

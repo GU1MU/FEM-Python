@@ -18,7 +18,7 @@ from fem.application.results import (
 from fem.application.revisions import SolveTaskSnapshot, TaskToken
 from fem.core.model import AnalysisStep, OutputRequest
 from fem.core.result import ModelResult
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
     make_truss_field_characterization_result,
 )

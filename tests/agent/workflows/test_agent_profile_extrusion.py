@@ -82,7 +82,7 @@ def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
     context = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": "P1"},
-        ToolExecutionContext("agent-phase3", before.session_revision, "read"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "read"),
     )
     assert context.ok
     assert context.data["material_profile_count"] == 1
@@ -96,7 +96,7 @@ def test_dedicated_extrusion_reads_unique_profile_and_accepts_atomically(
             "profile_selection": "unique_material_profile",
             "height": 2.5,
         },
-        ToolExecutionContext("agent-phase3", before.session_revision, "prepare"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "prepare"),
     )
     assert prepared.ok, prepared.summary
     assert session.snapshot() == before
@@ -124,7 +124,7 @@ def test_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
     context = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": "P1"},
-        ToolExecutionContext("agent-phase3", before.session_revision, "read"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "read"),
     )
     source = context.data["profiles"][0]["face_id"]
 
@@ -136,7 +136,7 @@ def test_explicit_profile_ids_require_same_revision(monkeypatch) -> None:
             "context_revision": before.session_revision,
             "height": 2.5,
         },
-        ToolExecutionContext("agent-phase3", before.session_revision, "prepare"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "prepare"),
     )
     assert prepared.ok, prepared.summary
     assert session.snapshot() == before
@@ -158,7 +158,7 @@ def test_explicit_profile_ids_without_revision_are_rejected(monkeypatch) -> None
     context = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": "P1"},
-        ToolExecutionContext("agent-phase3", before.session_revision, "read"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "read"),
     )
     source = context.data["profiles"][0]["face_id"]
     rejected = controller.dispatch(
@@ -168,7 +168,7 @@ def test_explicit_profile_ids_without_revision_are_rejected(monkeypatch) -> None
             "profile_selection": [source],
             "height": 2.5,
         },
-        ToolExecutionContext("agent-phase3", before.session_revision, "prepare"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "prepare"),
     )
     assert not rejected.ok
     assert rejected.data["diagnostic"]["code"] == "profile-transform.stale-context"
@@ -187,7 +187,7 @@ def test_explicit_profile_ids_with_stale_revision_are_rejected(monkeypatch) -> N
     context = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": "P1"},
-        ToolExecutionContext("agent-phase3", before.session_revision, "read"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "read"),
     )
     source = context.data["profiles"][0]["face_id"]
     session.add_native_part(RectangleGeometry("Revision bump", 1.0, 1.0))
@@ -200,7 +200,7 @@ def test_explicit_profile_ids_with_stale_revision_are_rejected(monkeypatch) -> N
             "context_revision": before.session_revision,
             "height": 2.5,
         },
-        ToolExecutionContext("agent-phase3", changed.session_revision, "prepare"),
+        ToolExecutionContext("agent-profile-extrusion", changed.session_revision, "prepare"),
     )
     assert not rejected.ok
     assert rejected.data["diagnostic"]["code"] == "profile-transform.stale-context"
@@ -225,7 +225,7 @@ def test_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
             "profile_selection": "unique_material_profile",
             "height": 2.5,
         },
-        ToolExecutionContext("agent-phase3", before.session_revision, "ambiguous"),
+        ToolExecutionContext("agent-profile-extrusion", before.session_revision, "ambiguous"),
     )
     assert not ambiguous.ok
     assert ambiguous.data["diagnostic"]["code"] == (

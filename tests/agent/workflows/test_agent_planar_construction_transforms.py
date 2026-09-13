@@ -18,7 +18,7 @@ import pytest
 def _construction(*nodes: dict[str, object], result: str) -> dict[str, object]:
     return {
         "schema_version": 1,
-        "name": "Phase 4 construction",
+        "name": "Planar transform construction",
         "plane": "XY",
         "nodes": list(nodes),
         "result_node_id": result,
@@ -55,7 +55,7 @@ def _dispatch(controller, arguments: dict[str, object], key: str):
     return controller.dispatch(
         "prepare_planar_construction_proposal",
         arguments,
-        ToolExecutionContext("phase4-ir-transform", 0, key),
+        ToolExecutionContext("planar-ir-transform", 0, key),
     )
 
 
@@ -109,7 +109,7 @@ def test_ir_planar_part_uses_existing_profile_transform_tools() -> None:
     read = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": part.id},
-        ToolExecutionContext("phase4-ir-transform", snapshot.session_revision, "read"),
+        ToolExecutionContext("planar-ir-transform", snapshot.session_revision, "read"),
     )
     direct_context = profile_transform_context(
         part.geometry_recipe,
@@ -128,7 +128,7 @@ def test_ir_planar_part_uses_existing_profile_transform_tools() -> None:
             "height": 2.0,
         },
         ToolExecutionContext(
-            "phase4-ir-transform",
+            "planar-ir-transform",
             snapshot.session_revision,
             "dedicated-extrusion",
         ),

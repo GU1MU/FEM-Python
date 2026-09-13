@@ -22,7 +22,7 @@ from fem.application.results import (
 from fem.post.fields import encode_result_region_key
 from fem_gui.postprocessing_dialogs import TypedResultQueryDialog
 from fem_gui.result_presentation import result_field_is_visible
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 

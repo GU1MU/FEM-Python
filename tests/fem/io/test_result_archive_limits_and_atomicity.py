@@ -24,7 +24,7 @@ from fem.io import (
 )
 from fem.io._atomic_binary import atomic_write_verified_binary
 import fem.io.result_archive_v1 as archive_codec
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 from tests.fem.io.test_result_archive_v1 import (
@@ -47,7 +47,7 @@ def _expanded_location(location, copy_index: int):
 
 @pytest.fixture(scope="module")
 def result_archive():
-    return make_result_archive(make_continuum_nodal_semantics_result, "phase6-small")
+    return make_result_archive(make_continuum_nodal_semantics_result, "archive-small")
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +91,7 @@ def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
     encoded = encode_result_archive(archive)
     assert len(encoded) > 1_000_000
 
-    target = tmp_path / "phase6-large.femres"
+    target = tmp_path / "archive-large.femres"
     tracemalloc.start()
     started = time.perf_counter()
     save_result_archive(target, archive)
@@ -141,7 +141,7 @@ def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
         "write_current_bytes": write_current,
         "read_current_bytes": read_current,
     }
-    print("PHASE6_RESULT_ARCHIVE_METRICS " + json.dumps(metrics, sort_keys=True))
+    print("RESULT_ARCHIVE_METRICS " + json.dumps(metrics, sort_keys=True))
     assert write_seconds >= 0.0
     assert read_seconds >= 0.0
 

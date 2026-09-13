@@ -67,7 +67,7 @@ def concentric_ring_source_face_id(sketch: SketchGeometry) -> str:
 
 
 def concentric_ring_fixture() -> ConcentricRingFixture:
-    """Build the reusable Phase 0 sketch, catalog, and extrusion recipe."""
+    """Build the reusable ring sketch, catalog, and extrusion recipe."""
 
     sketch = concentric_ring_sketch()
     source_face_id = concentric_ring_source_face_id(sketch)

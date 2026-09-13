@@ -121,7 +121,7 @@ def _dispatch(controller, arguments: dict[str, object], key: str):
     return controller.dispatch(
         "prepare_planar_construction_proposal",
         arguments,
-        ToolExecutionContext("phase7-planar", 0, key),
+        ToolExecutionContext("planar-project-roundtrip", 0, key),
     )
 
 
@@ -132,7 +132,7 @@ def _save_and_reopen(session: ModelSession, path):
 
 
 @pytest.mark.gmsh
-def test_phase7_h_plate_preview_mesh_disk_roundtrip_and_edit(
+def test_h_plate_preview_mesh_disk_roundtrip_and_edit(
     real_gmsh,
     tmp_path,
 ) -> None:
@@ -253,7 +253,7 @@ def _composite_slot(bars: list[tuple[float, float, float, float]]) -> dict[str, 
     ),
     ids=("tee", "e", "cross"),
 )
-def test_phase7_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> None:
+def test_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> None:
     del real_gmsh
     construction = _composite_slot(bars)
     assert {node["kind"] for node in construction["nodes"]} == {
@@ -284,7 +284,7 @@ def test_phase7_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> No
 
 
 @pytest.mark.gmsh
-def test_phase7_u_path_stroke_preview_mesh_and_disk_roundtrip(
+def test_u_path_stroke_preview_mesh_and_disk_roundtrip(
     real_gmsh,
     tmp_path,
 ) -> None:
@@ -342,7 +342,7 @@ def test_phase7_u_path_stroke_preview_mesh_and_disk_roundtrip(
 
 
 @pytest.mark.gmsh
-def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
+def test_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
     real_gmsh,
     tmp_path,
 ) -> None:
@@ -361,7 +361,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
     read = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": part.id},
-        ToolExecutionContext("phase7-transform", current.session_revision, "read"),
+        ToolExecutionContext("profile-transform-roundtrip", current.session_revision, "read"),
     )
     assert read.ok
     transformed = controller.dispatch(
@@ -372,7 +372,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
             "height": 2.0,
         },
         ToolExecutionContext(
-            "phase7-transform",
+            "profile-transform-roundtrip",
             current.session_revision,
             "extrude",
         ),
@@ -381,7 +381,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
     bridge.accept_from_gui_control(transformed.data["proposal_id"])
     recipe = session.snapshot().parts[0].geometry_recipe
     assert type(recipe) is ExtrudedGeometry
-    with geometry_runtime.model("phase7-h-extrusion", dimension=3) as cad:
+    with geometry_runtime.model("h-extrusion-roundtrip", dimension=3) as cad:
         compiled = compile_recipe(cad, recipe)
         hole_sides = tuple(
             entity.logical_id
@@ -405,7 +405,7 @@ def test_phase7_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
 
 
 @pytest.mark.gmsh
-def test_phase7_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
+def test_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
     real_gmsh,
     tmp_path,
 ) -> None:
@@ -432,7 +432,7 @@ def test_phase7_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
         )]
     )
     engine = AgentSessionEngine(
-        tmp_path / "phase7-direct-extrusion",
+        tmp_path / "direct-extrusion-roundtrip",
         provider,
         dynamic_tools=dynamic,
     )

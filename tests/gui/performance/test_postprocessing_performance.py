@@ -1,8 +1,8 @@
+"""Result rendering measurements, dataset reuse, and stress recovery."""
+
 from __future__ import annotations
 
-import argparse
 import gc
-import json
 import tracemalloc
 from collections.abc import Callable
 from time import perf_counter
@@ -154,7 +154,7 @@ def _quad_result(element_count: int) -> ModelResult:
     )
 
 
-def run(
+def _measure_postprocessing(
     element_count: int,
     *,
     include_recovery: bool = False,
@@ -199,21 +199,17 @@ def run(
     return result
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--elements", type=int, default=20_000)
-    parser.add_argument("--include-recovery", action="store_true")
-    arguments = parser.parse_args()
-    print(
-        json.dumps(
-            run(
-                arguments.elements,
-                include_recovery=arguments.include_recovery,
-            ),
-            ensure_ascii=False,
-        )
-    )
+def test_result_rendering_reuses_dataset(record_property) -> None:
+    metrics = _measure_postprocessing(20_000)
+    for name, value in metrics.items():
+        record_property(name, value)
+    assert metrics["points"] == 20_301
+    assert metrics["dataset_reused"] == 1
 
 
-if __name__ == "__main__":
-    main()
+def test_stress_recovery_materializes_each_element(record_property) -> None:
+    metrics = _measure_postprocessing(10, include_recovery=True)
+    for name, value in metrics.items():
+        record_property(name, value)
+    assert metrics["dataset_reused"] == 1
+    assert metrics["recovery_rows"] == 10

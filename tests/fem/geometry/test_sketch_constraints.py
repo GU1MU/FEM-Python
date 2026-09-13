@@ -42,7 +42,7 @@ def _geometry(*constraints: object) -> SketchGeometry:
     )
 
 
-def test_all_phase2_constraint_value_objects_validate_on_a_strict_sketch() -> None:
+def test_all_basic_constraint_value_objects_validate_on_a_strict_sketch() -> None:
     constraints = (
         SketchCoincidentConstraint("G1", "P1", "P2", "inferred"),
         SketchPointOnCurveConstraint("G2", "P4", "C1"),

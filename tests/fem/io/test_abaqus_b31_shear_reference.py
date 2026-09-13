@@ -245,7 +245,7 @@ def test_query_csv_and_vtk_reuse_the_stored_s12_field(tmp_path: Path) -> None:
     )
     result = static_linear.solve(model, "Load")
     provider = build_result_provider(
-        ResultSourceKey("phase5", "session", "artifact", 1, "Load", "run"),
+        ResultSourceKey("b31-shear-reference", "session", "artifact", 1, "Load", "run"),
         result,
     )
     provider = execute_output_requests(
@@ -272,7 +272,7 @@ def test_query_csv_and_vtk_reuse_the_stored_s12_field(tmp_path: Path) -> None:
     csv_row = next(csv.DictReader(StringIO(dumps_result_csv(export, queried))))
     assert float(csv_row["value"]) == stored
 
-    vtk_path = tmp_path / "phase5-s12.vtk"
+    vtk_path = tmp_path / "b31-s12.vtk"
     write_result_vtk(vtk_path, export)
     vtk = read_result_vtk(vtk_path)
     assert vtk.values == pytest.approx((stored,))

@@ -44,7 +44,7 @@ def _controller(session: ModelSession, refresh=None):
 def _session(recipe) -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "Phase 5 diagnostics",
+        "Profile transform diagnostics",
         UnitContext("mm", "N", "MPa"),
         recipe,
         part_name="Sketch",
@@ -52,7 +52,7 @@ def _session(recipe) -> ModelSession:
     return session
 
 
-def _context(controller, name: str = "phase5") -> ToolExecutionContext:
+def _context(controller, name: str = "profile-transform-diagnostics") -> ToolExecutionContext:
     return ToolExecutionContext(name, 0, name)
 
 

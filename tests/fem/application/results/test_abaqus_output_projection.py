@@ -16,12 +16,12 @@ from fem.solvers import static_linear
 
 
 def _write_b31_output_deck(tmp_path: Path) -> Path:
-    path = tmp_path / "phase6-output.inp"
+    path = tmp_path / "abaqus-output.inp"
     path.write_text(
         "\n".join(
             (
                 "*Heading",
-                "Phase 6 output projection",
+                "Abaqus output projection",
                 "*Node",
                 "1, 0.0, 0.0, 0.0",
                 "2, 1.0, 0.0, 0.0",
@@ -56,12 +56,12 @@ def _write_b31_output_deck(tmp_path: Path) -> Path:
 
 def _source() -> ResultSourceKey:
     return ResultSourceKey(
-        result_id="result-phase6",
-        session_id="session-phase6",
-        artifact_id="artifact-phase6",
+        result_id="result-output-projection",
+        session_id="session-output-projection",
+        artifact_id="artifact-output-projection",
         model_revision=1,
         step_name="Load",
-        run_id="run-phase6",
+        run_id="run-output-projection",
     )
 
 

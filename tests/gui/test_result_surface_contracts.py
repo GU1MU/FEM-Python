@@ -17,7 +17,7 @@ from fem_gui.action_state import (
 from fem_gui.main_window import FEMMainWindow
 
 
-def test_phase0_result_actions_replace_reload_close_in_project_surfaces(gui_application):
+def test_result_actions_replace_reload_close_in_project_surfaces(gui_application):
     descriptors = {item.key: item for item in ACTION_DESCRIPTORS}
     assert tuple(item.key for item in ACTION_DESCRIPTORS[:11]) == (
         GuiActionKey.OPEN,

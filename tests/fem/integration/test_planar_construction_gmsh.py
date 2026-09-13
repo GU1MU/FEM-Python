@@ -9,7 +9,7 @@ from fem.application.planar_construction import (
     compile_planar_construction,
 )
 from fem.geometry import PlanarConstructionIR, SketchArc, SketchCircle, SketchLine
-from tests.helpers.fixtures.planar_construction_phase0 import EXPECTED_H_CONSTRUCTION
+from tests.helpers.fixtures.planar_construction_baseline import EXPECTED_H_CONSTRUCTION
 
 
 def _compile(nodes: list[dict[str, object]], result: str = "result"):
@@ -17,7 +17,7 @@ def _compile(nodes: list[dict[str, object]], result: str = "result"):
         PlanarConstructionIR.from_dict(
             {
                 "schema_version": 1,
-                "name": "phase2 fixture",
+                "name": "H-slot plate construction",
                 "plane": "XY",
                 "nodes": nodes,
                 "result_node_id": result,

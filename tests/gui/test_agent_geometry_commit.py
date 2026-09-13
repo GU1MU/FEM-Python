@@ -69,7 +69,7 @@ def _proposal(
     )
     return create_geometry_proposal(
         proposal_id=proposal_id,
-        agent_session_id="agent-session-a2",
+        agent_session_id="agent-geometry-commit",
         turn_id=f"turn-{proposal_id}",
         source_tool_call_ids=(f"call-{proposal_id}",),
         context=context,
@@ -255,7 +255,7 @@ def test_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
     )
     proposal = create_geometry_edit_proposal(
         proposal_id="proposal-add-second-hole",
-        agent_session_id="agent-session-a2",
+        agent_session_id="agent-geometry-commit",
         turn_id="turn-add-second-hole",
         source_tool_call_ids=("call-add-second-hole",),
         context=context,
@@ -328,7 +328,7 @@ def test_invalid_hole_commit_failure_is_atomic() -> None:
     invalid = AgentProposal.create(
         proposal_id="proposal-invalid-hole",
         proposal_kind=ProposalKind.GEOMETRY,
-        agent_session_id="agent-session-a2",
+        agent_session_id="agent-geometry-commit",
         turn_id="turn-invalid-hole",
         source_tool_call_ids=("call-invalid-hole",),
         target_document_id=context.binding.document_id,
@@ -400,7 +400,7 @@ def test_invalid_strict_profile_create_or_replace_is_atomic(
         part_id = str(before.parts[0].id)
         proposal = create_geometry_edit_proposal(
             proposal_id=f"proposal-invalid-replace-{suffix}",
-            agent_session_id="agent-session-a2",
+            agent_session_id="agent-geometry-commit",
             turn_id="turn-invalid-replace",
             source_tool_call_ids=("call-invalid-replace",),
             context=authoring_context_from_snapshot(before),

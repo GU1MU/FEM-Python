@@ -104,7 +104,7 @@ def test_oversized_construction_is_rejected_before_cad(monkeypatch) -> None:
     result = controller.dispatch(
         "prepare_planar_construction_proposal",
         overbudget,
-        ToolExecutionContext("phase6-overbudget", 0, "overbudget"),
+        ToolExecutionContext("planar-construction-overbudget", 0, "overbudget"),
     )
 
     assert not result.ok

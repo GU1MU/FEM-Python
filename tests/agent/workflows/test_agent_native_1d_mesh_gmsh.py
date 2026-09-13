@@ -74,7 +74,7 @@ def test_real_agent_line_mesh_materializes_stable_scopes_and_reopens(
     )
     proposal = create_mesh_proposal(
         proposal_id=f"proposal-real-{line_element_type}",
-        agent_session_id="agent-real-line-phase2",
+        agent_session_id="agent-real-line-mesh",
         turn_id=f"turn-real-{line_element_type}",
         source_tool_call_ids=(f"call-real-{line_element_type}",),
         context=authoring_context_from_snapshot(session.snapshot()),

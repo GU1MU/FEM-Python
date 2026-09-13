@@ -86,7 +86,6 @@ def test_dialog_hides_source_descriptions_and_builds_selected_recipe(gui_applica
 
     label_texts = {label.text() for label in dialog.findChildren(QLabel)}
     assert "Source Profiles" not in label_texts
-    assert "+Z（Phase 2）" not in label_texts
     assert "+Z" in label_texts
     assert recipe.height == 4.5
     assert recipe.source_face_ids == (first, second)

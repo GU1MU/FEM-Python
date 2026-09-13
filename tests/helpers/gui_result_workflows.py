@@ -9,7 +9,7 @@ from fem.io import save_result_archive
 from fem_gui.main_window import FEMMainWindow
 from fem_gui.task_controller import BackgroundTaskState
 from tests.helpers.result_archives import make_result_archive
-from tests.helpers.phase8_result_characterization import (
+from tests.helpers.result_field_fixtures import (
     make_continuum_nodal_semantics_result,
 )
 
