@@ -11,7 +11,7 @@ TESTS_ROOT = PROJECT_ROOT / "tests"
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 _SKIP_REASON_PREFIXES = (
     "[slow-opt-in]",
-    "[cloud-opt-in]",
+    "[cloud-config]",
     "[platform-capability]",
     "[optional-native-runtime]",
 )

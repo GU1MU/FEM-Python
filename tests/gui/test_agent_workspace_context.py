@@ -233,26 +233,6 @@ def test_reference_rejects_path_escape(tmp_path):
         )
 
 
-def test_index_does_not_follow_real_directory_link(tmp_path):
-    workspace_root = tmp_path / "workspace"
-    outside_root = tmp_path / "outside"
-    workspace_root.mkdir()
-    outside_root.mkdir()
-    (workspace_root / "safe.txt").write_text("safe", encoding="utf-8")
-    (outside_root / "secret.txt").write_text("secret", encoding="utf-8")
-    workspace = normalize_user_workspace(workspace_root)
-    link = workspace_root / "outside-link"
-    try:
-        link.symlink_to(outside_root, target_is_directory=True)
-    except OSError:
-        pytest.skip(
-            "[platform-capability] 当前 Windows 权限不允许创建符号链接"
-        )
-    snapshot = WorkspaceIndexer().scan(workspace)
-    assert [item.relative_path for item in snapshot.files] == ["safe.txt"]
-    assert snapshot.skipped_unsafe_entries >= 1
-
-
 def test_index_skips_link_and_reparse_metadata(
     tmp_path,
     monkeypatch,

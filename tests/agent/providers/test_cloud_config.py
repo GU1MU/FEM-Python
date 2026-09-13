@@ -4,38 +4,45 @@ import pytest
 
 from fem_agent.config import ConfigError, LocalAgentConfig, TEST_CONFIG_NAME
 
+from tests.helpers import agent_cloud_config
 from tests.helpers.agent_cloud_config import (
     CLOUD_SMOKE_CONFIG_ENV,
-    CLOUD_SMOKE_OPT_IN_ENV,
-    CLOUD_OPT_IN_REASON,
+    CLOUD_SMOKE_ENV,
     load_cloud_smoke_config,
 )
 
 
-@pytest.mark.parametrize(
-    "environ",
-    (
-        {},
-        {CLOUD_SMOKE_OPT_IN_ENV: "1"},
-        {CLOUD_SMOKE_CONFIG_ENV: "ignored.json"},
-    ),
-)
-def test_cloud_smoke_config_requires_both_explicit_gates_without_reading_config(
-    monkeypatch,
-    environ,
-):
-    def fail_if_loaded(_cls, _path):
-        raise AssertionError("cloud config must not be read before both gates")
+def test_cloud_smoke_config_defaults_to_local_configuration(tmp_path, monkeypatch):
+    path = tmp_path / TEST_CONFIG_NAME
+    path.write_text('{"api_key": "local-test-secret"}', encoding="utf-8")
+    monkeypatch.setattr(agent_cloud_config, "DEFAULT_CLOUD_CONFIG_PATH", path)
 
-    monkeypatch.setattr(
-        LocalAgentConfig,
-        "load",
-        classmethod(fail_if_loaded),
-    )
-    config, reason = load_cloud_smoke_config(environ)
+    config, reason = load_cloud_smoke_config({})
+
+    assert reason is None
+    assert config is not None
+    assert config.api_key == "local-test-secret"
+    assert config.enabled
+
+
+def test_cloud_smoke_config_can_be_disabled_without_reading_config(monkeypatch):
+    def fail_if_loaded(_cls, _path):
+        raise AssertionError("disabled cloud tests must not read config")
+
+    monkeypatch.setattr(LocalAgentConfig, "load", classmethod(fail_if_loaded))
+    config, reason = load_cloud_smoke_config({CLOUD_SMOKE_ENV: "0"})
 
     assert config is None
-    assert reason == CLOUD_OPT_IN_REASON
+    assert reason == "[cloud-config] disabled by FEM_AGENT_CLOUD_SMOKE=0"
+
+
+def test_cloud_smoke_config_skips_missing_local_configuration(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        agent_cloud_config, "DEFAULT_CLOUD_CONFIG_PATH", tmp_path / TEST_CONFIG_NAME,
+    )
+    config, reason = load_cloud_smoke_config({})
+    assert config is None
+    assert reason == "[cloud-config] local Agent configuration is missing"
 
 
 def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
@@ -60,7 +67,6 @@ def test_cloud_smoke_config_caps_cost_and_keeps_key_out_of_environment(
     )
 
     config, reason = load_cloud_smoke_config({
-        CLOUD_SMOKE_OPT_IN_ENV: "1",
         CLOUD_SMOKE_CONFIG_ENV: str(path),
     })
 
@@ -91,7 +97,6 @@ def test_cloud_smoke_config_rejects_nonofficial_endpoint_before_network(
 
     with pytest.raises(ConfigError, match="official HTTPS API endpoint"):
         load_cloud_smoke_config({
-            CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: str(path),
         })
 
@@ -99,7 +104,6 @@ def test_cloud_smoke_config_rejects_nonofficial_endpoint_before_network(
 def test_cloud_smoke_config_requires_an_absolute_external_path():
     with pytest.raises(ConfigError, match="must be absolute"):
         load_cloud_smoke_config({
-            CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: TEST_CONFIG_NAME,
         })
 
@@ -119,13 +123,11 @@ def test_cloud_smoke_diagnostics_do_not_echo_config_values(tmp_path):
 
     with pytest.raises(ConfigError) as captured:
         load_cloud_smoke_config({
-            CLOUD_SMOKE_OPT_IN_ENV: "1",
             CLOUD_SMOKE_CONFIG_ENV: str(path),
         })
 
     failure_output = f"invalid cloud smoke configuration: {captured.value}"
     assert secret not in failure_output
-    assert secret not in CLOUD_OPT_IN_REASON
 
 
 def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
@@ -142,11 +144,10 @@ def test_cloud_smoke_skip_reason_does_not_echo_config_values(tmp_path):
     )
 
     config, reason = load_cloud_smoke_config({
-        CLOUD_SMOKE_OPT_IN_ENV: "1",
         CLOUD_SMOKE_CONFIG_ENV: str(path),
     })
 
     assert config is None
     assert reason is not None
-    assert reason.startswith("[cloud-opt-in]")
+    assert reason.startswith("[cloud-config]")
     assert secret not in reason

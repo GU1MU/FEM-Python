@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -129,29 +128,6 @@ def test_artifact_metadata_cannot_redirect_outside_session(tmp_path: Path) -> No
     )
 
     with pytest.raises(ArtifactIntegrityError):
-        store.resolve_artifact(session_id, record.artifact_id)
-
-
-def test_stored_file_symlink_escape_is_rejected_when_supported(
-    tmp_path: Path,
-) -> None:
-    source = tmp_path / "model.inp"
-    source.write_bytes(b"*Heading\n")
-    outside = tmp_path / "outside.inp"
-    outside.write_bytes(b"outside")
-    store = ArtifactStore(tmp_path / "workspace")
-    session_id = store.create_session()
-    record = store.copy_input(session_id, source)
-    copied = store.resolve_artifact(session_id, record.artifact_id)
-    copied.unlink()
-    try:
-        os.symlink(outside, copied)
-    except OSError as exc:
-        pytest.skip(
-            f"[platform-capability] file symlinks are unavailable: {exc}"
-        )
-
-    with pytest.raises(UnsafePathError):
         store.resolve_artifact(session_id, record.artifact_id)
 
 

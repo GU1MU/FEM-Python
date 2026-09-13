@@ -9,7 +9,7 @@ from fem_agent.providers.deepseek import DeepSeekProvider
 from tests.helpers.agent_cloud_config import load_cloud_smoke_config
 
 
-def test_opt_in_deepseek_tool_call_smoke():
+def test_deepseek_tool_call_smoke():
     try:
         config, reason = load_cloud_smoke_config(os.environ)
     except ConfigError as error:

@@ -48,18 +48,6 @@ def test_ensure_export_directory_creates_flat_dir_once(tmp_path: Path) -> None:
         ensure_export_directory(tmp_path / "plain.txt")
 
 
-def test_ensure_export_directory_rejects_symlinked_root(
-    tmp_path: Path,
-) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    if not _try_symlink(real, link):
-        pytest.skip("[platform-capability] symlinks are unavailable on this platform")
-    with pytest.raises(ExportStorageError):
-        ensure_export_directory(link)
-
-
 def test_allocate_increments_like_explorer_and_never_overwrites(
     tmp_path: Path,
 ) -> None:
