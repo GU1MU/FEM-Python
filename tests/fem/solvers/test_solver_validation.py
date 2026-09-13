@@ -45,7 +45,7 @@ def test_linear_solver_reports_singular_system_with_cause():
     ("operation", "error", "message"),
     [
         (static_linear.solve, RuntimeError, "singular or under-constrained"),
-        (static_linear.validate_stiffness, ValueError, "约束不足|奇异"),
+        (static_linear.validate_stiffness, ValueError, "underconstrained|singular"),
     ],
     ids=["solve", "preflight"],
 )
@@ -72,7 +72,7 @@ def test_stiffness_preflight_distinguishes_a_numerically_null_mode(monkeypatch):
         lambda _mesh: csr_matrix(stiffness),
     )
 
-    with pytest.raises(ValueError, match="约束不足|奇异") as caught:
+    with pytest.raises(ValueError, match="underconstrained|singular") as caught:
         static_linear.validate_stiffness(model, "pull")
 
     assert "numerically null free mode" in str(caught.value.__cause__)

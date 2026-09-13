@@ -140,7 +140,7 @@ def test_mesh_task_snapshot_rejects_named_region_override() -> None:
     session.replace_mesh_settings(MeshSettings(0.5))
     task = session.prepare_mesh_generation()
 
-    with pytest.raises(TypeError, match="不能重复传入 named_regions"):
+    with pytest.raises(TypeError, match="do not pass named_regions again"):
         generate_fem_model(task, named_regions=())
 
 
@@ -272,7 +272,7 @@ def test_logical_resolver_accepts_only_typed_references(
         with pytest.raises(TypeError, match="LogicalEntityRef"):
             compiled.resolve(invalid_reference)
 
-        with pytest.raises(TopologyResolutionError, match="已失效"):
+        with pytest.raises(TopologyResolutionError, match="is stale"):
             compiled.resolve(LogicalEntityRef("edge:missing"))
 
 
@@ -580,7 +580,7 @@ def test_unproven_subentities_fail_closed_but_domain_meshing_remains_available(
     )
     with geometry.model("mapped-unproven-session", dimension=2) as cad:
         compiled = compile_recipe(cad, recipe)
-        with pytest.raises(TopologyResolutionError, match="不可用于建模"):
+        with pytest.raises(TopologyResolutionError, match="cannot be used for modeling"):
             compiled.resolve(LogicalEntityRef("edge:missing"))
 
     model = generate_fem_model(recipe, MeshSettings(0.4))
@@ -622,7 +622,7 @@ def test_periodic_display_points_are_absent_from_cad_point_contract(
             CylinderGeometry("mapped-cylinder", 0.5, 1.0),
         )
 
-        with pytest.raises(TopologyResolutionError, match="已失效"):
+        with pytest.raises(TopologyResolutionError, match="is stale"):
             compiled.resolve(LogicalEntityRef("point:seam"))
         assert len(compiled.resolve(LogicalEntityRef("edge:bottom-rim"))) == 1
         assert len(compiled.resolve(LogicalEntityRef("edge:top-rim"))) == 1

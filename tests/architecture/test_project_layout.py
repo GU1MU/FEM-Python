@@ -1308,7 +1308,7 @@ def test_project_v1_writer_contains_explicit_orientation_fail_closed_guard():
 
     assert "beam_orientation" in source
     assert "ProjectV1EncodeError" in source
-    assert "v1 不支持 Beam orientation" in source
+    assert "v1 does not support beam orientation" in source
 
 
 def test_project_v2_production_path_has_no_v1_specific_import():
