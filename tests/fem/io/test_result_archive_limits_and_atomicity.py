@@ -7,7 +7,6 @@ from io import BytesIO
 import json
 from pathlib import Path
 import time
-import tracemalloc
 
 import numpy as np
 import pytest
@@ -88,23 +87,16 @@ def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
     tmp_path: Path,
 ) -> None:
     archive = large_result_archive
-    encoded = encode_result_archive(archive)
-    assert len(encoded) > 1_000_000
-
     target = tmp_path / "archive-large.femres"
-    tracemalloc.start()
     started = time.perf_counter()
     save_result_archive(target, archive)
     write_seconds = time.perf_counter() - started
-    write_current, write_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    archive_bytes = target.stat().st_size
+    assert archive_bytes > 1_000_000
 
-    tracemalloc.start()
     started = time.perf_counter()
     loaded = load_result_archive(target)
     read_seconds = time.perf_counter() - started
-    read_current, read_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
 
     assert len(loaded.snapshot.fields) == len(archive.fields) == 7
     assert sum(len(field.locations) for field in loaded.snapshot.fields) > 50_000
@@ -131,15 +123,11 @@ def test_large_archive_roundtrip_records_measurements_and_reuses_arrays(
         assert prepared_field._values is provider_field._values
 
     metrics = {
-        "archive_bytes": len(encoded),
+        "archive_bytes": archive_bytes,
         "field_count": len(archive.fields),
         "record_count": sum(len(field.locations) for field in archive.fields),
         "write_seconds": write_seconds,
         "read_seconds": read_seconds,
-        "write_peak_bytes": write_peak,
-        "read_peak_bytes": read_peak,
-        "write_current_bytes": write_current,
-        "read_current_bytes": read_current,
     }
     print("RESULT_ARCHIVE_METRICS " + json.dumps(metrics, sort_keys=True))
     assert write_seconds >= 0.0

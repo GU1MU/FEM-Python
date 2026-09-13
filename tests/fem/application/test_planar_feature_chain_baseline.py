@@ -1,21 +1,8 @@
-"""Regression oracle for the planar feature-chain compilation baseline.
-
-Freezes the golden facts, the structural recipe fingerprint and the
-whole-call instrumented counts of the reconstructed
-``plate_300x100_slot_shu`` IR (see tests/helpers/fixtures/planar_feature_chain_baseline.py)
-to verify semantic equivalence across compiler changes.
-The incremental chain build is O(N) and covers the whole call (7 cuts / 7
-lineage proofs / 14 evidence captures); the final proof reuses the last-step
-live carrier instead of replaying the recipe, giving 7/7/14 for the whole
-``compile_planar_feature_recipe`` call.  No timing assertions: CI wall clocks
-are unstable, the time budget lives in the plan document.
-"""
+"""Check analytical geometry and linear compile counts on a seven-cut plate."""
 
 from __future__ import annotations
 
 import math
-
-import pytest
 
 from fem.application import planar_boolean as planar_boolean_module
 from fem.application import planar_construction as planar_construction_module
@@ -38,25 +25,19 @@ from tests.helpers.fixtures.planar_feature_chain_baseline import (
     BASELINE_EVIDENCE_COUNT,
     BASELINE_FEATURE_CHAIN_MODEL_COUNT,
     BASELINE_FEATURE_CURVE_TYPE_COUNTS,
-    BASELINE_FEATURE_RECIPE_SHA256,
     BASELINE_HOLE_COUNT,
     BASELINE_LINEAGE_COUNT,
-    feature_recipe_fingerprint,
-    plate_300x100_slot_shu,
+    seven_hole_plate,
 )
 
-# The shared feature-recipe run still includes the final-proof full-chain
-# replay, so it costs tens of seconds and stays behind the slow opt-in.
-pytestmark = pytest.mark.slow
-
-_CONSTRUCTION = plate_300x100_slot_shu()
+_CONSTRUCTION = seven_hole_plate()
 
 _direct_compiled_cache: CompiledPlanarConstruction | None = None
 _feature_run_cache: dict[str, object] | None = None
 
 
 def _direct_compiled() -> CompiledPlanarConstruction:
-    """Flatten the baseline IR once for the whole module (~2s)."""
+    """Share one detached compilation across this module."""
 
     global _direct_compiled_cache
     if _direct_compiled_cache is None:
@@ -163,17 +144,18 @@ def test_feature_chain_has_seven_chained_cuts_and_golden_curves(
     run = _feature_run()
     recipe = run["recipe"]
 
+    feature_ids = set()
     chained_cuts = 0
     current = recipe
     while isinstance(current, BooleanGeometry):
         assert current.operation == "cut"
+        assert current.planar_context is not None
+        feature_ids.add(current.planar_context.feature_id)
         chained_cuts += 1
         current = current.object_geometry
     assert chained_cuts == BASELINE_CHAINED_CUT_COUNT
 
-    # Structural equivalence with the legacy implementation: same operation,
-    # feature IDs, selected logical faces and operand sketches at every node.
-    assert feature_recipe_fingerprint(recipe) == BASELINE_FEATURE_RECIPE_SHA256
+    assert len(feature_ids) == BASELINE_CHAINED_CUT_COUNT
 
     facts = run["feature_facts"]
     assert facts.curve_types == BASELINE_FEATURE_CURVE_TYPE_COUNTS

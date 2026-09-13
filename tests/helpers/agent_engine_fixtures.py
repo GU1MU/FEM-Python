@@ -1,8 +1,29 @@
 from fem_agent.artifacts import ArtifactStore
 from fem_agent.engine import AgentSessionEngine
 from fem_agent.tools.registry import ToolExecutionContext
+from fem_agent.worker import (
+    InspectionRequest,
+    InspectionWorkerError,
+    IsolatedFEMInspector,
+    execute_inspection_request,
+)
 
 from tests.helpers.abaqus_builders import write_perforated_plate_style_inp
+
+
+class InProcessFEMInspector(IsolatedFEMInspector):
+    """Keep real inspection for engine tests without launching a child."""
+
+    def inspect(
+        self, spec, revision_hash, *, validate=False, timeout_seconds=None,
+        cancel_event=None,
+    ):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InspectionWorkerError("inspection cancelled")
+        return execute_inspection_request(
+            self.artifacts.root,
+            InspectionRequest(spec, revision_hash, validate=validate),
+        )
 
 
 def _attached_engine(tmp_path, provider):
@@ -17,6 +38,7 @@ def _attached_engine(tmp_path, provider):
         provider,
         session_id="ses_engine",
     )
+    engine.registry.inspector = InProcessFEMInspector(workspace)
     artifact = ArtifactStore(workspace).copy_input(engine.session_id, source)
     engine.attach_artifact(artifact.artifact_id)
     return engine, source

@@ -1,7 +1,10 @@
 import json
 import threading
 
+import pytest
 
+import fem_agent.worker as worker_module
+from fem_agent.artifacts import atomic_write_json
 from fem_agent.diagnostics import DiagnosticCode
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.providers.base import ToolCall
@@ -10,8 +13,50 @@ from fem_agent.schemas import RunStatus, SessionPhase
 from fem_agent.tools.registry import ToolExecutionContext
 from fem_agent.worker import WorkerResponse, WorkerResponseIntegrityError
 
-from tests.helpers.agent_engine_fixtures import _attached_engine, _ready_engine
+from tests.helpers.agent_engine_fixtures import (
+    InProcessFEMInspector,
+    _attached_engine,
+    _ready_engine,
+)
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
+
+
+@pytest.fixture(autouse=True)
+def in_process_worker_transport(monkeypatch):
+    """Exercise engine state and real FEM work without child startup overhead.
+
+    Process isolation, deadlines, and wire transport remain covered by
+    test_worker_subprocess.py and test_e2e.py.
+    """
+    def query(self, response, queries, *, timeout_seconds=None, cancel_event=None):
+        request = worker_module.ResultQueryRequest(
+            session_id=response.session_id,
+            revision=response.revision,
+            revision_hash=response.revision_hash,
+            run_id=response.run_id,
+            queries=tuple(queries),
+        )
+        try:
+            return worker_module.execute_result_query_request(
+                self.artifacts.root, request,
+            )
+        except Exception as error:
+            raise worker_module.ResultQueryWorkerError(str(error)) from error
+
+    def launch(
+        self, request, record, run, request_path, response_path, timeout, cancel_event,
+    ):
+        response = worker_module.execute_worker_request(self.artifacts.root, request)
+        atomic_write_json(response_path, response.to_dict())
+        return worker_module.load_verified_worker_response(
+            self.artifacts, record, run.run_id,
+        )
+
+    monkeypatch.setattr(
+        worker_module.IsolatedFEMInspector, "inspect", InProcessFEMInspector.inspect,
+    )
+    monkeypatch.setattr(worker_module.IsolatedFEMResultQuerier, "query", query)
+    monkeypatch.setattr(worker_module.IsolatedFEMWorker, "_launch", launch)
 
 
 def test_solved_model_is_queried_then_explained_by_agent_without_new_run(

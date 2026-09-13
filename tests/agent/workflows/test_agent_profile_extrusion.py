@@ -4,6 +4,11 @@ from copy import deepcopy
 
 import pytest
 
+from fem import geometry as geometry_runtime
+from fem.application.preprocessing import generate_fem_model
+from fem.application.recipe_compiler import compile_recipe
+from fem.geometry import LogicalEntityRef
+from fem.mesh.settings import MeshSettings
 from fem.application import ModelSession, UnitContext
 from fem.geometry import ExtrudedGeometry, RectangleGeometry, SketchCircle, SketchRectangle, describe_recipe_topology
 from fem.io.project import decode_project, encode_project
@@ -466,3 +471,53 @@ def test_project_round_trip_preserves_selected_source_and_lineage(
 
     assert after.height == 6.0
     assert describe_recipe_topology(after).signature.logical_ids == before_ids
+
+
+@pytest.mark.gmsh
+def test_profile_extrusion_preserves_hole_faces_and_generates_tet_mesh(
+    real_gmsh,
+) -> None:
+    del real_gmsh
+    session = _native_session(hole_profile_sketch())
+    current = session.snapshot()
+    part = current.parts[0]
+    bridge, controller = _controller(session)
+    read = controller.dispatch(
+        "read_profile_transform_context",
+        {"part_id": part.id},
+        ToolExecutionContext("profile-hole-extrusion", current.session_revision, "read"),
+    )
+    assert read.ok
+    transformed = controller.dispatch(
+        "prepare_profile_extrusion",
+        {
+            "part_id": part.id,
+            "profile_selection": "unique_material_profile",
+            "height": 2.0,
+        },
+        ToolExecutionContext(
+            "profile-hole-extrusion",
+            current.session_revision,
+            "extrude",
+        ),
+    )
+    assert transformed.ok, transformed.summary
+    bridge.accept_from_gui_control(transformed.data["proposal_id"])
+    recipe = session.snapshot().parts[0].geometry_recipe
+    assert type(recipe) is ExtrudedGeometry
+    with geometry_runtime.model("hole-extrusion-mesh", dimension=3) as cad:
+        compiled = compile_recipe(cad, recipe)
+        hole_sides = tuple(
+            entity.logical_id
+            for entity in compiled.catalog.entities_of("face")
+            if entity.semantic_role == "sweep.boundary.hole"
+        )
+        assert len(hole_sides) == 4
+        assert all(
+            compiled.resolve(LogicalEntityRef(logical_id)) for logical_id in hole_sides
+        )
+    mesh = generate_fem_model(
+        recipe,
+        MeshSettings(1.2, cell_shape="tetrahedron"),
+    )
+    assert {element.type for element in mesh.mesh.elements} == {"Tet4"}

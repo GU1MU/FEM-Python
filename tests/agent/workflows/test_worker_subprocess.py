@@ -26,6 +26,33 @@ from tests.helpers.agent_worker_fixtures import (
 )
 
 
+@pytest.fixture(scope="module")
+def solved_worker_workspace(tmp_path_factory):
+    """One real child solve supplies independent corruption-test copies."""
+    directory = tmp_path_factory.mktemp("solved-worker-baseline")
+    workspace, _artifacts, _revisions, record = _prepared_revision(
+        directory, confirmed=True,
+    )
+    response = IsolatedFEMWorker(workspace).run(
+        record.session_id,
+        revision=record.revision,
+        revision_hash=record.revision_hash,
+        idempotency_key="persisted-result",
+        timeout_seconds=30,
+    )
+    assert response.status == RunStatus.SUCCEEDED
+    return workspace, record, response
+
+
+@pytest.fixture
+def copied_worker_run(tmp_path, solved_worker_workspace):
+    source, record, response = solved_worker_workspace
+    workspace = tmp_path / "workspace"
+    shutil.copytree(source, workspace)
+    worker = IsolatedFEMWorker(workspace)
+    return worker, worker.artifacts, record, response
+
+
 def test_isolated_inspector_round_trips_unicode_unit_context(tmp_path):
     units = UnitContext(
         length="mm",
@@ -205,24 +232,9 @@ def test_worker_solves_without_queries_and_supports_later_postprocessing(
         )
 
 
-def test_isolated_postsolve_query_rejects_a_tampered_solution(tmp_path):
-    workspace, artifacts, revisions, record = _prepared_revision(
-        tmp_path,
-        requested_queries=(),
-        export_formats=(),
-    )
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
-    response = IsolatedFEMWorker(workspace).run(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-        idempotency_key="tamper_solution",
-        timeout_seconds=30,
-    )
+def test_isolated_postsolve_query_rejects_a_tampered_solution(copied_worker_run):
+    worker, artifacts, record, response = copied_worker_run
+    workspace = worker.artifacts.root
     solution = next(
         item for item in response.artifacts if item.kind == "solution"
     )
@@ -247,21 +259,8 @@ def test_isolated_postsolve_query_rejects_a_tampered_solution(tmp_path):
     assert response.status == RunStatus.SUCCEEDED
 
 
-def test_worker_recovers_a_missing_response_from_a_verified_manifest(tmp_path):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
-    worker = IsolatedFEMWorker(workspace)
-    original = worker.run(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-        idempotency_key="recover_committed_solve",
-        timeout_seconds=30,
-    )
+def test_worker_recovers_a_missing_response_from_a_verified_manifest(copied_worker_run):
+    worker, artifacts, record, original = copied_worker_run
     run = artifacts.run_directory(record.session_id, original.run_id)
     response_path = run.path / "logs" / "worker-response.json"
     response_path.unlink()
@@ -280,7 +279,7 @@ def test_worker_recovers_a_missing_response_from_a_verified_manifest(tmp_path):
         record.session_id,
         revision=record.revision,
         revision_hash=record.revision_hash,
-        idempotency_key="recover_committed_solve",
+        idempotency_key="persisted-result",
         timeout_seconds=30,
     )
 
@@ -300,21 +299,8 @@ def test_worker_recovers_a_missing_response_from_a_verified_manifest(tmp_path):
     assert len(list(run.path.parent.iterdir())) == 1
 
 
-def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(tmp_path):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
-    worker = IsolatedFEMWorker(workspace)
-    original = worker.run(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-        idempotency_key="corrupt_committed_manifest",
-        timeout_seconds=30,
-    )
+def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(copied_worker_run):
+    worker, artifacts, record, original = copied_worker_run
     run = artifacts.run_directory(record.session_id, original.run_id)
     response_path = run.path / "logs" / "worker-response.json"
     response_path.unlink()
@@ -329,7 +315,7 @@ def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(tmp_path):
             record.session_id,
             revision=record.revision,
             revision_hash=record.revision_hash,
-            idempotency_key="corrupt_committed_manifest",
+            idempotency_key="persisted-result",
             timeout_seconds=30,
         )
 
@@ -337,21 +323,8 @@ def test_worker_fails_closed_when_a_commit_manifest_is_corrupt(tmp_path):
     assert len(list(run.path.parent.iterdir())) == 1
 
 
-def test_worker_fails_closed_when_a_manifest_artifact_hash_is_wrong(tmp_path):
-    workspace, artifacts, revisions, record = _prepared_revision(tmp_path)
-    ConfirmationStore(workspace, revisions).confirm(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-    )
-    worker = IsolatedFEMWorker(workspace)
-    original = worker.run(
-        record.session_id,
-        revision=record.revision,
-        revision_hash=record.revision_hash,
-        idempotency_key="corrupt_committed_artifact",
-        timeout_seconds=30,
-    )
+def test_worker_fails_closed_when_a_manifest_artifact_hash_is_wrong(copied_worker_run):
+    worker, artifacts, record, original = copied_worker_run
     run = artifacts.run_directory(record.session_id, original.run_id)
     response_path = run.path / "logs" / "worker-response.json"
     response_path.unlink()
@@ -372,7 +345,7 @@ def test_worker_fails_closed_when_a_manifest_artifact_hash_is_wrong(tmp_path):
             record.session_id,
             revision=record.revision,
             revision_hash=record.revision_hash,
-            idempotency_key="corrupt_committed_artifact",
+            idempotency_key="persisted-result",
             timeout_seconds=30,
         )
 

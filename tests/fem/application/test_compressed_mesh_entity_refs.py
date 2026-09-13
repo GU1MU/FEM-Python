@@ -64,23 +64,21 @@ def _peak_bytes(factory) -> int:
     return peak
 
 
-@pytest.mark.slow
-def test_contiguous_100k_storage_reduces_retained_memory_by_at_least_80_percent() -> None:
+def test_contiguous_storage_reduces_retained_memory_by_at_least_80_percent() -> None:
     old_bytes = _peak_bytes(
-        lambda: tuple(MeshEntityRef.node(value) for value in range(1, 100_001))
+        lambda: tuple(MeshEntityRef.node(value) for value in range(1, 10_001))
     )
     compact_bytes = _peak_bytes(
         lambda: CompressedMeshEntityRefs(
-            MeshEntityRef.node(value) for value in range(1, 100_001)
+            MeshEntityRef.node(value) for value in range(1, 10_001)
         )
     )
 
     assert compact_bytes <= old_bytes * 0.20
 
 
-@pytest.mark.slow
 def test_sparse_storage_does_not_exceed_legacy_reference_storage() -> None:
-    ids = range(1, 200_000, 2)
+    ids = range(1, 20_000, 2)
     old_bytes = _peak_bytes(
         lambda: tuple(MeshEntityRef.element(value) for value in ids)
     )

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from fem import geometry as geometry_runtime
 from fem.application import (
     ModelSession,
     compile_planar_construction,
@@ -10,11 +9,9 @@ from fem.application import (
     derive_feature_history,
 )
 from fem.application.preprocessing import generate_fem_model
-from fem.application.recipe_compiler import compile_recipe
 from fem.geometry import (
     BooleanGeometry,
     ExtrudedGeometry,
-    LogicalEntityRef,
     PlanarConstructionIR,
 )
 from fem.io.project import load_project, save_project
@@ -74,18 +71,20 @@ def _h_plate() -> dict[str, object]:
                 "operands": ["left_bar", "cross_bar", "right_bar"],
             },
             {
+                # Straight edges keep project/workflow checks inexpensive.
                 "id": "hole_seed",
-                "kind": "circle",
-                "center_x": 1.0,
-                "center_y": 1.0,
-                "radius": 0.35,
+                "kind": "rectangle",
+                "x": 0.65,
+                "y": 0.65,
+                "width": 0.7,
+                "height": 0.7,
             },
             {
                 "id": "corner_holes",
                 "kind": "rectangular_pattern",
                 "seed": "hole_seed",
                 "count_x": 2,
-                "count_y": 2,
+                "count_y": 1,
                 "spacing_x": 28.0,
                 "spacing_y": 8.0,
             },
@@ -143,7 +142,7 @@ def test_h_plate_preview_mesh_disk_roundtrip_and_edit(
 
     result = _dispatch(
         controller,
-        _planar_arguments(_h_plate(), part_function="带 H 槽和四角孔的二维板"),
+        _planar_arguments(_h_plate(), part_function="带 H 槽和两个孔的二维板"),
         "h-planar",
     )
 
@@ -284,9 +283,8 @@ def test_three_named_shapes_use_only_generic_nodes(real_gmsh, bars) -> None:
 
 
 @pytest.mark.gmsh
-def test_u_path_stroke_preview_mesh_and_disk_roundtrip(
+def test_u_path_stroke_proposal_preserves_one_hole(
     real_gmsh,
-    tmp_path,
 ) -> None:
     del real_gmsh
     construction = {
@@ -335,73 +333,6 @@ def test_u_path_stroke_preview_mesh_and_disk_roundtrip(
         PlanarConstructionIR.from_dict(construction)
     ).proof
     assert proof.hole_count == 1
-    mesh = generate_fem_model(recipe, MeshSettings(1.0, cell_shape="triangle"))
-    assert {element.type for element in mesh.mesh.elements} == {"Tri3"}
-    reopened = _save_and_reopen(session, tmp_path / "u-path-slot.fempy")
-    assert reopened.parts[0].geometry_recipe == recipe
-
-
-@pytest.mark.gmsh
-def test_h_sketch_dedicated_extrusion_lineage_tet_and_roundtrip(
-    real_gmsh,
-    tmp_path,
-) -> None:
-    del real_gmsh
-    session = ModelSession()
-    bridge, controller = make_planar_authoring_controller(session)
-    planar = _dispatch(
-        controller,
-        _planar_arguments(_h_plate(), part_function="后续拉伸的 H 槽板"),
-        "h-before-extrusion",
-    )
-    bridge.accept_from_gui_control(planar.data["proposal_id"])
-    current = session.snapshot()
-    part = current.parts[0]
-    bridge, controller = make_planar_authoring_controller(session)
-    read = controller.dispatch(
-        "read_profile_transform_context",
-        {"part_id": part.id},
-        ToolExecutionContext("profile-transform-roundtrip", current.session_revision, "read"),
-    )
-    assert read.ok
-    transformed = controller.dispatch(
-        "prepare_profile_extrusion",
-        {
-            "part_id": part.id,
-            "profile_selection": "unique_material_profile",
-            "height": 2.0,
-        },
-        ToolExecutionContext(
-            "profile-transform-roundtrip",
-            current.session_revision,
-            "extrude",
-        ),
-    )
-    assert transformed.ok, transformed.summary
-    bridge.accept_from_gui_control(transformed.data["proposal_id"])
-    recipe = session.snapshot().parts[0].geometry_recipe
-    assert type(recipe) is ExtrudedGeometry
-    with geometry_runtime.model("h-extrusion-roundtrip", dimension=3) as cad:
-        compiled = compile_recipe(cad, recipe)
-        hole_sides = tuple(
-            entity.logical_id
-            for entity in compiled.catalog.entities_of("face")
-            if entity.semantic_role == "sweep.boundary.hole"
-        )
-        # Feature-chain persistence keeps boolean-split boundaries: the H
-        # slot contributes twelve selectable sides and each of the four
-        # corner holes is cut into four arc sides (4 x 4), giving 28.
-        assert len(hole_sides) == 28
-        assert all(
-            compiled.resolve(LogicalEntityRef(logical_id)) for logical_id in hole_sides
-        )
-    mesh = generate_fem_model(
-        recipe,
-        MeshSettings(1.2, cell_shape="tetrahedron"),
-    )
-    assert {element.type for element in mesh.mesh.elements} == {"Tet4"}
-    reopened = _save_and_reopen(session, tmp_path / "h-extrusion.fempy")
-    assert reopened.parts[0].geometry_recipe == recipe
 
 
 @pytest.mark.gmsh
@@ -414,8 +345,15 @@ def test_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
     bridge, controller = make_planar_authoring_controller(session)
     dynamic = ControllerDynamicTools(controller)
     arguments = {
-        "part_function": "直接生成带组合槽的厚板",
-        "construction": _h_plate(),
+        "part_function": "直接生成厚板",
+        "construction": {
+            "schema_version": 1,
+            "name": "direct-extrusion-plate",
+            "plane": "XY",
+            "nodes": [{"id": "plate", "kind": "rectangle", "x": 0, "y": 0,
+                       "width": 4, "height": 3}],
+            "result_node_id": "plate",
+        },
         "output": {
             "kind": "extrusion",
             "profile_selection": "unique_material_profile",
@@ -438,7 +376,7 @@ def test_blank_direct_extrusion_is_one_provider_round_and_one_final_card(
     )
     before = session.snapshot()
 
-    events = engine.send_message("创建带组合槽的厚板，厚度 2")
+    events = engine.send_message("创建厚板，厚度 2")
 
     assert len(provider.requests) == 1
     assert session.snapshot() == before

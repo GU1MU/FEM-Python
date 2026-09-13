@@ -12,6 +12,8 @@ from fem.core.model import (
     Surface,
 )
 from fem.core.result import ModelResult
+from fem.io import inp as abaqus
+from fem.solvers import static_linear
 from fem.post.stress import beam, field, invariants
 
 from fem_agent.diagnostics import DiagnosticCode
@@ -21,6 +23,7 @@ from fem_agent.schemas import (
     UnitContext,
 )
 from fem_agent.tools.results import MAX_PROVIDER_SCALARS, query_results
+from tests.helpers.abaqus_builders import write_hex20_block_inp
 from tests.helpers.mesh_builders import make_tri3_stiffness_mesh
 from tests.helpers.model_builders import make_simple_truss_mesh
 from tests.helpers.result_field_fixtures import (
@@ -301,3 +304,49 @@ def test_stress_extrema_match_existing_nodal_stress_postprocessing():
     assert all(scalar.unit == "MPa" for scalar in summary.scalars)
     assert all(scalar.element_id == 1 for scalar in summary.scalars)
     assert all(scalar.region == "plate" for scalar in summary.scalars)
+
+
+def test_hex20_surface_query_uses_saved_displacements_without_solving(
+    tmp_path, monkeypatch,
+):
+    source = write_hex20_block_inp(tmp_path, "surface_query_hex20.inp")
+    model = abaqus.read(source)
+    result = static_linear.solve(model, step=model.steps[-1])
+    surface_nodes = {
+        node_id
+        for face in model.surfaces["Surf-loaded"].faces
+        for node_id in face.node_ids
+    }
+    assert len(surface_nodes) == 8
+    expected = max(
+        np.linalg.norm([
+            result.nodal_displacement(node_id, component)
+            for component in (1, 2, 3)
+        ])
+        for node_id in surface_nodes
+    )
+    original_displacements = result.U.copy()
+    original_reactions = result.reactions.copy()
+
+    def unexpected_solve(*args, **kwargs):
+        pytest.fail("querying an existing result must not run the solver")
+
+    monkeypatch.setattr(static_linear, "solve", unexpected_solve)
+    summary = query_results(
+        result,
+        (ResultQuery(ResultQueryKind.MAX_DISPLACEMENT_MAGNITUDE,
+                     surface="Surf-loaded"),),
+        run_id="hex20-surface-query",
+        unit_context=UNITS,
+    )
+
+    assert summary.diagnostics == ()
+    assert len(summary.scalars) == 1
+    scalar = summary.scalars[0]
+    assert scalar.region == "Surf-loaded"
+    assert scalar.node_id in surface_nodes
+    assert scalar.value == pytest.approx(expected)
+    assert scalar.unit == "mm"
+    assert scalar.run_id == "hex20-surface-query"
+    np.testing.assert_array_equal(result.U, original_displacements)
+    np.testing.assert_array_equal(result.reactions, original_reactions)
