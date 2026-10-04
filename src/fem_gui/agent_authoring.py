@@ -67,8 +67,6 @@ from fem_agent.authoring import (
     ProposalKind,
     ProposalPortRecord,
     ProposalState,
-    RequirementLedger,
-    RequirementReview,
     UnitContextSummary,
 )
 from fem_agent.analysis_authoring import require_non_destructive_a5_batch
@@ -3836,22 +3834,6 @@ class AgentAuthoringBridge:
         )
         return self.reject_proposal(proposal_id, authorization)
 
-    def confirm_requirement_review_from_gui(
-        self,
-        ledger: RequirementLedger,
-        review: RequirementReview,
-    ) -> RequirementReview:
-        self._require_gui_thread()
-        return ledger._confirm_review_from_gui(review)
-
-    def reject_requirement_review_from_gui(
-        self,
-        ledger: RequirementLedger,
-        review: RequirementReview,
-    ) -> RequirementReview:
-        self._require_gui_thread()
-        return ledger._reject_review_from_gui(review)
-
     def state(self, proposal_id: str) -> ProposalState:
         try:
             return self._records[proposal_id].state
@@ -4903,9 +4885,6 @@ def create_session_authoring_workflow_controller(
                     "supported_edits": [
                         "planar_boolean",
                         "replace_planar_boolean_feature",
-                        "extrude_profiles",
-                        "revolve_profile",
-                        "path_sweep_profile",
                         "add_path_slot",
                         "translate",
                         "rotate",
@@ -4953,15 +4932,6 @@ def create_session_authoring_workflow_controller(
                 "translate",
                 "rotate",
             ]
-            if (
-                type(part.geometry_recipe) is SketchGeometry
-                and part.geometry_recipe.is_strict
-            ):
-                catalog["supported_edits"][:0] = [
-                    "extrude_profiles",
-                    "revolve_profile",
-                    "path_sweep_profile",
-                ]
             sketch = _as_strict_planar_sketch(part.geometry_recipe)
             profile_analysis = geometry_runtime.analyze_sketch_profiles(sketch)
             profiles = profile_analysis.profiles

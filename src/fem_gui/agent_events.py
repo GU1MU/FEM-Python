@@ -481,7 +481,6 @@ def _validate_payload(event_type: EventType, payload: Mapping[str, Any]) -> None
                 "mesh",
                 "solve",
                 "destructive_edit",
-                "requirement_review",
                 "project_save",
             }:
                 raise AgentEventError("proposal_kind is not a known type")

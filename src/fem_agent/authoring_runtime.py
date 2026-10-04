@@ -11,7 +11,6 @@ import math
 import re
 import threading
 from typing import TYPE_CHECKING, Any
-import uuid
 
 from fem.geometry.construction_ir import (
     MAX_BOOLEAN_OPERANDS,
@@ -31,8 +30,6 @@ from .authoring import (
     AuthoringContractError,
     ProposalState,
     RequirementLedger,
-    RequirementReview,
-    RequirementReviewStatus,
     RequirementStatus,
 )
 from .diagnostics import DiagnosticCode, make_diagnostic
@@ -64,7 +61,6 @@ if TYPE_CHECKING:
 
 class AuthoringWorkflowStage(str, Enum):
     REQUIREMENTS = "requirements"
-    REVIEW_PENDING = "review_pending"
     GEOMETRY_READY = "geometry_ready"
     GEOMETRY_PENDING = "geometry_pending"
     MESH_READY = "mesh_ready"
@@ -421,7 +417,6 @@ _FORBIDDEN_CONFIRMATION_TOOL_NAMES = frozenset(
         "accept_proposal",
         "confirm_mesh",
         "confirm_solve",
-        "confirm_requirement_review",
         "reject_proposal",
         "cancel_operation",
     }
@@ -590,9 +585,6 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
         "uniqueItems": True,
     },
 }
-_REQUIRED_REQUIREMENTS = tuple(
-    key for key in _REQUIREMENT_SPECS if key != "line_element_type"
-)
 _GEOMETRY_REQUIREMENTS = (
     "length_unit",
     "force_unit",
@@ -729,15 +721,6 @@ _SET_REQUIREMENTS = _tool(
         "required": ["turn_id", "requirements"],
         "additionalProperties": False,
     },
-)
-_REQUEST_REVIEW = _tool(
-    "request_requirement_review",
-    (
-        "Create a local RequirementReview after every required value for the "
-        "current stage has been explicitly supplied. This tool cannot confirm "
-        "it."
-    ),
-    _NO_ARGUMENTS,
 )
 
 _COMPOSITE_PATH_SCHEMA = {
@@ -910,565 +893,403 @@ _READ_GEOMETRY_EDIT_CONTEXT = _tool(
         "additionalProperties": False,
     },
 )
-_PREPARE_GEOMETRY_EDIT = _tool(
-    "prepare_geometry_edit",
-    (
-        "Prepare an in-place, revision-bound edit of an existing native Part. "
-        "Selected-Profile extrusion requires explicit canonical source_face_ids "
-        "from read_geometry_feature_catalog and creates one independent Part per "
-        "selected material Profile. Revolution and path sweep require one explicit "
-        "canonical Profile; path sweep also requires an ordered open polyline and "
-        "a fixed or transport frame. Exact Part/Body Boolean requires explicit "
-        "target, tool, fuse/cut operation, result name, and the sole supported "
-        "tool-consumption policy. A two-dimensional fuse or cut uses planar_boolean "
-        "with one detached rectangle, circle, polygon, or path-stroke tool and is "
-        "appended to native feature history. The edit runs only after the local "
-        "GUI control is clicked."
-    ),
-    {
-        "type": "object",
-        "properties": {
-            "part_id": {"type": "string", "minLength": 1, "maxLength": 128},
-            "edit": {
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "extrude_profiles"},
-                            "source_face_ids": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": 32,
-                                "uniqueItems": True,
-                                "items": {
-                                    "type": "string",
-                                    "pattern": "^face:[^\\s]+$",
-                                    "maxLength": 192,
+_GEOMETRY_EDIT_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "part_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "edit": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "planar_boolean"},
+                        "boolean_operation": {
+                            "type": "string",
+                            "enum": ["fuse", "cut"],
+                        },
+                        "tool": {
+                            "description": (
+                                "Cut/fuse profile as a primitive region, "
+                                "closed polygon boundary, or open non- "
+                                "branching constant-width path_stroke."
+                            ),
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {"const": "rectangle"},
+                                        "x": {"type": "number"},
+                                        "y": {"type": "number"},
+                                        "width": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                        "height": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                    },
+                                    "required": [
+                                        "kind",
+                                        "x",
+                                        "y",
+                                        "width",
+                                        "height",
+                                    ],
+                                    "additionalProperties": False,
                                 },
-                                "description": (
-                                    "Explicit canonical material Profile IDs "
-                                    "from read_geometry_feature_catalog."
-                                ),
-                            },
-                            "height": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {"const": "circle"},
+                                        "center_x": {"type": "number"},
+                                        "center_y": {"type": "number"},
+                                        "radius": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                        },
+                                    },
+                                    "required": [
+                                        "kind",
+                                        "center_x",
+                                        "center_y",
+                                        "radius",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {"const": "polygon"},
+                                        "vertices": {
+                                            "type": "array",
+                                            "minItems": 3,
+                                            "maxItems": 64,
+                                            "description": (
+                                                "Ordered vertices of one closed "
+                                                "perimeter. Concave boundaries "
+                                                "are valid."
+                                            ),
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "x": {"type": "number"},
+                                                    "y": {"type": "number"},
+                                                },
+                                                "required": ["x", "y"],
+                                                "additionalProperties": False,
+                                            },
+                                        },
+                                    },
+                                    "required": ["kind", "vertices"],
+                                    "additionalProperties": False,
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "kind": {"const": "path_stroke"},
+                                        "points": {
+                                            "type": "array",
+                                            "minItems": 2,
+                                            "maxItems": 64,
+                                            "description": (
+                                                "Open non-branching centerline "
+                                                "for one constant-width slot. "
+                                                + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
+                                            ),
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "x": {"type": "number"},
+                                                    "y": {"type": "number"},
+                                                },
+                                                "required": ["x", "y"],
+                                                "additionalProperties": False,
+                                            },
+                                        },
+                                        "width": {
+                                            "type": "number",
+                                            "exclusiveMinimum": 0,
+                                            "description": (
+                                                "Full constant slot width."
+                                            ),
+                                        },
+                                        "cap": {
+                                            "type": "string",
+                                            "enum": ["butt", "square", "round"],
+                                            "description": (
+                                                "Boundary style at both path ends."
+                                            ),
+                                        },
+                                        "join": {
+                                            "type": "string",
+                                            "enum": ["miter", "bevel", "round"],
+                                            "description": (
+                                                "Boundary style at path bends."
+                                            ),
+                                        },
+                                    },
+                                    "required": [
+                                        "kind",
+                                        "points",
+                                        "width",
+                                        "cap",
+                                        "join",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                            ]
                         },
-                        "required": ["operation", "source_face_ids", "height"],
-                        "additionalProperties": False,
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "revolve_profile"},
-                            "source_face_id": {
-                                "type": "string",
-                                "pattern": "^face:[^\\s]+$",
-                                "maxLength": 192,
-                            },
-                            "axis": {
-                                "type": "string",
-                                "enum": ["x", "y", "z"],
-                            },
-                            "angle_degrees": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                                "maximum": 360,
-                            },
+                    "required": ["operation", "boolean_operation", "tool"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "part_boolean"},
+                        "boolean_operation": {
+                            "type": "string",
+                            "enum": ["fuse", "cut"],
                         },
-                        "required": [
-                            "operation",
-                            "source_face_id",
-                            "axis",
-                            "angle_degrees",
-                        ],
-                        "additionalProperties": False,
+                        "tool_part_id": {
+                            "type": "string",
+                            "pattern": "^P[1-9][0-9]*$",
+                        },
+                        "result_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        },
+                        "tool_handling": {
+                            "const": "consume_tool_part",
+                        },
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "path_sweep_profile"},
-                            "source_face_id": {
-                                "type": "string",
-                                "pattern": "^face:[^\\s]+$",
-                                "maxLength": 192,
-                            },
-                            "path": {
+                    "required": [
+                        "operation",
+                        "boolean_operation",
+                        "tool_part_id",
+                        "result_name",
+                        "tool_handling",
+                    ],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "body_boolean"},
+                        "boolean_operation": {
+                            "type": "string",
+                            "enum": ["fuse", "cut"],
+                        },
+                        "target_body_id": {
+                            "type": "string",
+                            "pattern": "^B[1-9][0-9]*$",
+                        },
+                        "tool_body_id": {
+                            "type": "string",
+                            "pattern": "^B[1-9][0-9]*$",
+                        },
+                        "result_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        },
+                        "tool_handling": {
+                            "const": "consume_tool_body",
+                        },
+                    },
+                    "required": [
+                        "operation",
+                        "boolean_operation",
+                        "target_body_id",
+                        "tool_body_id",
+                        "result_name",
+                        "tool_handling",
+                    ],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "add_circle"},
+                        "center_x": {"type": "number"},
+                        "center_y": {"type": "number"},
+                        "radius": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
+                    },
+                    "required": [
+                        "operation",
+                        "center_x",
+                        "center_y",
+                        "radius",
+                    ],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "add_rectangle"},
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "width": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
+                        "height": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
+                    },
+                    "required": [
+                        "operation",
+                        "x",
+                        "y",
+                        "width",
+                        "height",
+                    ],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "add_polygon"},
+                        "vertices": {
+                            "type": "array",
+                            "minItems": 3,
+                            "maxItems": 64,
+                            "description": (
+                                "Ordered non-self-intersecting perimeter. The "
+                                "closing edge is implicit; concave boundaries "
+                                "are valid."
+                            ),
+                            "items": {
                                 "type": "object",
                                 "properties": {
-                                    "points": {
-                                        "type": "array",
-                                        "minItems": 2,
-                                        "maxItems": 64,
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "name": {
-                                                    "type": "string",
-                                                    "minLength": 1,
-                                                    "maxLength": 64,
-                                                },
-                                                "x": {"type": "number"},
-                                                "y": {"type": "number"},
-                                                "z": {"type": "number"},
-                                            },
-                                            "required": ["name", "x", "y", "z"],
-                                            "additionalProperties": False,
-                                        },
-                                    },
-                                    "members": {
-                                        "type": "array",
-                                        "minItems": 1,
-                                        "maxItems": 63,
-                                        "description": (
-                                            "Explicit traversal order; ordinary 1D graph order is never inferred."
-                                        ),
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "name": {
-                                                    "type": "string",
-                                                    "minLength": 1,
-                                                    "maxLength": 64,
-                                                },
-                                                "start": {
-                                                    "type": "string",
-                                                    "minLength": 1,
-                                                    "maxLength": 64,
-                                                },
-                                                "end": {
-                                                    "type": "string",
-                                                    "minLength": 1,
-                                                    "maxLength": 64,
-                                                },
-                                            },
-                                            "required": ["name", "start", "end"],
-                                            "additionalProperties": False,
-                                        },
-                                    },
+                                    "x": {"type": "number"},
+                                    "y": {"type": "number"},
                                 },
-                                "required": ["points", "members"],
+                                "required": ["x", "y"],
                                 "additionalProperties": False,
                             },
-                            "frame_strategy": {
-                                "type": "string",
-                                "enum": ["fixed", "transport"],
-                            },
                         },
-                        "required": [
-                            "operation",
-                            "source_face_id",
-                            "path",
-                            "frame_strategy",
-                        ],
-                        "additionalProperties": False,
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "planar_boolean"},
-                            "boolean_operation": {
-                                "type": "string",
-                                "enum": ["fuse", "cut"],
-                            },
-                            "tool": {
-                                "description": (
-                                    "Cut/fuse profile as a primitive region, "
-                                    "closed polygon boundary, or open non- "
-                                    "branching constant-width path_stroke."
-                                ),
-                                "oneOf": [
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "kind": {"const": "rectangle"},
-                                            "x": {"type": "number"},
-                                            "y": {"type": "number"},
-                                            "width": {
-                                                "type": "number",
-                                                "exclusiveMinimum": 0,
-                                            },
-                                            "height": {
-                                                "type": "number",
-                                                "exclusiveMinimum": 0,
-                                            },
-                                        },
-                                        "required": [
-                                            "kind",
-                                            "x",
-                                            "y",
-                                            "width",
-                                            "height",
-                                        ],
-                                        "additionalProperties": False,
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "kind": {"const": "circle"},
-                                            "center_x": {"type": "number"},
-                                            "center_y": {"type": "number"},
-                                            "radius": {
-                                                "type": "number",
-                                                "exclusiveMinimum": 0,
-                                            },
-                                        },
-                                        "required": [
-                                            "kind",
-                                            "center_x",
-                                            "center_y",
-                                            "radius",
-                                        ],
-                                        "additionalProperties": False,
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "kind": {"const": "polygon"},
-                                            "vertices": {
-                                                "type": "array",
-                                                "minItems": 3,
-                                                "maxItems": 64,
-                                                "description": (
-                                                    "Ordered vertices of one closed "
-                                                    "perimeter. Concave boundaries "
-                                                    "are valid."
-                                                ),
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "x": {"type": "number"},
-                                                        "y": {"type": "number"},
-                                                    },
-                                                    "required": ["x", "y"],
-                                                    "additionalProperties": False,
-                                                },
-                                            },
-                                        },
-                                        "required": ["kind", "vertices"],
-                                        "additionalProperties": False,
-                                    },
-                                    {
-                                        "type": "object",
-                                        "properties": {
-                                            "kind": {"const": "path_stroke"},
-                                            "points": {
-                                                "type": "array",
-                                                "minItems": 2,
-                                                "maxItems": 64,
-                                                "description": (
-                                                    "Open non-branching centerline "
-                                                    "for one constant-width slot. "
-                                                    + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
-                                                ),
-                                                "items": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "x": {"type": "number"},
-                                                        "y": {"type": "number"},
-                                                    },
-                                                    "required": ["x", "y"],
-                                                    "additionalProperties": False,
-                                                },
-                                            },
-                                            "width": {
-                                                "type": "number",
-                                                "exclusiveMinimum": 0,
-                                                "description": (
-                                                    "Full constant slot width."
-                                                ),
-                                            },
-                                            "cap": {
-                                                "type": "string",
-                                                "enum": ["butt", "square", "round"],
-                                                "description": (
-                                                    "Boundary style at both path ends."
-                                                ),
-                                            },
-                                            "join": {
-                                                "type": "string",
-                                                "enum": ["miter", "bevel", "round"],
-                                                "description": (
-                                                    "Boundary style at path bends."
-                                                ),
-                                            },
-                                        },
-                                        "required": [
-                                            "kind",
-                                            "points",
-                                            "width",
-                                            "cap",
-                                            "join",
-                                        ],
-                                        "additionalProperties": False,
-                                    },
-                                ]
-                            },
-                        },
-                        "required": ["operation", "boolean_operation", "tool"],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "part_boolean"},
-                            "boolean_operation": {
-                                "type": "string",
-                                "enum": ["fuse", "cut"],
-                            },
-                            "tool_part_id": {
-                                "type": "string",
-                                "pattern": "^P[1-9][0-9]*$",
-                            },
-                            "result_name": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                            "tool_handling": {
-                                "const": "consume_tool_part",
-                            },
-                        },
-                        "required": [
-                            "operation",
-                            "boolean_operation",
-                            "tool_part_id",
-                            "result_name",
-                            "tool_handling",
-                        ],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "body_boolean"},
-                            "boolean_operation": {
-                                "type": "string",
-                                "enum": ["fuse", "cut"],
-                            },
-                            "target_body_id": {
-                                "type": "string",
-                                "pattern": "^B[1-9][0-9]*$",
-                            },
-                            "tool_body_id": {
-                                "type": "string",
-                                "pattern": "^B[1-9][0-9]*$",
-                            },
-                            "result_name": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                            "tool_handling": {
-                                "const": "consume_tool_body",
-                            },
-                        },
-                        "required": [
-                            "operation",
-                            "boolean_operation",
-                            "target_body_id",
-                            "tool_body_id",
-                            "result_name",
-                            "tool_handling",
-                        ],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "add_circle"},
-                            "center_x": {"type": "number"},
-                            "center_y": {"type": "number"},
-                            "radius": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                        },
-                        "required": [
-                            "operation",
-                            "center_x",
-                            "center_y",
-                            "radius",
-                        ],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "add_rectangle"},
-                            "x": {"type": "number"},
-                            "y": {"type": "number"},
-                            "width": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                            "height": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                        },
-                        "required": [
-                            "operation",
-                            "x",
-                            "y",
-                            "width",
-                            "height",
-                        ],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "add_polygon"},
-                            "vertices": {
-                                "type": "array",
-                                "minItems": 3,
-                                "maxItems": 64,
-                                "description": (
-                                    "Ordered non-self-intersecting perimeter. The "
-                                    "closing edge is implicit; concave boundaries "
-                                    "are valid."
-                                ),
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "x": {"type": "number"},
-                                        "y": {"type": "number"},
-                                    },
-                                    "required": ["x", "y"],
-                                    "additionalProperties": False,
+                    "required": ["operation", "vertices"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "add_path_slot"},
+                        "points": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 64,
+                            "description": (
+                                "Open non-branching centerline for one "
+                                "constant-width slot; the compiler generates "
+                                "its offset boundary. "
+                                + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type": "number"},
+                                    "y": {"type": "number"},
                                 },
+                                "required": ["x", "y"],
+                                "additionalProperties": False,
                             },
                         },
-                        "required": ["operation", "vertices"],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "add_path_slot"},
-                            "points": {
-                                "type": "array",
-                                "minItems": 2,
-                                "maxItems": 64,
-                                "description": (
-                                    "Open non-branching centerline for one "
-                                    "constant-width slot; the compiler generates "
-                                    "its offset boundary. "
-                                    + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
-                                ),
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "x": {"type": "number"},
-                                        "y": {"type": "number"},
-                                    },
-                                    "required": ["x", "y"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "width": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                                "description": "Full slot width.",
-                            },
-                            "cap": {
-                                "type": "string",
-                                "enum": ["butt", "square", "round"],
-                            },
-                            "join": {
-                                "type": "string",
-                                "enum": ["miter", "bevel", "round"],
-                            },
+                        "width": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "description": "Full slot width.",
                         },
-                        "required": ["operation", "points", "width", "cap", "join"],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "update_point"},
-                            "point_id": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                            "x": {"type": "number"},
-                            "y": {"type": "number"},
+                        "cap": {
+                            "type": "string",
+                            "enum": ["butt", "square", "round"],
                         },
-                        "required": ["operation", "point_id"],
-                        "minProperties": 3,
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "update_circle"},
-                            "circle_id": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                            "center_x": {"type": "number"},
-                            "center_y": {"type": "number"},
-                            "radius": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
+                        "join": {
+                            "type": "string",
+                            "enum": ["miter", "bevel", "round"],
                         },
-                        "required": ["operation", "circle_id"],
-                        "minProperties": 3,
-                        "additionalProperties": False,
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "translate"},
-                            "dx": {"type": "number"},
-                            "dy": {"type": "number"},
-                            "dz": {"type": "number"},
+                    "required": ["operation", "points", "width", "cap", "join"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "update_point"},
+                        "point_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
                         },
-                        "required": ["operation", "dx", "dy"],
-                        "additionalProperties": False,
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "operation": {"const": "rotate"},
-                            "axis": {
-                                "type": "string",
-                                "enum": ["x", "y", "z"],
-                            },
-                            "angle_degrees": {"type": "number"},
+                    "required": ["operation", "point_id"],
+                    "minProperties": 3,
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "update_circle"},
+                        "circle_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
                         },
-                        "required": ["operation", "axis", "angle_degrees"],
-                        "additionalProperties": False,
+                        "center_x": {"type": "number"},
+                        "center_y": {"type": "number"},
+                        "radius": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                        },
                     },
-                ]
-            },
+                    "required": ["operation", "circle_id"],
+                    "minProperties": 3,
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "translate"},
+                        "dx": {"type": "number"},
+                        "dy": {"type": "number"},
+                        "dz": {"type": "number"},
+                    },
+                    "required": ["operation", "dx", "dy"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "operation": {"const": "rotate"},
+                        "axis": {
+                            "type": "string",
+                            "enum": ["x", "y", "z"],
+                        },
+                        "angle_degrees": {"type": "number"},
+                    },
+                    "required": ["operation", "axis", "angle_degrees"],
+                    "additionalProperties": False,
+                },
+            ]
         },
-        "required": ["part_id", "edit"],
-        "additionalProperties": False,
     },
-)
-# Profile transforms retain a compatibility dispatcher in the GUI bridge, but
-# the provider-facing general edit schema no longer advertises those three
-# large union branches.  Dedicated tools above are the sole discovery seam.
-_legacy_geometry_edit_parameters = dict(_PREPARE_GEOMETRY_EDIT.parameters)
-_legacy_edit = dict(_legacy_geometry_edit_parameters["properties"]["edit"])
-_PROFILE_TRANSFORM_OPERATION_CONSTS = frozenset(
-    {"extrude_profiles", "revolve_profile", "path_sweep_profile"}
-)
-_legacy_edit["oneOf"] = [
-    branch
-    for branch in _legacy_edit["oneOf"]
-    if branch.get("properties", {}).get("operation", {}).get("const")
-    not in _PROFILE_TRANSFORM_OPERATION_CONSTS
-]
+    "required": ["part_id", "edit"],
+    "additionalProperties": False,
+}
+_geometry_edit_schema = _GEOMETRY_EDIT_PARAMETERS["properties"]["edit"]
 _PLANAR_BOOLEAN_EDIT_SCHEMA = next(
     branch
-    for branch in _legacy_edit["oneOf"]
+    for branch in _geometry_edit_schema["oneOf"]
     if branch.get("properties", {}).get("operation", {}).get("const")
     == "planar_boolean"
 )
@@ -1490,7 +1311,7 @@ _REPLACE_PLANAR_BOOLEAN_FEATURE_EDIT_SCHEMA = {
     "required": ["operation", "feature_id", "tool"],
     "additionalProperties": False,
 }
-_legacy_edit["oneOf"].append(_REPLACE_PLANAR_BOOLEAN_FEATURE_EDIT_SCHEMA)
+_geometry_edit_schema["oneOf"].append(_REPLACE_PLANAR_BOOLEAN_FEATURE_EDIT_SCHEMA)
 _DELETE_CIRCLES_EDIT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1753,7 +1574,7 @@ _DELETE_CONSTRAINTS_EDIT_SCHEMA = {
     "required": ["operation", "constraint_ids"],
     "additionalProperties": False,
 }
-_legacy_edit["oneOf"].extend(
+_geometry_edit_schema["oneOf"].extend(
     [
         _DELETE_CIRCLES_EDIT_SCHEMA,
         _REPLACE_CIRCLE_PATTERN_EDIT_SCHEMA,
@@ -1788,11 +1609,11 @@ _BATCH_PLANAR_OPERATION_CONSTS = frozenset(
 )
 _batch_planar_branches = [
     branch
-    for branch in _legacy_edit["oneOf"]
+    for branch in _geometry_edit_schema["oneOf"]
     if branch.get("properties", {}).get("operation", {}).get("const")
     in _BATCH_PLANAR_OPERATION_CONSTS
 ]
-_legacy_edit["oneOf"].append(
+_geometry_edit_schema["oneOf"].append(
     {
         "type": "object",
         "properties": {
@@ -1826,13 +1647,9 @@ _SPATIAL_RELATION_SCHEMA = {
     "required": ["reference_feature_id", "relation", "clearance"],
     "additionalProperties": False,
 }
-_legacy_geometry_edit_parameters["properties"] = {
-    **dict(_legacy_geometry_edit_parameters["properties"]),
-    "edit": _legacy_edit,
-    "spatial_relation": _SPATIAL_RELATION_SCHEMA,
-}
+_GEOMETRY_EDIT_PARAMETERS["properties"]["spatial_relation"] = _SPATIAL_RELATION_SCHEMA
 _PREPARE_GEOMETRY_EDIT = ToolDefinition(
-    _PREPARE_GEOMETRY_EDIT.name,
+    "prepare_geometry_edit",
     (
         "Prepare a revision-bound native Part edit using the current geometry IDs "
         "and narrowed operation schema. Dedicated prepare_profile_* tools handle "
@@ -1843,7 +1660,7 @@ _PREPARE_GEOMETRY_EDIT = ToolDefinition(
         "reference feature_id, direction, and exact clearance checked by local "
         "preflight."
     ),
-    _legacy_geometry_edit_parameters,
+    _GEOMETRY_EDIT_PARAMETERS,
 )
 
 
@@ -3875,7 +3692,6 @@ _STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
         _READ_EDITABLE_OBJECTS,
         _EDIT_MODEL_OBJECT,
     ),
-    AuthoringWorkflowStage.REVIEW_PENDING: (_READ_CONTEXT,),
     AuthoringWorkflowStage.GEOMETRY_READY: (
         _READ_CONTEXT,
         _GEOMETRY_FEATURE_CATALOG,
@@ -4104,9 +3920,6 @@ class AuthoringWorkflowController:
         self._workspace_export_available = workspace_export_available
         self._ledger = RequirementLedger()
         self._stage = AuthoringWorkflowStage.REQUIREMENTS
-        self._pending_review: RequirementReview | None = None
-        self._review_binding: tuple[str, str, int] | None = None
-        self._review_source_stage: AuthoringWorkflowStage | None = None
         self._pending_operation: str | None = None
         self._project_save_record: ProjectSaveProposalRecord | None = None
         self._geometry_resume_stage: AuthoringWorkflowStage | None = None
@@ -4348,11 +4161,6 @@ class AuthoringWorkflowController:
     @property
     def ledger(self) -> RequirementLedger:
         return self._ledger
-
-    @property
-    def pending_review(self) -> RequirementReview | None:
-        with self._lock:
-            return self._pending_review
 
     @property
     def terminal_records(self) -> tuple[AuthoringTerminalRecord, ...]:
@@ -4726,19 +4534,7 @@ class AuthoringWorkflowController:
                     f"Authoring tool {name!r} is unavailable in stage {self._stage.value}.",
                 )
             try:
-                raw_edit = arguments.get("edit")
-                compatibility_operation = (
-                    raw_edit.get("operation")
-                    if isinstance(raw_edit, Mapping)
-                    else None
-                )
-                # Profile transforms retain a local compatibility dispatcher;
-                # provider-facing calls use their dedicated typed tools.
-                if (
-                    name == _PREPARE_GEOMETRY_EDIT.name
-                    and compatibility_operation
-                    not in _PROFILE_TRANSFORM_OPERATION_CONSTS
-                ):
+                if name == _PREPARE_GEOMETRY_EDIT.name:
                     _validate_geometry_edit_arguments(
                         arguments,
                         definitions[name],
@@ -4748,9 +4544,6 @@ class AuthoringWorkflowController:
                     outcome = self._read_context()
                 elif name == _SET_REQUIREMENTS.name:
                     outcome = self._set_requirements(arguments)
-                elif name == _REQUEST_REVIEW.name:
-                    _require_exact_fields(arguments, set())
-                    outcome = self._request_review()
                 else:
                     _require_exact_fields(arguments, set()) if name not in {
                         RESULT_QUERY_TOOL_NAME,
@@ -4875,77 +4668,6 @@ class AuthoringWorkflowController:
                     ),
                 )
 
-    def resolve_requirement_review(
-        self,
-        review: RequirementReview,
-    ) -> None:
-        """Advance only after the existing GUI bridge returned a review state."""
-
-        if type(review) is not RequirementReview:
-            raise TypeError("review must be RequirementReview")
-        with self._lock:
-            pending = self._pending_review
-            source_stage = self._review_source_stage
-            if (
-                pending is None
-                or source_stage is None
-                or pending.review_id != review.review_id
-                or pending.review_hash != review.review_hash
-            ):
-                raise ValueError("RequirementReview does not match the pending review")
-            if review.status is RequirementReviewStatus.CONFIRMED:
-                self._stage = (
-                    AuthoringWorkflowStage.GEOMETRY_READY
-                    if source_stage is AuthoringWorkflowStage.REQUIREMENTS
-                    else source_stage
-                )
-            elif review.status in {
-                RequirementReviewStatus.REJECTED,
-                RequirementReviewStatus.STALE,
-            }:
-                self._stage = source_stage
-            else:
-                raise ValueError("RequirementReview is not terminal")
-            self._pending_review = None
-            self._review_binding = None
-            self._review_source_stage = None
-            self._record_terminal("requirement_review", review.status.value, "")
-            self._refresh_turn_snapshot_locked()
-
-    def stale_review_for_binding(
-        self,
-        context: AuthoringContext,
-    ) -> bool:
-        if type(context) is not AuthoringContext:
-            raise TypeError("context must be AuthoringContext")
-        current = (
-            context.binding.document_id,
-            context.binding.session_id,
-            context.binding.session_revision,
-        )
-        with self._lock:
-            if (
-                self._stage is not AuthoringWorkflowStage.REVIEW_PENDING
-                or self._review_binding is None
-                or self._review_binding == current
-            ):
-                return False
-            self._record_terminal(
-                "requirement_review",
-                "stale",
-                "document, session, or revision changed",
-            )
-            self._pending_review = None
-            self._review_binding = None
-            self._review_source_stage = None
-            self._binding_identity = current
-            self._geometry_edit_schema_scope = None
-            self._ledger = RequirementLedger()
-            self._stage = AuthoringWorkflowStage.STALE
-            self._observed_context = context
-            self._refresh_turn_snapshot_locked()
-            return True
-
     def observe_binding(
         self,
         context: AuthoringContext,
@@ -5052,9 +4774,6 @@ class AuthoringWorkflowController:
             )
             self._pending_operation = None
             self._clear_destructive_pending()
-            self._pending_review = None
-            self._review_binding = None
-            self._review_source_stage = None
             self._ledger = RequirementLedger()
             self._stage = AuthoringWorkflowStage.STALE
             self._refresh_turn_snapshot_locked()
@@ -5178,9 +4897,6 @@ class AuthoringWorkflowController:
             self._record_terminal(operation, ProposalState.STALE.value, normalized)
             self._pending_operation = None
             self._clear_destructive_pending()
-            self._pending_review = None
-            self._review_binding = None
-            self._review_source_stage = None
             self._ledger = RequirementLedger()
             # A document/session transition invalidates the last typed GUI
             # context.  Keep the workflow terminal record, but do not let
@@ -5241,9 +4957,6 @@ class AuthoringWorkflowController:
     def reset_for_binding(self) -> None:
         with self._lock:
             self._ledger = RequirementLedger()
-            self._pending_review = None
-            self._review_binding = None
-            self._review_source_stage = None
             self._pending_operation = None
             self._project_save_record = None
             self._geometry_resume_stage = None
@@ -5401,22 +5114,6 @@ class AuthoringWorkflowController:
             )
             self._refresh_turn_snapshot_locked()
 
-    def confirmed_requirements(
-        self,
-        group: str = "all",
-    ) -> dict[str, object]:
-        if group == "all":
-            keys = _REQUIRED_REQUIREMENTS
-        else:
-            keys = self._requirement_keys(group, handler=True)
-        return {
-            item.key: item.value
-            for item in self._ledger.require_confirmed(
-                group,
-                keys,
-            )
-        }
-
     def collected_requirements(
         self,
         group: str,
@@ -5462,14 +5159,7 @@ class AuthoringWorkflowController:
         )
 
     def _current_requirement_group(self) -> str | None:
-        stage = (
-            self._review_source_stage
-            if self._stage is AuthoringWorkflowStage.REVIEW_PENDING
-            else self._stage
-        )
-        if stage is None:
-            return None
-        return _REQUIREMENT_GATE_BY_STAGE.get(stage)
+        return _REQUIREMENT_GATE_BY_STAGE.get(self._stage)
 
     def _active_part_dimension(self) -> int | None:
         context = self._observed_context
@@ -5754,102 +5444,6 @@ class AuthoringWorkflowController:
         }
         summary = "Explicit current-operation requirements recorded."
         return AuthoringToolOutcome(summary, data)
-
-    def _request_review(self) -> AuthoringToolOutcome:
-        requirement_group = self._current_requirement_group()
-        if requirement_group is None:
-            raise ValueError("there is no active requirement stage")
-        required = self._requirement_keys(requirement_group)
-        recorded = {
-            item.key
-            for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
-        }
-        missing = [key for key in required if key not in recorded]
-        if missing:
-            raise ValueError("clarification_required: " + ", ".join(missing))
-        values = {item.key: item.value for item in self._ledger.entries}
-        if requirement_group == "analysis":
-            _validate_supported_requirement_combination(
-                values,
-                dimension=self._active_part_dimension(),
-            )
-        review = self._ledger.create_review(
-            f"review-{uuid.uuid4().hex}",
-            required,
-        )
-        raw_context = self._context_reader()
-        context_data = (
-            raw_context.to_provider_dict()
-            if type(raw_context) is AuthoringContext
-            else dict(raw_context)
-            if isinstance(raw_context, Mapping)
-            else None
-        )
-        if context_data is None or not isinstance(
-            context_data.get("binding"),
-            Mapping,
-        ):
-            raise TypeError("context_reader returned no binding")
-        binding = dict(context_data["binding"])
-        self._pending_review = review
-        self._review_source_stage = self._stage
-        self._review_binding = (
-            str(binding["document_id"]),
-            str(binding["session_id"]),
-            int(binding["session_revision"]),
-        )
-        self._stage = AuthoringWorkflowStage.REVIEW_PENDING
-        self._refresh_turn_snapshot_locked()
-        title, summary, impact = {
-            "geometry": (
-                "Confirm geometry requirements",
-                f"Review {len(review.fields)} geometry and project unit parameters",
-                "Confirm before using these values to create geometry",
-            ),
-            "mesh": (
-                "Confirm mesh requirements",
-                f"Review {len(review.fields)} mesh parameters",
-                "Confirm before using these values for meshing",
-            ),
-            "definitions": (
-                "Confirm material and section requirements",
-                f"Review {len(review.fields)} material and section parameters",
-                "Confirm before using these values for materials, sections, and assignments",
-            ),
-            "analysis": (
-                "Confirm analysis requirements",
-                f"Review {len(review.fields)} boundary condition, load, and result parameters",
-                "Confirm before using these values for analysis definitions",
-            ),
-        }[requirement_group]
-        return AuthoringToolOutcome(
-            "RequirementReview is waiting for the local GUI control.",
-            {
-                "review_id": review.review_id,
-                "review_hash": review.review_hash,
-                "ledger_revision": review.ledger_revision,
-                "status": review.status.value,
-                "requirement_stage": requirement_group,
-                "fields": [item.to_dict() for item in review.fields],
-                "proposal_view": {
-                    "proposal_id": review.review_id,
-                    "proposal_hash": review.review_hash,
-                    "proposal_kind": "requirement_review",
-                    "title": title,
-                    "summary": summary,
-                    "impact": impact,
-                    "confirm_label": "Confirm",
-                    "target_document_id": binding["document_id"],
-                    "target_session_id": binding["session_id"],
-                    "base_session_revision": binding["session_revision"],
-                },
-            },
-        )
 
     def _advance_after_success(
         self,
@@ -6378,48 +5972,6 @@ def _validate_requirement_value(
             _validate_requirement_value(key, item, item_spec)
     else:
         raise RuntimeError("unsupported requirement schema")
-
-
-def _validate_supported_requirement_combination(
-    values: Mapping[str, object],
-    *,
-    dimension: int | None = None,
-) -> None:
-    active_dimension = 3 if dimension == 3 else 2
-    fixed_dofs = tuple(values["fixed_dofs"])
-    if fixed_dofs != tuple(range(min(fixed_dofs), max(fixed_dofs) + 1)):
-        raise ValueError(
-            "clarification_required: fixed_dofs must be one contiguous "
-            f"{active_dimension}D translation range"
-        )
-    load_type = str(values["load_type"])
-    direction = str(values["load_direction"])
-    magnitude = float(values["load_magnitude"])
-    if load_type == "nodal":
-        if direction not in ({"x", "y", "z"} if active_dimension == 3 else {"x", "y"}):
-            raise ValueError(
-                "clarification_required: nodal force requires a global "
-                "translation direction"
-            )
-        return
-    if load_type.endswith("traction"):
-        if direction not in ({"x", "y", "z"} if active_dimension == 3 else {"x", "y"}):
-            raise ValueError(
-                "clarification_required: traction requires an explicit global "
-                "translation direction"
-            )
-        return
-    if not load_type.endswith("pressure") or direction not in {
-        "inward_normal",
-        "outward_normal",
-    }:
-        raise ValueError("clarification_required: pressure requires a normal direction")
-    if (direction == "inward_normal" and magnitude <= 0.0) or (
-        direction == "outward_normal" and magnitude >= 0.0
-    ):
-        raise ValueError(
-            "clarification_required: pressure sign must match its normal direction"
-        )
 
 
 def _requirement_stage(key: str) -> str:

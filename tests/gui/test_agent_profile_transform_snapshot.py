@@ -196,20 +196,13 @@ def test_unavailable_refresh_does_not_reuse_previous_document() -> None:
     assert controller.provider_snapshot.available is False
 
 
-def test_stale_review_projects_the_new_typed_binding() -> None:
+def test_binding_change_projects_the_new_typed_binding() -> None:
     old_context = _context()
     new_context = _context(revision=5)
     controller = AuthoringWorkflowController(lambda: old_context, {})
     controller.observe_binding(old_context)
     controller.set_published_tool_names(("read_authoring_context",))
-    controller._stage = AuthoringWorkflowStage.REVIEW_PENDING
-    controller._review_binding = (
-        old_context.binding.document_id,
-        old_context.binding.session_id,
-        old_context.binding.session_revision,
-    )
-
-    assert controller.stale_review_for_binding(new_context)
+    assert not controller.observe_binding(new_context)
     snapshot = controller.turn_snapshot
     assert snapshot.available
     assert snapshot.document_id == new_context.binding.document_id

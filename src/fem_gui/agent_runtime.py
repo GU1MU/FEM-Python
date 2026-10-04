@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from PySide6.QtCore import QObject, Qt, Signal
 
 from fem_agent.artifacts import ArtifactStore, InputRejectedError
-from fem_agent.authoring import ProposalState, RequirementReview
+from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import (
     AuthoringTurnSnapshot,
     AuthoringWorkflowController,
@@ -853,17 +853,6 @@ class QtAgentRuntime(QObject):
             controller.cancel_turn()
             self._try_publish_authoring_tool_cache_owner_thread()
         return True
-
-    def resolve_requirement_review_from_gui(
-        self,
-        review: RequirementReview,
-    ) -> None:
-        self._require_owner_thread()
-        controller = self._authoring_controller
-        if controller is None:
-            raise RuntimeError("authoring controller is not configured")
-        controller.resolve_requirement_review(review)
-        self._try_publish_authoring_tool_cache_owner_thread()
 
     def record_authoring_proposal_state_from_gui(
         self,

@@ -636,14 +636,12 @@ def test_planar_fuse_and_extrusion_append_native_features_in_order() -> None:
 
     source_face_ids = resolve_extrusion_source_faces(planar_recipe).face_ids
     extruded = controller.dispatch(
-        "prepare_geometry_edit",
+        "prepare_profile_extrusion",
         {
             "part_id": "P1",
-            "edit": {
-                "operation": "extrude_profiles",
-                "source_face_ids": list(source_face_ids),
-                "height": 2.0,
-            },
+            "profile_selection": {"source_face_ids": list(source_face_ids)},
+            "context_revision": session.session_revision,
+            "height": 2.0,
         },
         ToolExecutionContext(
             session.session_id,

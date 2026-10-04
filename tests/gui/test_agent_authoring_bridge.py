@@ -24,14 +24,12 @@ from fem_agent.authoring import (
     AgentProposal,
     AuthoringAuthorizationError,
     AuthoringContext,
-    ClarificationRequiredError,
     FakeAuthoringPort,
     LocalModelBinding,
     ModelOperation,
     OperationKind,
     ProposalKind,
     ProposalState,
-    RequirementLedger,
 )
 from fem_agent.engine import EngineEvent, EngineEventType
 from fem_gui.agent_authoring import (
@@ -323,34 +321,6 @@ def test_result_invalidating_proposal_uses_configured_unsaved_result_gate() -> N
     accepted = bridge.accept_from_gui_control(proposal.proposal_id)
     assert accepted.state is ProposalState.ACCEPTED
     assert confirmations == [False, True]
-
-
-def test_requirement_review_confirmation_only_enters_through_gui_bridge() -> None:
-    ledger = RequirementLedger()
-    ledger.record(
-        "geometry.dimension",
-        field_type="integer",
-        stage="geometry",
-        value=2,
-        source_turn_id="turn-1",
-    )
-    review = ledger.create_review(
-        "review-1",
-        ("geometry.dimension",),
-    )
-    bridge = AgentAuthoringBridge(FakeAuthoringPort())
-    bridge.bind_context(_context())
-
-    with pytest.raises(ClarificationRequiredError):
-        ledger.require_confirmed("geometry", ("geometry.dimension",))
-
-    confirmed = bridge.confirm_requirement_review_from_gui(ledger, review)
-
-    assert confirmed.status.value == "confirmed"
-    assert ledger.require_confirmed(
-        "geometry",
-        ("geometry.dimension",),
-    )[0].value == 2
 
 
 def test_gui_authorization_rejects_a_background_caller() -> None:

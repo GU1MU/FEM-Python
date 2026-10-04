@@ -60,7 +60,6 @@ from PySide6.QtWidgets import (
 from ..agent_authoring import (
     AgentProposal,
     AuthoringWorkflowController,
-    AuthoringWorkflowStage,
     ProposalState,
 )
 
@@ -3441,43 +3440,6 @@ class AgentChatDrawer(_BoundaryFrame):
                     "Save task could not start",
                 )
             return
-        if proposal.proposal_kind == "requirement_review":
-            if not self._proposal_targets_live_binding(proposal, turn_id):
-                self._show_preview_notice("Requirements review is stale; regenerate it")
-                return
-            controller = self.agent_runtime.authoring_controller
-            review = (
-                None
-                if controller is None
-                else controller.pending_review
-            )
-            if not self._requirement_review_is_current(
-                proposal.proposal_id,
-                proposal.proposal_hash,
-            ):
-                self._show_preview_notice("Requirements review is stale; regenerate it")
-                return
-            try:
-                confirmed = bridge.confirm_requirement_review_from_gui(
-                    controller.ledger,
-                    review,
-                )
-                self.agent_runtime.resolve_requirement_review_from_gui(
-                    confirmed
-                )
-            except Exception as exc:
-                self._show_preview_notice(
-                    str(exc).strip() or "Requirements confirmation failed"
-                )
-            else:
-                self._record_projected_proposal_lifecycle(
-                    proposal,
-                    turn_id,
-                    ProposalState.SUCCEEDED,
-                    "Requirements review confirmed",
-                )
-                self._show_preview_notice("Requirements review confirmed through GUI controls")
-            return
         try:
             receipt = bridge.accept_from_gui_control(proposal.proposal_id)
         except Exception as exc:
@@ -3551,43 +3513,6 @@ class AgentChatDrawer(_BoundaryFrame):
             )
             self._show_preview_notice("Save request rejected; no files written")
             return
-        if proposal.proposal_kind == "requirement_review":
-            if not self._proposal_targets_live_binding(proposal, turn_id):
-                self._show_preview_notice("Requirements review is stale; regenerate it")
-                return
-            controller = self.agent_runtime.authoring_controller
-            review = (
-                None
-                if controller is None
-                else controller.pending_review
-            )
-            if not self._requirement_review_is_current(
-                proposal.proposal_id,
-                proposal.proposal_hash,
-            ):
-                self._show_preview_notice("Requirements review is stale; regenerate it")
-                return
-            try:
-                rejected = bridge.reject_requirement_review_from_gui(
-                    controller.ledger,
-                    review,
-                )
-                self.agent_runtime.resolve_requirement_review_from_gui(
-                    rejected
-                )
-            except Exception as exc:
-                self._show_preview_notice(
-                    str(exc).strip() or "Requirements rejection failed"
-                )
-            else:
-                self._record_projected_proposal_lifecycle(
-                    proposal,
-                    turn_id,
-                    ProposalState.REJECTED,
-                    "User rejected requirements review",
-                )
-                self._show_preview_notice("Requirements review rejected; model unchanged")
-            return
         try:
             receipt = bridge.reject_from_gui_control(proposal.proposal_id)
         except Exception as exc:
@@ -3615,10 +3540,7 @@ class AgentChatDrawer(_BoundaryFrame):
         bridge = self.authoring_bridge
         if bridge is None or bridge.context is None:
             return False
-        if turn_id is not None and proposal.proposal_kind not in {
-            "project_save",
-            "requirement_review",
-        }:
+        if turn_id is not None and proposal.proposal_kind != "project_save":
             source_turn = self.agent_runtime.proposal_source_turn_from_gui(
                 proposal.proposal_id,
                 proposal.proposal_hash,
@@ -3650,10 +3572,7 @@ class AgentChatDrawer(_BoundaryFrame):
             or binding.session_id != proposal.target_session_id
             or binding.session_revision != proposal.base_session_revision
         ):
-            if turn_id is not None and proposal.proposal_kind in {
-                "project_save",
-                "requirement_review",
-            }:
+            if turn_id is not None and proposal.proposal_kind == "project_save":
                 self._record_projected_proposal_lifecycle(
                     proposal,
                     turn_id,
@@ -3661,19 +3580,6 @@ class AgentChatDrawer(_BoundaryFrame):
                     "Bound document, session, or revision changed",
                 )
             return False
-        if proposal.proposal_kind == "requirement_review":
-            current = self._requirement_review_is_current(
-                proposal.proposal_id,
-                proposal.proposal_hash,
-            )
-            if not current and turn_id is not None:
-                self._record_projected_proposal_lifecycle(
-                    proposal,
-                    turn_id,
-                    ProposalState.STALE,
-                    "Requirements review identity changed",
-                )
-            return current
         if proposal.proposal_kind == "project_save":
             controller = self.agent_runtime.authoring_controller
             current = bool(
@@ -3977,11 +3883,6 @@ class AgentChatDrawer(_BoundaryFrame):
             != button.property("baseSessionRevision")
         ):
             return False
-        if button.property("proposalKind") == "requirement_review":
-            return self._requirement_review_is_current(
-                str(button.property("proposalId")),
-                str(button.property("proposalHash")),
-            )
         if button.property("proposalKind") == "project_save":
             controller = self.agent_runtime.authoring_controller
             return bool(
@@ -4000,24 +3901,6 @@ class AgentChatDrawer(_BoundaryFrame):
             return bridge.state(proposal_id).value == "pending_confirmation"
         except Exception:
             return False
-
-    def _requirement_review_is_current(
-        self,
-        review_id: str,
-        review_hash: str,
-    ) -> bool:
-        controller = self.agent_runtime.authoring_controller
-        if (
-            controller is None
-            or controller.stage is not AuthoringWorkflowStage.REVIEW_PENDING
-        ):
-            return False
-        pending = controller.pending_review
-        return (
-            pending is not None
-            and pending.review_id == review_id
-            and pending.review_hash == review_hash
-        )
 
     def _application_quit(self) -> None:
         self.shutdown_runtime(wait=False)
