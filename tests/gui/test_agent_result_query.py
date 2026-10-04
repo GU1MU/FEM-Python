@@ -122,10 +122,10 @@ def test_catalog_exposes_only_bounded_ready_identity_and_units() -> None:
     )
     assert catalog.nodal_regions == (
         "all_nodes",
-        "边-固定端",
-        "边-加载端",
+        "Edge-固定端",
+        "Edge-加载端",
     )
-    assert catalog.element_regions == ("all_elements", "域-板体")
+    assert catalog.element_regions == ("all_elements", "Domain-板体")
     encoded = str(response.to_dict()).casefold()
     for forbidden in (
         "coordinates",
@@ -154,7 +154,7 @@ def test_reads_three_milestone_result_types_with_units_and_identity() -> None:
         variable=AgentResultVariable.STRESS,
         component="Mises",
         position="element_nodal",
-        region="域-板体",
+        region="Domain-板体",
         aggregation=AgentResultAggregation.ABSOLUTE_EXTREME,
     )
     reaction = build_result_query(
@@ -162,7 +162,7 @@ def test_reads_three_milestone_result_types_with_units_and_identity() -> None:
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
         position="node",
-        region="边-固定端",
+        region="Edge-固定端",
         aggregation=AgentResultAggregation.SUM,
     )
 
@@ -208,7 +208,7 @@ def test_stress_extrema_match_native_records_and_keep_signed_value(
         variable=AgentResultVariable.STRESS,
         component="S11",
         position="element_nodal",
-        region="域-板体",
+        region="Domain-板体",
         aggregation=aggregation,
     )
     records = _native_records(session, request)
@@ -237,13 +237,13 @@ def test_stress_extrema_match_native_records_and_keep_signed_value(
 def test_fixed_region_reaction_sum_deduplicates_each_node() -> None:
     session = make_solved_session()
     provider = session.current_result_provider()
-    assert provider.named_region_node_ids("边-固定端") == (4, 1)
+    assert provider.named_region_node_ids("Edge-固定端") == (4, 1)
     request = build_result_query(
         session,
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
         position="node",
-        region="边-固定端",
+        region="Edge-固定端",
         aggregation=AgentResultAggregation.SUM,
     )
     expected = math.fsum(item.value for item in _native_records(session, request))
@@ -328,7 +328,7 @@ def test_no_result_component_region_and_position_fail_without_value() -> None:
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
         position="node",
-        region="域-板体",
+        region="Domain-板体",
         aggregation=AgentResultAggregation.SUM,
     )
     unpublished_region = build_result_query(
@@ -344,7 +344,7 @@ def test_no_result_component_region_and_position_fail_without_value() -> None:
         variable=AgentResultVariable.STRESS,
         component="Mises",
         position="centroid",
-        region="域-板体",
+        region="Domain-板体",
         aggregation=AgentResultAggregation.MAXIMUM,
     )
 
@@ -409,12 +409,12 @@ def test_rejects_stale_source_generation_and_keeps_historical_run_addressable() 
         == "result.query.stale"
     )
 
-    solve_task = session.prepare_solve(STATIC_STEP_NAME, "作业-结果查询-2")
+    solve_task = session.prepare_solve(STATIC_STEP_NAME, "Job-结果查询-2")
     assert session.begin_run(solve_task.token).accepted
     result = static_linear.solve(
         solve_task.model,
         solve_task.step_name,
-        name="作业-结果查询-2",
+        name="Job-结果查询-2",
     )
     assert session.accept_run_succeeded(
         solve_task.token,

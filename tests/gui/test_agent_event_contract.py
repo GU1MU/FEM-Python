@@ -328,7 +328,7 @@ def test_message_presentation_kind_replays_and_can_be_finalized():
         events.make(
             EventType.MESSAGE_START,
             {
-                "message_id": "patch-preview-message",
+                "message_id": "proposal-preview-message",
                 "role": "assistant",
                 "format": "restricted_markdown",
             },
@@ -336,7 +336,7 @@ def test_message_presentation_kind_replays_and_can_be_finalized():
         events.make(
             EventType.MESSAGE_DELTA,
             {
-                "message_id": "patch-preview-message",
+                "message_id": "proposal-preview-message",
                 "delta": "即将更新当前材料。",
             },
         ),
@@ -345,8 +345,8 @@ def test_message_presentation_kind_replays_and_can_be_finalized():
         events.make(
             EventType.MESSAGE_COMPLETE,
             {
-                "message_id": "patch-preview-message",
-                "presentation_kind": "patch_preview",
+                "message_id": "proposal-preview-message",
+                "presentation_kind": "proposal_preview",
             },
         )
     )
@@ -358,7 +358,7 @@ def test_message_presentation_kind_replays_and_can_be_finalized():
         .messages[0]
     )
 
-    assert message.presentation_kind is MessagePresentationKind.PATCH_PREVIEW
+    assert message.presentation_kind is MessagePresentationKind.PROPOSAL_PREVIEW
     with pytest.raises(AgentEventError, match="presentation_kind"):
         events.make(
             EventType.MESSAGE_START,
@@ -1084,7 +1084,7 @@ def test_short_process_message_shows_directly_without_toggle(gui_application, te
 
 @pytest.mark.parametrize(
     "presentation_kind",
-    ["decision_request", "patch_preview", "proposal_preview", "result_summary"],
+    ["proposal_preview", "result_summary"],
 )
 def test_formal_assistant_messages_never_collapse_when_long(
     gui_application,

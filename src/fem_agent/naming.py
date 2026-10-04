@@ -7,23 +7,24 @@ import re
 from collections.abc import Iterable, Mapping
 
 
-LEGACY_OBJECT_TYPES = {
-    "模型": "Model",
-    "部件": "Part",
-    "实体": "Body",
-    "点": "Point",
-    "边": "Edge",
-    "面": "Face",
-    "域": "Domain",
-    "材料": "Material",
-    "截面": "Section",
-    "分析步": "Step",
-    "位移": "Displacement",
-    "载荷": "Load",
-    "结果请求": "Output",
-    "作业": "Job",
-}
-CONTROLLED_OBJECT_TYPES = frozenset(LEGACY_OBJECT_TYPES.values())
+CONTROLLED_OBJECT_TYPES = frozenset(
+    {
+        "Model",
+        "Part",
+        "Body",
+        "Point",
+        "Edge",
+        "Face",
+        "Domain",
+        "Material",
+        "Section",
+        "Step",
+        "Displacement",
+        "Load",
+        "Output",
+        "Job",
+    }
+)
 
 _SYSTEM_NAMES = frozenset(
     {
@@ -59,7 +60,6 @@ class NamePolicy:
     def compose(self, object_type: str, function: str) -> str:
         if type(object_type) is not str:
             raise NamePolicyError("object type is not controlled")
-        object_type = LEGACY_OBJECT_TYPES.get(object_type, object_type)
         if object_type not in CONTROLLED_OBJECT_TYPES:
             raise NamePolicyError("object type is not controlled")
         normalized = self._normalize_function(function)
@@ -87,9 +87,7 @@ class NamePolicy:
     @staticmethod
     def has_type(name: str, object_type: str) -> bool:
         prefix = name.partition("-")[0]
-        return LEGACY_OBJECT_TYPES.get(prefix, prefix) == LEGACY_OBJECT_TYPES.get(
-            object_type, object_type
-        )
+        return object_type in CONTROLLED_OBJECT_TYPES and prefix == object_type
 
     def validate(self, name: str) -> str:
         if type(name) is not str:
@@ -99,7 +97,7 @@ class NamePolicy:
         object_type, separator, function = name.partition("-")
         if not separator:
             raise NamePolicyError("name must use {type}-{function}")
-        if LEGACY_OBJECT_TYPES.get(object_type, object_type) not in CONTROLLED_OBJECT_TYPES:
+        if object_type not in CONTROLLED_OBJECT_TYPES:
             raise NamePolicyError("object type is not controlled")
         normalized = object_type + "-" + self._normalize_function(function)
         if len(normalized) > self.max_name_length:

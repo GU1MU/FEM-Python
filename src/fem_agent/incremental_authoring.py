@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import replace
 import math
 from typing import Protocol
 
@@ -16,21 +15,14 @@ from fem.application import (
     ScopedDefinitionBatch,
     SectionDefinition,
     UnitContext,
-    describe_model_capabilities,
 )
-from fem.application.results import project_output_request
 from fem.core.model import (
     AnalysisStep,
-    DisplacementConstraint,
-    EdgeLoad,
     MaterialDefinition,
-    OutputRequest,
 )
 
 from .authoring import AuthoringContext, ModelPatch
-from .analysis_authoring import expected_result_units
 from .definition_authoring import (
-    build_eccentric_plate_scopes,
     definition_state_operations,
 )
 from .naming import NamePolicy
@@ -38,14 +30,10 @@ from .naming import NamePolicy
 
 DIRECT_DEFINITION_ACTIONS = frozenset(
     {
-        "create_plate_scopes",
         "create_material",
         "create_section",
         "assign_section",
         "create_static_step",
-        "create_boundary_condition",
-        "create_load",
-        "create_result_request",
     }
 )
 
@@ -90,16 +78,7 @@ def create_incremental_definition_patch(
     steps = deepcopy(tuple(snapshot.steps))
     created_names: tuple[str, ...]
 
-    if normalized_action == "create_plate_scopes":
-        _exact_fields(values, set())
-        scopes = build_eccentric_plate_scopes(snapshot)
-        existing = {item.name for item in regions}
-        conflicts = existing.intersection(item.name for item in scopes.regions)
-        if conflicts:
-            raise ValueError("plate scope names already exist")
-        regions = regions + scopes.regions
-        created_names = tuple(item.name for item in scopes.regions)
-    elif normalized_action == "create_material":
+    if normalized_action == "create_material":
         _exact_fields(values, {"name", "properties"})
         name = _controlled_name(values["name"], "material name", "Material")
         if name in {str(item.name) for item in materials}:
@@ -129,11 +108,11 @@ def create_incremental_definition_patch(
         if material not in {str(item.name) for item in materials}:
             raise ValueError("section material does not exist")
         if set(values) == planar_fields:
-            compatibility_properties = _mapping(
+            planar_properties = _mapping(
                 values["properties"],
                 "section properties",
             )
-            if compatibility_properties:
+            if planar_properties:
                 raise ValueError("planar section properties must be empty")
             plane_type = _enum(
                 values["plane_type"],
@@ -231,120 +210,6 @@ def create_incremental_definition_patch(
             ),
         )
         created_names = (name,)
-    elif normalized_action == "create_boundary_condition":
-        _exact_fields(
-            values,
-            {
-                "name",
-                "step_name",
-                "target_scope",
-                "target_kind",
-                "first_component",
-                "last_component",
-                "value",
-            },
-        )
-        name = _controlled_name(values["name"], "boundary name", "Displacement")
-        step_name = _nonblank(values["step_name"], "analysis step name")
-        target_scope = _require_scope(
-            regions,
-            values["target_scope"],
-            values["target_kind"],
-        )
-        boundary = DisplacementConstraint(
-            target_scope,
-            _component(values["first_component"], "first_component"),
-            _component(values["last_component"], "last_component"),
-            _finite(values["value"], "boundary value"),
-            str(values["target_kind"]),
-            name,
-        )
-        if boundary.last_component < boundary.first_component:
-            raise ValueError("boundary component range is reversed")
-        steps = _append_step_child(
-            steps,
-            step_name,
-            "boundaries",
-            boundary,
-            name,
-        )
-        created_names = (name,)
-    elif normalized_action == "create_load":
-        required = {"name", "step_name", "target_scope", "load_type"}
-        allowed = required | {"vector", "magnitude"}
-        _allowed_fields(values, allowed, required)
-        name = _controlled_name(values["name"], "load name", "Load")
-        step_name = _nonblank(values["step_name"], "analysis step name")
-        target_scope = _require_scope(regions, values["target_scope"], "edge")
-        load_type = _enum(
-            values["load_type"],
-            "load_type",
-            {"edge_traction", "edge_pressure"},
-        )
-        if load_type == "edge_traction":
-            vector = _vector(values.get("vector"), "load vector", 2)
-            if "magnitude" in values:
-                raise ValueError("edge traction uses vector, not magnitude")
-            load = EdgeLoad(target_scope, vector, None, "traction", name)
-        else:
-            if "vector" in values:
-                raise ValueError("edge pressure uses magnitude, not vector")
-            load = EdgeLoad(
-                target_scope,
-                (),
-                _finite(values.get("magnitude"), "load magnitude"),
-                "pressure",
-                name,
-            )
-        steps = _append_step_child(
-            steps,
-            step_name,
-            "edge_loads",
-            load,
-            name,
-        )
-        created_names = (name,)
-    else:
-        _exact_fields(
-            values,
-            {
-                "name", "step_name", "target", "variables", "units",
-                "confirmed",
-            },
-        )
-        name = _controlled_name(
-            values["name"],
-            "result request name",
-            "Output",
-        )
-        step_name = _nonblank(values["step_name"], "analysis step name")
-        target = _enum(values["target"], "result target", {"node", "element"})
-        variables = _string_tuple(values["variables"], "result variables")
-        supported = {
-            "node": {"U", "UR", "RF", "RM"},
-            "element": {"SF", "SM", "LE", "S"},
-        }
-        if not set(variables).issubset(supported[target]):
-            raise ValueError("result variables do not match their target")
-        units = snapshot.unit_context
-        if units is None:
-            raise ValueError("result request requires a project unit context")
-        requested_units = _string_tuple(values["units"], "result units")
-        if requested_units != expected_result_units(units, variables):
-            raise ValueError("result request units do not match the project context")
-        if values["confirmed"] is not True:
-            raise ValueError("result request engineering fields are not confirmed")
-        output = OutputRequest("field", target, variables, name=name)
-        _require_output_capability(snapshot, output)
-        steps = _append_step_child(
-            steps,
-            step_name,
-            "outputs",
-            output,
-            name,
-        )
-        created_names = (name,)
-
     definitions = ModelDefinitions(materials, sections, assignments, steps)
     return ModelPatch.create(
         patch_id=patch_id,
@@ -391,20 +256,11 @@ def require_incremental_definition_batch(
     """Verify that a direct patch contains exactly its declared addition."""
 
     normalized_action = _exact_action(action)
-    before_regions = tuple(snapshot.named_regions.values())
     before_materials = tuple(snapshot.materials)
     before_sections = tuple(snapshot.sections)
     before_assignments = tuple(snapshot.assignments)
     before_steps = tuple(snapshot.steps)
 
-    if normalized_action == "create_plate_scopes":
-        _require_prefix("named regions", before_regions, batch.regions, 4)
-        _require_equal_definition_groups(
-            snapshot,
-            batch,
-            skip={"regions"},
-        )
-        return
     if normalized_action == "create_material":
         _require_prefix("materials", before_materials, batch.materials, 1)
         _require_equal_definition_groups(
@@ -443,96 +299,13 @@ def require_incremental_definition_batch(
         )
         return
 
-    _require_equal_definition_groups(snapshot, batch, skip={"steps"})
-    if len(batch.steps) != len(before_steps):
-        raise ValueError("direct step-child patch cannot add or remove a step")
-    field = {
-        "create_boundary_condition": "boundaries",
-        "create_load": "edge_loads",
-        "create_result_request": "outputs",
-    }[normalized_action]
-    changed = 0
-    for before, after in zip(before_steps, batch.steps, strict=True):
-        if before == after:
-            continue
-        changed += 1
-        for name in (
-            "name",
-            "procedure",
-            "metadata",
-            "boundaries",
-            "cloads",
-            "surface_loads",
-            "outputs",
-            "edge_loads",
-            "line_loads",
-            "body_loads",
-            "gravity_loads",
-        ):
-            before_value = getattr(before, name)
-            after_value = getattr(after, name)
-            if name == field:
-                _require_prefix(
-                    f"step {field}",
-                    tuple(before_value),
-                    tuple(after_value),
-                    1,
-                )
-            elif after_value != before_value:
-                raise ValueError(
-                    f"direct {normalized_action} patch changed step field {name}"
-                )
-    if changed != 1:
-        raise ValueError("direct step-child patch must change exactly one step")
-
 
 _ACTION_SUMMARIES = {
-    "create_plate_scopes": "Semantic scopes created for the current plate",
     "create_material": "Material created",
     "create_section": "Section created",
     "assign_section": "Section assignment created",
     "create_static_step": "Linear static step created",
-    "create_boundary_condition": "Boundary condition created",
-    "create_load": "Load created",
-    "create_result_request": "Result request created",
 }
-
-
-def _append_step_child(
-    steps: Sequence[object],
-    step_name: str,
-    field: str,
-    child: object,
-    child_name: str,
-) -> tuple[object, ...]:
-    matches = [item for item in steps if getattr(item, "name", None) == step_name]
-    if len(matches) != 1:
-        raise ValueError("analysis step is missing or ambiguous")
-    step = matches[0]
-    for collection_name in (
-        "boundaries",
-        "cloads",
-        "edge_loads",
-        "surface_loads",
-        "line_loads",
-        "body_loads",
-        "gravity_loads",
-        "outputs",
-    ):
-        if any(
-            getattr(item, "name", None) == child_name
-            for item in tuple(getattr(step, collection_name))
-        ):
-            raise ValueError("step child name already exists")
-    return tuple(
-        replace(
-            item,
-            **{field: tuple(getattr(item, field)) + (child,)},
-        )
-        if item is step
-        else item
-        for item in steps
-    )
 
 
 def _require_live_native_context(
@@ -552,49 +325,6 @@ def _require_live_native_context(
         or binding.session_revision != snapshot.session_revision
     ):
         raise ValueError("direct authoring context is stale or unavailable")
-
-
-def _require_output_capability(
-    snapshot: _Snapshot,
-    request: OutputRequest,
-) -> None:
-    model = getattr(snapshot.artifact, "model", None)
-    if model is None:
-        raise ValueError("result request requires a current realized model")
-    report = describe_model_capabilities(model)
-    catalog = report.output_request_catalog
-    if not report.compatible or catalog is None:
-        raise ValueError("result request requires a compatible current model")
-    projection = project_output_request(request, catalog, request_index=0)
-    executable = projection.executable_request
-    projected = (
-        ()
-        if executable is None
-        else tuple(
-            item.canonical_variable.value
-            for item in executable.variables
-            if item.canonical_variable is not None
-        )
-    )
-    if (
-        projection.diagnostics
-        or len(projected) != len(request.variables)
-        or set(projected) != set(request.variables)
-    ):
-        raise ValueError("result request is not fully executable by this model")
-
-
-def _require_scope(
-    regions: Sequence[NamedRegion],
-    value: object,
-    expected_kind: object,
-) -> str:
-    name = _nonblank(value, "target scope")
-    kind = _enum(expected_kind, "target kind", {"node", "edge", "face", "element"})
-    matches = [item for item in regions if item.name == name]
-    if len(matches) != 1 or matches[0].entity_kind != kind:
-        raise ValueError("target scope is missing or has the wrong entity kind")
-    return name
 
 
 def _require_equal_definition_groups(
@@ -648,15 +378,6 @@ def _exact_fields(value: Mapping[str, object], expected: set[str]) -> None:
         raise ValueError("parameters do not match the selected action")
 
 
-def _allowed_fields(
-    value: Mapping[str, object],
-    allowed: set[str],
-    required: set[str],
-) -> None:
-    if not required.issubset(value) or set(value) - allowed:
-        raise ValueError("parameters do not match the selected action")
-
-
 def _nonblank(value: object, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{label} must be a non-blank string")
@@ -697,12 +418,6 @@ def _positive(value: object, label: str) -> float:
     return normalized
 
 
-def _component(value: object, label: str) -> int:
-    if type(value) is not int or not 1 <= value <= 6:
-        raise ValueError(f"{label} must be an integer from 1 to 6")
-    return value
-
-
 def _vector(value: object, label: str, size: int) -> tuple[float, ...]:
     if isinstance(value, (str, bytes, bytearray, Mapping)):
         raise TypeError(f"{label} must be an array")
@@ -713,20 +428,6 @@ def _vector(value: object, label: str, size: int) -> tuple[float, ...]:
     if len(values) != size:
         raise ValueError(f"{label} must contain {size} values")
     return tuple(_finite(item, label) for item in values)
-
-
-def _string_tuple(value: object, label: str) -> tuple[str, ...]:
-    if isinstance(value, (str, bytes, bytearray, Mapping)):
-        raise TypeError(f"{label} must be an array")
-    try:
-        values = tuple(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise TypeError(f"{label} must be an array") from error
-    if not values or any(type(item) is not str or not item for item in values):
-        raise ValueError(f"{label} must contain non-blank strings")
-    if len(set(values)) != len(values):
-        raise ValueError(f"{label} must not contain duplicates")
-    return values
 
 
 __all__ = [

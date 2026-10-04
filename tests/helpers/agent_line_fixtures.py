@@ -17,7 +17,7 @@ from fem_gui.agent_authoring import (
 from tests.helpers.agent_authoring_workflows import dispatch_authoring_tool
 
 
-TRUSS_STEP_NAME = "分析步-拉伸"
+TRUSS_STEP_NAME = "Step-拉伸"
 
 
 def make_straight_wire() -> WireGeometry:
@@ -98,7 +98,7 @@ def apply_truss_definitions(
         (
             "create_named_region",
             {
-                "name": "点-固定端",
+                "name": "Point-固定端",
                 "part_id": "P1",
                 "logical_ids": ["point:Root"],
                 "mesh_kind": "node",
@@ -108,7 +108,7 @@ def apply_truss_definitions(
         (
             "create_named_region",
             {
-                "name": "点-自由端",
+                "name": "Point-自由端",
                 "part_id": "P1",
                 "logical_ids": ["point:Tip"],
                 "mesh_kind": "node",
@@ -118,7 +118,7 @@ def apply_truss_definitions(
         (
             "create_named_region",
             {
-                "name": "域-杆件",
+                "name": "Domain-杆件",
                 "part_id": "P1",
                 "logical_ids": ["edge:Bar"],
                 "mesh_kind": "element",
@@ -128,7 +128,7 @@ def apply_truss_definitions(
         (
             "create_material",
             {
-                "name": "材料-钢",
+                "name": "Material-钢",
                 "properties": {"E": 210000.0, "nu": 0.3},
             },
             "material",
@@ -140,8 +140,8 @@ def apply_truss_definitions(
                 (
                     "create_section",
                     {
-                        "name": "截面-拉杆",
-                        "material": "材料-钢",
+                        "name": "Section-拉杆",
+                        "material": "Material-钢",
                         "section_type": "truss",
                         "properties": {"area": 10.0},
                     },
@@ -150,8 +150,8 @@ def apply_truss_definitions(
                 (
                     "assign_section",
                     {
-                        "section_name": "截面-拉杆",
-                        "region_name": "域-杆件",
+                        "section_name": "Section-拉杆",
+                        "region_name": "Domain-杆件",
                     },
                     "assignment",
                 ),
@@ -163,9 +163,9 @@ def apply_truss_definitions(
             (
                 "create_boundary_condition",
                 {
-                    "name": "位移-固定端",
+                    "name": "Displacement-固定端",
                     "step_name": TRUSS_STEP_NAME,
-                    "target_scope": "点-固定端",
+                    "target_scope": "Point-固定端",
                     "target_kind": "node_set",
                     "first_component": 1,
                     "last_component": 3,
@@ -183,9 +183,9 @@ def apply_truss_definitions(
             (
                 "create_boundary_condition",
                 {
-                    "name": "位移-自由端横向",
+                    "name": "Displacement-自由端横向",
                     "step_name": TRUSS_STEP_NAME,
-                    "target_scope": "点-自由端",
+                    "target_scope": "Point-自由端",
                     "target_kind": "node_set",
                     "first_component": 2,
                     "last_component": 3,
@@ -202,9 +202,9 @@ def apply_truss_definitions(
             (
                 "create_load",
                 {
-                    "name": "载荷-轴向力",
+                    "name": "Load-轴向力",
                     "step_name": TRUSS_STEP_NAME,
-                    "target_scope": "点-自由端",
+                    "target_scope": "Point-自由端",
                     "entity_type": "node",
                     "load_type": "nodal",
                     "component": 1,
@@ -220,7 +220,7 @@ def apply_truss_definitions(
             (
                 "create_result_request",
                 {
-                    "name": "结果请求-节点",
+                    "name": "Output-节点",
                     "step_name": TRUSS_STEP_NAME,
                     "target": "node",
                     "variables": ["U", "RF"],
@@ -232,7 +232,7 @@ def apply_truss_definitions(
             (
                 "create_result_request",
                 {
-                    "name": "结果请求-应力",
+                    "name": "Output-应力",
                     "step_name": TRUSS_STEP_NAME,
                     "target": "element",
                     "variables": ["S"],

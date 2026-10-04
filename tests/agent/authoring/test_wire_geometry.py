@@ -162,6 +162,7 @@ def test_wire_rejects_non_finite_coordinates_and_payload_extensions() -> None:
     with pytest.raises(ValueError, match="wire point fields do not match"):
         geometry_recipe_from_payload(
             {
+                "schema_version": 1,
                 "kind": "wire",
                 "name": "线框-无效",
                 "points": [
@@ -266,10 +267,10 @@ def test_stale_wire_proposal_cannot_add_a_part() -> None:
     session = ModelSession()
     units = UnitContext("mm", "N", "MPa", convention="N-mm-MPa")
     session.create_native_project_with_first_part(
-        "模型-既有",
+        "Model-既有",
         units,
-        RectangleGeometry("实体-既有", 2.0, 1.0),
-        part_name="部件-既有",
+        RectangleGeometry("Body-既有", 2.0, 1.0),
+        part_name="Part-既有",
     )
     refreshes: list[int] = []
     bridge = AgentAuthoringBridge(
@@ -311,8 +312,8 @@ def test_stale_wire_proposal_cannot_add_a_part() -> None:
     proposal_id = prepared.data["proposal_id"]
 
     session.add_native_part(
-        RectangleGeometry("实体-外部", 1.0, 1.0),
-        name="部件-外部",
+        RectangleGeometry("Body-外部", 1.0, 1.0),
+        name="Part-外部",
         mesh_settings=None,
         unit_context=units,
     )

@@ -69,7 +69,6 @@ from fem_agent.authoring import (
     ProposalState,
     UnitContextSummary,
 )
-from fem_agent.analysis_authoring import require_non_destructive_a5_batch
 from fem_agent.boolean_authoring import (
     BODY_BOOLEAN_TOOL_HANDLING,
     PART_BOOLEAN_TOOL_HANDLING,
@@ -84,7 +83,6 @@ from fem_agent.authoring_runtime import (
 )
 from fem_agent.definition_authoring import (
     inverse_operations_for_snapshot,
-    require_non_destructive_a4_batch,
     scoped_definition_batch_from_operations,
 )
 from fem_agent.definition_action_authoring import (
@@ -433,7 +431,7 @@ def _preflight_composite_geometry(
 
 
 def _canonical_profile_source_recipe(recipe: object) -> object:
-    """Canonicalize legacy planar primitives for proposal replay checks."""
+    """Project current planar primitives onto the sketch graph for replay checks."""
 
     try:
         return _as_strict_planar_sketch(recipe)
@@ -2323,7 +2321,6 @@ class SessionGeometryAuthoringPort:
             else:
                 batch = scoped_definition_batch_from_operations(
                     proposal.operations,
-                    self._session.snapshot(),
                     base_session_revision=proposal.base_session_revision,
                 )
                 authoring_mode = proposal.preconditions.get("authoring_mode")
@@ -2995,7 +2992,6 @@ class SessionGeometryAuthoringPort:
         else:
             batch = scoped_definition_batch_from_operations(
                 patch.operations,
-                snapshot,
                 base_session_revision=patch.base_session_revision,
             )
             if authoring_mode == "direct_incremental":
@@ -3010,13 +3006,8 @@ class SessionGeometryAuthoringPort:
                     batch,
                     preconditions.get("direct_action"),
                 )
-            elif (
-                isinstance(preconditions, Mapping)
-                and preconditions.get("authoring_phase") == "A5"
-            ):
-                require_non_destructive_a5_batch(snapshot, batch)
             else:
-                require_non_destructive_a4_batch(snapshot, batch)
+                raise AuthoringContractError("unsupported definition authoring mode")
             delta = self._session.apply_scoped_definition_batch(batch)
         inverse = ModelPatch.create(
             patch_id=f"inverse-{patch.patch_hash[:24]}",
@@ -3086,11 +3077,9 @@ class SessionGeometryAuthoringPort:
             )
             self._patch_records[str(patch_id)] = stale
             raise AuthoringAuthorizationError(stale.message)
-        snapshot = self._session.snapshot()
         inverse = record.inverse_patch
         batch = scoped_definition_batch_from_operations(
             inverse.operations,
-            snapshot,
             base_session_revision=inverse.base_session_revision,
         )
         delta = self._session.apply_scoped_definition_batch(batch)
@@ -5065,10 +5054,7 @@ def create_session_authoring_workflow_controller(
         snapshot,
         part,
     ) -> tuple[str, ...]:
-        if "profile_selection" not in arguments and "source_face_ids" in arguments:
-            raw_selection = arguments["source_face_ids"]
-        else:
-            raw_selection = arguments.get("profile_selection")
+        raw_selection = arguments["profile_selection"]
         unique_selection = (
             raw_selection == "unique_material_profile"
             or (
@@ -5321,8 +5307,6 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         try:
             required = {"part_id", "profile_selection", "height"}
-            if "source_face_ids" in arguments and "profile_selection" not in arguments:
-                required = {"part_id", "source_face_ids", "height"}
             missing = required - set(arguments)
             extra = set(arguments) - required - {"context_revision"}
             if missing:
@@ -5379,8 +5363,6 @@ def create_session_authoring_workflow_controller(
     ) -> AuthoringToolOutcome:
         try:
             required = {"part_id", "profile_selection", "axis", "angle_degrees"}
-            if "source_face_ids" in arguments and "profile_selection" not in arguments:
-                required = {"part_id", "source_face_ids", "axis", "angle_degrees"}
             missing = required - set(arguments)
             extra = set(arguments) - required - {"context_revision"}
             if missing or extra:
@@ -5422,8 +5404,6 @@ def create_session_authoring_workflow_controller(
                 "path",
                 "frame_strategy",
             }
-            if "source_face_ids" in arguments and "profile_selection" not in arguments:
-                required = {"part_id", "source_face_ids", "path", "frame_strategy"}
             missing = required - set(arguments)
             extra = set(arguments) - required - {"context_revision"}
             if missing:
@@ -6830,26 +6810,12 @@ def create_session_authoring_workflow_controller(
         suffix = str(metadata.pop("identity_suffix"))
         change = create_definition_change(
             patch_id=f"patch-{suffix}",
-            proposal_id=f"proposal-{suffix}",
             context=current_context(),
             snapshot=current_session().snapshot(),
             action=arguments["action"],
             parameters=arguments["parameters"],
             **metadata,
         )
-        if type(change.value) is AgentProposal:
-            proposal = change.value
-            return proposal_outcome(
-                proposal,
-                summary=str(proposal.display_summary["summary"]),
-                impact=str(proposal.display_summary["impact"]),
-                confirm_label=str(proposal.display_summary["confirm_label"]),
-                extra_data={
-                    "action": change.action,
-                    "definition_object_type": change.resume_object_type,
-                    "objects": list(proposal.expected_changes.get("created_names", ())),
-                },
-            )
         patch = change.value
         provisional = AuthoringToolOutcome(
             str(patch.display_summary["summary"]),

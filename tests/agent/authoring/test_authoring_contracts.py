@@ -7,7 +7,6 @@ import pytest
 from fem_agent.naming import NameAllocator, NamePolicy, NamePolicyError
 from fem_agent.authoring import (
     AgentProposal,
-    AuthoringAuthorizationError,
     AuthoringContext,
     AuthoringContractError,
     CapabilitySummary,
@@ -39,7 +38,7 @@ def _operation() -> ModelOperation:
     return ModelOperation(
         OperationKind.ADD_NATIVE_PART,
         {
-            "part_name": "部件-偏心孔板",
+            "part_name": "Part-偏心孔板",
             "recipe": {
                 "kind": "PlateWithHoleGeometry",
                 "dimension": 2,
@@ -79,12 +78,12 @@ def _proposal(proposal_id: str = "proposal-1") -> AgentProposal:
 def test_authoring_context_is_bounded_and_provider_safe() -> None:
     context = AuthoringContext(
         binding=_binding(),
-        model_name="模型-孔板",
+        model_name="Model-孔板",
         active_part_id="P1",
         parts=(
             PartSummary(
                 "P1",
-                "部件-偏心孔板",
+                "Part-偏心孔板",
                 "PlateWithHoleGeometry",
                 2,
                 False,
@@ -130,11 +129,6 @@ def test_requirement_changes_invalidate_dependents() -> None:
     )
     width = next(entry for entry in ledger.entries if entry.key == "width")
     assert width.status is RequirementStatus.INVALIDATED
-    with pytest.raises(AuthoringAuthorizationError):
-        ledger.record(
-            "height", field_type="number", stage="geometry", value=100.0,
-            source_turn_id="t2", status=RequirementStatus.CONFIRMED,
-        )
 
 
 def test_patch_and_proposal_hashes_are_strict_and_idempotent() -> None:
@@ -165,7 +159,7 @@ def test_patch_and_proposal_hashes_are_strict_and_idempotent() -> None:
         ModelOperation(
             OperationKind.ADD_NATIVE_PART,
             {
-                "part_name": "部件-孔板",
+                "part_name": "Part-孔板",
                 "recipe": {},
                 "script": "do_work()",
             },
@@ -174,7 +168,7 @@ def test_patch_and_proposal_hashes_are_strict_and_idempotent() -> None:
         ModelOperation(
             OperationKind.ADD_NATIVE_PART,
             {
-                "part_name": "部件-孔板",
+                "part_name": "Part-孔板",
                 "recipe": {},
                 "arbitrary": True,
             },
@@ -222,11 +216,13 @@ def test_name_policy_allocates_normalized_unique_stable_names() -> None:
     assert allocator.allocate("parts", "Part", "A板") == "Part-A板-2"
     assert policy.compose("Edge", "固定端") == "Edge-固定端"
 
-    assert policy.validate("部件-偏心孔板") == "部件-偏心孔板"
-    legacy_limit_name = "位移-" + "长" * 93
-    assert policy.validate(legacy_limit_name) == legacy_limit_name
-    assert policy.compose("部件", "偏心孔板") == "Part-偏心孔板"
-    assert allocator.require_next("legacy", "Part", "部件-偏心孔板") == "部件-偏心孔板"
+    with pytest.raises(NamePolicyError, match="object type is not controlled"):
+        policy.validate("部件-偏心孔板")
+    maximum_length_name = "Displacement-" + "长" * 83
+    assert policy.validate(maximum_length_name) == maximum_length_name
+    with pytest.raises(NamePolicyError, match="object type is not controlled"):
+        policy.compose("部件", "偏心孔板")
+    assert allocator.require_next("parts-new", "Part", "Part-偏心孔板") == "Part-偏心孔板"
 
     with pytest.raises(NamePolicyError):
         policy.compose("Part", " 偏心孔板")

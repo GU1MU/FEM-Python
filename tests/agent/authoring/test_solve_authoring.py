@@ -39,12 +39,12 @@ from fem_agent.solve_authoring import (
 from tests.helpers.model_builders import make_static_pull_truss_model
 
 
-STEP_NAME = "分析步-静力"
+STEP_NAME = "Step-静力"
 
 
 def _recipe() -> PlateWithHoleGeometry:
     return PlateWithHoleGeometry(
-        "实体-偏心孔板",
+        "Body-偏心孔板",
         10.0,
         6.0,
         6.5,
@@ -55,7 +55,7 @@ def _recipe() -> PlateWithHoleGeometry:
 
 def _model():
     model = make_static_pull_truss_model()
-    model.name = "模型-偏心孔板"
+    model.name = "Model-偏心孔板"
     model.steps = [
         AnalysisStep(
             STEP_NAME,
@@ -65,25 +65,25 @@ def _model():
                     1,
                     3,
                     0.0,
-                    name="位移-固定端",
+                    name="Displacement-固定端",
                 ),
                 DisplacementConstraint(
                     2,
                     2,
                     3,
                     0.0,
-                    name="位移-横向稳定",
+                    name="Displacement-横向稳定",
                 ),
             ),
             cloads=(
-                NodalLoad("TIP", 1, 100.0, name="载荷-拉伸"),
+                NodalLoad("TIP", 1, 100.0, name="Load-拉伸"),
             ),
             outputs=(
                 OutputRequest(
                     "field",
                     "node",
                     ("U", "RF"),
-                    name="结果请求-位移反力",
+                    name="Output-位移反力",
                 ),
             ),
             metadata={"nlgeom": False},
@@ -95,10 +95,10 @@ def _model():
 def _native_session(*, blocked: bool = False) -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         _recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     session.replace_part_mesh_settings(
         "P1",
@@ -133,7 +133,7 @@ def _native_session(*, blocked: bool = False) -> ModelSession:
         step_name=STEP_NAME,
         diagnostics=diagnostics,
         facts=PreflightFacts(
-            model_name="模型-偏心孔板",
+            model_name="Model-偏心孔板",
             step_name=STEP_NAME,
             procedure="static",
             node_count=2,
@@ -162,7 +162,8 @@ def _proposal(session: ModelSession, proposal_id: str = "proposal-a6"):
         snapshot=session.snapshot(),
         draft_revision=6,
         step_name=STEP_NAME,
-        job_name="作业-静力1",
+        job_name="Job-静力1",
+        target_document_id=f"document:{session.session_id}",
     )
 
 
@@ -205,7 +206,7 @@ def test_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     summary = build_solve_summary(
         snapshot,
         STEP_NAME,
-        "作业-静力1",
+        "Job-静力1",
     )
     proposal = _proposal(session)
     operation = proposal.operations[0]
@@ -219,15 +220,15 @@ def test_summary_and_proposal_are_bounded_and_provider_safe() -> None:
     assert proposal.proposal_kind is ProposalKind.SOLVE
     assert operation.kind is OperationKind.REQUEST_SOLVE
     assert step == STEP_NAME
-    assert job == "作业-静力1"
+    assert job == "Job-静力1"
     assert artifact == snapshot.artifact.artifact_id
     assert revision == snapshot.model_revision
     assert stamp.stamp_hash in encoded
     assert summary.node_count == 2
     assert summary.element_count == 1
-    assert summary.constraint_names == ("位移-固定端", "位移-横向稳定")
-    assert summary.load_names == ("载荷-拉伸",)
-    assert summary.output_names == ("结果请求-位移反力",)
+    assert summary.constraint_names == ("Displacement-固定端", "Displacement-横向稳定")
+    assert summary.load_names == ("Load-拉伸",)
+    assert summary.output_names == ("Output-位移反力",)
     assert r"D:\private" not in encoded
     assert "node_ids" not in encoded
     assert "elements" not in encoded

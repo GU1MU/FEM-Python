@@ -120,9 +120,4 @@ def _truthy_option(value: Any) -> bool:
     return bool(value)
 
 
-# A descriptive alias is useful to worker code that already imported the
-# implementation under its earlier draft name.
-validate_model_diagnostics = validate_analysis
-
-
-__all__ = ["validate_analysis", "validate_model_diagnostics"]
+__all__ = ["validate_analysis"]

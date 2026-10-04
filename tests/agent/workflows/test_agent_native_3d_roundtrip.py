@@ -121,23 +121,23 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
     actions = (
         (
             "create_named_region",
-            region_parameters("域-实体", "body:domain", "element"),
+            region_parameters("Domain-实体", "body:domain", "element"),
             "agent-loop-body",
         ),
         (
             "create_named_region",
-            region_parameters("面-固定端", "face:side/left", "face"),
+            region_parameters("Face-固定端", "face:side/left", "face"),
             "agent-loop-fixed-face",
         ),
         (
             "create_named_region",
-            region_parameters("面-加载端", "face:side/right", "face"),
+            region_parameters("Face-加载端", "face:side/right", "face"),
             "agent-loop-loaded-face",
         ),
         (
             "create_material",
             {
-                "name": "材料-线弹性",
+                "name": "Material-线弹性",
                 "properties": {"E": 1000.0, "nu": 0.0},
             },
             "agent-loop-material",
@@ -145,8 +145,8 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
         (
             "create_section",
             {
-                "name": "截面-实体",
-                "material": "材料-线弹性",
+                "name": "Section-实体",
+                "material": "Material-线弹性",
                 "section_type": "solid",
                 "properties": {},
             },
@@ -155,22 +155,22 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
         (
             "assign_section",
             {
-                "section_name": "截面-实体",
-                "region_name": "域-实体",
+                "section_name": "Section-实体",
+                "region_name": "Domain-实体",
             },
             "agent-loop-assignment",
         ),
         (
             "create_static_step",
-            {"name": "分析步-静力"},
+            {"name": "Step-静力"},
             "agent-loop-step",
         ),
         (
             "create_boundary_condition",
             {
-                "name": "位移-固定端",
-                "step_name": "分析步-静力",
-                "target_scope": "面-固定端",
+                "name": "Displacement-固定端",
+                "step_name": "Step-静力",
+                "target_scope": "Face-固定端",
                 "target_kind": "surface",
                 "first_component": 1,
                 "last_component": 3,
@@ -184,9 +184,9 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
         (
             "create_load",
             {
-                "name": "载荷-拉伸",
-                "step_name": "分析步-静力",
-                "target_scope": "面-加载端",
+                "name": "Load-拉伸",
+                "step_name": "Step-静力",
+                "target_scope": "Face-加载端",
                 "entity_type": "surface",
                 "load_type": "surface_traction",
                 "component": None,
@@ -202,8 +202,8 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
         (
             "create_result_request",
             {
-                "name": "结果请求-节点",
-                "step_name": "分析步-静力",
+                "name": "Output-节点",
+                "step_name": "Step-静力",
                 "target": "node",
                 "variables": ["U", "RF"],
                 "units": ["mm", "N"],
@@ -255,7 +255,7 @@ def test_agent_controller_bridge_completes_real_3d_loop_and_reopens(
     loaded_ids = sorted(
         {
             node_id
-            for face in result.model.surfaces["面-加载端"].faces
+            for face in result.model.surfaces["Face-加载端"].faces
             for node_id in face.node_ids
         }
     )

@@ -6,8 +6,9 @@ from fem.geometry import (
     LogicalEntityRef,
     SketchCircle,
     SketchGeometry,
-    SketchRectangle,
-    legacy_sketch_to_strict,
+    SketchPoint,
+    SketchLine,
+    SketchPlane,
 )
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent, create_mesh_proposal
@@ -16,14 +17,23 @@ from fem.application import ModelSession, UnitContext
 
 
 def _recipe() -> SketchGeometry:
-    return legacy_sketch_to_strict(
-        SketchGeometry(
-            "草图-通用孔板",
-            (
-                SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
-                SketchCircle("cut", 6.5, 2.0, 1.0),
-            ),
-        )
+    return SketchGeometry(
+        "Plate",
+        SketchPlane.xy(),
+        (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 10.0, 0.0),
+            SketchPoint("P3", 10.0, 6.0),
+            SketchPoint("P4", 0.0, 6.0),
+            SketchPoint("P5", 6.5, 2.0),
+        ),
+        (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+            SketchCircle("C5", "P5", 1.0),
+        ),
     )
 
 
@@ -115,10 +125,10 @@ def test_mesh_intent_connects_mesh_settings_and_strict_auto_spec() -> None:
 def test_mesh_proposal_is_revision_bound_and_uses_local_gui_summary() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         _recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     context = authoring_context_from_snapshot(session.snapshot())
     intent = MeshIntent(

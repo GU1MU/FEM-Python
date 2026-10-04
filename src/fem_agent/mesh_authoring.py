@@ -28,8 +28,6 @@ from .authoring import (
 
 
 MESH_INTENT_SCHEMA_VERSION = "1.2"
-_LINE_MESH_INTENT_SCHEMA_VERSION = "1.1"
-_LEGACY_MESH_INTENT_SCHEMA_VERSION = "1.0"
 _PLANAR_CELL_SHAPES = frozenset({"triangle", "quadrilateral"})
 _SOLID_CELL_SHAPES = frozenset({"tetrahedron", "hexahedron"})
 _LINE_ELEMENT_TYPES = frozenset({"Truss2", "Beam2"})
@@ -71,54 +69,17 @@ class MeshIntent:
     auto_level: int | None = None
     local_controls: tuple[LocalMeshControl, ...] = ()
     line_element_type: str | None = None
-    schema_version: str | None = None
+    schema_version: str = MESH_INTENT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        schema_version = self.schema_version
-        if schema_version is None:
-            schema_version = (
-                _LINE_MESH_INTENT_SCHEMA_VERSION
-                if self.cell_shape == "line"
-                else MESH_INTENT_SCHEMA_VERSION
-                if self.cell_shape in _SOLID_CELL_SHAPES
-                else _LEGACY_MESH_INTENT_SCHEMA_VERSION
-            )
-            object.__setattr__(self, "schema_version", schema_version)
-        if schema_version not in {
-            _LEGACY_MESH_INTENT_SCHEMA_VERSION,
-            _LINE_MESH_INTENT_SCHEMA_VERSION,
-            MESH_INTENT_SCHEMA_VERSION,
-        }:
+        if self.schema_version != MESH_INTENT_SCHEMA_VERSION:
             raise ValueError("unknown MeshIntent schema_version")
-        if schema_version == _LEGACY_MESH_INTENT_SCHEMA_VERSION:
-            if (
-                type(self.cell_shape) is not str
-                or self.cell_shape not in _PLANAR_CELL_SHAPES
-            ):
-                raise ValueError(
-                    "MeshIntent schema 1.0 cell_shape must be 'triangle' or "
-                    "'quadrilateral'"
-                )
-            if self.line_element_type is not None:
-                raise ValueError(
-                    "MeshIntent schema 1.0 does not support line_element_type"
-                )
-        elif schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION and (
-            self.cell_shape != "line"
+        if type(self.cell_shape) is not str or self.cell_shape not in (
+            _PLANAR_CELL_SHAPES | _SOLID_CELL_SHAPES | {"line"}
         ):
-            raise ValueError(
-                "MeshIntent schema 1.1 cell_shape must be 'line'"
-            )
-        elif schema_version == MESH_INTENT_SCHEMA_VERSION:
-            if self.cell_shape not in _SOLID_CELL_SHAPES:
-                raise ValueError(
-                    "MeshIntent schema 1.2 cell_shape must be 'tetrahedron' "
-                    "or 'hexahedron'"
-                )
-            if self.line_element_type is not None:
-                raise ValueError(
-                    "MeshIntent schema 1.2 does not support line_element_type"
-                )
+            raise ValueError("unknown MeshIntent cell_shape")
+        if self.cell_shape != "line" and self.line_element_type is not None:
+            raise ValueError("only line MeshIntent supports line_element_type")
         if isinstance(self.order, bool) or type(self.order) is not int:
             raise TypeError("MeshIntent order must be an integer")
         if self.cell_shape == "line" and self.order != 1:
@@ -207,7 +168,7 @@ class MeshIntent:
                 for item in self.local_controls
             ],
         }
-        if self.schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION:
+        if self.cell_shape == "line":
             payload["line_element_type"] = self.line_element_type
         return payload
 
@@ -225,13 +186,10 @@ class MeshIntent:
             "order",
             "local_controls",
         }
-        if schema_version == _LINE_MESH_INTENT_SCHEMA_VERSION:
-            expected.add("line_element_type")
-        elif schema_version not in {
-            _LEGACY_MESH_INTENT_SCHEMA_VERSION,
-            MESH_INTENT_SCHEMA_VERSION,
-        }:
+        if schema_version != MESH_INTENT_SCHEMA_VERSION:
             raise ValueError("unknown MeshIntent schema_version")
+        if value.get("cell_shape") == "line":
+            expected.add("line_element_type")
         if set(value) != expected:
             raise ValueError(
                 f"MeshIntent payload fields do not match schema {schema_version}"

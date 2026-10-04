@@ -78,9 +78,9 @@ def test_strict_production_action_requires_unit_direction_and_confirmation() -> 
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-不完整",
+                "name": "Load-不完整",
                 "step_name": STATIC_STEP_NAME,
-                "target_scope": "边-加载端",
+                "target_scope": "Edge-加载端",
                 "entity_type": "edge",
                 "load_type": "edge_traction",
                 "component": None,
@@ -107,7 +107,7 @@ def test_strict_production_action_supports_nodal_loads() -> None:
             tuple(snapshot.named_regions.values())
             + (
                 NamedRegion(
-                    "点-加载",
+                    "Point-加载",
                     (MeshEntityRef.node(2, part_id="P1"),),
                 ),
             ),
@@ -137,9 +137,9 @@ def test_strict_production_action_supports_nodal_loads() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-节点",
+                "name": "Load-节点",
                 "step_name": STATIC_STEP_NAME,
-                "target_scope": "点-加载",
+                "target_scope": "Point-加载",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 2,
@@ -156,7 +156,7 @@ def test_strict_production_action_supports_nodal_loads() -> None:
 
     assert load.ok, load.to_json()
     stored = session.snapshot().steps[0].cloads[0]
-    assert stored.name == "载荷-节点"
+    assert stored.name == "Load-节点"
     assert stored.component == 2
     assert stored.value == -5.0
 
@@ -176,7 +176,7 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
         {
             "action": "create_material",
             "parameters": {
-                "name": "材料-附加",
+                "name": "Material-附加",
                 "properties": {"E": 70000.0, "nu": 0.33},
             },
         },
@@ -188,7 +188,7 @@ def test_definition_iteration_applies_directly_and_retains_history() -> None:
     assert "proposal_id" not in applied.data
     after = session.snapshot()
     assert controller.stage is AuthoringWorkflowStage.PREFLIGHT_READY
-    assert "材料-附加" in {item.name for item in after.materials}
+    assert "Material-附加" in {item.name for item in after.materials}
     assert tuple(run.run_id for run in after.runs) == tuple(
         run.run_id for run in before.runs
     )
@@ -249,7 +249,7 @@ def test_definition_edit_applies_directly_and_retains_history() -> None:
         "edit_model_object",
         {
             "object_type": "load",
-            "target_id": "载荷-拉伸",
+            "target_id": "Load-拉伸",
             "step_name": STATIC_STEP_NAME,
             "changes": {
                 "vector": [25.0, 0.0],
@@ -302,7 +302,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
         _edit_patch(
             session,
             "boundary_condition",
-            "位移-固定端",
+            "Displacement-固定端",
             {
                 "last_component": 3,
                 "unit": "mm",
@@ -315,7 +315,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
         _edit_patch(
             session,
             "load",
-            "载荷-拉伸",
+            "Load-拉伸",
             {
                 "vector": [10.0, 0.0, 0.0],
                 "entity_type": "edge",
@@ -331,7 +331,7 @@ def test_two_dimensional_boundary_and_load_edits_fail_closed() -> None:
         _edit_patch(
             session,
             "load",
-            "载荷-拉伸",
+            "Load-拉伸",
             {
                 "vector": [20.0, 0.0],
                 "entity_type": "edge",
@@ -358,7 +358,7 @@ def test_three_dimensional_surface_edit_sign_fails_closed() -> None:
         _edit_patch(
             session,
             "load",
-            "载荷-表面",
+            "Load-表面",
             {
                 "vector": None,
                 "magnitude": 2.0,
@@ -417,7 +417,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
     session.apply_scoped_definition_batch(
         ScopedDefinitionBatch(
             snapshot.session_revision,
-            (NamedRegion("边-可编辑", outer_references),),
+            (NamedRegion("Edge-可编辑", outer_references),),
             (),
             (),
             (),
@@ -429,7 +429,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
         _edit_patch(
             session,
             "named_region",
-            "边-可编辑",
+            "Edge-可编辑",
             {
                 "part_id": hole["part_id"],
                 "logical_ids": [hole["logical_id"]],
@@ -441,7 +441,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
     patch = _edit_patch(
         session,
         "named_region",
-        "边-可编辑",
+        "Edge-可编辑",
         {
             "part_id": hole["part_id"],
             "logical_ids": [hole["logical_id"]],
@@ -455,7 +455,7 @@ def test_scope_redirect_uses_unreferenced_topology_catalog_edge() -> None:
     )
 
     after = session.snapshot()
-    redirected = after.named_regions["边-可编辑"].references
+    redirected = after.named_regions["Edge-可编辑"].references
     assert set(redirected).isdisjoint(outer_references)
     assert len(redirected) == hole["matched_count"]
     assert after.session_revision == before.session_revision + 1

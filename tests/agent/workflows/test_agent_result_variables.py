@@ -103,8 +103,8 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
     apply_beam_definitions(controller, beam)
 
     for name, target, variables, units in (
-        ("结果请求-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
-        ("结果请求-截面力", "element", ["SF", "SM"], ["N", "N*mm"]),
+        ("Output-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
+        ("Output-截面力", "element", ["SF", "SM"], ["N", "N*mm"]),
     ):
         outcome = dispatch_authoring_tool(
             controller,
@@ -131,7 +131,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
         "edit_model_object",
         {
             "object_type": "result_request",
-            "target_id": "结果请求-节点",
+            "target_id": "Output-节点",
             "step_name": BEAM_STEP,
             "changes": {
                 "variables": ["U", "UR", "RF", "RM"],
@@ -149,7 +149,7 @@ def test_agent_result_request_uses_model_capability_and_exact_units() -> None:
         "edit_model_object",
         {
             "object_type": "result_request",
-            "target_id": "结果请求-节点",
+            "target_id": "Output-节点",
             "step_name": BEAM_STEP,
             "changes": {
                 "variables": ["U", "UR", "RF", "RM"],
@@ -170,7 +170,7 @@ def test_plate_result_requests_reject_unsupported_variables() -> None:
         plate_controller,
         plate,
         "apply_model_definition",
-        {"action": "create_static_step", "parameters": {"name": "分析步-静力"}},
+        {"action": "create_static_step", "parameters": {"name": "Step-静力"}},
         "result-variables-plate-step",
     )
     assert step.ok
@@ -183,8 +183,8 @@ def test_plate_result_requests_reject_unsupported_variables() -> None:
             {
                 "action": "create_result_request",
                 "parameters": {
-                    "name": f"结果请求-拒绝-{variable}",
-                    "step_name": "分析步-静力",
+                    "name": f"Output-拒绝-{variable}",
+                    "step_name": "Step-静力",
                     "target": "node" if variable == "UR" else "element",
                     "variables": [variable],
                     "units": [unit],
@@ -203,8 +203,8 @@ def test_beam_catalog_and_queries_cover_rotational_and_section_fields() -> None:
     controller, bridge = make_authoring_controller(session)
     apply_beam_definitions(controller, session)
     for name, target, variables, units in (
-        ("结果请求-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
-        ("结果请求-截面力矩", "element", ["SF", "SM"], ["N", "N*mm"]),
+        ("Output-转角力矩", "node", ["UR", "RM"], ["rad", "N*mm"]),
+        ("Output-截面力矩", "element", ["SF", "SM"], ["N", "N*mm"]),
     ):
         apply_definition_action(
             controller,
@@ -259,7 +259,7 @@ def test_truss_le_catalog_and_centroid_query() -> None:
         session,
         "create_result_request",
         {
-            "name": "结果请求-对数应变",
+            "name": "Output-对数应变",
             "step_name": TRUSS_STEP,
             "target": "element",
             "variables": ["LE"],
@@ -284,7 +284,7 @@ def test_truss_le_catalog_and_centroid_query() -> None:
             AgentResultVariable.LOGARITHMIC_STRAIN,
             "LE11",
             "centroid",
-            "域-杆件",
+            "Domain-杆件",
             AgentResultAggregation.MAXIMUM,
         )
     )

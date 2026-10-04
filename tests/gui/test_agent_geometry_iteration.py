@@ -9,10 +9,11 @@ from PySide6.QtWidgets import QApplication
 from fem.application import ModelSession, UnitContext
 from fem.core.model import MaterialDefinition
 from fem.geometry import (
+    SketchPoint,
+    SketchLine,
     SketchCircle,
     SketchGeometry,
     SketchRadiusDimension,
-    SketchRectangle,
 )
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import (
@@ -40,11 +41,23 @@ from tests.helpers.agent_result_fixtures import make_solved_session
 def _three_hole_sketch() -> SketchGeometry:
     return planar_sketch_geometry(
         "Plate",
-        contours=(
-            SketchRectangle("material", 0.0, 0.0, 20.0, 20.0),
-            SketchCircle("cut", 5.0, 10.0, 1.0),
-            SketchCircle("cut", 10.0, 10.0, 1.0),
-            SketchCircle("cut", 15.0, 10.0, 1.0),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 20.0, 0.0),
+            SketchPoint("P3", 20.0, 20.0),
+            SketchPoint("P4", 0.0, 20.0),
+            SketchPoint("P5", 5.0, 10.0),
+            SketchPoint("P6", 10.0, 10.0),
+            SketchPoint("P7", 15.0, 10.0),
+        ),
+        curves=(
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+            SketchCircle("C5", "P5", 1.0),
+            SketchCircle("C6", "P6", 1.0),
+            SketchCircle("C7", "P7", 1.0),
         ),
     ).recipe
 

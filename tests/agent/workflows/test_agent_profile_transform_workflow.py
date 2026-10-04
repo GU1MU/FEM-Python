@@ -5,7 +5,7 @@ import json
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import SketchCircle
+from fem.geometry import SketchCircle, SketchPoint
 from fem_agent.authoring import ProposalState
 from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import planar_sketch_geometry
@@ -32,9 +32,13 @@ def _session_controller(recipe, *, name: str = "Native profile transform"):
 def _ring_recipe():
     return planar_sketch_geometry(
         "Ring profile",
-        contours=(
-            SketchCircle("material", 0.0, 0.0, 5.0),
-            SketchCircle("cut", 0.0, 0.0, 2.0),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 0.0, 0.0),
+        ),
+        curves=(
+            SketchCircle("C1", "P1", 5.0),
+            SketchCircle("C2", "P2", 2.0),
         ),
     ).recipe
 

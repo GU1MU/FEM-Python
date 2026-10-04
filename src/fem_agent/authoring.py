@@ -45,22 +45,6 @@ class AuthoringAuthorizationError(PermissionError):
     """An operation was not authorized by a local GUI control."""
 
 
-class ClarificationRequiredError(RuntimeError):
-    """A deterministic authoring stage gate is not satisfied."""
-
-    code = "clarification_required"
-
-    def __init__(self, stage: str, missing_fields: Sequence[str]) -> None:
-        self.stage = _require_text(stage, "stage")
-        self.missing_fields = tuple(
-            sorted({_require_key(item) for item in missing_fields})
-        )
-        super().__init__(
-            f"{self.stage} requires confirmed fields: "
-            + ", ".join(self.missing_fields)
-        )
-
-
 def _require_text(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AuthoringContractError(f"{field_name} must be a non-empty string")
@@ -446,8 +430,6 @@ class AuthoringContext:
     capabilities: tuple[CapabilitySummary, ...] = ()
     unit_context: UnitContextSummary | None = None
     schema_version: str = AUTHORING_SCHEMA_VERSION
-    # Keep additive fields after the original constructor surface so legacy
-    # positional callers retain their previous meaning.
     run_count: int = 0
     result_count: int = 0
     selected_run_id: str | None = None
@@ -554,7 +536,6 @@ class AuthoringContext:
 class RequirementStatus(str, Enum):
     MISSING = "missing"
     PROPOSED = "proposed"
-    CONFIRMED = "confirmed"
     INVALIDATED = "invalidated"
 
 
@@ -625,91 +606,12 @@ class RequirementEntry:
         }
 
 
-class RequirementReviewStatus(str, Enum):
-    PENDING = "pending_confirmation"
-    CONFIRMED = "confirmed"
-    REJECTED = "rejected"
-    STALE = "stale"
-
-
-@dataclass(frozen=True, slots=True)
-class RequirementReview:
-    review_id: str
-    ledger_revision: int
-    fields: tuple[RequirementEntry, ...]
-    status: RequirementReviewStatus
-    review_hash: str
-    schema_version: str = AUTHORING_SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "review_id",
-            _require_identifier(self.review_id, "review_id"),
-        )
-        if (
-            not isinstance(self.ledger_revision, int)
-            or isinstance(self.ledger_revision, bool)
-            or self.ledger_revision < 0
-        ):
-            raise AuthoringContractError(
-                "ledger_revision must be a non-negative integer"
-            )
-        fields = tuple(self.fields)
-        if not fields or any(
-            type(item) is not RequirementEntry for item in fields
-        ):
-            raise AuthoringContractError(
-                "RequirementReview requires RequirementEntry fields"
-            )
-        object.__setattr__(self, "fields", fields)
-        try:
-            status = RequirementReviewStatus(self.status)
-        except ValueError as exc:
-            raise AuthoringContractError("unknown review status") from exc
-        object.__setattr__(self, "status", status)
-        if self.schema_version != AUTHORING_SCHEMA_VERSION:
-            raise AuthoringContractError("unknown RequirementReview schema_version")
-        if self.review_hash != _hash(self._hash_payload()):
-            raise AuthoringContractError("RequirementReview hash does not match")
-
-    @classmethod
-    def create(
-        cls,
-        review_id: str,
-        ledger_revision: int,
-        fields: Sequence[RequirementEntry],
-    ) -> RequirementReview:
-        payload = {
-            "schema_version": AUTHORING_SCHEMA_VERSION,
-            "review_id": review_id,
-            "ledger_revision": ledger_revision,
-            "fields": [item.to_dict() for item in fields],
-        }
-        return cls(
-            review_id=review_id,
-            ledger_revision=ledger_revision,
-            fields=tuple(fields),
-            status=RequirementReviewStatus.PENDING,
-            review_hash=_hash(payload),
-        )
-
-    def _hash_payload(self) -> dict[str, object]:
-        return {
-            "schema_version": self.schema_version,
-            "review_id": self.review_id,
-            "ledger_revision": self.ledger_revision,
-            "fields": [item.to_dict() for item in self.fields],
-        }
-
-
 class RequirementLedger:
     """Agent-private requirements with dependency invalidation."""
 
     def __init__(self) -> None:
         self._entries: dict[str, RequirementEntry] = {}
         self._revision = 0
-        self._reviews: dict[str, RequirementReview] = {}
 
     @property
     def revision(self) -> int:
@@ -730,10 +632,6 @@ class RequirementLedger:
         status: RequirementStatus = RequirementStatus.PROPOSED,
         dependencies: Sequence[str] = (),
     ) -> RequirementEntry:
-        if RequirementStatus(status) is RequirementStatus.CONFIRMED:
-            raise AuthoringAuthorizationError(
-                "confirmed requirements require a GUI RequirementReview"
-            )
         normalized = _require_key(key)
         prior = self._entries.get(normalized)
         entry = RequirementEntry(
@@ -754,7 +652,6 @@ class RequirementLedger:
                 normalized,
                 f"upstream requirement {normalized} changed",
             )
-        self._stale_reviews()
         return entry
 
     def invalidate(self, key: str, reason: str) -> RequirementEntry:
@@ -774,122 +671,7 @@ class RequirementLedger:
             self._entries[normalized] = invalidated
             self._revision += 1
             self._invalidate_dependents(normalized, reason)
-            self._stale_reviews()
         return invalidated
-
-    def create_review(
-        self,
-        review_id: str,
-        keys: Sequence[str],
-    ) -> RequirementReview:
-        normalized = tuple(
-            dict.fromkeys(_require_key(item) for item in keys)
-        )
-        if not normalized:
-            raise AuthoringContractError("RequirementReview cannot be empty")
-        fields: list[RequirementEntry] = []
-        for key in normalized:
-            try:
-                entry = self._entries[key]
-            except KeyError as exc:
-                raise AuthoringContractError(
-                    f"unknown requirement: {key}"
-                ) from exc
-            if entry.status not in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }:
-                raise ClarificationRequiredError(entry.stage, (key,))
-            fields.append(entry)
-        review = RequirementReview.create(
-            review_id,
-            self._revision,
-            fields,
-        )
-        self._reviews[review.review_id] = review
-        return review
-
-    def _confirm_review_from_gui(
-        self,
-        review: RequirementReview,
-    ) -> RequirementReview:
-        """Apply a review only through the GUI bridge's capability path."""
-
-        current = self._require_current_review(review)
-        if current.status is not RequirementReviewStatus.PENDING:
-            raise AuthoringAuthorizationError(
-                "RequirementReview is no longer pending"
-            )
-        for reviewed in current.fields:
-            live = self._entries.get(reviewed.key)
-            if live != reviewed:
-                self._stale_reviews()
-                raise AuthoringContractError("RequirementReview is stale")
-        for reviewed in current.fields:
-            self._entries[reviewed.key] = replace(
-                reviewed,
-                status=RequirementStatus.CONFIRMED,
-                invalidation_reason=None,
-            )
-        self._revision += 1
-        confirmed = replace(
-            current,
-            status=RequirementReviewStatus.CONFIRMED,
-        )
-        self._reviews[current.review_id] = confirmed
-        return confirmed
-
-    def _reject_review_from_gui(
-        self,
-        review: RequirementReview,
-    ) -> RequirementReview:
-        current = self._require_current_review(review)
-        if current.status is not RequirementReviewStatus.PENDING:
-            raise AuthoringAuthorizationError(
-                "RequirementReview is no longer pending"
-            )
-        rejected = replace(current, status=RequirementReviewStatus.REJECTED)
-        self._reviews[current.review_id] = rejected
-        return rejected
-
-    def require_confirmed(
-        self,
-        stage: str,
-        required_keys: Sequence[str],
-    ) -> tuple[RequirementEntry, ...]:
-        normalized = tuple(
-            dict.fromkeys(_require_key(item) for item in required_keys)
-        )
-        missing = [
-            key
-            for key in normalized
-            if (
-                key not in self._entries
-                or self._entries[key].status is not RequirementStatus.CONFIRMED
-            )
-        ]
-        if missing:
-            raise ClarificationRequiredError(stage, missing)
-        return tuple(self._entries[key] for key in normalized)
-
-    def confirmed_hash(self) -> str:
-        confirmed = [
-            item.to_dict()
-            for item in self.entries
-            if item.status is RequirementStatus.CONFIRMED
-        ]
-        return _hash(confirmed)
-
-    def _require_current_review(
-        self,
-        review: RequirementReview,
-    ) -> RequirementReview:
-        if type(review) is not RequirementReview:
-            raise AuthoringContractError("review must be RequirementReview")
-        current = self._reviews.get(review.review_id)
-        if current is None or current.review_hash != review.review_hash:
-            raise AuthoringContractError("RequirementReview is not registered")
-        return current
 
     def _invalidate_dependents(self, key: str, reason: str) -> None:
         pending = [key]
@@ -914,17 +696,6 @@ class RequirementLedger:
                     changed = True
         if changed:
             self._revision += 1
-
-    def _stale_reviews(self) -> None:
-        for review_id, review in tuple(self._reviews.items()):
-            if (
-                review.status is RequirementReviewStatus.PENDING
-                and review.ledger_revision != self._revision
-            ):
-                self._reviews[review_id] = replace(
-                    review,
-                    status=RequirementReviewStatus.STALE,
-                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1171,7 +942,15 @@ _OPERATION_PARAMETER_FIELDS: dict[
                 "validation_stamp",
             }
         ),
-        frozenset({"step_name", "validation_stamp"}),
+        frozenset(
+            {
+                "step_name",
+                "job_name",
+                "artifact_id",
+                "model_revision",
+                "validation_stamp",
+            }
+        ),
     ),
     OperationKind.REQUEST_RESULT_QUERY: (
         frozenset({"query"}),
@@ -1247,21 +1026,6 @@ class ModelOperation:
             raise AuthoringContractError(
                 f"{kind.value} is missing parameter fields: "
                 + ", ".join(sorted(missing))
-            )
-        if kind is OperationKind.REQUEST_SOLVE and keys not in {
-            frozenset({"step_name", "validation_stamp"}),
-            frozenset(
-                {
-                    "step_name",
-                    "job_name",
-                    "artifact_id",
-                    "model_revision",
-                    "validation_stamp",
-                }
-            ),
-        }:
-            raise AuthoringContractError(
-                "request_solve must use either the legacy or exact A6 field set"
             )
         if kind is OperationKind.DELETE_MODEL_OBJECT:
             object_type = parameters.get("object_type")
@@ -1949,7 +1713,6 @@ __all__ = [
     "AuthoringContractError",
     "AuthoringPort",
     "CapabilitySummary",
-    "ClarificationRequiredError",
     "DefinitionSummary",
     "FakeAuthoringPort",
     "LocalModelBinding",
@@ -1963,8 +1726,6 @@ __all__ = [
     "ProposalState",
     "RequirementEntry",
     "RequirementLedger",
-    "RequirementReview",
-    "RequirementReviewStatus",
     "RequirementStatus",
     "UnitContextSummary",
 ]

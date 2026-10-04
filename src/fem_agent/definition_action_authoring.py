@@ -56,7 +56,6 @@ from .analysis_authoring import (
     expected_result_units,
 )
 from .authoring import (
-    AgentProposal,
     AuthoringContext,
     ModelPatch,
 )
@@ -98,9 +97,9 @@ class _Snapshot(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DefinitionChange:
-    """One strict direct patch (or a legacy compatible proposal value)."""
+    """One strict direct definition patch."""
 
-    value: ModelPatch | AgentProposal
+    value: ModelPatch
     action: str
     resume_object_type: str
 
@@ -108,7 +107,6 @@ class DefinitionChange:
 def create_definition_change(
     *,
     patch_id: str,
-    proposal_id: str,
     agent_session_id: str,
     turn_id: str,
     source_tool_call_ids: Sequence[str],
@@ -173,7 +171,6 @@ def create_definition_change(
             else "named_region"
         )
 
-    del proposal_id
     return DefinitionChange(patch, normalized_action, resume_object_type)
 
 

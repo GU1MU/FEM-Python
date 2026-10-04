@@ -27,7 +27,7 @@ def _native_context(revision: int = 3) -> AuthoringContext:
             "native",
             True,
         ),
-        "模型-1",
+        "Model-1",
         "part-1",
         capabilities=(
             CapabilitySummary("request_project_save", True),

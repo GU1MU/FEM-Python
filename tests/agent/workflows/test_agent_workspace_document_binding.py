@@ -65,10 +65,10 @@ def _validated_solve_session() -> ModelSession:
     model = read(_FIXTURE)
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-桁架",
+        "Model-桁架",
         UnitContext("mm", "N", "MPa"),
-        PlateWithHoleGeometry("实体-偏心孔板", 10.0, 6.0, 6.5, 2.0, 1.0),
-        part_name="部件-桁架",
+        PlateWithHoleGeometry("Body-偏心孔板", 10.0, 6.0, 6.5, 2.0, 1.0),
+        part_name="Part-桁架",
     )
     session.replace_part_mesh_settings(
         "P1",
@@ -92,7 +92,7 @@ def _solve_proposal(session: ModelSession, *, target_document_id: str | None):
         snapshot=session.snapshot(),
         draft_revision=6,
         step_name=STEP_NAME,
-        job_name="作业-静力1",
+        job_name="Job-静力1",
         target_document_id=target_document_id,
     )
 

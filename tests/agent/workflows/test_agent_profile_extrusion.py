@@ -7,10 +7,10 @@ import pytest
 from fem import geometry as geometry_runtime
 from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
-from fem.geometry import LogicalEntityRef
+from fem.geometry import LogicalEntityRef, SketchPoint, SketchLine
 from fem.mesh.settings import MeshSettings
 from fem.application import ModelSession, UnitContext
-from fem.geometry import ExtrudedGeometry, RectangleGeometry, SketchCircle, SketchRectangle, describe_recipe_topology
+from fem.geometry import ExtrudedGeometry, RectangleGeometry, SketchCircle, describe_recipe_topology
 from fem.io.project import decode_project, encode_project
 from fem_agent.authoring import ProposalState
 from fem_agent.geometry_authoring import (
@@ -240,18 +240,36 @@ def test_dedicated_extrusion_requires_explicit_selection_for_multiple_profiles(
 
 
 @pytest.mark.parametrize(
-    "contour",
+    "draft",
     (
-        SketchRectangle("material", 0.0, 0.0, 3.0, 2.0),
-        SketchCircle("material", 0.0, 0.0, 1.5),
+        planar_sketch_geometry(
+            "Agent sketch",
+            points=(
+                SketchPoint("P1", 0.0, 0.0),
+                SketchPoint("P2", 3.0, 0.0),
+                SketchPoint("P3", 3.0, 2.0),
+                SketchPoint("P4", 0.0, 2.0),
+            ),
+            curves=(
+                SketchLine("L1", "P1", "P2"),
+                SketchLine("L2", "P2", "P3"),
+                SketchLine("L3", "P3", "P4"),
+                SketchLine("L4", "P4", "P1"),
+            ),
+        ),
+        planar_sketch_geometry(
+            "Agent sketch",
+            points=(SketchPoint("P1", 0.0, 0.0),),
+            curves=(SketchCircle("C1", "P1", 1.5),),
+        ),
     ),
 )
 @pytest.mark.usefixtures("real_gmsh")
 def test_agent_extrudes_rectangle_and_circle_profiles(
     monkeypatch,
-    contour,
+    draft,
 ) -> None:
-    sketch = planar_sketch_geometry("Agent sketch", contours=(contour,)).recipe
+    sketch = draft.recipe
     source = next(
         entity.logical_id
         for entity in describe_recipe_topology(sketch).entities

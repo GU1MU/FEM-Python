@@ -63,10 +63,10 @@ from fem_gui.agent_authoring import (
 def _session() -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-板",
+        "Model-板",
         UnitContext("mm", "N", "MPa"),
-        RectangleGeometry("实体-板", 10.0, 4.0),
-        part_name="部件-板",
+        RectangleGeometry("Body-板", 10.0, 4.0),
+        part_name="Part-板",
     )
     model = FEMModel(
         Mesh2D(
@@ -81,7 +81,7 @@ def _session() -> ModelSession:
                 Element2D(2, (1, 3, 4), "Tri3"),
             ],
         ),
-        name="模型-板",
+        name="Model-板",
         metadata={
             NATIVE_PART_OWNERSHIP_KEY: {
                 "P1": {
@@ -103,48 +103,48 @@ def _session() -> ModelSession:
             session.session_revision,
             (
                 NamedRegion(
-                    "边-固定端",
+                    "Edge-固定端",
                     (MeshEntityRef.edge(2, 2, (4, 1), part_id="P1"),),
                 ),
                 NamedRegion(
-                    "边-加载端",
+                    "Edge-加载端",
                     (MeshEntityRef.edge(1, 1, (2, 3), part_id="P1"),),
                 ),
                 NamedRegion(
-                    "域-板体",
+                    "Domain-板体",
                     (
                         MeshEntityRef.element(1, part_id="P1"),
                         MeshEntityRef.element(2, part_id="P1"),
                     ),
                 ),
             ),
-            (MaterialDefinition("材料-钢", {"E": 210000.0, "nu": 0.3}),),
+            (MaterialDefinition("Material-钢", {"E": 210000.0, "nu": 0.3}),),
             (
                 SectionDefinition(
-                    "截面-平面应力",
-                    "材料-钢",
+                    "Section-平面应力",
+                    "Material-钢",
                     "solid",
                     {"plane_type": "stress", "thickness": 1.0},
                 ),
             ),
-            (RegionAssignment("截面-平面应力", "域-板体"),),
+            (RegionAssignment("Section-平面应力", "Domain-板体"),),
             (
                 AnalysisStep(
-                    "分析步-静力",
+                    "Step-静力",
                     boundaries=(
                         DisplacementConstraint(
-                            "边-固定端",
+                            "Edge-固定端",
                             1,
                             2,
-                            name="位移-固定端",
+                            name="Displacement-固定端",
                             target_kind="edge",
                         ),
                     ),
                     edge_loads=(
                         EdgeLoad(
-                            "边-加载端",
+                            "Edge-加载端",
                             (10.0, 0.0),
-                            name="载荷-拉伸",
+                            name="Load-拉伸",
                         ),
                     ),
                     outputs=(
@@ -152,13 +152,13 @@ def _session() -> ModelSession:
                             "field",
                             "node",
                             ("U", "RF"),
-                            name="结果请求-位移反力",
+                            name="Output-位移反力",
                         ),
                         OutputRequest(
                             "field",
                             "element",
                             ("S",),
-                            name="结果请求-应力",
+                            name="Output-应力",
                         ),
                         OutputRequest("field", "node", ("U",)),
                     ),
@@ -224,18 +224,18 @@ def test_deletable_catalog_is_bounded_stable_and_provider_safe() -> None:
 
     assert ("part", "P1", None) in identities
     assert ("generated_mesh", "current", None) in identities
-    assert ("named_region", "边-固定端", None) in identities
-    assert ("analysis_step", "分析步-静力", None) in identities
+    assert ("named_region", "Edge-固定端", None) in identities
+    assert ("analysis_step", "Step-静力", None) in identities
     assert (
         "boundary_condition",
-        "位移-固定端",
-        "分析步-静力",
+        "Displacement-固定端",
+        "Step-静力",
     ) in identities
-    assert ("load", "载荷-拉伸", "分析步-静力") in identities
+    assert ("load", "Load-拉伸", "Step-静力") in identities
     assert (
         "result_request",
-        "结果请求-应力",
-        "分析步-静力",
+        "Output-应力",
+        "Step-静力",
     ) in identities
     assert all(item.target_id for item in catalog)
     assert all(item.target_id != "None" for item in catalog)
@@ -265,10 +265,10 @@ def test_catalog_exposes_and_deletes_only_the_terminal_native_feature() -> None:
         MovedGeometry(DiskGeometry("Hole-2", 0.4), 7.0, 2.0),
     )
     session.create_native_project_with_first_part(
-        "模型-特征删除",
+        "Model-特征删除",
         UnitContext("mm", "N", "MPa"),
         second_cut,
-        part_name="部件-板",
+        part_name="Part-板",
     )
     catalog = deletable_object_catalog(session.snapshot())
     feature = next(item for item in catalog if item.object_type == "feature")
@@ -306,8 +306,8 @@ def test_delete_proposal_is_path_free_and_requires_unique_gui_authorization() ->
     proposal = _proposal(
         session,
         "boundary_condition",
-        "位移-固定端",
-        "分析步-静力",
+        "Displacement-固定端",
+        "Step-静力",
     )
     refreshes: list[str] = []
     port = SessionGeometryAuthoringPort(
@@ -338,9 +338,9 @@ def test_delete_proposal_is_path_free_and_requires_unique_gui_authorization() ->
 @pytest.mark.parametrize(
     ("object_type", "target_id", "step_name"),
     [
-        ("load", "载荷-拉伸", "分析步-静力"),
-        ("result_request", "结果请求-应力", "分析步-静力"),
-        ("analysis_step", "分析步-静力", None),
+        ("load", "Load-拉伸", "Step-静力"),
+        ("result_request", "Output-应力", "Step-静力"),
+        ("analysis_step", "Step-静力", None),
     ],
 )
 def test_step_and_named_children_are_deleted_atomically(
@@ -368,7 +368,7 @@ def test_step_and_named_children_are_deleted_atomically(
             item.name
             for item in snapshot.steps[0].outputs
             if item.name is not None
-        ] == ["结果请求-位移反力"]
+        ] == ["Output-位移反力"]
 
 
 def test_scope_mesh_and_part_deletions_reuse_session_cascades() -> None:
@@ -376,7 +376,7 @@ def test_scope_mesh_and_part_deletions_reuse_session_cascades() -> None:
     scope_proposal = _proposal(
         scope_session,
         "named_region",
-        "边-固定端",
+        "Edge-固定端",
     )
     apply_delete_operation(
         scope_session,
@@ -384,14 +384,14 @@ def test_scope_mesh_and_part_deletions_reuse_session_cascades() -> None:
         base_session_revision=scope_proposal.base_session_revision,
     )
     scoped = scope_session.snapshot()
-    assert "边-固定端" not in scoped.named_regions
+    assert "Edge-固定端" not in scoped.named_regions
     assert scoped.steps[0].boundaries == ()
     assert scoped.steps[0].edge_loads
 
     assignment_proposal = _proposal(
         scope_session,
         "named_region",
-        "域-板体",
+        "Domain-板体",
     )
     apply_delete_operation(
         scope_session,
@@ -457,8 +457,8 @@ def test_controller_publishes_delete_tools_and_waits_for_gui_terminal() -> None:
         "prepare_delete_proposal",
         {
             "object_type": "boundary_condition",
-            "target_id": "位移-固定端",
-            "step_name": "分析步-静力",
+            "target_id": "Displacement-固定端",
+            "step_name": "Step-静力",
         },
         context,
     )
@@ -484,10 +484,10 @@ def test_controller_publishes_delete_tools_and_waits_for_gui_terminal() -> None:
 def test_deleting_last_part_restores_geometry_creation_and_context_units() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-单部件",
+        "Model-单部件",
         UnitContext("mm", "N", "MPa"),
-        RectangleGeometry("实体-板", 10.0, 4.0),
-        part_name="部件-板",
+        RectangleGeometry("Body-板", 10.0, 4.0),
+        part_name="Part-板",
     )
     holders: dict[str, object] = {}
 
@@ -543,7 +543,7 @@ def test_editable_catalog_exposes_current_values_and_opaque_scope_references() -
         item
         for item in catalog
         if item.object_type == "named_region"
-        and item.target_id == "边-固定端"
+        and item.target_id == "Edge-固定端"
     )
     boundary = next(
         item
@@ -560,7 +560,7 @@ def test_editable_catalog_exposes_current_values_and_opaque_scope_references() -
         for key in scope.details["reference_keys"]
     )
     assert boundary.details["value"] == 0.0
-    assert boundary.details["target_scope"] == "边-固定端"
+    assert boundary.details["target_scope"] == "Edge-固定端"
     assert load.details["load_kind"] == "edge"
     assert load.details["vector"] == [10.0, 0.0]
     encoded = json.dumps(
@@ -576,8 +576,8 @@ def test_scope_edit_renames_dependencies_and_replaces_membership() -> None:
     rename = _edit_proposal(
         session,
         "named_region",
-        "边-固定端",
-        {"new_name": "边-约束端"},
+        "Edge-固定端",
+        {"new_name": "Edge-约束端"},
     )
     apply_edit_operation(
         session,
@@ -586,20 +586,20 @@ def test_scope_edit_renames_dependencies_and_replaces_membership() -> None:
     )
     renamed = session.snapshot()
 
-    assert "边-固定端" not in renamed.named_regions
-    assert renamed.steps[0].boundaries[0].target == "边-约束端"
+    assert "Edge-固定端" not in renamed.named_regions
+    assert renamed.steps[0].boundaries[0].target == "Edge-约束端"
 
     catalog = editable_object_catalog(renamed)
     loading = next(
         item
         for item in catalog
         if item.object_type == "named_region"
-        and item.target_id == "边-加载端"
+        and item.target_id == "Edge-加载端"
     )
     membership = _edit_proposal(
         session,
         "named_region",
-        "边-约束端",
+        "Edge-约束端",
         {"reference_keys": loading.details["reference_keys"]},
     )
     apply_edit_operation(
@@ -609,22 +609,22 @@ def test_scope_edit_renames_dependencies_and_replaces_membership() -> None:
     )
 
     assert (
-        session.snapshot().named_regions["边-约束端"].references
-        == session.snapshot().named_regions["边-加载端"].references
+        session.snapshot().named_regions["Edge-约束端"].references
+        == session.snapshot().named_regions["Edge-加载端"].references
     )
 
     domain = _edit_proposal(
         session,
         "named_region",
-        "域-板体",
-        {"new_name": "域-结构体"},
+        "Domain-板体",
+        {"new_name": "Domain-结构体"},
     )
     apply_edit_operation(
         session,
         domain.operations[0],
         base_session_revision=domain.base_session_revision,
     )
-    assert session.snapshot().assignments[0].region_name == "域-结构体"
+    assert session.snapshot().assignments[0].region_name == "Domain-结构体"
 
 
 def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
@@ -632,9 +632,9 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
     boundary = _edit_proposal(
         session,
         "boundary_condition",
-        "位移-固定端",
+        "Displacement-固定端",
         {
-            "target_scope": "边-加载端",
+            "target_scope": "Edge-加载端",
                 "first_component": 2,
                 "last_component": 2,
                 "value": 1.5,
@@ -642,7 +642,7 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
                 "distribution": "uniform",
                 "confirmed": True,
         },
-        "分析步-静力",
+        "Step-静力",
     )
     revision = session.session_revision
     refreshes: list[str] = []
@@ -662,7 +662,7 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
 
     assert receipt.state is ProposalState.SUCCEEDED
     assert refreshes == ["refresh"]
-    assert edited_boundary.target == "边-加载端"
+    assert edited_boundary.target == "Edge-加载端"
     assert edited_boundary.target_kind == "edge"
     assert edited_boundary.first_component == 2
     assert edited_boundary.last_component == 2
@@ -671,9 +671,9 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
     load = _edit_proposal(
         session,
         "load",
-        "载荷-拉伸",
+        "Load-拉伸",
         {
-            "target_scope": "边-固定端",
+            "target_scope": "Edge-固定端",
             "vector": [20.0, 5.0],
             "entity_type": "edge",
             "load_type": "edge_traction",
@@ -682,7 +682,7 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
             "distribution": "uniform",
             "confirmed": True,
         },
-        "分析步-静力",
+        "Step-静力",
     )
     apply_edit_operation(
         session,
@@ -691,7 +691,7 @@ def test_boundary_and_load_edits_are_atomic_and_gui_authorized() -> None:
     )
     edited_load = session.snapshot().steps[0].edge_loads[0]
 
-    assert edited_load.edge == "边-固定端"
+    assert edited_load.edge == "Edge-固定端"
     assert edited_load.vector == (20.0, 5.0)
     assert edited_load.load_type == "traction"
 
@@ -704,15 +704,15 @@ def test_invalid_edit_is_rejected_without_changing_the_session() -> None:
         _edit_proposal(
             session,
             "boundary_condition",
-            "位移-固定端",
+            "Displacement-固定端",
             {"vector": [1.0, 2.0]},
-            "分析步-静力",
+            "Step-静力",
         )
     with pytest.raises(ValueError, match="unavailable identity"):
         _edit_proposal(
             session,
             "named_region",
-            "边-固定端",
+            "Edge-固定端",
             {"reference_keys": ["scope-ref-" + "0" * 64]},
         )
 
@@ -761,8 +761,8 @@ def test_controller_applies_supported_edit_directly_and_refreshes_binding() -> N
         "edit_model_object",
         {
             "object_type": "load",
-            "target_id": "载荷-拉伸",
-            "step_name": "分析步-静力",
+            "target_id": "Load-拉伸",
+            "step_name": "Step-静力",
             "changes": {
                 "vector": [25.0, 0.0],
                 "entity_type": "edge",

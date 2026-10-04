@@ -2211,13 +2211,7 @@ class AgentChatDrawer(_BoundaryFrame):
         raw_title = str(
             summary.get("title", "Agent applied model changes")
         )
-        raw_detail = str(summary.get("summary", "")).strip()
-        # Recognize the built-in title stored in legacy conversation history.
-        visible_title = (
-            f"Agent {raw_detail}"
-            if raw_title == "Agent 修改已同步" and raw_detail
-            else raw_title
-        )
+        visible_title = raw_title
         state_value = str(
             getattr(getattr(record, "state", None), "value", "")
         )

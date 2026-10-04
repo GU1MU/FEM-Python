@@ -16,7 +16,7 @@ from fem_gui.agent_authoring import (
 )
 
 
-STATIC_STEP_NAME = "分析步-静力"
+STATIC_STEP_NAME = "Step-静力"
 
 
 def make_authoring_controller(
@@ -115,9 +115,9 @@ def apply_static_analysis_definitions(controller, session: ModelSession) -> None
         (
             "create_boundary_condition",
             {
-                "name": "位移-固定端",
+                "name": "Displacement-固定端",
                 "step_name": STATIC_STEP_NAME,
-                "target_scope": "边-固定端",
+                "target_scope": "Edge-固定端",
                 "target_kind": "edge",
                 "first_component": 1,
                 "last_component": 2,
@@ -130,9 +130,9 @@ def apply_static_analysis_definitions(controller, session: ModelSession) -> None
         (
             "create_load",
             {
-                "name": "载荷-拉伸",
+                "name": "Load-拉伸",
                 "step_name": STATIC_STEP_NAME,
-                "target_scope": "边-加载端",
+                "target_scope": "Edge-加载端",
                 "entity_type": "edge",
                 "load_type": "edge_traction",
                 "component": None,
@@ -147,7 +147,7 @@ def apply_static_analysis_definitions(controller, session: ModelSession) -> None
         (
             "create_result_request",
             {
-                "name": "结果请求-位移反力",
+                "name": "Output-位移反力",
                 "step_name": STATIC_STEP_NAME,
                 "target": "node",
                 "variables": ["U", "RF"],

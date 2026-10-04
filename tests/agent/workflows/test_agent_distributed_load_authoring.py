@@ -26,7 +26,7 @@ from tests.helpers.agent_session_fixtures import make_defined_plate_session
 from tests.helpers.agent_surface_fixtures import make_surface_load_session
 
 
-PLATE_STEP_NAME = "分析步-静力"
+PLATE_STEP_NAME = "Step-静力"
 
 
 def _create_step(controller: object, session: object, name: str) -> None:
@@ -76,9 +76,9 @@ def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-体力",
+                "name": "Load-体力",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-板体",
+                "target_scope": "Domain-板体",
                 "entity_type": "element",
                 "load_type": "body",
                 "vector": [1.0, -2.0],
@@ -101,9 +101,9 @@ def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-错误体力",
+                "name": "Load-错误体力",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-板体",
+                "target_scope": "Domain-板体",
                 "entity_type": "element",
                 "load_type": "body",
                 "vector": [1.0, 2.0, 3.0],
@@ -122,7 +122,7 @@ def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
         ({"vector": [3.0, 4.0, 5.0]}, "wrong-body-edit-dimension"),
         ({"vector": [3.0, 4.0], "unit": "N/mm"}, "wrong-body-edit-unit"),
         (
-            {"vector": [3.0, 4.0], "target_scope": "边-加载端"},
+            {"vector": [3.0, 4.0], "target_scope": "Edge-加载端"},
             "wrong-body-edit-scope",
         ),
     )
@@ -140,7 +140,7 @@ def test_creates_body_force_and_fails_closed_on_wrong_dimension() -> None:
             "edit_model_object",
             {
                 "object_type": "load",
-                "target_id": "载荷-体力",
+                "target_id": "Load-体力",
                 "step_name": PLATE_STEP_NAME,
                 "changes": changes,
             },
@@ -165,9 +165,9 @@ def test_creates_global_and_local_beam_line_loads() -> None:
             {
                 "action": "create_load",
                 "parameters": {
-                    "name": f"载荷-梁-{coordinate_system}",
+                    "name": f"Load-梁-{coordinate_system}",
                     "step_name": BEAM_STEP_NAME,
-                    "target_scope": "域-梁",
+                    "target_scope": "Domain-梁",
                     "entity_type": "element",
                     "load_type": "line",
                     "vector": [0.0, -5.0, 0.0],
@@ -191,7 +191,7 @@ def test_creates_global_and_local_beam_line_loads() -> None:
         "edit_model_object",
         {
             "object_type": "load",
-            "target_id": "载荷-梁-global",
+            "target_id": "Load-梁-global",
             "step_name": BEAM_STEP_NAME,
             "changes": {
                 "vector": [1.0, -8.0, 2.0],
@@ -213,7 +213,7 @@ def test_creates_global_and_local_beam_line_loads() -> None:
         "edit_model_object",
         {
             "object_type": "load",
-            "target_id": "载荷-梁-global",
+            "target_id": "Load-梁-global",
             "step_name": BEAM_STEP_NAME,
             "changes": {
                 "vector": [9.0, 9.0, 9.0],
@@ -232,13 +232,13 @@ def test_creates_global_and_local_beam_line_loads() -> None:
     invalid_creates = (
         ({"coordinate_system": "cylindrical"}, "invalid-line-coordinate"),
         ({"unit": "N"}, "invalid-line-unit"),
-        ({"target_scope": "点-自由端"}, "invalid-line-scope"),
+        ({"target_scope": "Point-自由端"}, "invalid-line-scope"),
     )
     for index, (overrides, key) in enumerate(invalid_creates):
         parameters = {
-            "name": f"载荷-无效梁-{index}",
+            "name": f"Load-无效梁-{index}",
             "step_name": BEAM_STEP_NAME,
-            "target_scope": "域-梁",
+            "target_scope": "Domain-梁",
             "entity_type": "element",
             "load_type": "line",
             "vector": [0.0, -5.0, 0.0],
@@ -272,9 +272,9 @@ def test_line_rejects_non_beam_element_region_atomically() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-非梁线载荷",
+                "name": "Load-非梁线载荷",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-板体",
+                "target_scope": "Domain-板体",
                 "entity_type": "element",
                 "load_type": "line",
                 "vector": [0.0, -5.0, 0.0],
@@ -305,9 +305,9 @@ def test_local_line_and_gravity_fail_closed_without_capability() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-局部未定向",
+                "name": "Load-局部未定向",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "域-梁",
+                "target_scope": "Domain-梁",
                 "entity_type": "element",
                 "load_type": "line",
                 "vector": [0.0, -5.0, 0.0],
@@ -329,7 +329,7 @@ def test_local_line_and_gravity_fail_closed_without_capability() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-重力",
+                "name": "Load-重力",
                 "step_name": BEAM_STEP_NAME,
                 "target_scope": None,
                 "entity_type": "element",
@@ -362,7 +362,7 @@ def test_gravity_accepts_global_target_with_explicit_unit() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-重力",
+                "name": "Load-重力",
                 "step_name": PLATE_STEP_NAME,
                 "target_scope": None,
                 "entity_type": "element",
@@ -388,9 +388,9 @@ def test_gravity_accepts_global_target_with_explicit_unit() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-区域重力",
+                "name": "Load-区域重力",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-板体",
+                "target_scope": "Domain-板体",
                 "entity_type": "element",
                 "load_type": "gravity",
                 "acceleration": [9810.0, 0.0],
@@ -404,14 +404,14 @@ def test_gravity_accepts_global_target_with_explicit_unit() -> None:
     )
     assert scoped.ok, scoped.to_json()
     stored_scoped = session.snapshot().steps[0].gravity_loads[1]
-    assert stored_scoped.target == "域-板体"
+    assert stored_scoped.target == "Domain-板体"
     assert stored_scoped.acceleration == (9810.0, 0.0)
 
 
 @pytest.mark.usefixtures("real_gmsh")
 def test_creates_three_dimensional_body_force() -> None:
     session = make_surface_load_session()
-    _add_all_element_region(session, "域-三维块")
+    _add_all_element_region(session, "Domain-三维块")
     controller, _bridge = make_authoring_controller(session)
 
     created = dispatch_authoring_tool(
@@ -421,9 +421,9 @@ def test_creates_three_dimensional_body_force() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-三维体力",
+                "name": "Load-三维体力",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-三维块",
+                "target_scope": "Domain-三维块",
                 "entity_type": "element",
                 "load_type": "body",
                 "vector": [1.0, -2.0, 3.0],
@@ -456,9 +456,9 @@ def test_new_load_retains_accepted_result_history() -> None:
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-求解后体力",
+                "name": "Load-求解后体力",
                 "step_name": PLATE_STEP_NAME,
-                "target_scope": "域-板体",
+                "target_scope": "Domain-板体",
                 "entity_type": "element",
                 "load_type": "body",
                 "vector": [0.0, -1.0],

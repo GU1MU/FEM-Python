@@ -37,10 +37,10 @@ def _accepted_feature_proposal():
     session = ModelSession()
     base = RectangleGeometry("Plate", 10.0, 4.0)
     session.create_native_project_with_first_part(
-        "模型-特征撤销",
+        "Model-特征撤销",
         UnitContext("mm", "N", "MPa"),
         base,
-        part_name="部件-板",
+        part_name="Part-板",
     )
     cut = BooleanGeometry(
         "Cut",
@@ -104,7 +104,7 @@ def test_later_geometry_revision_disables_old_feature_proposal_undo() -> None:
 def test_plain_recipe_replacement_is_not_mislabeled_as_feature_undo() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-参数修改",
+        "Model-参数修改",
         UnitContext("mm", "N", "MPa"),
         RectangleGeometry("Plate", 10.0, 4.0),
     )

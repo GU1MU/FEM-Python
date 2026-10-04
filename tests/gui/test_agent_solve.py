@@ -79,7 +79,7 @@ def _wait_for_task(window: FEMMainWindow) -> None:
 
 def _recipe() -> PlateWithHoleGeometry:
     return PlateWithHoleGeometry(
-        "实体-偏心孔板",
+        "Body-偏心孔板",
         10.0,
         6.0,
         6.5,
@@ -95,10 +95,10 @@ def _seed_session(
 ) -> object:
     model = read(_FIXTURE)
     session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         _recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     session.replace_part_mesh_settings(
         "P1",
@@ -139,10 +139,10 @@ def _proposal(
     session: ModelSession,
     proposal_id: str = "proposal-solve",
     *,
-    job_name: str = "作业-静力1",
+    job_name: str = "Job-静力1",
     target_document_id: str | None = None,
 ) -> AgentProposal:
-    proposal = create_solve_proposal(
+    return create_solve_proposal(
         proposal_id=proposal_id,
         agent_session_id="agent-session-solve",
         turn_id=f"turn-{proposal_id}",
@@ -151,24 +151,7 @@ def _proposal(
         draft_revision=6,
         step_name=STEP_NAME,
         job_name=job_name,
-    )
-    if target_document_id is None:
-        return proposal
-    return AgentProposal.create(
-        proposal_kind=proposal.proposal_kind,
-        proposal_id=proposal.proposal_id,
-        agent_session_id=proposal.agent_session_id,
-        turn_id=proposal.turn_id,
-        source_tool_call_ids=proposal.source_tool_call_ids,
-        target_document_id=str(target_document_id),
-        target_session_id=proposal.target_session_id,
-        base_session_revision=proposal.base_session_revision,
-        draft_revision=proposal.draft_revision,
-        operations=proposal.operations,
-        preconditions=proposal.preconditions,
-        expected_changes=proposal.expected_changes,
-        invalidation_impact=proposal.invalidation_impact,
-        display_summary=proposal.display_summary,
+        target_document_id=(target_document_id or f"document:{session.session_id}"),
     )
 
 
@@ -220,7 +203,7 @@ def test_agent_automatically_preflights_then_gui_click_solves_in_background(
         window.agent_authoring_bridge.state(proposal.proposal_id)
         is ProposalState.SUCCEEDED
     )
-    run = window.session.find_run("作业-静力1")
+    run = window.session.find_run("Job-静力1")
     assert run is not None and run.status is RunStatus.SUCCEEDED
     provenance = window.session.result_provenance_for(run.run_id)
     assert provenance is not None
@@ -328,7 +311,7 @@ def test_revision_and_validation_stamp_changes_disable_old_proposals() -> None:
 
     revision_proposal = _proposal(session, "proposal-revision")
     bridge.register_proposal(revision_proposal)
-    session.rename_native_model("模型-用户修改")
+    session.rename_native_model("Model-用户修改")
     bridge.bind_snapshot(session.snapshot())
     assert (
         bridge.state(revision_proposal.proposal_id)
@@ -341,7 +324,7 @@ def test_revision_and_validation_stamp_changes_disable_old_proposals() -> None:
     fresh = _proposal(
         session,
         "proposal-stamp",
-        job_name="作业-静力2",
+        job_name="Job-静力2",
     )
     current_record = session.validation_for(STEP_NAME)
     assert current_record is not None

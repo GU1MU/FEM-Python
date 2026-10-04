@@ -32,7 +32,7 @@ from tests.helpers.mesh_builders import make_selection_quad_mesh
 
 def _recipe() -> PlateWithHoleGeometry:
     return PlateWithHoleGeometry(
-        "实体-偏心孔板",
+        "Body-偏心孔板",
         10.0,
         6.0,
         6.5,
@@ -48,10 +48,10 @@ def _model(name: str) -> FEMModel:
 def _session() -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         _recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     return session
 
@@ -167,7 +167,7 @@ def test_running_failure_cancel_and_stale_keep_current_model() -> None:
     proposal = _proposal(session, "proposal-stale")
     bridge.register_proposal(proposal)
     bridge.accept_from_gui_control(proposal.proposal_id)
-    session.rename_native_model("模型-用户修改")
+    session.rename_native_model("Model-用户修改")
     current = session.snapshot()
 
     delta = port.accept_mesh_result(proposal.proposal_id, _model("晚到网格"))
@@ -222,10 +222,10 @@ def test_main_window_success_projects_exactly_once(
     _application = QApplication.instance() or QApplication([])
     window = FEMMainWindow()
     window.session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         _recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     window.document = window.session.projection_snapshot()
     window.agent_authoring_bridge.bind_snapshot(window.document)

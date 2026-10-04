@@ -32,7 +32,7 @@ from fem_gui.agent_authoring import authoring_context_from_snapshot
 from tests.helpers.agent_session_fixtures import make_defined_plate_session
 
 
-STEP = "分析步-静力"
+STEP = "Step-静力"
 
 
 def _session() -> ModelSession:
@@ -44,30 +44,30 @@ def _session() -> ModelSession:
             tuple(snapshot.named_regions.values())
             + (
                 NamedRegion(
-                    "域-备用",
+                    "Domain-备用",
                     (MeshEntityRef.element(1, part_id="P1"),),
                 ),
             ),
             tuple(snapshot.materials)
-            + (MaterialDefinition("材料-铝", {"E": 70000.0, "nu": 0.33}),),
+            + (MaterialDefinition("Material-铝", {"E": 70000.0, "nu": 0.33}),),
             tuple(snapshot.sections)
-            + (SectionDefinition("截面-备用", "材料-铝"),),
+            + (SectionDefinition("Section-备用", "Material-铝"),),
             tuple(snapshot.assignments),
             (
                 AnalysisStep(
                     STEP,
                     boundaries=(
                         DisplacementConstraint(
-                            "边-固定端", 1, 2, 0.0, "edge", "位移-固定端"
+                            "Edge-固定端", 1, 2, 0.0, "edge", "Displacement-固定端"
                         ),
                     ),
                     edge_loads=(
                         EdgeLoad(
-                            "边-加载端",
+                            "Edge-加载端",
                             (10.0, 0.0),
                             None,
                             "traction",
-                            "载荷-拉伸",
+                            "Load-拉伸",
                         ),
                     ),
                     outputs=(
@@ -77,7 +77,7 @@ def _session() -> ModelSession:
                             ("U", "RF"),
                             {"frequency": 1},
                             OutputSourceEvidence("native"),
-                            "结果请求-节点",
+                            "Output-节点",
                         ),
                     ),
                     metadata={"nlgeom": False},
@@ -138,7 +138,7 @@ def test_catalog_exposes_all_definition_edit_types_with_bounded_details() -> Non
         "new_name",
         "properties",
     ]
-    assert by_type["section_assignment"].target_id == "域-板体"
+    assert by_type["section_assignment"].target_id == "Domain-板体"
     assert by_type["result_request"].step_name == STEP
     payload = [item.to_provider_dict() for item in catalog]
     assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) < 32768
@@ -150,34 +150,34 @@ def test_material_and_section_renames_cascade_atomically() -> None:
     material = _patch(
         session,
         "material",
-        "材料-钢",
+        "Material-钢",
         {
-            "new_name": "材料-结构钢",
+            "new_name": "Material-结构钢",
             "properties": {"E": 200000.0, "density": 7.85e-9},
         },
     )
     _apply(session, material)
     after_material = session.snapshot()
-    assert after_material.materials[0].name == "材料-结构钢"
+    assert after_material.materials[0].name == "Material-结构钢"
     assert after_material.materials[0].properties["density"] == 7.85e-9
     assert after_material.materials[0].properties["nu"] == 0.3
-    assert after_material.sections[0].material == "材料-结构钢"
+    assert after_material.sections[0].material == "Material-结构钢"
 
     section = _patch(
         session,
         "section",
-        "截面-平面应力",
+        "Section-平面应力",
         {
-            "new_name": "截面-板",
-            "material": "材料-结构钢",
+            "new_name": "Section-板",
+            "material": "Material-结构钢",
             "section_type": "solid",
             "properties": {"plane_type": "stress", "thickness": 2.0},
         },
     )
     _apply(session, section)
     after_section = session.snapshot()
-    assert after_section.sections[0].name == "截面-板"
-    assert after_section.assignments[0].section_name == "截面-板"
+    assert after_section.sections[0].name == "Section-板"
+    assert after_section.assignments[0].section_name == "Section-板"
 
 
 def test_assignment_step_and_result_request_edits_preserve_child_state() -> None:
@@ -185,12 +185,12 @@ def test_assignment_step_and_result_request_edits_preserve_child_state() -> None
     assignment = _patch(
         session,
         "section_assignment",
-        "域-板体",
-        {"region_name": "域-备用", "section_name": "截面-备用"},
+        "Domain-板体",
+        {"region_name": "Domain-备用", "section_name": "Section-备用"},
     )
     _apply(session, assignment)
     assert session.snapshot().assignments == (
-        RegionAssignment("截面-备用", "域-备用"),
+        RegionAssignment("Section-备用", "Domain-备用"),
     )
 
     before_step = session.snapshot().steps[0]
@@ -199,14 +199,14 @@ def test_assignment_step_and_result_request_edits_preserve_child_state() -> None
         "analysis_step",
         STEP,
         {
-            "new_name": "分析步-复算",
+            "new_name": "Step-复算",
             "procedure": "static",
             "metadata": {"increments": 20},
         },
     )
     _apply(session, step_patch)
     edited_step = session.snapshot().steps[0]
-    assert edited_step.name == "分析步-复算"
+    assert edited_step.name == "Step-复算"
     assert edited_step.boundaries == before_step.boundaries
     assert edited_step.edge_loads == before_step.edge_loads
     assert edited_step.outputs == before_step.outputs
@@ -216,19 +216,19 @@ def test_assignment_step_and_result_request_edits_preserve_child_state() -> None
     output_patch = _patch(
         session,
         "result_request",
-        "结果请求-节点",
+        "Output-节点",
         {
-            "new_name": "结果请求-应力",
+            "new_name": "Output-应力",
             "output_kind": "field",
             "target": "element",
             "variables": ["S"],
             "metadata": {"position": "centroid"},
         },
-        step_name="分析步-复算",
+        step_name="Step-复算",
     )
     _apply(session, output_patch)
     output = session.snapshot().steps[0].outputs[0]
-    assert output.name == "结果请求-应力"
+    assert output.name == "Output-应力"
     assert output.target == "element"
     assert output.variables == ("S",)
     assert output.metadata == {"frequency": 1, "position": "centroid"}
@@ -238,30 +238,30 @@ def test_assignment_step_and_result_request_edits_preserve_child_state() -> None
 @pytest.mark.parametrize(
     ("object_type", "target_id", "changes", "step_name", "message"),
     (
-        ("material", "材料-钢", {"new_name": "材料-铝"}, None, "unique"),
+        ("material", "Material-钢", {"new_name": "Material-铝"}, None, "unique"),
         (
             "section",
-            "截面-平面应力",
-            {"material": "材料-不存在"},
+            "Section-平面应力",
+            {"material": "Material-不存在"},
             None,
             "unavailable",
         ),
         (
             "section_assignment",
-            "域-板体",
-            {"region_name": "域-不存在"},
+            "Domain-板体",
+            {"region_name": "Domain-不存在"},
             None,
             "unavailable",
         ),
         ("analysis_step", STEP, {"procedure": "dynamic"}, None, "unsupported"),
         (
             "result_request",
-            "结果请求-节点",
+            "Output-节点",
             {"target": "node", "variables": ["S"]},
             STEP,
             "do not match",
         ),
-        ("material", "材料-钢", {"properties": {"E": 210000.0, "nu": 0.3}}, None, "do not modify"),
+        ("material", "Material-钢", {"properties": {"E": 210000.0, "nu": 0.3}}, None, "do not modify"),
     ),
 )
 def test_invalid_definition_edits_fail_atomically(
@@ -273,7 +273,7 @@ def test_invalid_definition_edits_fail_atomically(
 ) -> None:
     session = _session()
     before = session.snapshot()
-    if object_type == "material" and changes == {"new_name": "材料-铝"}:
+    if object_type == "material" and changes == {"new_name": "Material-铝"}:
         patch = _patch(session, object_type, target_id, changes)
         with pytest.raises(ValueError, match=message):
             _apply(session, patch)
@@ -294,11 +294,11 @@ def test_stale_definition_edit_fails_without_partial_mutation() -> None:
     patch = _patch(
         session,
         "material",
-        "材料-钢",
+        "Material-钢",
         {"properties": {"E": 205000.0, "nu": 0.3}},
     )
     session.rename_native_model(
-        "模型-迭代",
+        "Model-迭代",
         expected_session_revision=session.session_revision,
     )
     before = session.snapshot()
@@ -314,7 +314,7 @@ def test_definition_patch_reports_history_retention_and_preflight_reset() -> Non
     patch = _patch(
         session,
         "material",
-        "材料-钢",
+        "Material-钢",
         {"properties": {"E": 205000.0, "nu": 0.3}},
     )
 

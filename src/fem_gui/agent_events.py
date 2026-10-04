@@ -95,8 +95,6 @@ class MessageStatus(str, Enum):
 class MessagePresentationKind(str, Enum):
     PROCESS = "process"
     PROPOSAL_PREVIEW = "proposal_preview"
-    PATCH_PREVIEW = "patch_preview"
-    DECISION_REQUEST = "decision_request"
     RESULT_SUMMARY = "result_summary"
 
 

@@ -18,15 +18,15 @@ from tests.helpers.mesh_builders import make_selection_hex_mesh
 def make_surface_load_session(unit_context: UnitContext | None = None) -> ModelSession:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-三维块",
+        "Model-三维块",
         unit_context or UnitContext("mm", "N", "MPa"),
-        BoxGeometry("实体-三维块", 2.0, 3.0, 4.0),
-        part_name="部件-三维块",
+        BoxGeometry("Body-三维块", 2.0, 3.0, 4.0),
+        part_name="Part-三维块",
     )
     mesh = make_selection_hex_mesh()
     model = FEMModel(
         mesh,
-        name="模型-三维块",
+        name="Model-三维块",
         metadata={
             NATIVE_PART_OWNERSHIP_KEY: {
                 "P1": {
@@ -52,7 +52,7 @@ def make_surface_load_session(unit_context: UnitContext | None = None) -> ModelS
             snapshot.session_revision,
             (
                 NamedRegion(
-                    "面-加载",
+                    "Face-加载",
                     (MeshEntityRef.face(*face, part_id="P1"),),
                 ),
             ),
@@ -61,14 +61,14 @@ def make_surface_load_session(unit_context: UnitContext | None = None) -> ModelS
             (),
             (
                 AnalysisStep(
-                    "分析步-静力",
+                    "Step-静力",
                     surface_loads=(
                         SurfaceLoad(
-                            "面-加载",
+                            "Face-加载",
                             (1.0, 0.0, 0.0),
                             None,
                             "traction",
-                            "载荷-表面",
+                            "Load-表面",
                         ),
                     ),
                     metadata={"nlgeom": False},

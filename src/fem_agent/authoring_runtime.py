@@ -34,7 +34,6 @@ from .authoring import (
 )
 from .diagnostics import DiagnosticCode, make_diagnostic
 from .geometry_authoring import geometry_feature_catalog_tool_schema
-from .naming import LEGACY_OBJECT_TYPES
 from .providers.base import ToolDefinition
 from .result_authoring import (
     ANALYSIS_RUN_CATALOG_TOOL_NAME,
@@ -289,16 +288,6 @@ class AuthoringTurnSnapshot:
             snapshot_generation=generation,
         )
 
-    @property
-    def generation(self) -> int:
-        """Alias used by adapters that call the freshness field generation."""
-
-        return self.snapshot_generation
-
-    @property
-    def revision(self) -> int | None:
-        return self.session_revision
-
     def _to_dict_unbounded(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
@@ -515,20 +504,9 @@ def _json_size_bytes(payload: Mapping[str, object]) -> int:
 
 
 _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
-    "modeling_assumption": {
-        "type": "string",
-        "enum": ["plane_stress", "plane_strain"],
-    },
     "length_unit": {"type": "string"},
     "force_unit": {"type": "string"},
     "stress_unit": {"type": "string"},
-    "plate_thickness": {"type": "number", "exclusiveMinimum": 0},
-    "young_modulus": {"type": "number", "exclusiveMinimum": 0},
-    "poisson_ratio": {
-        "type": "number",
-        "exclusiveMinimum": -1,
-        "exclusiveMaximum": 0.5,
-    },
     "mesh_cell_shape": {
         "type": "string",
         "enum": [
@@ -544,45 +522,6 @@ _REQUIREMENT_SPECS: dict[str, dict[str, object]] = {
     "line_element_type": {
         "type": "string",
         "enum": ["Truss2", "Beam2"],
-    },
-    "fixed_dofs": {
-        "type": "array",
-        "items": {"type": "integer", "minimum": 1, "maximum": 3},
-        "minItems": 1,
-        "maxItems": 3,
-        "uniqueItems": True,
-    },
-    "load_type": {
-        "type": "string",
-        "enum": [
-            "edge_traction",
-            "edge_pressure",
-            "surface_traction",
-            "surface_pressure",
-            "nodal",
-        ],
-    },
-    "load_direction": {
-        "type": "string",
-        "enum": [
-            "x",
-            "y",
-            "z",
-            "inward_normal",
-            "outward_normal",
-        ],
-    },
-    "load_magnitude": {"type": "number"},
-    "load_unit": {"type": "string"},
-    "load_distribution": {"type": "string", "enum": ["uniform"]},
-    "analysis_procedure": {"type": "string", "enum": ["static"]},
-    "nlgeom": {"type": "boolean", "enum": [False]},
-    "result_requests": {
-        "type": "array",
-        "items": {"type": "string", "enum": ["U", "S", "RF"]},
-        "minItems": 1,
-        "maxItems": 3,
-        "uniqueItems": True,
     },
 }
 _GEOMETRY_REQUIREMENTS = (
@@ -607,37 +546,9 @@ _LINE_MESH_REQUIREMENTS = (
     "mesh_global_size",
     "line_element_type",
 )
-_DEFINITION_REQUIREMENTS = (
-    "modeling_assumption",
-    "plate_thickness",
-    "young_modulus",
-    "poisson_ratio",
-)
-_ANALYSIS_REQUIREMENTS = (
-    "fixed_dofs",
-    "load_type",
-    "load_direction",
-    "load_magnitude",
-    "load_unit",
-    "load_distribution",
-    "analysis_procedure",
-    "nlgeom",
-    "result_requests",
-)
 _REQUIREMENT_GROUPS: dict[str, tuple[str, ...]] = {
     "geometry": _GEOMETRY_REQUIREMENTS,
     "mesh": _MESH_REQUIREMENTS,
-    "definitions": _DEFINITION_REQUIREMENTS,
-    "analysis": _ANALYSIS_REQUIREMENTS,
-}
-_HANDLER_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    **_REQUIREMENT_GROUPS,
-    "analysis": (
-        "length_unit",
-        "force_unit",
-        "stress_unit",
-        *_ANALYSIS_REQUIREMENTS,
-    ),
 }
 _REQUIREMENT_GATE_BY_STAGE = {
     AuthoringWorkflowStage.REQUIREMENTS: "geometry",
@@ -2034,11 +1945,7 @@ def _exact_schema(
 
 
 def _controlled_name_schema(*prefixes: str) -> dict[str, object]:
-    accepted = (
-        *prefixes,
-        *(old for old, new in LEGACY_OBJECT_TYPES.items() if new in prefixes),
-    )
-    alternatives = "|".join(re.escape(prefix) for prefix in accepted)
+    alternatives = "|".join(re.escape(prefix) for prefix in prefixes)
     return {
         "type": "string",
         "pattern": f"^({alternatives})-.+$",
@@ -5120,15 +5027,11 @@ class AuthoringWorkflowController:
     ) -> dict[str, object]:
         """Return a complete explicit geometry or mesh requirement group."""
 
-        keys = self._requirement_keys(group, handler=True)
+        keys = self._requirement_keys(group)
         values = {
             item.key: item.value
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         missing = [key for key in keys if key not in values]
         if missing:
@@ -5141,15 +5044,11 @@ class AuthoringWorkflowController:
     ) -> tuple[str, ...]:
         """Return active requirement keys supplied by local defaults."""
 
-        keys = self._requirement_keys(group, handler=True)
+        keys = self._requirement_keys(group)
         entries = {
             item.key: item
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         return tuple(
             key
@@ -5178,12 +5077,9 @@ class AuthoringWorkflowController:
     def _requirement_keys(
         self,
         group: str,
-        *,
-        handler: bool = False,
     ) -> tuple[str, ...]:
-        source = _HANDLER_REQUIREMENTS if handler else _REQUIREMENT_GROUPS
         try:
-            keys = source[group]
+            keys = _REQUIREMENT_GROUPS[group]
         except KeyError as exc:
             raise ValueError("unknown requirement group") from exc
         if group == "mesh" and self._active_part_dimension() == 1:
@@ -5207,37 +5103,6 @@ class AuthoringWorkflowController:
             }
         if key == "mesh_order" and dimension == 1:
             return {"type": "integer", "enum": [1]}
-        if key == "fixed_dofs":
-            maximum = 3 if dimension == 3 else 2
-            return {
-                "type": "array",
-                "items": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": maximum,
-                },
-                "minItems": 1,
-                "maxItems": maximum,
-                "uniqueItems": True,
-            }
-        if key == "load_type":
-            return {
-                "type": "string",
-                "enum": (
-                    ["nodal", "surface_traction", "surface_pressure"]
-                    if dimension == 3
-                    else ["nodal", "edge_traction", "edge_pressure"]
-                ),
-            }
-        if key == "load_direction":
-            return {
-                "type": "string",
-                "enum": (
-                    ["x", "y", "z", "inward_normal", "outward_normal"]
-                    if dimension == 3
-                    else ["x", "y", "inward_normal", "outward_normal"]
-                ),
-            }
         return spec
 
     def _requirement_group_complete(self, group: str) -> bool:
@@ -5245,11 +5110,7 @@ class AuthoringWorkflowController:
         recorded = {
             item.key
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         return required <= recorded
 
@@ -5262,11 +5123,7 @@ class AuthoringWorkflowController:
         recorded = {
             item.key
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         accepted_units = (
             {}
@@ -5357,11 +5214,7 @@ class AuthoringWorkflowController:
         recorded = {
             item.key
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         return AuthoringToolOutcome(
             "Bounded authoring context read locally.",
@@ -5424,11 +5277,7 @@ class AuthoringWorkflowController:
         recorded = {
             item.key
             for item in self._ledger.entries
-            if item.status
-            in {
-                RequirementStatus.PROPOSED,
-                RequirementStatus.CONFIRMED,
-            }
+            if item.status is RequirementStatus.PROPOSED
         }
         missing = [
             key

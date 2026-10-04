@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from fem.application import ModelSession, UnitContext
-from fem.geometry import CylinderGeometry, SketchCircle
+from fem.geometry import CylinderGeometry, SketchCircle, SketchPoint
 from fem_agent.diagnostics import (
     PROFILE_TRANSFORM_DIAGNOSTIC_CODES,
     ProfileTransformDiagnostic,
@@ -196,7 +196,13 @@ def test_required_fields_are_bounded_and_deduplicated_before_recovery() -> None:
 
 
 def test_part_not_found_is_typed_and_keeps_snapshot() -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     _bridge, controller = _controller(session)
     before = session.snapshot()
     result = controller.dispatch(
@@ -277,7 +283,13 @@ def test_missing_profile_height_and_ambiguous_selection_have_next_inputs() -> No
 
 
 def test_invalid_source_and_stale_context_do_not_mutate_session() -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     _bridge, controller = _controller(session)
     before = session.snapshot()
     invalid = controller.dispatch(
@@ -306,7 +318,13 @@ def test_invalid_source_and_stale_context_do_not_mutate_session() -> None:
 
 
 def test_path_boundary_reports_first_invalid_member_and_frame(monkeypatch) -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     _bridge, controller = _controller(session)
     broken = _valid_path()
     broken["members"] = [
@@ -373,7 +391,13 @@ def test_path_boundary_reports_first_invalid_member_and_frame(monkeypatch) -> No
 
 
 def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     refresh_count = []
     bridge, controller = _controller(session, lambda: refresh_count.append("refresh"))
     before = session.snapshot()
@@ -469,7 +493,13 @@ def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> No
 
 
 def test_unexpected_body_count_diagnostic_preserves_draft(monkeypatch) -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
         agent_authoring,
@@ -500,7 +530,13 @@ def test_programming_errors_keep_generic_tool_contract(
     monkeypatch,
     dependency_error,
 ) -> None:
-    session = _session(planar_sketch_geometry("Sketch", contours=(SketchCircle("material", 0, 0, 1),)).recipe)
+    session = _session(
+        planar_sketch_geometry(
+            "Sketch",
+            points=(SketchPoint("P1", 0, 0),),
+            curves=(SketchCircle("C1", "P1", 1),),
+        ).recipe
+    )
     refresh_count = []
     bridge, controller = _controller(session, lambda: refresh_count.append("refresh"))
     before = session.snapshot()

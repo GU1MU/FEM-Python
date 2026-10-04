@@ -12,8 +12,7 @@ import pytest
 
 from fem.application import AnalysisRun, ModelSession, RunStatus, UnitContext
 from fem.mesh.settings import MeshSettings
-from fem_agent.authoring import AuthoringAuthorizationError, ModelPatch, ProposalState
-from fem_agent.definition_authoring import create_scope_definition_change
+from fem_agent.authoring import AuthoringAuthorizationError, ModelPatch
 from fem_agent.incremental_authoring import create_incremental_definition_patch
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
@@ -23,7 +22,7 @@ from fem_gui.agent_authoring import (
 )
 from fem_gui.widgets.agent_chat import AgentChatDrawer, _AGENT_CHAT_STYLESHEET
 
-from tests.helpers.agent_definition_fixtures import build_plate_definition_patch
+from tests.helpers.agent_definition_fixtures import build_material_definition_patch
 from tests.helpers.agent_session_fixtures import (
     make_eccentric_plate_model,
     make_eccentric_plate_recipe,
@@ -49,7 +48,7 @@ def test_bridge_applies_once_and_gui_card_undoes_once(gui_application) -> None:
     bridge.bind_snapshot(session.snapshot())
     drawer = AgentChatDrawer(authoring_bridge=bridge)
 
-    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
+    record = bridge.apply_automatic_patch(build_material_definition_patch(session))
     replay = bridge.apply_automatic_patch(record.patch)
 
     assert record.undo_available
@@ -110,7 +109,7 @@ def test_direct_material_patch_uses_compact_inline_undo_notice(
         draft_revision=1,
         action="create_material",
         parameters={
-            "name": "材料-尼龙PA",
+            "name": "Material-尼龙PA",
             "properties": {"E": 2600.0, "nu": 0.39},
         },
     )
@@ -154,12 +153,12 @@ def test_automatic_port_rejects_destructive_inverse_as_forward_patch() -> None:
     )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
-    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
+    record = bridge.apply_automatic_patch(build_material_definition_patch(session))
 
-    with pytest.raises(ValueError, match="cannot overwrite or remove"):
+    with pytest.raises(ValueError, match="unsupported definition authoring mode"):
         port.apply_patch(record.inverse_patch)
 
-    assert session.snapshot().named_regions
+    assert not session.snapshot().named_regions
     assert session.snapshot().materials
 
 
@@ -173,7 +172,7 @@ def test_revision_change_disables_old_undo_entry(gui_application) -> None:
     )
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
-    record = bridge.apply_automatic_patch(build_plate_definition_patch(session))
+    record = bridge.apply_automatic_patch(build_material_definition_patch(session))
     current = session.snapshot()
     session.replace_model_definitions(
         current.materials,
@@ -193,57 +192,11 @@ def test_revision_change_disables_old_undo_entry(gui_application) -> None:
     assert not bridge.can_undo_patch(record.patch.patch_id)
 
 
-def test_result_invalidating_proposal_rejection_keeps_model_unchanged() -> None:
-    session = make_meshed_eccentric_plate_session()
-    snapshot = session.snapshot()
-    artifact = snapshot.artifact
-    run = AnalysisRun(
-        "run-definition-patch",
-        "作业-旧结果",
-        "分析步-旧",
-        artifact.artifact_id,
-        artifact.model_revision,
-        status=RunStatus.SUCCEEDED,
-        result_id="result-definition-patch",
-    )
-    result_snapshot = replace(snapshot, runs=(run,))
-    proposal = create_scope_definition_change(
-        patch_id="patch-with-result",
-        proposal_id="proposal-with-result",
-        agent_session_id="agent-definition-patch",
-        turn_id="turn-definition-patch",
-        source_tool_call_ids=("call-definition-patch",),
-        context=authoring_context_from_snapshot(result_snapshot),
-        snapshot=result_snapshot,
-        draft_revision=4,
-        material_function="结构钢",
-        material_properties={"E": 210000.0, "nu": 0.3},
-        section_function="平面应力",
-        plane_type="stress",
-        thickness=2.0,
-    )
-    port = SessionGeometryAuthoringPort(
-        session,
-        lambda: None,
-        apply_definition_delta=lambda _delta: None,
-    )
-    bridge = AgentAuthoringBridge(port)
-    bridge.bind_snapshot(snapshot)
-    bridge.register_proposal(proposal)
-
-    receipt = bridge.reject_from_gui_control(proposal.proposal_id)
-
-    assert receipt.state is ProposalState.REJECTED
-    assert session.snapshot().session_revision == snapshot.session_revision
-    assert not session.snapshot().named_regions
-    assert not session.snapshot().materials
-
-
 def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
     monkeypatch,
 ) -> None:
     session = make_meshed_eccentric_plate_session()
-    patch = build_plate_definition_patch(session)
+    patch = build_material_definition_patch(session)
     snapshot = session.snapshot()
     artifact = snapshot.artifact
     result_snapshot = replace(
@@ -251,8 +204,8 @@ def test_automatic_apply_fails_closed_if_port_sees_accepted_result(
         runs=(
             AnalysisRun(
                 "run-definition-patch",
-                "作业-旧结果",
-                "分析步-旧",
+                "Job-旧结果",
+                "Step-旧",
                 artifact.artifact_id,
                 artifact.model_revision,
                 status=RunStatus.SUCCEEDED,
@@ -303,7 +256,7 @@ def test_inverse_id_is_bounded_for_maximum_forward_id() -> None:
     bridge = AgentAuthoringBridge(port)
     bridge.bind_snapshot(session.snapshot())
     snapshot = session.snapshot()
-    original = build_plate_definition_patch(session)
+    original = build_material_definition_patch(session)
     patch = ModelPatch.create(
         patch_id="p" * 128,
         agent_session_id=original.agent_session_id,
@@ -336,10 +289,10 @@ def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
     window = FEMMainWindow()
     session: ModelSession = window.session
     session.create_native_project_with_first_part(
-        "模型-偏心孔板",
+        "Model-偏心孔板",
         UnitContext("mm", "N", "MPa"),
         make_eccentric_plate_recipe(),
-        part_name="部件-偏心孔板",
+        part_name="Part-偏心孔板",
     )
     task = session.prepare_agent_mesh_generation(
         "P1",
@@ -350,7 +303,7 @@ def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
     session.accept_agent_generated_model(task.token, make_eccentric_plate_model())
     window._rebuild_full_projection()
     window.agent_authoring_bridge.bind_snapshot(session.snapshot())
-    patch = build_plate_definition_patch(session)
+    patch = build_material_definition_patch(session)
     actor_rebuilds: list[object] = []
     monkeypatch.setattr(
         window.viewport,
@@ -362,6 +315,8 @@ def test_main_window_definition_projection_does_not_rebuild_mesh_actors(
 
     assert actor_rebuilds == []
     assert window.document.session_revision == record.session_revision
-    assert window.document.named_regions
-    assert window.document.materials
+    assert not window.document.named_regions
+    assert [material.name for material in window.document.materials] == [
+        "Material-结构钢"
+    ]
     window.close()

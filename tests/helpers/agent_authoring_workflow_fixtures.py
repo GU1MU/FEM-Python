@@ -48,7 +48,7 @@ def _context() -> AuthoringContext:
             "native",
             True,
         ),
-        model_name="模型-偏心孔板",
+        model_name="Model-偏心孔板",
         active_part_id=None,
     )
 

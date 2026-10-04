@@ -155,7 +155,7 @@ controls. A proposal is not an executed operation; its terminal event establishe
 acceptance, execution, and success. Requirement values come from explicit user
 input or typed local defaults. Blank native geometry defaults to mm-N-MPa;
 set_authoring_requirements records explicit overrides. The geometry or mesh
-operation card supplies confirmation without a separate RequirementReview.
+operation card supplies the required confirmation.
 Keep discussion focused on the current requested operation and missing fields.
 
 New planar regions and their extrusion, revolution, or path sweep outputs use
@@ -217,7 +217,6 @@ class _ConversationStorageLimit(ValueError):
 class EngineEventType(str, Enum):
     MESSAGE_STARTED = "message_started"
     MESSAGE_DELTA = "message_delta"
-    MESSAGE_PRESENTATION = "message_presentation"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
     ANALYSIS_SUMMARY = "analysis_summary"
@@ -2124,17 +2123,16 @@ class AgentSessionEngine:
                 path,
                 max_bytes=self.config.max_tool_audit_storage_bytes,
             )
-            if payload.get("schema_version") not in {
-                _CONVERSATION_SCHEMA_VERSION,
-                _TOOL_AUDIT_SCHEMA_VERSION,
-            } or not isinstance(payload.get("entries"), list):
+            if (
+                payload.get("schema_version") != _TOOL_AUDIT_SCHEMA_VERSION
+                or not isinstance(payload.get("entries"), list)
+            ):
                 raise ValueError("tool audit storage is invalid")
-            if payload.get("schema_version") == _TOOL_AUDIT_SCHEMA_VERSION:
-                entries = [
-                    dict(item)
-                    for item in payload["entries"]
-                    if isinstance(item, Mapping)
-                ]
+            entries = [
+                dict(item)
+                for item in payload["entries"]
+                if isinstance(item, Mapping)
+            ]
         entries.extend(dict(item) for item in new_entries)
         entries = entries[-512:]
         payload = {
@@ -2215,10 +2213,9 @@ def _message_to_dict(message: AssistantMessage) -> dict[str, Any]:
 def _message_from_dict(value: Any) -> AssistantMessage:
     if not isinstance(value, Mapping):
         raise ValueError("conversation message must be an object")
-    required = {"role", "content", "tool_call_id", "tool_calls"}
-    allowed = required | {"reasoning_content"}
+    required = {"role", "content", "tool_call_id", "tool_calls", "reasoning_content"}
     field_names = frozenset(value)
-    if field_names not in {frozenset(required), frozenset(allowed)} or not isinstance(
+    if field_names != required or not isinstance(
         value["tool_calls"], list
     ):
         raise ValueError("conversation message has invalid fields")
@@ -2226,7 +2223,7 @@ def _message_from_dict(value: Any) -> AssistantMessage:
         role=value["role"],
         content=value["content"],
         tool_call_id=value["tool_call_id"],
-        reasoning_content=value.get("reasoning_content"),
+        reasoning_content=value["reasoning_content"],
         tool_calls=tuple(
             ToolCall(
                 item["call_id"],

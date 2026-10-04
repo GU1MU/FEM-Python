@@ -58,7 +58,7 @@ def test_mesh_intent_schema_is_strict_and_hex_is_capability_gated() -> None:
         )
     with pytest.raises(ValueError, match="fields do not match"):
         MeshIntent.from_dict({**payload, "fallback": "tetrahedron"})
-    with pytest.raises(ValueError, match="schema 1.1"):
+    with pytest.raises(ValueError, match="schema_version"):
         MeshIntent(
             "tetrahedron",
             1,

@@ -11,12 +11,12 @@ from fem_agent.result_authoring import (
 )
 
 from tests.helpers.agent_session_fixtures import (
-    make_plate_static_analysis,
+    make_plate_static_step,
     make_defined_plate_session,
 )
 
 
-STATIC_STEP_NAME = "分析步-静力"
+STATIC_STEP_NAME = "Step-静力"
 
 
 def make_solved_session():
@@ -29,7 +29,7 @@ def make_solved_session():
             snapshot.materials,
             snapshot.sections,
             snapshot.assignments,
-            (make_plate_static_analysis().to_step(),),
+            (make_plate_static_step(),),
         )
     )
     assert delta.accepted
@@ -43,12 +43,12 @@ def make_solved_session():
     assert report.passed
     assert session.accept_validation(validation.token, report).accepted
 
-    solve_task = session.prepare_solve(STATIC_STEP_NAME, "作业-结果查询")
+    solve_task = session.prepare_solve(STATIC_STEP_NAME, "Job-结果查询")
     assert session.begin_run(solve_task.token).accepted
     result = static_linear.solve(
         solve_task.model,
         solve_task.step_name,
-        name="作业-结果查询",
+        name="Job-结果查询",
     )
     assert session.accept_run_succeeded(
         solve_task.token,

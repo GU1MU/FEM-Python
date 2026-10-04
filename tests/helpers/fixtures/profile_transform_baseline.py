@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from fem.geometry import (
+    SketchPoint,
     ExtrudedGeometry,
     SketchCircle,
     SketchGeometry,
@@ -49,9 +50,13 @@ def concentric_ring_sketch(
         raise ValueError("ring radii must satisfy 0 < inner < outer")
     return planar_sketch_geometry(
         "ring-profile",
-        contours=(
-            SketchCircle("material", 0.0, 0.0, outer_radius),
-            SketchCircle("cut", 0.0, 0.0, inner_radius),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 0.0, 0.0),
+        ),
+        curves=(
+            SketchCircle("C1", "P1", outer_radius),
+            SketchCircle("C2", "P2", inner_radius),
         ),
     ).recipe
 

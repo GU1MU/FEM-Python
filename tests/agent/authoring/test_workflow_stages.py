@@ -116,7 +116,7 @@ def test_mesh_uses_one_confirmation_and_definitions_are_direct() -> None:
         {
             "action": "create_material",
             "parameters": {
-                "name": "材料-铝合金",
+                "name": "Material-铝合金",
                 "properties": {"E": 70000.0, "nu": 0.33},
             },
         },
@@ -187,12 +187,12 @@ def test_geometry_edit_is_available_after_creation_and_returns_to_mesh() -> None
             "native",
             True,
         ),
-        model_name="模型-双孔板",
+        model_name="Model-双孔板",
         active_part_id="part-1",
         parts=(
             PartSummary(
                 "part-1",
-                "部件-孔板",
+                "Part-孔板",
                 "planar_sketch",
                 2,
                 False,
@@ -256,7 +256,7 @@ def test_existing_current_mesh_exposes_direct_definitions_immediately() -> None:
             "native",
             True,
         ),
-        model_name="模型-既有",
+        model_name="Model-既有",
         active_part_id="part-existing",
         mesh=MeshSummary(True, True, 20, 10),
     )
@@ -305,7 +305,7 @@ def test_dynamic_dispatch_is_serial_and_thread_safe() -> None:
                 {
                     "action": "create_material",
                     "parameters": {
-                        "name": "材料-测试",
+                        "name": "Material-测试",
                         "properties": {"E": 1.0},
                     },
                 },

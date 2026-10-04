@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 from fem.application.preprocessing import generate_fem_model
-from fem.geometry import DiskGeometry, LogicalEntityRef, RectangleGeometry, SketchCircle, SketchRectangle
+from fem.geometry import DiskGeometry, LogicalEntityRef, RectangleGeometry, SketchCircle, SketchPoint, SketchLine
 from fem.geometry.errors import GeometryError
 from fem.mesh.settings import LocalMeshControl, MeshSizeFalloff
 from fem_agent.mesh_authoring import MeshIntent
@@ -33,9 +33,19 @@ def test_real_auto_triangle_preserves_local_refinement(
     del real_gmsh
     recipe = planar_sketch_geometry(
         "Refined plate",
-        contours=(
-            SketchRectangle("material", 0.0, 0.0, 10.0, 6.0),
-            SketchCircle("cut", 6.5, 2.0, 1.0),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 10.0, 0.0),
+            SketchPoint("P3", 10.0, 6.0),
+            SketchPoint("P4", 0.0, 6.0),
+            SketchPoint("P5", 6.5, 2.0),
+        ),
+        curves=(
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+            SketchCircle("C5", "P5", 1.0),
         ),
     ).recipe
     intent = MeshIntent(
@@ -64,7 +74,7 @@ def test_real_strict_quad_failure_does_not_downgrade_to_triangles(
     real_gmsh,
 ) -> None:
     del real_gmsh
-    recipe = DiskGeometry("实体-圆盘", 2.0)
+    recipe = DiskGeometry("Body-圆盘", 2.0)
     settings = MeshIntent(
         "quadrilateral",
         1,

@@ -4,9 +4,10 @@ import pytest
 
 from fem.application import ModelSession, UnitContext
 from fem.geometry import (
+    SketchPoint,
+    SketchLine,
     PathSweptGeometry,
     RectangleGeometry,
-    SketchRectangle,
     WireGeometry,
     WireMember,
     WirePoint,
@@ -39,7 +40,18 @@ def _controller(session: ModelSession):
 def _strict_session() -> tuple[ModelSession, str]:
     sketch = planar_sketch_geometry(
         "Agent sweep sketch",
-        contours=(SketchRectangle("material", 0.0, 0.0, 2.0, 1.0),),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 2.0, 0.0),
+            SketchPoint("P3", 2.0, 1.0),
+            SketchPoint("P4", 0.0, 1.0),
+        ),
+        curves=(
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        ),
     ).recipe
     source = next(
         entity.logical_id

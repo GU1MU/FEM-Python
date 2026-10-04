@@ -51,7 +51,6 @@ from fem.geometry import (
     SketchPointOnCurveConstraint,
     SketchPerpendicularConstraint,
     SketchRadiusDimension,
-    SketchRectangle,
     SketchTangentConstraint,
     SketchVerticalConstraint,
     SolidBody,
@@ -60,7 +59,6 @@ from fem.geometry import (
     WirePoint,
     geometry_dimension,
     analyze_sketch_profiles,
-    legacy_sketch_to_strict,
     planar_geometry_normal,
     sketch_constraint_entity_ids,
     solve_sketch_constraints,
@@ -307,22 +305,12 @@ def disk_geometry(name: str, *, radius: Real) -> GeometryDraft:
 def planar_sketch_geometry(
     name: str,
     *,
-    contours: Sequence[SketchRectangle | SketchCircle],
+    points: Sequence[SketchPoint],
+    curves: Sequence[SketchLine | SketchCircle | SketchArc],
 ) -> GeometryDraft:
-    """Build a general strict XY sketch from bounded closed contours."""
+    """Build a strict XY sketch from its point and curve graph."""
 
-    values = tuple(contours)
-    if not values:
-        raise ValueError("contours must contain at least one closed contour")
-    if any(
-        type(item) not in {SketchRectangle, SketchCircle}
-        or (isinstance(item, SketchCircle) and not item.is_legacy)
-        for item in values
-    ):
-        raise TypeError(
-            "contours must contain legacy SketchRectangle or SketchCircle values"
-        )
-    recipe = legacy_sketch_to_strict(SketchGeometry(name, values))
+    recipe = SketchGeometry(name, SketchPlane.xy(), tuple(points), tuple(curves))
     return _draft(
         recipe,
         {
@@ -383,178 +371,6 @@ def planar_polygon_geometry(
             "point_count": float(len(points)),
             "curve_count": float(len(curves)),
         },
-    )
-
-
-def planar_path_slot_vertices(
-    points: Sequence[Sequence[Real]],
-    width: Real,
-) -> tuple[tuple[float, float], ...]:
-    """Return one closed constant-width slot around an open XY polyline.
-
-    The returned vertices use square end caps and bounded miter joins.  Exact
-    sketch topology validation remains authoritative for rejecting a path whose
-    offset self-intersects.
-    """
-
-    values = tuple(points)
-    if not 2 <= len(values) <= 32:
-        raise ValueError("slot path must contain between 2 and 32 points")
-    coordinates: list[tuple[float, float]] = []
-    for index, point in enumerate(values):
-        if isinstance(point, (str, bytes, bytearray)):
-            raise TypeError("slot path points must contain coordinate pairs")
-        components = tuple(point)
-        if len(components) != 2:
-            raise ValueError("slot path points must contain coordinate pairs")
-        coordinates.append(
-            (
-                _finite(components[0], f"points[{index}].x"),
-                _finite(components[1], f"points[{index}].y"),
-            )
-        )
-    if len(set(coordinates)) != len(coordinates):
-        raise ValueError("slot path points must be distinct")
-
-    width_value = _finite(width, "width")
-    if width_value <= 0.0:
-        raise ValueError("slot width must be positive")
-    half_width = width_value / 2.0
-
-    tangents: list[tuple[float, float]] = []
-    normals: list[tuple[float, float]] = []
-    for start, end in zip(coordinates[:-1], coordinates[1:], strict=True):
-        dx = end[0] - start[0]
-        dy = end[1] - start[1]
-        length = math.hypot(dx, dy)
-        if length <= _SKETCH_AUTHORING_TOLERANCE:
-            raise ValueError("slot path contains a zero-length segment")
-        tangent = (dx / length, dy / length)
-        tangents.append(tangent)
-        normals.append((-tangent[1], tangent[0]))
-
-    start_center = (
-        coordinates[0][0] - tangents[0][0] * half_width,
-        coordinates[0][1] - tangents[0][1] * half_width,
-    )
-    end_center = (
-        coordinates[-1][0] + tangents[-1][0] * half_width,
-        coordinates[-1][1] + tangents[-1][1] * half_width,
-    )
-    left = [
-        (
-            start_center[0] + normals[0][0] * half_width,
-            start_center[1] + normals[0][1] * half_width,
-        )
-    ]
-    right = [
-        (
-            start_center[0] - normals[0][0] * half_width,
-            start_center[1] - normals[0][1] * half_width,
-        )
-    ]
-
-    for index, center in enumerate(coordinates[1:-1], start=1):
-        previous_normal = normals[index - 1]
-        next_normal = normals[index]
-        miter_x = previous_normal[0] + next_normal[0]
-        miter_y = previous_normal[1] + next_normal[1]
-        miter_length = math.hypot(miter_x, miter_y)
-        if miter_length <= _SKETCH_AUTHORING_TOLERANCE:
-            raise ValueError("slot path cannot reverse direction at one point")
-        miter = (miter_x / miter_length, miter_y / miter_length)
-        denominator = miter[0] * next_normal[0] + miter[1] * next_normal[1]
-        if abs(denominator) <= _SKETCH_AUTHORING_TOLERANCE:
-            raise ValueError("slot path contains an unsupported sharp turn")
-        scale = half_width / denominator
-        if abs(scale) > half_width * 8.0:
-            raise ValueError("slot path turn is too sharp for the requested width")
-        offset = (miter[0] * scale, miter[1] * scale)
-        left.append((center[0] + offset[0], center[1] + offset[1]))
-        right.append((center[0] - offset[0], center[1] - offset[1]))
-
-    left.append(
-        (
-            end_center[0] + normals[-1][0] * half_width,
-            end_center[1] + normals[-1][1] * half_width,
-        )
-    )
-    right.append(
-        (
-            end_center[0] - normals[-1][0] * half_width,
-            end_center[1] - normals[-1][1] * half_width,
-        )
-    )
-    vertices = tuple((*left, *reversed(right)))
-    if len(set(vertices)) != len(vertices):
-        raise ValueError("slot path produced duplicate boundary vertices")
-    return vertices
-
-
-def plate_with_hole_geometry(
-    name: str,
-    *,
-    width: Real,
-    height: Real,
-    hole_radius: Real,
-    hole_center: Sequence[Real] | None = None,
-    center_offset: Sequence[Real] | None = None,
-) -> GeometryDraft:
-    """Build the legacy single-hole compatibility recipe.
-
-    Active Agent tools use general strict planar sketches. This constructor is
-    retained only to decode and test projects authored before that migration.
-    """
-
-    if (hole_center is None) == (center_offset is None):
-        raise ValueError("provide exactly one of hole_center or center_offset")
-    normalized_width = _finite(width, "width")
-    normalized_height = _finite(height, "height")
-    position = hole_center if hole_center is not None else center_offset
-    if isinstance(position, (str, bytes, bytearray)):
-        raise TypeError("hole position must be a two-component sequence")
-    values = tuple(position or ())
-    if len(values) != 2:
-        raise ValueError("hole position must contain exactly two components")
-    first = _finite(values[0], "hole position x")
-    second = _finite(values[1], "hole position y")
-    if hole_center is None:
-        hole_x = normalized_width / 2.0 + first
-        hole_y = normalized_height / 2.0 + second
-        position_kind = "center_offset"
-    else:
-        hole_x, hole_y = first, second
-        position_kind = "hole_center"
-    recipe = PlateWithHoleGeometry(
-        name,
-        normalized_width,
-        normalized_height,
-        hole_x,
-        hole_y,
-        _finite(hole_radius, "hole_radius"),
-    )
-    draft = _draft(
-        recipe,
-        {
-            "width": recipe.width,
-            "height": recipe.height,
-            "hole_x": recipe.hole_x,
-            "hole_y": recipe.hole_y,
-            "hole_radius": recipe.hole_radius,
-        },
-    )
-    return GeometryDraft(
-        recipe=draft.recipe,
-        recipe_payload=draft.recipe_payload,
-        preview=draft.preview,
-        key_dimensions=draft.key_dimensions,
-        transforms=(
-            {
-                "kind": position_kind,
-                "x": first,
-                "y": second,
-            },
-        ),
     )
 
 
@@ -1234,7 +1050,7 @@ def create_profile_path_sweep_proposal(
         recipe=recipe,
         operation_kind=OperationKind.SWEEP_PART_PROFILE,
         parameters={
-            "ordered_wire": _geometry_recipe_to_payload(path),
+            "ordered_wire": geometry_recipe_to_payload(path),
             "frame_strategy": recipe.frame_strategy,
         },
         summary=summary,
@@ -2767,11 +2583,8 @@ def profile_transform_context(
         "MovedGeometry": "transformed_geometry",
         "RotatedGeometry": "transformed_geometry",
     }.get(native_recipe_kind, "native_geometry")
-    # Legacy primitive recipes are still persisted in existing projects.  The
-    # Profile-transform contract is defined over the strict sketch graph, so
-    # canonicalize those bounded planar primitives before deriving topology or
-    # Profile IDs.  Keep the original/native kind in the read payload so the
-    # caller can distinguish a legacy source from an already strict sketch.
+    # Current GUI primitives are projected onto the strict sketch graph for
+    # Profile topology and IDs while preserving their native kind in this read.
     analysis_recipe = recipe
     if type(recipe) in {
         RectangleGeometry,
@@ -3430,16 +3243,8 @@ def geometry_recipe_from_payload(value: object) -> object:
         raise TypeError("geometry recipe payload must be an object")
     payload = dict(value)
     version = payload.pop("schema_version", None)
-    if version is not None and version != _RECIPE_SCHEMA_VERSION:
+    if version != _RECIPE_SCHEMA_VERSION:
         raise ValueError("unknown geometry recipe schema_version")
-    if version is None and payload.get("kind") in {
-        "extruded",
-        "revolved",
-        "path_swept",
-        "boolean",
-        "multi_body",
-    }:
-        raise ValueError("3D feature payload requires schema_version")
     _validate_recipe_payload_budget(value)
     return _geometry_recipe_from_payload(payload)
 
@@ -4084,7 +3889,7 @@ def _preview(
             ),
         )
     if type(recipe) is SketchGeometry:
-        sketch = recipe if recipe.is_strict else legacy_sketch_to_strict(recipe)
+        sketch = _as_strict_planar_sketch(recipe)
         assert sketch.plane is not None
         points = tuple(
             sketch.plane.to_global(point.u, point.v) for point in sketch.points
@@ -4269,44 +4074,33 @@ def _make_preview(
 
 def _as_strict_planar_sketch(recipe: object) -> SketchGeometry:
     if type(recipe) is SketchGeometry:
-        return recipe if recipe.is_strict else legacy_sketch_to_strict(recipe)
-    if type(recipe) is RectangleGeometry:
-        return planar_sketch_geometry(
-            recipe.name,
-            contours=(
-                SketchRectangle(
-                    "material",
-                    0.0,
-                    0.0,
-                    recipe.width,
-                    recipe.height,
-                ),
-            ),
-        ).recipe
+        if not recipe.is_strict:
+            raise TypeError("Agent geometry requires a strict sketch")
+        return recipe
+    if type(recipe) in {RectangleGeometry, PlateWithHoleGeometry}:
+        points = (
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", recipe.width, 0.0),
+            SketchPoint("P3", recipe.width, recipe.height),
+            SketchPoint("P4", 0.0, recipe.height),
+        )
+        curves = (
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        )
+        if type(recipe) is PlateWithHoleGeometry:
+            points += (SketchPoint("P5", recipe.hole_x, recipe.hole_y),)
+            curves += (SketchCircle("C5", "P5", recipe.hole_radius),)
+        return SketchGeometry(recipe.name, SketchPlane.xy(), points, curves)
     if type(recipe) is DiskGeometry:
-        return planar_sketch_geometry(
+        return SketchGeometry(
             recipe.name,
-            contours=(SketchCircle("material", 0.0, 0.0, recipe.radius),),
-        ).recipe
-    if type(recipe) is PlateWithHoleGeometry:
-        return planar_sketch_geometry(
-            recipe.name,
-            contours=(
-                SketchRectangle(
-                    "material",
-                    0.0,
-                    0.0,
-                    recipe.width,
-                    recipe.height,
-                ),
-                SketchCircle(
-                    "cut",
-                    recipe.hole_x,
-                    recipe.hole_y,
-                    recipe.hole_radius,
-                ),
-            ),
-        ).recipe
+            SketchPlane.xy(),
+            (SketchPoint("P1", 0.0, 0.0),),
+            (SketchCircle("C1", "P1", recipe.radius),),
+        )
     raise TypeError("incremental planar edits require a planar primitive or sketch")
 
 
@@ -4588,7 +4382,6 @@ __all__ = [
     "planar_feature_geometry_catalog",
     "planar_geometry_catalog",
     "planar_construction_proposal_evidence",
-    "planar_path_slot_vertices",
     "planar_polygon_geometry",
     "planar_sketch_geometry",
     "rectangle_geometry",

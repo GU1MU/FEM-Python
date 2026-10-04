@@ -6,6 +6,8 @@ from PySide6.QtWidgets import QApplication
 from fem.application import ModelSession, UnitContext
 from fem.core.model import MaterialDefinition
 from fem.geometry import (
+    SketchPoint,
+    SketchLine,
     BooleanGeometry,
     BoxGeometry,
     ExtrudedGeometry,
@@ -13,7 +15,6 @@ from fem.geometry import (
     MultiBodyGeometry,
     PathSweptGeometry,
     RevolvedGeometry,
-    SketchRectangle,
     WireGeometry,
     WireMember,
     WirePoint,
@@ -51,7 +52,18 @@ from tests.helpers.agent_result_fixtures import make_solved_session
 def _single_profile_session() -> tuple[ModelSession, object, str]:
     sketch = planar_sketch_geometry(
         "Profile",
-        contours=(SketchRectangle("material", 0.0, 0.0, 2.0, 1.0),),
+        points=(
+            SketchPoint("P1", 0.0, 0.0),
+            SketchPoint("P2", 2.0, 0.0),
+            SketchPoint("P3", 2.0, 1.0),
+            SketchPoint("P4", 0.0, 1.0),
+        ),
+        curves=(
+            SketchLine("L1", "P1", "P2"),
+            SketchLine("L2", "P2", "P3"),
+            SketchLine("L3", "P3", "P4"),
+            SketchLine("L4", "P4", "P1"),
+        ),
     ).recipe
     face_id = next(
         entity.logical_id

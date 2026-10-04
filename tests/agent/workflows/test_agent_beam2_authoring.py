@@ -42,8 +42,8 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assignment = session.snapshot().assignments[0]
     assert assignment.beam_orientation == BeamOrientation((0.0, 1.0, 0.0))
     result = solve_authoring_session(controller, bridge, session)
-    tip_id = result.model.node_sets["点-自由端"].node_ids[0]
-    root_id = result.model.node_sets["点-固定端"].node_ids[0]
+    tip_id = result.model.node_sets["Point-自由端"].node_ids[0]
+    root_id = result.model.node_sets["Point-固定端"].node_ids[0]
 
     length = 2.0
     young = 210000.0
@@ -110,7 +110,7 @@ def test_agent_beam2_full_loop_matches_axial_bending_and_torsion_oracles(
     assert reopened.accept_agent_generated_model(task.token, regenerated).accepted
     reopened_controller, reopened_bridge = make_authoring_controller(reopened)
     reopened_result = solve_authoring_session(reopened_controller, reopened_bridge, reopened)
-    reopened_tip = reopened_result.model.node_sets["点-自由端"].node_ids[0]
+    reopened_tip = reopened_result.model.node_sets["Point-自由端"].node_ids[0]
     assert reopened_result.nodal_displacement(reopened_tip, 4) == pytest.approx(
         expected_twist
     )
@@ -138,7 +138,7 @@ def test_agent_supports_existing_circular_beam_sections(
         controller,
         session,
         "create_material",
-        {"name": "材料-钢", "properties": {"E": 210000.0, "nu": 0.3}},
+        {"name": "Material-钢", "properties": {"E": 210000.0, "nu": 0.3}},
         "material",
     )
     apply_definition_action(
@@ -146,8 +146,8 @@ def test_agent_supports_existing_circular_beam_sections(
         session,
         "create_section",
         {
-            "name": "截面-圆梁",
-            "material": "材料-钢",
+            "name": "Section-圆梁",
+            "material": "Material-钢",
             "section_type": section_type,
             "properties": properties,
         },
@@ -168,8 +168,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         (
             "zero-height",
             {
-                "name": "截面-非法矩形",
-                "material": "材料-钢",
+                "name": "Section-非法矩形",
+                "material": "Material-钢",
                 "section_type": "rectangle",
                 "properties": {"height": 0.0, "width": 10.0},
             },
@@ -177,8 +177,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         (
             "invalid-annulus",
             {
-                "name": "截面-非法圆管",
-                "material": "材料-钢",
+                "name": "Section-非法圆管",
+                "material": "Material-钢",
                 "section_type": "hollow_circle",
                 "properties": {"outer_radius": 3.0, "inner_radius": 4.0},
             },
@@ -200,8 +200,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         session,
         "create_section",
         {
-            "name": "截面-矩形梁",
-            "material": "材料-钢",
+            "name": "Section-矩形梁",
+            "material": "Material-钢",
             "section_type": "rectangle",
             "properties": {"height": 20.0, "width": 10.0},
         },
@@ -219,8 +219,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
             {
                 "action": "assign_section",
                 "parameters": {
-                    "section_name": "截面-矩形梁",
-                    "region_name": "域-梁",
+                    "section_name": "Section-矩形梁",
+                    "region_name": "Domain-梁",
                     "local_y_reference": direction,
                 },
             },
@@ -237,8 +237,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         truss_session,
         "create_section",
         {
-            "name": "截面-矩形梁",
-            "material": "材料-钢",
+            "name": "Section-矩形梁",
+            "material": "Material-钢",
             "section_type": "rectangle",
             "properties": {"height": 20.0, "width": 10.0},
         },
@@ -252,8 +252,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         {
             "action": "assign_section",
             "parameters": {
-                "section_name": "截面-矩形梁",
-                "region_name": "域-梁",
+                "section_name": "Section-矩形梁",
+                "region_name": "Domain-梁",
                 "local_y_reference": [0.0, 1.0, 0.0],
             },
         },
@@ -267,8 +267,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         truss_session,
         "create_section",
         {
-            "name": "截面-拉杆",
-            "material": "材料-钢",
+            "name": "Section-拉杆",
+            "material": "Material-钢",
             "section_type": "truss",
             "properties": {"area": 10.0},
         },
@@ -282,8 +282,8 @@ def test_beam_definition_rejections_are_strict_and_atomic(real_gmsh) -> None:
         {
             "action": "assign_section",
             "parameters": {
-                "section_name": "截面-拉杆",
-                "region_name": "域-梁",
+                "section_name": "Section-拉杆",
+                "region_name": "Domain-梁",
                 "local_y_reference": [0.0, 1.0, 0.0],
             },
         },
@@ -303,7 +303,6 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
     snapshot = session.snapshot()
     boundary = create_definition_change(
         patch_id="patch-fixed",
-        proposal_id="proposal-fixed",
         agent_session_id="agent-beam-authoring",
         turn_id="turn-fixed",
         source_tool_call_ids=("call-fixed",),
@@ -312,9 +311,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         draft_revision=1,
         action="create_boundary_condition",
         parameters={
-            "name": "位移-固定端",
+            "name": "Displacement-固定端",
             "step_name": BEAM_STEP_NAME,
-            "target_scope": "点-固定端",
+            "target_scope": "Point-固定端",
             "target_kind": "node_set",
             "first_component": 1,
             "last_component": 6,
@@ -332,7 +331,6 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
 
     torque = create_definition_change(
         patch_id="patch-torque",
-        proposal_id="proposal-torque",
         agent_session_id="agent-beam-authoring",
         turn_id="turn-torque",
         source_tool_call_ids=("call-torque",),
@@ -341,9 +339,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         draft_revision=1,
         action="create_load",
         parameters={
-            "name": "载荷-扭矩",
+            "name": "Load-扭矩",
             "step_name": BEAM_STEP_NAME,
-            "target_scope": "点-自由端",
+            "target_scope": "Point-自由端",
             "entity_type": "node",
             "load_type": "nodal",
             "component": 4,
@@ -363,9 +361,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "mixed-nonzero",
             "create_boundary_condition",
             {
-                "name": "位移-非法混合",
+                "name": "Displacement-非法混合",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-固定端",
+                "target_scope": "Point-固定端",
                 "target_kind": "node_set",
                 "first_component": 1,
                 "last_component": 6,
@@ -379,9 +377,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "moment-force-unit",
             "create_load",
             {
-                "name": "载荷-错误力矩单位",
+                "name": "Load-错误力矩单位",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-自由端",
+                "target_scope": "Point-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 4,
@@ -397,9 +395,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
             "moment-force-direction",
             "create_load",
             {
-                "name": "载荷-错误力矩方向",
+                "name": "Load-错误力矩方向",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-自由端",
+                "target_scope": "Point-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 4,
@@ -428,9 +426,9 @@ def test_beam_six_dof_units_and_summaries_are_explicit(real_gmsh) -> None:
         session,
         "create_boundary_condition",
         {
-            "name": "位移-纯转动",
+            "name": "Displacement-纯转动",
             "step_name": BEAM_STEP_NAME,
-            "target_scope": "点-固定端",
+            "target_scope": "Point-固定端",
             "target_kind": "node_set",
             "first_component": 4,
             "last_component": 6,

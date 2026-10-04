@@ -30,7 +30,7 @@ def _source() -> AcceptedResultSource:
         session_id="session-a7",
         artifact_id="artifact-a7",
         model_revision=7,
-        step_name="分析步-静力",
+        step_name="Step-静力",
         run_id="run-a7",
     )
 
@@ -78,7 +78,7 @@ def test_sum_is_limited_to_reaction_force() -> None:
     reaction = _query(
         variable=AgentResultVariable.REACTION_FORCE,
         component="RF1",
-        region="边-固定端",
+        region="Edge-固定端",
         aggregation=AgentResultAggregation.SUM,
     )
     assert reaction.aggregation is AgentResultAggregation.SUM
@@ -129,7 +129,7 @@ def test_fake_port_explanation_uses_only_returned_scalar() -> None:
     assert "1.25 mm" in explanation
     assert "node 42" in explanation
     assert "run run-a7" in explanation
-    assert "step 分析步-静力" in explanation
+    assert "step Step-静力" in explanation
 
 
 def test_no_result_failure_has_no_engineering_scalar() -> None:

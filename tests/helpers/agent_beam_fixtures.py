@@ -4,7 +4,7 @@ from fem.application import ModelSession
 from tests.helpers.agent_line_fixtures import apply_definition_action
 
 
-BEAM_STEP_NAME = "分析步-梁"
+BEAM_STEP_NAME = "Step-梁"
 
 
 def apply_line_scopes_and_material(controller: object, session: ModelSession) -> None:
@@ -12,7 +12,7 @@ def apply_line_scopes_and_material(controller: object, session: ModelSession) ->
         (
             "create_named_region",
             {
-                "name": "点-固定端",
+                "name": "Point-固定端",
                 "part_id": "P1",
                 "logical_ids": ["point:Root"],
                 "mesh_kind": "node",
@@ -22,7 +22,7 @@ def apply_line_scopes_and_material(controller: object, session: ModelSession) ->
         (
             "create_named_region",
             {
-                "name": "点-自由端",
+                "name": "Point-自由端",
                 "part_id": "P1",
                 "logical_ids": ["point:Tip"],
                 "mesh_kind": "node",
@@ -32,7 +32,7 @@ def apply_line_scopes_and_material(controller: object, session: ModelSession) ->
         (
             "create_named_region",
             {
-                "name": "域-梁",
+                "name": "Domain-梁",
                 "part_id": "P1",
                 "logical_ids": ["edge:Bar"],
                 "mesh_kind": "element",
@@ -42,7 +42,7 @@ def apply_line_scopes_and_material(controller: object, session: ModelSession) ->
         (
             "create_material",
             {
-                "name": "材料-钢",
+                "name": "Material-钢",
                 "properties": {"E": 210000.0, "nu": 0.3},
             },
             "material",
@@ -60,8 +60,8 @@ def apply_beam_definitions(
         (
             "create_section",
             {
-                "name": "截面-矩形梁",
-                "material": "材料-钢",
+                "name": "Section-矩形梁",
+                "material": "Material-钢",
                 "section_type": "rectangle",
                 "properties": {"height": 20.0, "width": 10.0},
             },
@@ -70,8 +70,8 @@ def apply_beam_definitions(
         (
             "assign_section",
             {
-                "section_name": "截面-矩形梁",
-                "region_name": "域-梁",
+                "section_name": "Section-矩形梁",
+                "region_name": "Domain-梁",
                 "local_y_reference": [0.0, 1.0, 0.0],
             },
             "assignment",
@@ -80,9 +80,9 @@ def apply_beam_definitions(
         (
             "create_boundary_condition",
             {
-                "name": "位移-固定端",
+                "name": "Displacement-固定端",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-固定端",
+                "target_scope": "Point-固定端",
                 "target_kind": "node_set",
                 "first_component": 1,
                 "last_component": 6,
@@ -96,9 +96,9 @@ def apply_beam_definitions(
         (
             "create_load",
             {
-                "name": "载荷-轴向力",
+                "name": "Load-轴向力",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-自由端",
+                "target_scope": "Point-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 1,
@@ -114,9 +114,9 @@ def apply_beam_definitions(
         (
             "create_load",
             {
-                "name": "载荷-横向力",
+                "name": "Load-横向力",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-自由端",
+                "target_scope": "Point-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 2,
@@ -132,9 +132,9 @@ def apply_beam_definitions(
         (
             "create_load",
             {
-                "name": "载荷-扭矩",
+                "name": "Load-扭矩",
                 "step_name": BEAM_STEP_NAME,
-                "target_scope": "点-自由端",
+                "target_scope": "Point-自由端",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 4,
@@ -150,7 +150,7 @@ def apply_beam_definitions(
         (
             "create_result_request",
             {
-                "name": "结果请求-节点",
+                "name": "Output-节点",
                 "step_name": BEAM_STEP_NAME,
                 "target": "node",
                 "variables": ["U", "RF"],
@@ -162,7 +162,7 @@ def apply_beam_definitions(
         (
             "create_result_request",
             {
-                "name": "结果请求-应力",
+                "name": "Output-应力",
                 "step_name": BEAM_STEP_NAME,
                 "target": "element",
                 "variables": ["S"],

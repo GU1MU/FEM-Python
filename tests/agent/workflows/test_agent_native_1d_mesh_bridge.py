@@ -122,7 +122,7 @@ def test_session_controller_prepares_strict_line_proposal_without_mutation() -> 
     proposal_id = str(prepared.data["proposal_id"])
     proposal = bridge._records[proposal_id].proposal
     intent_payload = proposal.operations[0].parameters["mesh_intent"]
-    assert intent_payload["schema_version"] == "1.1"
+    assert intent_payload["schema_version"] == "1.2"
     assert intent_payload["cell_shape"] == "line"
     assert intent_payload["order"] == 1
     assert intent_payload["line_element_type"] == "Beam2"

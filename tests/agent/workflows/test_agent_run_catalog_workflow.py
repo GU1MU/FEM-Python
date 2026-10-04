@@ -32,9 +32,9 @@ from fem_agent.result_authoring import (
 
 
 def _second_success(session: ModelSession):
-    task = session.prepare_solve(STATIC_STEP_NAME, "作业-运行目录")
+    task = session.prepare_solve(STATIC_STEP_NAME, "Job-运行目录")
     assert session.begin_run(task.token).accepted
-    result = static_linear.solve(task.model, task.step_name, name="作业-运行目录")
+    result = static_linear.solve(task.model, task.step_name, name="Job-运行目录")
     assert session.accept_run_succeeded(
         task.token,
         build_solve_result_bundle(task, result),
@@ -225,7 +225,7 @@ def test_multistep_solve_requires_explicit_step_and_uses_job_supplier() -> None:
     supplied: list[str] = []
 
     def next_job_name() -> str:
-        supplied.append("作业-9")
+        supplied.append("Job-9")
         return supplied[-1]
 
     controller = create_session_authoring_workflow_controller(
@@ -254,14 +254,14 @@ def test_multistep_solve_requires_explicit_step_and_uses_job_supplier() -> None:
 
     assert not ambiguous.ok
     assert explicit.ok
-    assert supplied == ["作业-9"]
+    assert supplied == ["Job-9"]
     record = next(iter(authoring_bridge._records.values()))
     assert record.proposal.operations[0].parameters["step_name"] == "Step-B"
     assert (
         record.proposal.operations[0].parameters["job_name"]
-        == "作业-9"
+        == "Job-9"
     )
-    assert session.find_run("作业-9") is None
+    assert session.find_run("Job-9") is None
 
 
 def test_solve_proposal_dispatch_targets_bound_numeric_document() -> None:

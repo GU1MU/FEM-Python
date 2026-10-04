@@ -64,7 +64,7 @@ def _context(*, revision: int = 4) -> AuthoringContext:
             source_kind="native",
             supported=True,
         ),
-        model_name="模型-孔板",
+        model_name="Model-孔板",
         active_part_id=None,
     )
 
@@ -89,7 +89,7 @@ def _proposal(
             ModelOperation(
                 OperationKind.ADD_NATIVE_PART,
                 {
-                    "part_name": "部件-偏心孔板",
+                    "part_name": "Part-偏心孔板",
                     "recipe": {"kind": "PlateWithHoleGeometry"},
                 },
             ),
@@ -121,7 +121,7 @@ def test_snapshot_adapter_omits_paths_arrays_and_gui_objects() -> None:
         session_revision=7,
         source_kind="native",
         source_path="D:\\private\\model.femproj",
-        model_name="模型-孔板",
+        model_name="Model-孔板",
         active_part_id=None,
         parts=(),
         named_regions={},
@@ -151,7 +151,7 @@ def test_snapshot_adapter_omits_paths_arrays_and_gui_objects() -> None:
 
 
 def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
-    model = FEMModel(make_selection_quad_mesh(), name="模型-已划分网格")
+    model = FEMModel(make_selection_quad_mesh(), name="Model-已划分网格")
     snapshot = SimpleNamespace(
         session_id="session-meshed",
         session_revision=8,
@@ -180,7 +180,7 @@ def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
     assert context.mesh.node_count == 4
     assert context.mesh.element_count == 1
 
-    empty_model = FEMModel(type(model.mesh)([], []), name="模型-仅几何")
+    empty_model = FEMModel(type(model.mesh)([], []), name="Model-仅几何")
     empty_snapshot = SimpleNamespace(
         **{
             **vars(snapshot),
@@ -196,7 +196,7 @@ def test_snapshot_adapter_reads_counts_from_actual_fem_model_mesh() -> None:
 
 
 def test_snapshot_adapter_retains_non_engineering_edits_without_units() -> None:
-    model = FEMModel(make_selection_quad_mesh(), name="模型-无单位")
+    model = FEMModel(make_selection_quad_mesh(), name="Model-无单位")
     snapshot = SimpleNamespace(
         session_id="session-without-units",
         session_revision=9,
@@ -691,55 +691,6 @@ def test_runtime_flushes_whitespace_only_stream_delta(gui_application, tmp_path)
         assert delta is not None
         assert delta.event_type is EventType.MESSAGE_DELTA
         assert delta.payload["delta"] == "\n  "
-    finally:
-        runtime.shutdown()
-
-
-def test_runtime_finalizes_streamed_message_presentation_kind(gui_application, tmp_path) -> None:
-    runtime = QtAgentRuntime(tmp_path / "agent-private-presentation")
-    try:
-        context, _reset = runtime._start_turn(1, "agent-session-presentation")
-        with runtime._lock:
-            mapped = runtime._map_engine_event_locked(
-                context,
-                EngineEvent(
-                    EngineEventType.MESSAGE_STARTED,
-                    context.session_id,
-                    {"role": "assistant"},
-                    "2026-08-15T08:00:00Z",
-                ),
-            )
-            mapped.extend(
-                runtime._map_engine_event_locked(
-                    context,
-                    EngineEvent(
-                        EngineEventType.MESSAGE_DELTA,
-                        context.session_id,
-                        {"text": "Please provide the opening depth."},
-                        "2026-08-15T08:00:01Z",
-                    ),
-                )
-            )
-            mapped.extend(runtime._flush_pending_delta_locked(context))
-            mapped.extend(
-                runtime._map_engine_event_locked(
-                    context,
-                    EngineEvent(
-                        EngineEventType.MESSAGE_PRESENTATION,
-                        context.session_id,
-                        {"presentation_kind": "decision_request"},
-                        "2026-08-15T08:00:02Z",
-                    ),
-                )
-            )
-
-        assert [event.event_type for event in mapped] == [
-            EventType.MESSAGE_START,
-            EventType.MESSAGE_DELTA,
-            EventType.MESSAGE_COMPLETE,
-        ]
-        assert mapped[-1].payload["presentation_kind"] == "decision_request"
-        assert context.active_message_id is None
     finally:
         runtime.shutdown()
 

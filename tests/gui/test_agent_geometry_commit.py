@@ -29,7 +29,7 @@ from fem_agent.geometry_authoring import (
     create_geometry_proposal,
     disk_geometry,
     geometry_draft,
-    plate_with_hole_geometry,
+    rectangle_geometry,
 )
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
@@ -75,12 +75,11 @@ def _proposal(
         context=context,
         draft_revision=1,
         draft=(
-            plate_with_hole_geometry(
-                "实体-偏心孔板",
-                width=10.0,
-                height=6.0,
-                hole_radius=1.0,
-                center_offset=(1.5, -1.0),
+            add_planar_circle(
+                rectangle_geometry("Body-偏心孔板", width=10.0, height=6.0).recipe,
+                center_x=6.5,
+                center_y=2.0,
+                radius=1.0,
             )
             if draft is None
             else draft
@@ -199,17 +198,17 @@ def test_reject_keeps_blank_session_tree_actor_proxy_and_revision_unchanged() ->
 def test_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-组合件",
+        "Model-组合件",
         _application_units(),
-        RectangleGeometry("实体-矩形", 4.0, 2.0),
-        part_name="部件-板",
+        RectangleGeometry("Body-矩形", 4.0, 2.0),
+        part_name="Part-板",
     )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
     proposal = _proposal(
         session,
         proposal_id="proposal-add",
-        draft=disk_geometry("实体-圆盘", radius=1.0),
+        draft=disk_geometry("Body-圆盘", radius=1.0),
         part_function="圆盘",
     )
     before = session.snapshot()
@@ -222,24 +221,23 @@ def test_native_accept_adds_exactly_one_allocated_part_and_one_refresh() -> None
 
     assert receipt.state is ProposalState.SUCCEEDED
     assert after.session_revision == before.session_revision + 1
-    assert [part.name for part in after.parts] == ["部件-板", "Part-圆盘"]
+    assert [part.name for part in after.parts] == ["Part-板", "Part-圆盘"]
     assert refreshes == [after.session_revision]
 
 
 def test_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
     session = ModelSession()
-    original = plate_with_hole_geometry(
-        "实体-旧孔板",
-        width=100.0,
-        height=200.0,
-        hole_radius=10.0,
-        hole_center=(50.0, 100.0),
+    original = add_planar_circle(
+        rectangle_geometry("Body-孔板", width=100.0, height=200.0).recipe,
+        center_x=50.0,
+        center_y=100.0,
+        radius=10.0,
     )
     session.create_native_project_with_first_part(
-        "模型-双孔板",
+        "Model-双孔板",
         _application_units(),
         original.recipe,
-        part_name="部件-孔板",
+        part_name="Part-孔板",
     )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
@@ -272,7 +270,7 @@ def test_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
     assert receipt.state is ProposalState.SUCCEEDED
     assert len(after.parts) == 1
     assert str(after.parts[0].id) == part_id
-    assert after.parts[0].name == "部件-孔板"
+    assert after.parts[0].name == "Part-孔板"
     assert type(after.parts[0].geometry_recipe) is SketchGeometry
     assert len(
         [
@@ -288,23 +286,23 @@ def test_existing_part_adds_second_hole_without_delete_or_recreate() -> None:
 def test_stale_geometry_proposal_cannot_commit() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-组合件",
+        "Model-组合件",
         _application_units(),
-        RectangleGeometry("实体-矩形", 4.0, 2.0),
-        part_name="部件-板",
+        RectangleGeometry("Body-矩形", 4.0, 2.0),
+        part_name="Part-板",
     )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
     proposal = _proposal(
         session,
         proposal_id="proposal-stale",
-        draft=disk_geometry("实体-圆盘", radius=1.0),
+        draft=disk_geometry("Body-圆盘", radius=1.0),
         part_function="圆盘",
     )
     bridge.register_proposal(proposal)
     session.add_native_part(
-        RectangleGeometry("实体-外部", 1.0, 1.0),
-        name="部件-外部",
+        RectangleGeometry("Body-外部", 1.0, 1.0),
+        name="Part-外部",
         mesh_settings=None,
         unit_context=_application_units(),
     )
@@ -339,12 +337,13 @@ def test_invalid_hole_commit_failure_is_atomic() -> None:
             ModelOperation(
                 OperationKind.CREATE_NATIVE_PROJECT,
                 {
-                    "project_name": "模型-孔板",
-                    "part_name": "部件-孔板",
+                    "project_name": "Model-孔板",
+                    "part_name": "Part-孔板",
                     "unit_context": _units().to_dict(),
                     "recipe": {
+                        "schema_version": 1,
                         "kind": "plate_with_hole",
-                        "name": "实体-孔板",
+                        "name": "Body-孔板",
                         "width": 10.0,
                         "height": 6.0,
                         "hole_x": 0.5,
@@ -386,10 +385,10 @@ def test_invalid_strict_profile_create_or_replace_is_atomic(
     session = ModelSession()
     if replace_existing:
         session.create_native_project_with_first_part(
-            "模型-现有板",
+            "Model-现有板",
             _application_units(),
-            RectangleGeometry("实体-现有板", 4.0, 2.0),
-            part_name="部件-现有板",
+            RectangleGeometry("Body-现有板", 4.0, 2.0),
+            part_name="Part-现有板",
         )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
@@ -435,10 +434,10 @@ def test_invalid_strict_profile_add_is_atomic(
 ) -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-现有板",
+        "Model-现有板",
         _application_units(),
-        RectangleGeometry("实体-现有板", 4.0, 2.0),
-        part_name="部件-现有板",
+        RectangleGeometry("Body-现有板", 4.0, 2.0),
+        part_name="Part-现有板",
     )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
@@ -462,17 +461,17 @@ def test_invalid_strict_profile_add_is_atomic(
 def test_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
     session = ModelSession()
     session.create_native_project_with_first_part(
-        "模型-组合件",
+        "Model-组合件",
         _application_units(),
-        RectangleGeometry("实体-矩形", 4.0, 2.0),
-        part_name="部件-圆盘",
+        RectangleGeometry("Body-矩形", 4.0, 2.0),
+        part_name="Part-圆盘",
     )
     refreshes: list[int] = []
     bridge = _bridge(session, refreshes)
     proposal = _proposal(
         session,
         proposal_id="proposal-bypass",
-        draft=disk_geometry("实体-圆盘", radius=1.0),
+        draft=disk_geometry("Body-圆盘", radius=1.0),
         part_function="圆盘",
     )
     operation = proposal.operations[0]
@@ -491,7 +490,7 @@ def test_real_port_rejects_name_allocator_bypass_without_mutation() -> None:
                 operation,
                 parameters={
                     **operation.parameters,
-                    "part_name": "部件-圆盘",
+                    "part_name": "Part-圆盘",
                 },
             ),
         ),

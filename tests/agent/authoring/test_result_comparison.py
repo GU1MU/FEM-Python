@@ -35,7 +35,7 @@ from fem_gui.agent_authoring import (
 
 from tests.helpers.agent_result_fixtures import STATIC_STEP_NAME, make_solved_session
 from tests.helpers.agent_session_fixtures import (
-    make_plate_static_analysis,
+    make_plate_static_step,
     make_defined_plate_session,
 )
 
@@ -81,16 +81,16 @@ def _solve_again_with_double_load(
     assert first_run_id is not None
     baseline = _reference(session, first_run_id)
     snapshot = session.snapshot()
-    analysis = make_plate_static_analysis()
+    analysis = make_plate_static_step()
     doubled = replace(
         analysis,
-        loads=(replace(analysis.loads[0], vector=(20.0, 0.0)),),
+        edge_loads=(replace(analysis.edge_loads[0], vector=(20.0, 0.0)),),
     )
     session.replace_model_definitions(
         snapshot.materials,
         snapshot.sections,
         snapshot.assignments,
-        (doubled.to_step(),),
+        (doubled,),
     )
     validation = session.prepare_validation(STATIC_STEP_NAME)
     report = run_static_preflight(
@@ -99,9 +99,9 @@ def _solve_again_with_double_load(
         token=validation.token,
     )
     assert session.accept_validation(validation.token, report).accepted
-    task = session.prepare_solve(STATIC_STEP_NAME, "作业-比较候选")
+    task = session.prepare_solve(STATIC_STEP_NAME, "Job-比较候选")
     assert session.begin_run(task.token).accepted
-    result = static_linear.solve(task.model, task.step_name, name="作业-比较候选")
+    result = static_linear.solve(task.model, task.step_name, name="Job-比较候选")
     assert session.accept_run_succeeded(
         task.token,
         build_solve_result_bundle(task, result),
@@ -315,7 +315,7 @@ def test_comparison_fails_closed_for_foreign_stale_and_unavailable_inputs(
     historical_region = AgentResultComparisonQuery(
         replace(
             _comparison_query(baseline, candidate).query,
-            region="边-固定端",
+            region="Edge-固定端",
         ),
         baseline,
         candidate,

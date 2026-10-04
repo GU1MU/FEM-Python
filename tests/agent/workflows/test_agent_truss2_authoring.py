@@ -34,8 +34,8 @@ def test_agent_truss2_full_loop_matches_oracle_exports_and_reopens(
     apply_truss_definitions(controller, session)
     result = solve_authoring_session(controller, bridge, session)
 
-    tip_id = result.model.node_sets["点-自由端"].node_ids[0]
-    root_id = result.model.node_sets["点-固定端"].node_ids[0]
+    tip_id = result.model.node_sets["Point-自由端"].node_ids[0]
+    root_id = result.model.node_sets["Point-固定端"].node_ids[0]
     expected = 1000.0 * 2.0 / (210000.0 * 10.0)
     assert result.nodal_displacement(tip_id, component=1) == pytest.approx(expected)
     assert result.nodal_reaction(root_id, component=1) == pytest.approx(-1000.0)
@@ -64,7 +64,7 @@ def test_agent_truss2_full_loop_matches_oracle_exports_and_reopens(
     assert reopened.accept_agent_generated_model(task.token, regenerated).accepted
     resumed, resumed_bridge = make_authoring_controller(reopened)
     reopened_result = solve_authoring_session(resumed, resumed_bridge, reopened)
-    reopened_tip = reopened_result.model.node_sets["点-自由端"].node_ids[0]
+    reopened_tip = reopened_result.model.node_sets["Point-自由端"].node_ids[0]
     assert reopened_result.nodal_displacement(
         reopened_tip,
         component=1,
@@ -82,7 +82,7 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
         controller,
         session,
         "create_material",
-        {"name": "材料-钢", "properties": {"E": 210000.0, "nu": 0.3}},
+        {"name": "Material-钢", "properties": {"E": 210000.0, "nu": 0.3}},
         "material",
     )
     before = session.snapshot()
@@ -93,8 +93,8 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
         {
             "action": "create_section",
             "parameters": {
-                "name": "截面-零面积",
-                "material": "材料-钢",
+                "name": "Section-零面积",
+                "material": "Material-钢",
                 "section_type": "truss",
                 "properties": {"area": 0.0},
             },
@@ -109,9 +109,9 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
     apply_truss_definitions(component_controller, component_session)
     component_before = component_session.snapshot()
     component_parameters = {
-        "name": "载荷-非法分量",
+        "name": "Load-非法分量",
         "step_name": TRUSS_STEP_NAME,
-        "target_scope": "点-自由端",
+        "target_scope": "Point-自由端",
         "entity_type": "node",
         "load_type": "nodal",
         "component": 4,
@@ -125,7 +125,6 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
     with pytest.raises(ValueError, match="integer from 1 to 3"):
         create_definition_change(
             patch_id="patch-component-four",
-            proposal_id="proposal-component-four",
             agent_session_id="agent-line-mesh",
             turn_id="turn-component-four",
             source_tool_call_ids=("call-component-four",),
@@ -155,9 +154,9 @@ def test_truss_definition_rejections_and_underconstraint_are_atomic(real_gmsh) -
         {
             "action": "create_load",
             "parameters": {
-                "name": "载荷-错误目标",
+                "name": "Load-错误目标",
                 "step_name": TRUSS_STEP_NAME,
-                "target_scope": "点-不存在",
+                "target_scope": "Point-不存在",
                 "entity_type": "node",
                 "load_type": "nodal",
                 "component": 1,
@@ -221,7 +220,7 @@ def test_truss_section_assignment_rejects_beam2_region(real_gmsh) -> None:
         (
             "create_named_region",
             {
-                "name": "域-梁",
+                "name": "Domain-梁",
                 "part_id": "P1",
                 "logical_ids": ["edge:Bar"],
                 "mesh_kind": "element",
@@ -230,14 +229,14 @@ def test_truss_section_assignment_rejects_beam2_region(real_gmsh) -> None:
         ),
         (
             "create_material",
-            {"name": "材料-钢", "properties": {"E": 210000.0, "nu": 0.3}},
+            {"name": "Material-钢", "properties": {"E": 210000.0, "nu": 0.3}},
             "material",
         ),
         (
             "create_section",
             {
-                "name": "截面-拉杆",
-                "material": "材料-钢",
+                "name": "Section-拉杆",
+                "material": "Material-钢",
                 "section_type": "truss",
                 "properties": {"area": 10.0},
             },
@@ -253,8 +252,8 @@ def test_truss_section_assignment_rejects_beam2_region(real_gmsh) -> None:
         {
             "action": "assign_section",
             "parameters": {
-                "section_name": "截面-拉杆",
-                "region_name": "域-梁",
+                "section_name": "Section-拉杆",
+                "region_name": "Domain-梁",
             },
         },
         "wrong-region",

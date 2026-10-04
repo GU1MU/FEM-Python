@@ -37,12 +37,12 @@ def test_restore_active_job_is_read_only_and_never_exposes_solve(
             "native",
             True,
         ),
-        model_name="模型-活动作业",
+        model_name="Model-活动作业",
         active_part_id="part-active",
         parts=(
             PartSummary(
                 "part-active",
-                "部件-活动作业",
+                "Part-活动作业",
                 "planar_sketch",
                 2,
                 False,
@@ -90,12 +90,12 @@ def test_restored_job_terminal_refreshes_without_revision_change(
             "native",
             True,
         ),
-        model_name="模型-活动作业",
+        model_name="Model-活动作业",
         active_part_id="part-active",
         parts=(
             PartSummary(
                 "part-active",
-                "部件-活动作业",
+                "Part-活动作业",
                 "planar_sketch",
                 2,
                 False,
@@ -132,7 +132,7 @@ def test_binding_change_clears_collected_requirements() -> None:
             "native",
             True,
         ),
-        model_name="模型-新文档",
+        model_name="Model-新文档",
         active_part_id=None,
     )
     current = [initial]
