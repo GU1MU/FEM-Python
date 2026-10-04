@@ -78,7 +78,6 @@ def test_closed_centerline_returns_repair_guidance_without_mutation() -> None:
     assert not result.ok
     error = result.data["error"]
     assert error["code"] == "planar-ir.invalid-path-stroke"
-    assert error["remediation"]["preserve_representation"] is True
     assert session.snapshot() == before
 
 

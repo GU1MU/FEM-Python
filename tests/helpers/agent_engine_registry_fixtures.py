@@ -31,9 +31,6 @@ class _AdditionalModelToolRegistry:
         if name == "create_native_model_document":
             data = {
                 "state": "succeeded",
-                "next_action": (
-                    "read_authoring_context_then_prepare_requested_geometry"
-                ),
             }
         elif name == "prepare_planar_construction_proposal":
             data = {

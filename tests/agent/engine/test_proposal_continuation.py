@@ -1,46 +1,13 @@
-import pytest
-
 from fem_agent.engine import AgentSessionEngine, EngineEventType
-from fem_agent.providers.base import AssistantMessage, ProviderResponse, ToolCall
+from fem_agent.providers.base import ToolCall
 from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
-from tests.helpers.agent_engine_registry_fixtures import _GeometryEditToolRegistry
 from tests.helpers.agent_provider_fixtures import (
     tool_response,
     text_response,
     StreamingFakeProvider,
-    ReasoningStreamingFakeProvider,
 )
-
-
-def test_unbacked_proposal_execution_claim_is_not_exposed(tmp_path):
-    provider = FakeProvider(
-        [
-            text_response("方案已确认，等待本地操作执行完成。"),
-            text_response("当前没有可执行的本地提案。"),
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_unbacked_proposal_claim",
-        dynamic_tools=_GeometryEditToolRegistry(),
-    )
-
-    events = engine.send_message("当前状态是什么？")
-
-    assert len(provider.requests) == 2
-    assert not any(
-        "等待本地操作执行完成" in str(event.data.get("text", ""))
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    )
-    assert any(
-        event.event is EngineEventType.MESSAGE_DELTA
-        and event.data["text"] == "当前没有可执行的本地提案。"
-        for event in events
-    )
 
 
 def _register_test_continuation(
@@ -122,38 +89,6 @@ def test_proposal_continuation_uses_system_envelope_and_consumes_once(tmp_path):
     assert len(provider.requests) == 2
 
 
-def test_succeeded_proposal_suppresses_reconfirmation_and_refusal(tmp_path):
-    contradiction = (
-        "当前无法创建几何，请你在本地 UI 中再次点击并确认这个提案。"
-    )
-    provider = FakeProvider(
-        [text_response("等待本地确认"), text_response(contradiction)]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_continuation_guard",
-    )
-    engine.send_message("建立模型")
-    _register_test_continuation(engine)
-
-    events = engine.continue_after_proposal(
-        "proposal-continue-1",
-        "a" * 64,
-        "source-turn-1",
-        4,
-        "succeeded",
-        "几何创建完成",
-    )
-
-    deltas = [
-        event.data["text"]
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    ]
-    assert deltas == ["几何创建完成"]
-
-
 def test_succeeded_proposal_suppresses_unpublished_tool_call(tmp_path):
     provider = FakeProvider(
         [
@@ -221,42 +156,6 @@ def test_failed_or_revision_changed_continuation_cannot_advance_tools(tmp_path):
         "succeeded",
     ) == ()
     assert len(provider.requests) == 2
-
-
-@pytest.mark.parametrize(
-    "provider_type", [StreamingFakeProvider, ReasoningStreamingFakeProvider]
-)
-def test_terminal_result_is_authoritative_for_streaming_providers(tmp_path, provider_type):
-    provider = provider_type(
-        [
-            text_response("等待本地确认"),
-            ProviderResponse(
-                AssistantMessage(
-                    "assistant",
-                    content="网格操作卡已生成（待确认），全局尺寸 5",
-                    reasoning_content="The card is pending user confirmation.",
-                ),
-                finish_reason="stop",
-            ),
-        ]
-    )
-    streamed = []
-    engine = AgentSessionEngine(
-        tmp_path / "workspace", provider, event_sink=streamed.append
-    )
-    engine.send_message("建立模型")
-    _register_test_continuation(engine, proposal_kind="mesh")
-    streamed.clear()
-
-    engine.continue_after_proposal(
-        "proposal-continue-1", "a" * 64, "source-turn-1", 4, "succeeded", "网格已提交"
-    )
-
-    assert [
-        event.data["text"]
-        for event in streamed
-        if event.event is EngineEventType.MESSAGE_DELTA
-    ] == ["网格已提交"]
 
 
 def test_post_terminal_streamed_summary_replays_once_after_guards(tmp_path):

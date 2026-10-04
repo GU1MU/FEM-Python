@@ -133,9 +133,6 @@ from fem_agent.geometry_authoring import (
     planar_construction_proposal_evidence,
     planar_feature_geometry_catalog,
     planar_geometry_catalog,
-    planar_path_slot_vertices,
-    planar_polygon_geometry,
-    planar_sketch_geometry,
     PlanarEditValidationError,
     profile_transform_context,
     rotate_geometry,
@@ -216,8 +213,6 @@ from fem.geometry import (
     PathSweptGeometry,
     RevolvedGeometry,
     SketchGeometry,
-    SketchCircle,
-    SketchRectangle,
     SolidBody,
     WireMember,
     WireGeometry,
@@ -526,106 +521,6 @@ def _display_number(value: object) -> str:
     return format(normalized, ".12g")
 
 
-def _planar_profile_design_summary(
-    kind: str,
-    values: Mapping[str, object],
-    index: int,
-) -> str:
-    if kind == "rectangle":
-        return (
-            f"Rectangle {index}(x={_display_number(values['x'])}, "
-            f"y={_display_number(values['y'])}, "
-            f"width={_display_number(values['width'])}, "
-            f"height={_display_number(values['height'])})"
-        )
-    if kind == "circle":
-        return (
-            f"Circle {index}(center="
-            f"({_display_number(values['center_x'])}, "
-            f"{_display_number(values['center_y'])}), "
-            f"radius={_display_number(values['radius'])})"
-        )
-    vertices = tuple(values["vertices"])  # type: ignore[arg-type]
-    shown = vertices[:8]
-    coordinates = ", ".join(
-        f"({_display_number(vertex[0])}, {_display_number(vertex[1])})"
-        for vertex in shown
-    )
-    if len(vertices) > len(shown):
-        coordinates += f", …{len(vertices)} points total"
-    return f"Polygon {index}(vertices={coordinates})"
-
-
-def _bounded_geometry_design_summary(
-    prefix: str,
-    details: list[str],
-) -> str:
-    kept: list[str] = []
-    for index, detail in enumerate(details):
-        candidate = f"{prefix}: " + "; ".join((*kept, detail))
-        if len(candidate) > 720:
-            return (
-                f"{prefix}: "
-                + "; ".join(kept)
-                + f"; {len(details) - index} more profiles"
-            )
-        kept.append(detail)
-    return f"{prefix}: " + "; ".join(kept)
-
-
-class _GeometryIntentMismatchError(AuthoringContractError):
-    """A syntactically valid recipe conflicts with its declared Part function."""
-
-    def __init__(self, submitted_kind: str, expected_kinds: tuple[str, ...]) -> None:
-        self.submitted_kind = submitted_kind
-        self.expected_kinds = expected_kinds
-        super().__init__(
-            "geometry.intent-dimension-mismatch: a 1D wire cannot represent "
-            "a plate, sheet, solid, hole, slot, or cutout. Submit the final "
-            "planar or extruded geometry instead of a centerline placeholder."
-        )
-
-
-_WIRE_INCOMPATIBLE_PART_MARKERS = (
-    "板",
-    "薄片",
-    "片材",
-    "孔",
-    "槽",
-    "切口",
-    "切除",
-    "实体",
-    "plate",
-    "sheet",
-    "panel",
-    "slab",
-    "solid",
-    "hole",
-    "slot",
-    "cutout",
-    "cut-out",
-    "notch",
-)
-
-
-def _require_geometry_intent_compatibility(
-    part_function: str,
-    geometry_kind: str,
-) -> None:
-    if geometry_kind != "wire":
-        return
-    normalized = part_function.casefold()
-    if any(marker in normalized for marker in _WIRE_INCOMPATIBLE_PART_MARKERS):
-        raise _GeometryIntentMismatchError(
-            geometry_kind,
-            (
-                "planar_profiles",
-                "extruded_profiles",
-                "extruded_path_slot_plate",
-            ),
-        )
-
-
 def _geometry_unit_summary(
     requirements: Mapping[str, object],
     defaulted_keys: tuple[str, ...],
@@ -693,183 +588,6 @@ def _provider_recipe_kind(recipe: object | None) -> str | None:
         "MovedGeometry": "transformed_geometry",
         "RotatedGeometry": "transformed_geometry",
     }.get(type(recipe).__name__, "native_geometry")
-
-
-def _profile_vertices(value: object) -> tuple[tuple[object, object], ...]:
-    if (
-        not isinstance(value, list)
-        or not 3 <= len(value) <= 64
-        or any(
-            not isinstance(item, Mapping) or set(item) != {"x", "y"} for item in value
-        )
-    ):
-        raise ValueError("polygon vertices must contain 3 to 64 x/y objects")
-    return tuple((item["x"], item["y"]) for item in value)
-
-
-def _composite_profile_order_key(value: object) -> tuple[str, str]:
-    """Return a geometry-only key so contour order cannot alter identity."""
-
-    if not isinstance(value, Mapping):
-        return ("", repr(value))
-    kind = str(value.get("kind", ""))
-    if kind == "rectangle":
-        fields = ("x", "y", "width", "height")
-    elif kind == "circle":
-        fields = ("center_x", "center_y", "radius")
-    elif kind == "polygon":
-        vertices = value.get("vertices")
-        if isinstance(vertices, list):
-            return (
-                kind,
-                repr(
-                    tuple(
-                        (item.get("x"), item.get("y"))
-                        for item in vertices
-                        if isinstance(item, Mapping)
-                    )
-                ),
-            )
-        return (kind, repr(vertices))
-    else:
-        return (kind, repr(sorted(value.items(), key=lambda item: str(item[0]))))
-    return (kind, repr(tuple(value.get(field) for field in fields)))
-
-
-def _pop_profile_annotations(item: dict[str, object]) -> None:
-    """Validate optional provider hints while leaving topology authoritative."""
-
-    role = item.pop("role", None)
-    operation = item.pop("operation", None)
-    if role is not None and role not in {"material", "hole"}:
-        raise ValueError("composite profile role must be material or hole")
-    if operation is not None and operation not in {"material", "cut"}:
-        raise ValueError("composite profile operation must be material or cut")
-    if role is not None and operation is not None:
-        expected_role = "material" if operation == "material" else "hole"
-        if role != expected_role:
-            raise ValueError("composite profile role and operation disagree")
-
-
-def _composite_profile_contours(
-    value: object,
-    *,
-    recipe_name: str,
-) -> tuple[object, dict[str, object], tuple[str, ...]]:
-    """Build one strict XY sketch and prove one material Profile locally."""
-
-    if not isinstance(value, list) or not value:
-        raise ValueError("composite profiles must be a non-empty array")
-    draft = None
-    summaries: list[str] = []
-    for index, raw in enumerate(
-        sorted(value, key=_composite_profile_order_key),
-        start=1,
-    ):
-        if not isinstance(raw, Mapping):
-            raise TypeError("each composite profile must be an object")
-        item = dict(raw)
-        kind = str(item.pop("kind", ""))
-        _pop_profile_annotations(item)
-        # ``role``/``operation`` are annotations only.  The strict sketch
-        # analyser below determines material versus hole from containment, so
-        # contour order cannot change the selected Profile.
-        try:
-            if kind == "rectangle":
-                if set(item) != {"x", "y", "width", "height"}:
-                    raise ValueError("rectangle profile fields do not match")
-                shape = SketchRectangle(
-                    "material",
-                    item["x"],
-                    item["y"],
-                    item["width"],
-                    item["height"],
-                )
-                summaries.append(_planar_profile_design_summary(kind, item, index))
-                if draft is None:
-                    draft = planar_sketch_geometry(
-                        recipe_name,
-                        contours=(shape,),
-                    )
-                else:
-                    draft = add_planar_rectangle(
-                        draft.recipe,
-                        x=item["x"],
-                        y=item["y"],
-                        width=item["width"],
-                        height=item["height"],
-                    )
-            elif kind == "circle":
-                if set(item) != {"center_x", "center_y", "radius"}:
-                    raise ValueError("circle profile fields do not match")
-                shape = SketchCircle(
-                    "material",
-                    item["center_x"],
-                    item["center_y"],
-                    item["radius"],
-                )
-                summaries.append(_planar_profile_design_summary(kind, item, index))
-                if draft is None:
-                    draft = planar_sketch_geometry(
-                        recipe_name,
-                        contours=(shape,),
-                    )
-                else:
-                    draft = add_planar_circle(
-                        draft.recipe,
-                        center_x=item["center_x"],
-                        center_y=item["center_y"],
-                        radius=item["radius"],
-                    )
-            elif kind == "polygon":
-                if set(item) != {"vertices"}:
-                    raise ValueError("polygon profile fields do not match")
-                vertices = _profile_vertices(item["vertices"])
-                summaries.append(
-                    _planar_profile_design_summary(
-                        kind,
-                        {"vertices": vertices},
-                        index,
-                    )
-                )
-                if draft is None:
-                    draft = planar_polygon_geometry(
-                        recipe_name,
-                        vertices=vertices,
-                    )
-                else:
-                    draft = add_planar_polygon(
-                        draft.recipe,
-                        vertices=vertices,
-                    )
-            else:
-                raise ValueError("unsupported composite profile kind")
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"composite profile {index} is invalid: {error}"
-            ) from error
-    if draft is None:  # pragma: no cover - guarded by the non-empty input check
-        raise ValueError("composite profiles did not produce a sketch")
-    sketch = draft.recipe
-    context = profile_transform_context(sketch)
-    if not context.get("topology_exact"):
-        raise AuthoringContractError(
-            "profile-transform.topology-unproven: composite sketch topology "
-            "could not be proven"
-        )
-    if int(context.get("material_profile_count", 0)) != 1:
-        raise AuthoringContractError(
-            "profile-transform.unexpected-body-count: composite geometry "
-            "requires exactly one material Profile"
-        )
-    selection = resolve_extrusion_source_faces(sketch)
-    if len(selection.face_ids) != 1:
-        raise AuthoringContractError(
-            "profile-transform.unexpected-body-count: composite geometry "
-            "requires exactly one canonical source face"
-        )
-    context["design_summaries"] = list(summaries)
-    return sketch, context, selection.face_ids
 
 
 def _composite_path(value: object, *, name: str) -> WireGeometry:
@@ -4459,335 +4177,8 @@ def create_session_authoring_workflow_controller(
             raise AuthoringContractError("part_function and geometry must be non-empty")
         geometry = dict(raw_geometry)
         kind = str(geometry.get("kind", ""))
-        _require_geometry_intent_compatibility(part_function, kind)
-        recipe_name = (
-            f"Sketch-{part_function}"
-            if kind == "planar_profiles"
-            else (
-                f"Wire-{part_function}" if kind == "wire" else f"Body-{part_function}"
-            )
-        )
-        if kind == "planar_profiles":
-            if set(geometry) != {"kind", "profiles"}:
-                raise ValueError("planar geometry fields do not match")
-            raw_profiles = geometry["profiles"]
-            if not isinstance(raw_profiles, list) or not raw_profiles:
-                raise ValueError("profiles must be a non-empty array")
-            profiles = []
-            for raw_profile in raw_profiles:
-                if not isinstance(raw_profile, Mapping):
-                    raise ValueError("each profile must be an object")
-                profiles.append(dict(raw_profile))
-            profile_summaries: list[str] = []
-            first = profiles[0]
-            first_kind = str(first.pop("kind", ""))
-            _pop_profile_annotations(first)
-            if first_kind == "rectangle":
-                if set(first) != {"x", "y", "width", "height"}:
-                    raise ValueError("rectangle profile fields do not match")
-                draft = planar_sketch_geometry(
-                    recipe_name,
-                    contours=(
-                        SketchRectangle(
-                            "material",
-                            first["x"],
-                            first["y"],
-                            first["width"],
-                            first["height"],
-                        ),
-                    ),
-                )
-                profile_summaries.append(
-                    _planar_profile_design_summary(
-                        first_kind,
-                        first,
-                        1,
-                    )
-                )
-            elif first_kind == "circle":
-                if set(first) != {"center_x", "center_y", "radius"}:
-                    raise ValueError("circle profile fields do not match")
-                draft = planar_sketch_geometry(
-                    recipe_name,
-                    contours=(
-                        SketchCircle(
-                            "material",
-                            first["center_x"],
-                            first["center_y"],
-                            first["radius"],
-                        ),
-                    ),
-                )
-                profile_summaries.append(
-                    _planar_profile_design_summary(
-                        first_kind,
-                        first,
-                        1,
-                    )
-                )
-            elif first_kind == "polygon":
-                if set(first) != {"vertices"}:
-                    raise ValueError("polygon profile fields do not match")
-                vertices = _profile_vertices(first["vertices"])
-                draft = planar_polygon_geometry(
-                    recipe_name,
-                    vertices=vertices,
-                )
-                profile_summaries.append(
-                    _planar_profile_design_summary(
-                        first_kind,
-                        {"vertices": vertices},
-                        1,
-                    )
-                )
-            else:
-                raise ValueError("unsupported planar profile kind")
-            for index, profile in enumerate(profiles[1:], start=2):
-                profile_kind = str(profile.pop("kind", ""))
-                _pop_profile_annotations(profile)
-                if profile_kind == "rectangle":
-                    if set(profile) != {"x", "y", "width", "height"}:
-                        raise ValueError("rectangle profile fields do not match")
-                    draft = add_planar_rectangle(draft.recipe, **profile)
-                    profile_summaries.append(
-                        _planar_profile_design_summary(
-                            profile_kind,
-                            profile,
-                            index,
-                        )
-                    )
-                elif profile_kind == "circle":
-                    if set(profile) != {"center_x", "center_y", "radius"}:
-                        raise ValueError("circle profile fields do not match")
-                    draft = add_planar_circle(draft.recipe, **profile)
-                    profile_summaries.append(
-                        _planar_profile_design_summary(
-                            profile_kind,
-                            profile,
-                            index,
-                        )
-                    )
-                elif profile_kind == "polygon":
-                    if set(profile) != {"vertices"}:
-                        raise ValueError("polygon profile fields do not match")
-                    vertices = _profile_vertices(profile["vertices"])
-                    draft = add_planar_polygon(
-                        draft.recipe,
-                        vertices=vertices,
-                    )
-                    profile_summaries.append(
-                        _planar_profile_design_summary(
-                            profile_kind,
-                            {"vertices": vertices},
-                            index,
-                        )
-                    )
-                else:
-                    raise ValueError("unsupported planar profile kind")
-            geometry_summary = _bounded_geometry_design_summary(
-                "2D planar profiles",
-                profile_summaries,
-            )
-        elif kind == "extruded_path_slot_plate":
-            allowed = {
-                "kind",
-                "plate",
-                "slot_path",
-                "slot_width",
-                "height",
-                "provisional",
-            }
-            required = allowed - {"provisional"}
-            if set(geometry) - allowed or not required <= set(geometry):
-                raise ValueError("extruded_path_slot_plate fields do not match")
-            if "provisional" in geometry and type(geometry["provisional"]) is not bool:
-                raise TypeError("path slot provisional must be a boolean")
-            raw_plate = geometry["plate"]
-            if not isinstance(raw_plate, Mapping) or set(raw_plate) != {
-                "x",
-                "y",
-                "width",
-                "height",
-            }:
-                raise ValueError("path slot plate fields do not match")
-            raw_path = geometry["slot_path"]
-            if (
-                not isinstance(raw_path, list)
-                or not 2 <= len(raw_path) <= 32
-                or any(
-                    not isinstance(item, Mapping) or set(item) != {"x", "y"}
-                    for item in raw_path
-                )
-            ):
-                raise ValueError("slot_path must contain 2 to 32 ordered x/y objects")
-            path_points = tuple((item["x"], item["y"]) for item in raw_path)
-            slot_vertices = planar_path_slot_vertices(
-                path_points,
-                geometry["slot_width"],
-            )
-            profiles = [
-                {
-                    "kind": "rectangle",
-                    "x": raw_plate["x"],
-                    "y": raw_plate["y"],
-                    "width": raw_plate["width"],
-                    "height": raw_plate["height"],
-                    "role": "material",
-                },
-                {
-                    "kind": "polygon",
-                    "vertices": [{"x": x, "y": y} for x, y in slot_vertices],
-                    "role": "hole",
-                },
-            ]
-            sketch, profile_context, source_face_ids = _composite_profile_contours(
-                profiles,
-                recipe_name=recipe_name,
-            )
-            height = float(geometry["height"])
-            if not math.isfinite(height) or height <= 0.0:
-                raise ValueError("path slot extrusion height must be positive")
-            recipe = ExtrudedGeometry(
-                sketch,
-                height,
-                tuple(source_face_ids),
-            )
-            _run_profile_transform_preflight(
-                _preflight_composite_geometry,
-                recipe,
-            )
-            draft = geometry_draft(recipe)
-            length_unit = str(
-                controller.collected_requirements("geometry").get(
-                    "length_unit",
-                    "mm",
-                )
-            )
-            shown_path = ", ".join(
-                f"({_display_number(x)}, {_display_number(y)})"
-                for x, y in path_points[:8]
-            )
-            if len(path_points) > 8:
-                shown_path += f", …{len(path_points)} points total"
-            provisional = bool(geometry.get("provisional", False))
-            path_slot_details = [
-                _planar_profile_design_summary(
-                    "rectangle",
-                    raw_plate,
-                    1,
-                ),
-                f"Slot center path={shown_path}",
-                (f"Slot width={_display_number(geometry['slot_width'])} {length_unit}"),
-                f"Extrusion height={_display_number(height)} {length_unit}",
-                "holes=1",
-            ]
-            if provisional:
-                path_slot_details.append("Dimensions marked as provisional proposal values")
-            geometry_summary = _bounded_geometry_design_summary(
-                "3D plate with path slot",
-                path_slot_details,
-            )
-        elif kind in {"extruded_profiles", "path_swept_profile"}:
-            allowed = {
-                "kind",
-                "profiles",
-                "height",
-                "path",
-                "frame_strategy",
-                "provisional",
-            }
-            if set(geometry) - allowed:
-                raise ValueError("composite geometry fields do not match")
-            if "profiles" not in geometry:
-                raise ValueError("composite geometry requires profiles")
-            if "provisional" in geometry and type(geometry["provisional"]) is not bool:
-                raise TypeError("composite provisional must be a boolean")
-            if kind == "extruded_profiles" and (
-                "height" not in geometry
-                or "path" in geometry
-                or "frame_strategy" in geometry
-            ):
-                raise ValueError("extruded_profiles requires profiles and height")
-            if kind == "path_swept_profile" and (
-                "path" not in geometry
-                or "frame_strategy" not in geometry
-                or "height" in geometry
-            ):
-                raise ValueError(
-                    "path_swept_profile requires profiles, path, and frame_strategy"
-                )
-            raw_profiles = geometry["profiles"]
-            sketch, profile_context, source_face_ids = _composite_profile_contours(
-                raw_profiles,
-                recipe_name=recipe_name,
-            )
-            length_unit = str(
-                controller.collected_requirements("geometry").get(
-                    "length_unit",
-                    "mm",
-                )
-            )
-            if kind == "extruded_profiles":
-                height = float(geometry["height"])
-                if not math.isfinite(height) or height <= 0.0:
-                    raise ValueError("composite extrusion height must be positive")
-                recipe = ExtrudedGeometry(
-                    sketch,
-                    height,
-                    tuple(source_face_ids),
-                )
-                _run_profile_transform_preflight(
-                    _preflight_composite_geometry,
-                    recipe,
-                )
-                draft = geometry_draft(recipe)
-                transform_summary = (
-                    f"Extrusion height={_display_number(height)} {length_unit}, direction=positive XY normal"
-                )
-            else:
-                path = _composite_path(
-                    geometry["path"],
-                    name=f"SweepPath-{part_function}",
-                )
-                frame_strategy = str(geometry["frame_strategy"])
-                if frame_strategy not in {"fixed", "transport"}:
-                    raise ValueError(
-                        "path_swept_profile frame_strategy must be fixed or transport"
-                    )
-                recipe = PathSweptGeometry(
-                    sketch,
-                    path,
-                    tuple(source_face_ids),
-                    frame_strategy,
-                )
-                _run_profile_transform_preflight(
-                    _preflight_composite_geometry,
-                    recipe,
-                )
-                draft = geometry_draft(recipe)
-                transform_summary = (
-                    f"Path sweep segments={len(path.members)}, frame={frame_strategy}"
-                )
-            profile_summary = _bounded_geometry_design_summary(
-                "2D Profile",
-                [
-                    *(
-                        str(item)
-                        for item in profile_context.get("design_summaries", [])
-                    ),
-                    f"material={len(profile_context.get('profiles', []))}",
-                    f"holes={profile_context.get('hole_count', 0)}",
-                ],
-            )
-            provisional = bool(geometry.get("provisional", False))
-            provisional_summary = (
-                "; Dimensions marked as provisional proposal values" if provisional else ""
-            )
-            geometry_summary = (
-                f"{profile_summary}; 3D {kind}: {transform_summary}"
-                f"{provisional_summary}"
-            )
-        elif kind == "wire":
+        recipe_name = f"Wire-{part_function}" if kind == "wire" else f"Body-{part_function}"
+        if kind == "wire":
             if set(geometry) != {"kind", "points", "members"}:
                 raise ValueError("wire geometry fields do not match")
             raw_points = geometry["points"]
@@ -4892,32 +4283,11 @@ def create_session_authoring_workflow_controller(
             ),
             **metadata,
         )
-        legacy_composite = kind in {
-            "planar_profiles",
-            "extruded_profiles",
-            "extruded_path_slot_plate",
-            "path_swept_profile",
-        }
         return proposal_outcome(
             proposal,
             summary=proposal_summary,
             impact="Confirm to create this geometry and refresh the GUI",
             confirm_label="Add part",
-            extra_data={
-                "authoring_path": (
-                    "legacy_planar_profiles"
-                    if kind == "planar_profiles"
-                    else "legacy_geometry"
-                ),
-                **(
-                    {
-                        "compatibility_status": "deprecated",
-                        "replacement_tool": "prepare_planar_construction_proposal",
-                    }
-                    if legacy_composite
-                    else {}
-                ),
-            },
         )
 
     _PLANAR_DIAGNOSTIC_MESSAGES = {
@@ -5551,36 +4921,6 @@ def create_session_authoring_workflow_controller(
                             for face_id in selected_face_ids
                         ],
                     },
-                    "freeform_profile_policy": {
-                        "two_dimensional_cut_representation": (
-                            "native_planar_boolean_feature"
-                        ),
-                        "preferred_operation_for_constant_width_slot": (
-                            "add_path_slot"
-                        ),
-                        "constant_width_slot_operation_priority": [
-                            "add_path_slot",
-                            "planar_boolean(tool.kind=path_stroke)",
-                        ],
-                        "planar_boolean_path_stroke_role": "lower_level_equivalent",
-                        "primary_operation_for_closed_boundary_slot": (
-                            "planar_boolean(tool.kind=polygon)"
-                        ),
-                        "representation_priority": [
-                            "path_stroke_when_one_open_non_branching_centerline_"
-                            "and_constant_width_fully_define_the_slot",
-                            "polygon_for_other_single_closed_slot_boundaries",
-                            "primitive_union_only_for_genuinely_composite_geometry",
-                        ],
-                        "rectangle_decomposition_for_one_connected_slot": "avoid",
-                        "postcondition_for_one_cutout": (
-                            "append one proven cut feature to feature history"
-                        ),
-                        "existing_feature_tool_mutation": (
-                            "replace_planar_boolean_feature"
-                        ),
-                        "feature_tool_recipe_ids_are_editable": False,
-                    },
                     "planar_feature_geometry": planar_feature_geometry_catalog(
                         part.geometry_recipe
                     ),
@@ -5653,40 +4993,6 @@ def create_session_authoring_workflow_controller(
                     }
                     for item in profile_analysis.diagnostics[:16]
                 ],
-            }
-            catalog["freeform_profile_policy"] = {
-                "two_dimensional_cut_representation": "closed_inner_profile",
-                "part_boolean_required": False,
-                "preferred_operation_for_constant_width_slot": "add_path_slot",
-                "constant_width_slot_operation_priority": [
-                    "add_path_slot",
-                    "planar_boolean(tool.kind=path_stroke)",
-                ],
-                "planar_boolean_path_stroke_role": "lower_level_equivalent",
-                "preferred_operation_for_arbitrary_silhouette": "add_polygon",
-                "primary_operation_for_closed_boundary_slot": "add_polygon",
-                "representation_priority": [
-                    "add_path_slot_when_one_open_non_branching_centerline_"
-                    "and_constant_width_fully_define_the_slot",
-                    "add_polygon_for_other_single_closed_slot_boundaries",
-                    "ordered_lines_and_arcs_when_exact_curves_are_required",
-                ],
-                "rectangle_decomposition_for_one_connected_slot": "avoid",
-                "alternate_operation": "one_batch_of_ordered_lines_and_arcs",
-                "required_invariants": [
-                    "closed",
-                    "non_self_intersecting",
-                    "contained_by_material_profile",
-                ],
-                "forbidden_intermediate_geometry": [
-                    "open_centerline_as_standalone_geometry",
-                    "placeholder_unrelated_to_final_contour",
-                    "disconnected_rectangles_for_one_shaped_slot",
-                ],
-                "postcondition_for_one_cutout": (
-                    "material_profile_count is unchanged and hole_count increases by 1"
-                ),
-                "path_slot_postcondition_enforced_locally": True,
             }
         if part.dimension == 3:
             if type(part.geometry_recipe) is MultiBodyGeometry:
@@ -7139,7 +6445,7 @@ def create_session_authoring_workflow_controller(
             and tool.get("kind") == "path_stroke"
         )
 
-        def path_slot_retry_outcome(
+        def path_slot_validation_outcome(
             *,
             code: str,
             reason: str,
@@ -7162,32 +6468,8 @@ def create_session_authoring_workflow_controller(
                     "first_equals_last",
                     bool(raw_points) and raw_points[0] == raw_points[-1],
                 )
-            preferred_operation = (
-                "replace_planar_boolean_feature"
-                if operation == "replace_planar_boolean_feature"
-                else "add_path_slot"
-            )
-            remediation = {
-                "action": "retry_same_path_slot_with_revised_centerline",
-                "preserve_representation": True,
-                "preferred_operation": preferred_operation,
-                "lower_level_equivalent": "planar_boolean(tool.kind=path_stroke)",
-                "points_role": "centerline",
-                "required_topology": "open",
-                "non_branching": True,
-                "first_equals_last": bool(
-                    bounded_evidence.get("first_equals_last", False)
-                ),
-                "trace_slot_boundary": False,
-                "polygon_fallback_only_when": [
-                    "centerline_has_junction",
-                    "width_varies",
-                ],
-                "read_context_again": False,
-            }
             return AuthoringToolOutcome(
-                "Path-slot validation rejected the centerline; revise the same "
-                "path-slot representation and retry before presenting a proposal.",
+                "Path-slot validation rejected the centerline.",
                 {
                     "error": {
                         "code": code,
@@ -7199,9 +6481,7 @@ def create_session_authoring_workflow_controller(
                         "allowed_operations": list(
                             controller.geometry_edit_supported_operations
                         ),
-                        "remediation": remediation,
                     },
-                    "required_action": remediation["action"],
                 },
                 ok=False,
             )
@@ -7210,20 +6490,9 @@ def create_session_authoring_workflow_controller(
             return prepare_geometry_edit(arguments, controller)
         except PlanarEditValidationError as error:
             data = error.to_provider_dict()
-            data["retry_guidance"] = {
-                "action": "revise_and_retry_same_geometry_edit",
-                "present_confirmation": False,
-                "ask_user_for_geometry_repair": False,
-                "requirements": [
-                    "trace the complete boundary in order",
-                    "close every intended Profile",
-                    "remove crossings, overlaps, and T-junctions",
-                    "keep cutout Profiles inside a material Profile",
-                ],
-            }
             first = error.diagnostics[0]
             code = str(first["code"])
-            path_slot_outcome = path_slot_retry_outcome(
+            path_slot_outcome = path_slot_validation_outcome(
                 code=code,
                 reason=str(first["message"]),
                 error_type=type(error).__name__,
@@ -7235,7 +6504,7 @@ def create_session_authoring_workflow_controller(
             location = f" ({affected})" if affected else ""
             return AuthoringToolOutcome(
                 "Exact planar Profile validation rejected the edit: "
-                f"{code}{location}. Revise the contour before presenting a proposal.",
+                f"{code}{location}.",
                 data,
                 ok=False,
             )
@@ -7247,7 +6516,7 @@ def create_session_authoring_workflow_controller(
                 if isinstance(raw_evidence, (Mapping, tuple, list))
                 else {}
             )
-            path_slot_outcome = path_slot_retry_outcome(
+            path_slot_outcome = path_slot_validation_outcome(
                 code=diagnostic.code,
                 reason=diagnostic.message,
                 error_type=type(error).__name__,
@@ -7256,8 +6525,7 @@ def create_session_authoring_workflow_controller(
             if path_slot_outcome is not None:
                 return path_slot_outcome
             return AuthoringToolOutcome(
-                "Geometry edit execution was rejected; revise the operation using "
-                "the structured planar validation details.",
+                "Planar validation rejected the geometry edit.",
                 {
                     "error": {
                         "code": diagnostic.code,
@@ -7268,10 +6536,6 @@ def create_session_authoring_workflow_controller(
                         "allowed_operations": list(
                             controller.geometry_edit_supported_operations
                         ),
-                        "remediation": {
-                            "action": "revise_same_geometry_edit",
-                            "read_context_again": False,
-                        },
                     }
                 },
                 ok=False,
@@ -7283,8 +6547,7 @@ def create_session_authoring_workflow_controller(
                 operation = str(edit.get("operation", ""))
             reason = str(error).strip()[:1_000]
             return AuthoringToolOutcome(
-                "Planar Boolean validation rejected the geometry edit; use the "
-                "returned reason and allowed operations before retrying.",
+                "Planar Boolean validation rejected the geometry edit.",
                 {
                     "error": {
                         "code": "geometry-edit.planar-boolean-lineage",
@@ -7293,16 +6556,6 @@ def create_session_authoring_workflow_controller(
                         "allowed_operations": list(
                             controller.geometry_edit_supported_operations
                         ),
-                        "remediation": {
-                            "action": (
-                                "replace_existing_feature_or_revise_boolean_tool"
-                            ),
-                            "replacement_operation": (
-                                "replace_planar_boolean_feature"
-                            ),
-                            "append_requires_material_change": True,
-                            "read_context_again": False,
-                        },
                     }
                 },
                 ok=False,
@@ -7314,8 +6567,7 @@ def create_session_authoring_workflow_controller(
                 operation = str(edit.get("operation", ""))
             reason = str(error).strip()[:1_000]
             return AuthoringToolOutcome(
-                "Geometry edit execution was rejected; revise the operation using "
-                "the structured error details.",
+                "Geometry edit execution was rejected.",
                 {
                     "error": {
                         "code": "geometry-edit.execution-rejected",
@@ -7325,55 +6577,10 @@ def create_session_authoring_workflow_controller(
                         "allowed_operations": list(
                             controller.geometry_edit_supported_operations
                         ),
-                        "remediation": {
-                            "action": "use_allowed_operation_and_valid_ids",
-                            "read_context_again": False,
-                        },
                     }
                 },
                 ok=False,
             )
-
-    def prepare_geometry_with_diagnostics(
-        arguments: Mapping[str, object],
-        controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
-        """Keep composite Profile failures on the same typed boundary."""
-
-        geometry = arguments.get("geometry")
-        kind = str(geometry.get("kind", "")) if isinstance(geometry, Mapping) else ""
-        try:
-            return prepare_geometry(arguments, controller)
-        except _GeometryIntentMismatchError as error:
-            message = str(error)
-            return AuthoringToolOutcome(
-                message,
-                {
-                    "diagnostic": {
-                        "code": "geometry.intent-dimension-mismatch",
-                        "message": message,
-                        "retryable": True,
-                        "submitted_kind": error.submitted_kind,
-                        "expected_kinds": list(error.expected_kinds),
-                    }
-                },
-                ok=False,
-            )
-        except (AuthoringContractError, TypeError, ValueError) as error:
-            if kind in {
-                "extruded_profiles",
-                "extruded_path_slot_plate",
-            }:
-                return _profile_transform_error(error, operation="Composite Profile extrusion")
-            if kind == "path_swept_profile":
-                return _profile_transform_error(
-                    error,
-                    operation="Composite path sweep",
-                    first_failed_member=_first_failed_path_member(
-                        geometry.get("path") if isinstance(geometry, Mapping) else None
-                    ),
-                )
-            raise
 
     def mesh_refinement_entities():
         snapshot = current_session().snapshot()
@@ -7858,9 +7065,6 @@ def create_session_authoring_workflow_controller(
                 "target_session_id": context.binding.session_id,
                 "model_revision": context.binding.session_revision,
                 "preserved_existing_documents": True,
-                "next_action": (
-                    "read_authoring_context_then_prepare_requested_geometry"
-                ),
             },
         )
 
@@ -8197,7 +7401,7 @@ def create_session_authoring_workflow_controller(
     controller = AuthoringWorkflowController(
         current_context,
         {
-            "prepare_geometry_proposal": prepare_geometry_with_diagnostics,
+            "prepare_geometry_proposal": prepare_geometry,
             "prepare_planar_construction_proposal": prepare_planar_construction,
             "read_profile_transform_context": read_profile_transform_context,
             "prepare_profile_extrusion": prepare_profile_extrusion,

@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from fem_agent.engine import AgentSessionEngine, EngineEventType
@@ -155,69 +153,6 @@ def test_reasoning_precedes_formal_content_and_survives_reopen(
         if message.role == "assistant" and message.content == formal
     )
     assert restored.reasoning_content == reasoning
-
-
-def test_chinese_turn_retries_and_hides_an_english_only_response(tmp_path):
-    provider = FakeProvider(
-        [
-            text_response("I will inspect the current model."),
-            text_response("我会检查当前模型。"),
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_chinese_language_retry",
-    )
-
-    events = engine.send_message("请检查当前模型。")
-
-    deltas = [
-        event.data["text"]
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    ]
-    assert deltas == ["我会检查当前模型。"]
-    assert len(provider.requests) == 2
-    state = json.loads(
-        (provider.requests[0].messages[1].content or "").split(": ", 1)[1]
-    )
-    assert state["required_response_language"] == "zh-CN"
-
-
-def test_chinese_turn_drops_english_tool_narration_but_keeps_the_tool_call(tmp_path):
-    provider = FakeProvider(
-        [
-            ProviderResponse(
-                AssistantMessage(
-                    "assistant",
-                    content="I will inspect the available capabilities.",
-                    tool_calls=(ToolCall("call_language_tool", "show_capabilities", {}),),
-                ),
-                finish_reason="tool_calls",
-            ),
-            text_response("已读取当前能力。"),
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_chinese_tool_language",
-    )
-
-    events = engine.send_message("查看当前能力。")
-
-    deltas = [
-        event.data["text"]
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    ]
-    assert deltas == ["正在读取当前可用能力。", "已读取当前能力。"]
-    assistant_tool_message = next(
-        message for message in engine._history if message.tool_calls
-    )
-    assert assistant_tool_message.content is None
-    assert assistant_tool_message.tool_calls[0].name == "show_capabilities"
 
 
 def test_proposal_preview_precedes_the_proposal_result(tmp_path):

@@ -5,7 +5,6 @@ from fem_agent.providers.fake import FakeProvider
 from fem_agent.schemas import ToolResult
 
 from tests.helpers.agent_engine_registry_fixtures import (
-    _GeometryEditToolRegistry,
     _GeometryEditWithCatalogToolRegistry,
 )
 from tests.helpers.agent_provider_fixtures import tool_response, text_response
@@ -150,106 +149,6 @@ def test_planar_retry_limit_stops_provider_after_three_failed_calls(tmp_path):
     assert len(provider.requests) == 3
 
 
-def test_planar_edit_cannot_claim_submission_without_a_proposal_tool_call(tmp_path):
-    provider = FakeProvider(
-        [
-            text_response("我现在提交修订方案。"),
-            tool_response(
-                ToolCall("read-edit", "read_geometry_edit_context", {})
-            ),
-            text_response("提交。"),
-            tool_response(
-                ToolCall(
-                    "prepare-edit",
-                    "prepare_geometry_edit",
-                    {
-                        "part_id": "P1",
-                        "edit": {
-                            "operation": "add_path_slot",
-                            "points": [{"x": 0, "y": 0}, {"x": 1, "y": 0}],
-                            "width": 0.1,
-                            "cap": "square",
-                            "join": "miter",
-                        },
-                    },
-                )
-            ),
-        ]
-    )
-    tools = _GeometryEditToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_planar_edit_progress",
-        dynamic_tools=tools,
-    )
-
-    events = engine.send_message("当然，切除出S形状的槽即可")
-
-    assert len(provider.requests) == 4
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
-    ]
-    assert any(
-        event.event is EngineEventType.TOOL_COMPLETED
-        and event.data["tool"] == "prepare_geometry_edit"
-        and event.data["result"]["data"]["state"] == "pending_confirmation"
-        for event in events
-    )
-
-
-def test_geometry_proposal_requires_current_edit_context(tmp_path):
-    edit = {
-        "part_id": "P1",
-        "edit": {
-            "operation": "add_rectangle",
-            "x": 20,
-            "y": 20,
-            "width": 10,
-            "height": 10,
-        },
-    }
-    provider = FakeProvider(
-        [
-            tool_response(
-                ToolCall("premature-prepare", "prepare_geometry_edit", edit)
-            ),
-            tool_response(
-                ToolCall(
-                    "read-edit",
-                    "read_geometry_edit_context",
-                    {"part_id": "P1"},
-                )
-            ),
-            tool_response(
-                ToolCall("prepared", "prepare_geometry_edit", edit)
-            ),
-        ]
-    )
-    tools = _GeometryEditWithCatalogToolRegistry()
-    engine = AgentSessionEngine(
-        tmp_path / "workspace",
-        provider,
-        session_id="ses_planar_edit_premature_prepare",
-        dynamic_tools=tools,
-    )
-
-    events = engine.send_message("在现有平板上增加一个矩形槽")
-
-    assert [name for name, _arguments in tools.calls] == [
-        "read_geometry_edit_context",
-        "prepare_geometry_edit",
-    ]
-    completed = [
-        event.data
-        for event in events
-        if event.event is EngineEventType.TOOL_COMPLETED
-    ]
-    assert all(item["call_id"] != "premature-prepare" for item in completed)
-    assert completed[-1]["result"]["data"]["state"] == "pending_confirmation"
-
-
 def test_planar_edit_allows_clarification_after_context_read(tmp_path):
     provider = FakeProvider(
         [
@@ -306,15 +205,12 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
     }
     provider = FakeProvider(
         [
-            text_response("我先按旧版本说明。"),
             tool_response(
                 ToolCall("sync", "read_authoring_context", {})
             ),
-            text_response("修正轮廓如下。"),
             tool_response(
                 ToolCall("read-edit", "read_geometry_edit_context", {})
             ),
-            text_response("方案已确认，等待本地操作执行完成。"),
             tool_response(
                 ToolCall("prepare-edit", "prepare_geometry_edit", corrected_edit)
             ),
@@ -336,12 +232,6 @@ def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):
         "prepare_geometry_edit",
     ]
     assert tools.calls[-1][1] == corrected_edit
-    assert not any(
-        "旧版本" in str(event.data.get("text", ""))
-        or "等待本地操作执行完成" in str(event.data.get("text", ""))
-        for event in events
-        if event.event is EngineEventType.MESSAGE_DELTA
-    )
     assert any(
         event.event is EngineEventType.TOOL_COMPLETED
         and event.data["tool"] == "prepare_geometry_edit"

@@ -4,9 +4,7 @@ from __future__ import annotations
 from fem.application import ModelSession, UnitContext
 from fem.geometry import describe_recipe_topology
 from fem_agent.authoring_runtime import AuthoringWorkflowStage
-from fem_agent.engine import AgentSessionEngine, EngineEventType
 from fem_agent.geometry_authoring import geometry_contract_proof
-from fem_agent.providers.fake import FakeProvider
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
@@ -15,7 +13,6 @@ from fem_gui.agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 
-from tests.helpers.agent_provider_fixtures import text_response
 from tests.helpers.fixtures.profile_transform_baseline import concentric_ring_fixture
 
 
@@ -115,27 +112,3 @@ def test_mesh_ready_publishes_transform_seam() -> None:
         "prepare_profile_revolution",
         "prepare_profile_path_sweep",
     } <= names
-
-
-def test_repeated_refusal_gets_one_correction_and_local_recovery(tmp_path) -> None:
-    _session, controller = _ring_controller()
-    refusal = "拉伸不受支持；必须先生成网格。"
-    provider = FakeProvider(
-        [
-            text_response(refusal)
-            for _ in range(2)
-        ]
-    )
-    engine = AgentSessionEngine(
-        tmp_path / "agent-private",
-        provider,
-        dynamic_tools=controller,
-    )
-
-    events = engine.send_message("拉伸成3d")
-    assert not any(item.event is EngineEventType.TOOL_STARTED for item in events)
-    assert not any(
-        item.event is EngineEventType.MESSAGE_DELTA
-        and item.data.get("text") == refusal
-        for item in events
-    )

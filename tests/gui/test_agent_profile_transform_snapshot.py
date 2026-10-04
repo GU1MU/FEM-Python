@@ -420,7 +420,6 @@ def test_engine_context_and_audit_are_round_scoped_and_safe(tmp_path) -> None:
         "revision",
         "published_tool_names",
         "schema_hashes",
-        "route_hint",
         "tool_call_flags",
     }
     assert entry["tool_call_flags"] == {

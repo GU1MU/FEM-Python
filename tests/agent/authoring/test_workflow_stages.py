@@ -57,7 +57,6 @@ def test_geometry_uses_one_operation_confirmation_without_requirement_review() -
     )
     assert recorded.ok
     assert recorded.data["operation_confirmation_required"] is True
-    assert recorded.data["next_action"] == "prepare_stage_proposal"
     names = {item.name for item in controller.definitions}
     assert "prepare_geometry_proposal" in names
     assert "set_authoring_requirements" in names

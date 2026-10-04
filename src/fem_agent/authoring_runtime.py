@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-import copy
 import hashlib
 import json
 import math
@@ -692,32 +691,13 @@ def _result_tool_definition(schema: Mapping[str, object]) -> ToolDefinition:
     )
 
 
-_PATH_STROKE_OBJECT_POINT_EXAMPLES = (
-    'Centerline point examples: straight '
-    '[{"x":10,"y":10},{"x":40,"y":10}]; multiple bends '
-    '[{"x":10,"y":10},{"x":10,"y":30},{"x":35,"y":30},'
-    '{"x":35,"y":50}]. Points describe the centerline itself, not either '
-    "offset boundary. The first and last points must differ; never append the "
-    "first point to close the path."
+_PATH_STROKE_OBJECT_POINT_DESCRIPTION = (
+    'Ordered open centerline points as {"x": number, "y": number} objects. '
+    "Multiple bends are supported; the first and last points differ."
 )
-_PATH_STROKE_ARRAY_POINT_EXAMPLES = (
-    "Centerline point examples: straight [[10,10],[40,10]]; multiple bends "
-    "[[10,10],[10,30],[35,30],[35,50]]. Points describe the centerline "
-    "itself, not either offset boundary. The first and last points must differ; "
-    "never append the first point to close the path."
-)
-_MULTIPLE_PATH_STROKE_NODE_EXAMPLE = (
-    'Complete node example for two independent slots: [{"id":"plate",'
-    '"kind":"rectangle","x":0,"y":0,"width":80,"height":60},'
-    '{"id":"slot_a","kind":"path_stroke","points":[[10,15],[30,15]],'
-    '"width":4,"cap":"round","join":"round"},{"id":"cut_a",'
-    '"kind":"difference","base":"plate","subtract":["slot_a"]},'
-    '{"id":"slot_b","kind":"path_stroke","points":'
-    '[[45,15],[45,35],[65,35]],"width":4,"cap":"butt",'
-    '"join":"miter"},{"id":"result","kind":"difference",'
-    '"base":"cut_a","subtract":["slot_b"]}]. Keep independent slots in '
-    "separate path_stroke and difference nodes; never concatenate disconnected "
-    "centerlines into one points array."
+_PATH_STROKE_ARRAY_POINT_DESCRIPTION = (
+    "Ordered open centerline points as [x, y] pairs. Multiple bends are "
+    "supported; the first and last points differ."
 )
 
 
@@ -732,9 +712,8 @@ _SET_REQUIREMENTS = _tool(
         "Record current-stage engineering values explicitly supplied by the "
         "user. Blank projects already provide mm-N-MPa geometry defaults; "
         "this tool overrides them only when the user requests other units. "
-        "Once every current-stage value is recorded, call the stage's "
-        "published prepare tool in this same turn to present the operation "
-        "confirmation card; that card never appears without the call."
+        "Complete geometry or mesh requirements enable the corresponding "
+        "operation confirmation proposal."
     ),
     {
         "type": "object",
@@ -761,88 +740,6 @@ _REQUEST_REVIEW = _tool(
     _NO_ARGUMENTS,
 )
 
-# Blank-project composite geometry uses the same bounded profile vocabulary as
-# the existing planar proposal, then wraps that strict XY sketch in one native
-# 3D recipe.  ``role``/``operation`` are optional annotations: topology
-# containment remains the authority for deciding whether a contour is a hole.
-_COMPOSITE_PROFILE_ITEM_SCHEMA = {
-    "oneOf": [
-        {
-            "type": "object",
-            "properties": {
-                "kind": {"const": "rectangle"},
-                "x": {"type": "number"},
-                "y": {"type": "number"},
-                "width": {"type": "number", "exclusiveMinimum": 0},
-                "height": {"type": "number", "exclusiveMinimum": 0},
-                "role": {"type": "string", "enum": ["material", "hole"]},
-                "operation": {
-                    "type": "string",
-                    "enum": ["material", "cut"],
-                },
-            },
-            "required": ["kind", "x", "y", "width", "height"],
-            "additionalProperties": False,
-        },
-        {
-            "type": "object",
-            "properties": {
-                "kind": {"const": "circle"},
-                "center_x": {"type": "number"},
-                "center_y": {"type": "number"},
-                "radius": {"type": "number", "exclusiveMinimum": 0},
-                "role": {"type": "string", "enum": ["material", "hole"]},
-                "operation": {
-                    "type": "string",
-                    "enum": ["material", "cut"],
-                },
-            },
-            "required": ["kind", "center_x", "center_y", "radius"],
-            "additionalProperties": False,
-        },
-        {
-            "type": "object",
-            "properties": {
-                "kind": {"const": "polygon"},
-                "vertices": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 64,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "number"},
-                            "y": {"type": "number"},
-                        },
-                        "required": ["x", "y"],
-                        "additionalProperties": False,
-                    },
-                },
-                "role": {"type": "string", "enum": ["material", "hole"]},
-                "operation": {
-                    "type": "string",
-                    "enum": ["material", "cut"],
-                },
-            },
-            "required": ["kind", "vertices"],
-            "additionalProperties": False,
-        },
-    ]
-}
-_COMPOSITE_PROFILE_ARRAY_SCHEMA = {
-    "type": "array",
-    "minItems": 1,
-    "maxItems": 32,
-    "description": (
-        "Closed boundaries of the final Part. The first planar boundary is "
-        "the outer material profile; contained boundaries are cuts. Encode a "
-        "non-convex cutout or any cutout whose centerline would branch as one "
-        "ordered, closed, non-self-intersecting polygon with role=hole and "
-        "operation=cut. Do not replace the requested boundary with a bounding "
-        "rectangle plus a material island."
-    ),
-    "items": _COMPOSITE_PROFILE_ITEM_SCHEMA,
-}
 _COMPOSITE_PATH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -884,13 +781,10 @@ _COMPOSITE_PATH_SCHEMA = {
 _PREPARE_GEOMETRY = _tool(
     "prepare_geometry_proposal",
     (
-        "Build and present a revision-bound geometry proposal from general "
-        "planar profiles, a constant-width path slot cut through a plate, a "
-        "named spatial wire, or a supported solid primitive. Use wire only for "
-        "a final 1D beam, truss, or frame Part; never use it as a centerline "
-        "placeholder for a planar or solid Part. Record the project "
-        "unit context first. The geometry is not added until the local GUI "
-        "control is clicked."
+        "Prepare a revision-bound geometry proposal for a named spatial wire "
+        "or a simple solid primitive. Planar regions and planar-derived 3D "
+        "outputs use prepare_planar_construction_proposal. Applying the "
+        "proposal requires local GUI confirmation."
     ),
     {
         "type": "object",
@@ -960,15 +854,6 @@ _PREPARE_GEOMETRY = _tool(
                     {
                         "type": "object",
                         "properties": {
-                            "kind": {"const": "planar_profiles"},
-                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
-                        },
-                        "required": ["kind", "profiles"],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
                             "kind": {"const": "box"},
                             "width": {
                                 "type": "number",
@@ -1002,99 +887,6 @@ _PREPARE_GEOMETRY = _tool(
                         "required": ["kind", "radius", "height"],
                         "additionalProperties": False,
                     },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"const": "extruded_profiles"},
-                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
-                            "height": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                            "provisional": {"type": "boolean"},
-                        },
-                        "required": ["kind", "profiles", "height"],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"const": "extruded_path_slot_plate"},
-                            "plate": {
-                                "type": "object",
-                                "properties": {
-                                    "x": {"type": "number"},
-                                    "y": {"type": "number"},
-                                    "width": {
-                                        "type": "number",
-                                        "exclusiveMinimum": 0,
-                                    },
-                                    "height": {
-                                        "type": "number",
-                                        "exclusiveMinimum": 0,
-                                    },
-                                },
-                                "required": ["x", "y", "width", "height"],
-                                "additionalProperties": False,
-                            },
-                            "slot_path": {
-                                "type": "array",
-                                "minItems": 2,
-                                "maxItems": 32,
-                                "description": (
-                                    "Ordered open XY centerline for a slot fully "
-                                    "defined by one non-branching path and one "
-                                    "constant width. This is a cutout, not a wire Part."
-                                ),
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "x": {"type": "number"},
-                                        "y": {"type": "number"},
-                                    },
-                                    "required": ["x", "y"],
-                                    "additionalProperties": False,
-                                },
-                            },
-                            "slot_width": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                            "height": {
-                                "type": "number",
-                                "exclusiveMinimum": 0,
-                            },
-                            "provisional": {"type": "boolean"},
-                        },
-                        "required": [
-                            "kind",
-                            "plate",
-                            "slot_path",
-                            "slot_width",
-                            "height",
-                        ],
-                        "additionalProperties": False,
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"const": "path_swept_profile"},
-                            "profiles": _COMPOSITE_PROFILE_ARRAY_SCHEMA,
-                            "path": _COMPOSITE_PATH_SCHEMA,
-                            "frame_strategy": {
-                                "type": "string",
-                                "enum": ["fixed", "transport"],
-                            },
-                            "provisional": {"type": "boolean"},
-                        },
-                        "required": [
-                            "kind",
-                            "profiles",
-                            "path",
-                            "frame_strategy",
-                        ],
-                        "additionalProperties": False,
-                    },
                 ]
             },
         },
@@ -1103,52 +895,11 @@ _PREPARE_GEOMETRY = _tool(
     },
 )
 
-# Keep the legacy composite decoder callable for one migration cycle while the
-# provider sees one planar-construction path.  The remaining general branches
-# are deliberately disjoint from Planar Construction IR.  Deep-copy the schema
-# so later edits to the live tool definition cannot mutate the frozen snapshot.
-_LEGACY_PREPARE_GEOMETRY = ToolDefinition(
-    _PREPARE_GEOMETRY.name,
-    _PREPARE_GEOMETRY.description,
-    copy.deepcopy(dict(_PREPARE_GEOMETRY.parameters)),
-)
-_LEGACY_COMPOSITE_GEOMETRY_KINDS = frozenset(
-    {
-        "planar_profiles",
-        "extruded_profiles",
-        "extruded_path_slot_plate",
-        "path_swept_profile",
-    }
-)
-_prepare_geometry_parameters = dict(_PREPARE_GEOMETRY.parameters)
-_prepare_geometry_properties = dict(_prepare_geometry_parameters["properties"])
-_provider_geometry_schema = dict(_prepare_geometry_properties["geometry"])
-_provider_geometry_schema["oneOf"] = [
-    branch
-    for branch in _provider_geometry_schema["oneOf"]
-    if branch.get("properties", {}).get("kind", {}).get("const")
-    not in _LEGACY_COMPOSITE_GEOMETRY_KINDS
-]
-_prepare_geometry_properties["geometry"] = _provider_geometry_schema
-_prepare_geometry_parameters["properties"] = _prepare_geometry_properties
-_PREPARE_GEOMETRY = ToolDefinition(
-    _PREPARE_GEOMETRY.name,
-    (
-        "Prepare one revision-bound general geometry proposal for a named "
-        "spatial wire or a supported simple solid primitive. Planar regions "
-        "and any planar-derived 3D output use "
-        "prepare_planar_construction_proposal. The model changes only after "
-        "the local GUI control is clicked."
-    ),
-    _prepare_geometry_parameters,
-)
 _READ_GEOMETRY_EDIT_CONTEXT = _tool(
     "read_geometry_edit_context",
     (
-        "Read a bounded editable projection of one existing native Part. "
-        "Use this before changing an accepted geometry and again after success. "
-        "For planar sketches it returns exact Profile/hole counts and the generic "
-        "freeform closed-contour policy."
+        "Read the current editable native Part, supported operations, geometry "
+        "IDs, and exact Profile/hole counts for planar sketches."
     ),
     {
         "type": "object",
@@ -1323,12 +1074,9 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                             },
                             "tool": {
                                 "description": (
-                                    "Low-level cut/fuse profile. For a new constant-"
-                                    "width slot, prefer edit.operation=add_path_slot "
-                                    "when that operation is available. This "
-                                    "planar_boolean tool may use path_stroke as the "
-                                    "equivalent open non-branching centerline form, "
-                                    "or polygon for one connected closed boundary."
+                                    "Cut/fuse profile as a primitive region, "
+                                    "closed polygon boundary, or open non- "
+                                    "branching constant-width path_stroke."
                                 ),
                                 "oneOf": [
                                     {
@@ -1383,12 +1131,9 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                                 "minItems": 3,
                                                 "maxItems": 64,
                                                 "description": (
-                                                    "Primary boundary for one "
-                                                    "connected slot or cutout. "
-                                                    "List the closed perimeter "
-                                                    "once in order; concave "
-                                                    "boundaries are valid. Avoid "
-                                                    "rectangle decomposition."
+                                                    "Ordered vertices of one closed "
+                                                    "perimeter. Concave boundaries "
+                                                    "are valid."
                                                 ),
                                                 "items": {
                                                     "type": "object",
@@ -1413,12 +1158,9 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                                 "minItems": 2,
                                                 "maxItems": 64,
                                                 "description": (
-                                                    "Preferred compact centerline "
-                                                    "for one connected constant-"
-                                                    "width slot. Multiple bends "
-                                                    "are supported; the path must "
-                                                    "remain open and non-branching. "
-                                                    + _PATH_STROKE_OBJECT_POINT_EXAMPLES
+                                                    "Open non-branching centerline "
+                                                    "for one constant-width slot. "
+                                                    + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
                                                 ),
                                                 "items": {
                                                     "type": "object",
@@ -1584,12 +1326,9 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "minItems": 3,
                                 "maxItems": 64,
                                 "description": (
-                                    "Primary closed-boundary method for one "
-                                    "connected slot or cutout. List one ordered, "
-                                    "non-self-intersecting perimeter; the last "
-                                    "vertex closes back to the first and concave "
-                                    "boundaries are valid. Prefer this over "
-                                    "decomposing one shaped slot into rectangles."
+                                    "Ordered non-self-intersecting perimeter. The "
+                                    "closing edge is implicit; concave boundaries "
+                                    "are valid."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -1614,13 +1353,10 @@ _PREPARE_GEOMETRY_EDIT = _tool(
                                 "minItems": 2,
                                 "maxItems": 64,
                                 "description": (
-                                    "Preferred compact representation for one "
-                                    "connected constant-width slot: submit its "
-                                    "ordered open, non-branching centerline, which "
-                                    "may contain multiple bends. The compiler "
-                                    "generates the offset boundary; for a junction "
-                                    "or varying width, use add_polygon. "
-                                    + _PATH_STROKE_OBJECT_POINT_EXAMPLES
+                                    "Open non-branching centerline for one "
+                                    "constant-width slot; the compiler generates "
+                                    "its offset boundary. "
+                                    + _PATH_STROKE_OBJECT_POINT_DESCRIPTION
                                 ),
                                 "items": {
                                     "type": "object",
@@ -2098,28 +1834,14 @@ _legacy_geometry_edit_parameters["properties"] = {
 _PREPARE_GEOMETRY_EDIT = ToolDefinition(
     _PREPARE_GEOMETRY_EDIT.name,
     (
-        "Prepare a revision-bound edit of an existing native Part. Profile "
-        "transforms use the dedicated prepare_profile_* tools; this compatibility "
-        "tool retains sketch, rigid, and exact Boolean edits. Follow only the "
-        "operations in the latest read_geometry_edit_context result and in this "
-        "turn's narrowed schema. Feature tool recipes are read-only snapshots; "
-        "replace a prior planar Boolean tool with replace_planar_boolean_feature. "
-        "A planar cutout in a strict sketch is "
-        "one contained closed inner Profile, so it does not require Part Boolean. "
-        "Use add_path_slot as the preferred geometry-edit entry and compact form "
-        "when one ordered open, "
-        "non-branching centerline, including multiple bends, and one constant "
-        "width fully define the slot. Treat planar_boolean(tool.kind=path_stroke) "
-        "as its lower-level equivalent and use it only when add_path_slot is not "
-        "available. Use one complete closed add_polygon boundary "
-        "as the primary method for other connected slot silhouettes; avoid "
-        "decomposing them into rectangles. Use one complete line/arc batch when "
-        "exact curved boundaries require it. Invalid Profiles return exact topology diagnostics "
-        "and must be revised before presenting a confirmation. When the user "
-        "specifies an exact clearance from an existing planar Boolean feature, "
-        "include optional spatial_relation with that feature_id, direction, and "
-        "clearance; "
-        "the local preflight rejects a mismatched proposal."
+        "Prepare a revision-bound native Part edit using the current geometry IDs "
+        "and narrowed operation schema. Dedicated prepare_profile_* tools handle "
+        "Profile transforms. Feature tool recipes are read-only snapshots; "
+        "replace_planar_boolean_feature replaces their boundary. A planar cutout "
+        "in a strict sketch is a contained closed inner Profile. Invalid geometry "
+        "returns topology diagnostics. Optional spatial_relation specifies a "
+        "reference feature_id, direction, and exact clearance checked by local "
+        "preflight."
     ),
     _legacy_geometry_edit_parameters,
 )
@@ -3156,16 +2878,6 @@ def _planar_construction_context_capability() -> dict[str, object]:
                 "circular_pattern",
             ],
         },
-        "slot_representation_policy": {
-            "closed_boundary_default": "polygon",
-            "centerline_compact_form": "path_stroke",
-            "path_stroke_condition": (
-                "one_open_non_branching_polyline_and_one_constant_width"
-            ),
-            "multiple_bends_supported": True,
-            "primitive_union_role": "fallback_for_genuinely_composite_geometry",
-            "rectangle_decomposition_for_one_connected_slot": "avoid",
-        },
         "budgets": {
             "max_node_count": MAX_NODES,
             "max_boolean_operands": MAX_BOOLEAN_OPERANDS,
@@ -3244,11 +2956,9 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
                 "minItems": 3,
                 "maxItems": MAX_POLYGON_VERTICES,
                 "description": (
-                    "Default closed-boundary representation for one connected "
-                    "slot or cutout. List the perimeter vertices once in order; "
-                    "the closing edge is implicit, concave boundaries are valid, "
-                    "and the first vertex must not be repeated at the end. Prefer "
-                    "this over decomposing one shaped slot into rectangles."
+                    "Ordered perimeter vertices with an implicit closing edge. "
+                    "Concave boundaries are valid; the first vertex is not "
+                    "repeated at the end."
                 ),
                 "items": _PLANAR_POINT_SCHEMA,
             }
@@ -3264,12 +2974,10 @@ _PLANAR_CONSTRUCTION_NODE_SCHEMAS = (
                 "maxItems": MAX_PATH_POINTS,
                 "items": _PLANAR_POINT_SCHEMA,
                 "description": (
-                    "Preferred compact representation when one ordered, open, "
-                    "non-branching centerline and one constant width fully define "
-                    "the slot. The centerline may contain multiple bends; the "
-                    "compiler generates the closed offset boundary using cap and "
-                    "join. For a junction or varying width, use one polygon. "
-                    + _PATH_STROKE_ARRAY_POINT_EXAMPLES
+                    "Open non-branching centerline for one constant-width slot. "
+                    "The compiler generates the offset boundary using cap and "
+                    "join. "
+                    + _PATH_STROKE_ARRAY_POINT_DESCRIPTION
                 ),
             },
             "width": {
@@ -3502,27 +3210,12 @@ _PLANAR_CONSTRUCTION_OUTPUT_SCHEMA = {
 _PREPARE_PLANAR_CONSTRUCTION = _tool(
     "prepare_planar_construction_proposal",
     (
-        "Compile one bounded declarative Planar Construction IR v1 graph on "
-        "the global XY plane, prove its exact Profiles and materialized strict "
-        "sketch locally, then present one revision-bound planar or derived 3D "
-        "Part proposal. "
-        "Use polygon as the default closed-boundary representation for one "
-        "connected slot or cutout, including concave boundaries, and avoid "
-        "decomposing one shaped slot into rectangles. Use path_stroke as the "
-        "preferred compact form when one open non-branching polyline, which may "
-        "contain multiple bends, and one constant width fully define the slot; "
-        "cap and join control the generated boundary. Primitive unions remain a "
-        "fallback for genuinely composite geometry. Rectangle x/y are the "
-        "lower-left corner, circle radius is not diameter, and semantically "
-        "distinct slots and hole patterns use separate subtraction operands so "
-        "they remain separate native Cut features. For an internal "
-        "or centered cutout, keep positive clearance from the target exterior "
-        "and preserve one connected material component unless the user explicitly "
-        "requests an edge opening or material separation. "
-        "2D output accepts either the literal string 'planar' or the "
-        "equivalent object {'kind': 'planar'}; both normalize to planar. "
-        "do not calculate final Boolean boundary vertices or submit CAD code. "
-        "The model changes only after the local GUI control is clicked."
+        "Compile a bounded Planar Construction IR v1 graph on the global XY "
+        "plane, validate its Profiles and materialized sketch, and present a "
+        "revision-bound planar or derived 3D Part proposal. Separate "
+        "subtraction operands produce separate native Cut features. Planar "
+        "output accepts 'planar' or {'kind': 'planar'}. Applying the proposal "
+        "requires local GUI confirmation."
     ),
     {
         "type": "object",
@@ -3547,7 +3240,7 @@ _PREPARE_PLANAR_CONSTRUCTION = _tool(
                         "minItems": 1,
                         "maxItems": MAX_NODES,
                         "items": {"oneOf": list(_PLANAR_CONSTRUCTION_NODE_SCHEMAS)},
-                        "description": _MULTIPLE_PATH_STROKE_NODE_EXAMPLE,
+                        "description": "Construction nodes with unique IDs and explicit operand references.",
                     },
                     "result_node_id": _PLANAR_NODE_ID_SCHEMA,
                 },
@@ -3570,10 +3263,8 @@ _CREATE_NATIVE_MODEL_DOCUMENT = _tool(
     "create_native_model_document",
     (
         "Create and activate an additional blank native model document while "
-        "preserving every existing workspace document. Use this only when the "
-        "user asks for another or separate model document, not for a new Part "
-        "inside the current model. After success, read the new authoring context "
-        "and prepare the requested geometry in the same turn."
+        "preserving existing workspace documents. This creates a separate document "
+        "rather than a Part in the current model."
     ),
     {
         "type": "object",
@@ -6062,12 +5753,6 @@ class AuthoringWorkflowController:
             "operation_confirmation_required": not missing,
         }
         summary = "Explicit current-operation requirements recorded."
-        if not missing:
-            data["next_action"] = "prepare_stage_proposal"
-            summary = (
-                "All current-stage requirements are recorded. Present the "
-                "matching operation proposal now."
-            )
         return AuthoringToolOutcome(summary, data)
 
     def _request_review(self) -> AuthoringToolOutcome:

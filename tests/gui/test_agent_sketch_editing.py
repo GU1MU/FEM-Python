@@ -338,9 +338,6 @@ def test_invalid_freeform_profile_returns_actionable_diagnostics_atomically(
     assert result.data is not None
     assert result.data["kind"] == "planar_edit_validation"
     assert result.data["status"] == "rejected"
-    assert result.data["retry_guidance"]["action"] == (
-        "revise_and_retry_same_geometry_edit"
-    )
     codes = {item["code"] for item in result.data["diagnostics"]}
     assert expected_code in codes
     assert any(

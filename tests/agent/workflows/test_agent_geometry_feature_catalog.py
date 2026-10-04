@@ -214,11 +214,6 @@ def test_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() -> None:
         ToolExecutionContext("catalog-planar", 0, "catalog-planar-edit-read"),
     )
     assert edit_context.ok, edit_context.diagnostics[0].message
-    policy = edit_context.data["freeform_profile_policy"]
-    assert policy["primary_operation_for_closed_boundary_slot"] == (
-        "planar_boolean(tool.kind=polygon)"
-    )
-    assert policy["rectangle_decomposition_for_one_connected_slot"] == "avoid"
     edit_feature = edit_context.data["planar_feature_geometry"]["features"][0]
     assert edit_feature["feature_id"] == "PB1"
     assert edit_feature["bounding_box"] == [37.0, 120.0, 63.0, 180.0]
@@ -243,9 +238,6 @@ def test_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() -> None:
         if branch["properties"]["operation"]["const"] == "planar_boolean"
     )
     tool_schema = planar_boolean["properties"]["tool"]
-    # The guidance now routes constant-width slots to add_path_slot first and
-    # keeps polygon/path_stroke as the bounded planar_boolean tool forms.
-    assert "prefer edit.operation=add_path_slot" in tool_schema["description"]
     assert "path_stroke" in tool_schema["description"]
     assert "polygon" in tool_schema["description"]
     polygon_tool = next(
@@ -258,9 +250,6 @@ def test_planar_boolean_catalog_exposes_exact_tool_recipe_and_bounds() -> None:
         for branch in tool_schema["oneOf"]
         if branch["properties"]["kind"]["const"] == "path_stroke"
     )
-    assert "Primary boundary" in polygon_tool["properties"]["vertices"][
-        "description"
-    ]
     assert "Multiple bends" in path_tool["properties"]["points"]["description"]
     assert definition.parameters["properties"]["part_id"] == {"const": "P1"}
 
@@ -432,9 +421,6 @@ def test_replaces_planar_boolean_feature_and_replays_later_history(
         "geometry-edit.planar-boolean-lineage"
     )
     assert no_op_append.data["error"]["reason"].startswith("planar-boolean.")
-    assert no_op_append.data["error"]["remediation"]["replacement_operation"] == (
-        "replace_planar_boolean_feature"
-    )
 
     replacement = controller.dispatch(
         "prepare_geometry_edit",
