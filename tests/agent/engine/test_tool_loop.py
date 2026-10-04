@@ -62,15 +62,14 @@ def test_tool_round_keeps_explicit_user_decision_visible(tmp_path):
         for index, event in enumerate(events[:-1])
         if event.event is EngineEventType.MESSAGE_STARTED
         and events[index + 1].event is EngineEventType.MESSAGE_DELTA
-        and events[index + 1].data.get("text") in {process, decision}
+        and events[index + 1].data.get("text") == f"{process}\n\n{decision}"
     ]
     assert displayed == [
-        ("process", process),
-        ("decision_request", decision),
+        ("result_summary", f"{process}\n\n{decision}"),
     ]
 
 
-def test_failed_tool_mixed_process_and_decision_are_presented_separately(
+def test_failed_tool_preserves_content_as_one_message(
     tmp_path,
 ):
     edit = {
@@ -120,11 +119,10 @@ def test_failed_tool_mixed_process_and_decision_are_presented_separately(
         for index, event in enumerate(events[:-1])
         if event.event is EngineEventType.MESSAGE_STARTED
         and events[index + 1].event is EngineEventType.MESSAGE_DELTA
-        and events[index + 1].data.get("text") in {process, decision}
+        and events[index + 1].data.get("text") == f"{process}\n\n{decision}"
     ]
     assert displayed == [
-        ("process", process),
-        ("decision_request", decision),
+        ("result_summary", f"{process}\n\n{decision}"),
     ]
 
 

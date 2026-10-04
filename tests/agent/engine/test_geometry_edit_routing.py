@@ -185,9 +185,9 @@ def test_planar_edit_allows_clarification_after_context_read(tmp_path):
         event
         for event in events
         if event.event is EngineEventType.MESSAGE_STARTED
-        and event.data.get("presentation_kind") == "decision_request"
+        and event.data.get("presentation_kind") == "result_summary"
     )
-    assert clarification_start.data["presentation_kind"] == "decision_request"
+    assert clarification_start.data["presentation_kind"] == "result_summary"
 
 
 def test_undo_stale_edit_resynchronizes_before_new_proposal(tmp_path):

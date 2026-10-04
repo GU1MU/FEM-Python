@@ -171,9 +171,6 @@ _TOOL_DISPLAY_NAMES = {
     "list_artifacts": "List Agent artifacts",
     "create_native_model_document": "New model document",
 }
-_AUTOMATIC_MODEL_PATCH_TOOLS = frozenset(
-    {"apply_model_definition", "edit_model_object"}
-)
 
 
 def _diagnostic_identity(
@@ -2329,14 +2326,7 @@ class QtAgentRuntime(QObject):
         if call_id in context.tools:
             self.eventRejected.emit("Rejected duplicate tool call identifier")
             return []
-        events = self._complete_active_message_locked(
-            context,
-            presentation_kind=(
-                MessagePresentationKind.PATCH_PREVIEW.value
-                if tool_name in _AUTOMATIC_MODEL_PATCH_TOOLS
-                else None
-            ),
-        )
+        events = self._complete_active_message_locked(context)
         context.tools[call_id] = _ToolActivity(
             tool_name,
             time.monotonic(),

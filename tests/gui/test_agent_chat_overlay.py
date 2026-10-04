@@ -211,8 +211,14 @@ def test_composer_projects_one_proposal_through_local_and_continuation_states(
 
     assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
     assert drawer.composer_task_title.text() == "网格提案 2"
-    assert drawer.composer_task_summary.isHidden()
-    assert drawer.composer_task_impact.isHidden()
+    assert (
+        drawer.composer_task_summary.isVisible()
+        and drawer.composer_task_summary.text() == "生成第 2 版网格"
+    )
+    assert (
+        drawer.composer_task_impact.isVisible()
+        and drawer.composer_task_impact.text() == "将替换当前网格"
+    )
     assert drawer.composer_task_status.isHidden()
     visible_accepts = [
         button

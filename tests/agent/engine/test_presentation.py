@@ -86,7 +86,7 @@ def test_engine_forwards_provider_text_deltas_without_rebuffering(tmp_path):
     assert "".join(sink_deltas) == "正在检查当前模型"
 
 
-def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
+def test_streamed_formal_response_uses_result_presentation(tmp_path):
     provider = StreamingFakeProvider(
         [text_response("Please provide the target value.")]
     )
@@ -101,20 +101,17 @@ def test_streamed_formal_response_finalizes_semantic_presentation(tmp_path):
     presentation = next(
         event
         for event in events
-        if event.event is EngineEventType.MESSAGE_PRESENTATION
+        if event.event is EngineEventType.MESSAGE_STARTED
     )
-    assert presentation.data["presentation_kind"] == "decision_request"
+    assert presentation.data["presentation_kind"] == "result_summary"
 
 
 @pytest.mark.parametrize(
-    "provider_type, formal_event",
-    [
-        (FakeProvider, EngineEventType.MESSAGE_STARTED),
-        (ReasoningStreamingFakeProvider, EngineEventType.MESSAGE_PRESENTATION),
-    ],
+    "provider_type",
+    [FakeProvider, ReasoningStreamingFakeProvider],
 )
 def test_reasoning_precedes_formal_content_and_survives_reopen(
-    tmp_path, provider_type, formal_event
+    tmp_path, provider_type
 ):
     reasoning, formal = "Checking the current values.", "The requested values are valid."
     provider = provider_type(
@@ -139,7 +136,7 @@ def test_reasoning_precedes_formal_content_and_survives_reopen(
         if event.event is EngineEventType.MESSAGE_DELTA
     ) == reasoning + formal
     assert any(
-        event.event is formal_event
+        event.event is EngineEventType.MESSAGE_STARTED
         and event.data["presentation_kind"] == "result_summary"
         for event in events
     )
@@ -195,7 +192,7 @@ def test_proposal_preview_precedes_the_proposal_result(tmp_path):
     assert events[completed].data["result"]["data"]["state"] == "pending_confirmation"
 
 
-def test_automatic_model_patch_has_natural_preview_before_tool_execution(
+def test_automatic_model_patch_preserves_content_before_tool_execution(
     tmp_path,
 ):
     arguments = {
@@ -230,7 +227,7 @@ def test_automatic_model_patch_has_natural_preview_before_tool_execution(
     engine = AgentSessionEngine(
         tmp_path / "workspace",
         provider,
-        session_id="ses_patch_preview",
+        session_id="ses_patch_content",
         dynamic_tools=tools,
     )
 
@@ -242,24 +239,22 @@ def test_automatic_model_patch_has_natural_preview_before_tool_execution(
         if event.event is EngineEventType.TOOL_STARTED
         and event.data["tool"] == "apply_model_definition"
     )
-    preview_start_index = next(
+    content_start_index = next(
         index
         for index, event in enumerate(events[:tool_index])
         if event.event is EngineEventType.MESSAGE_STARTED
-        and event.data.get("presentation_kind") == "patch_preview"
+        and event.data.get("presentation_kind") == "result_summary"
     )
-    preview = events[preview_start_index + 1]
+    content = events[content_start_index + 1]
 
-    assert preview.event is EngineEventType.MESSAGE_DELTA
-    assert not any(
-        event.event is EngineEventType.MESSAGE_DELTA
-        and "apply_model_definition" in event.data["text"]
-        for event in events
+    assert content.event is EngineEventType.MESSAGE_DELTA
+    assert content.data["text"] == (
+        'apply_model_definition {"action":"create_material"}'
     )
     assert tools.calls == [("apply_model_definition", arguments)]
 
 
-def test_failed_tool_self_correction_is_presented_as_process(tmp_path):
+def test_failed_tool_preserves_formal_response_presentation(tmp_path):
     edit = {
         "part_id": "P1",
         "edit": {
@@ -295,7 +290,7 @@ def test_failed_tool_self_correction_is_presented_as_process(tmp_path):
     engine = AgentSessionEngine(
         tmp_path / "workspace",
         provider,
-        session_id="ses_failed_tool_process_presentation",
+        session_id="ses_failed_tool_content_presentation",
         dynamic_tools=tools,
     )
 
@@ -309,4 +304,4 @@ def test_failed_tool_self_correction_is_presented_as_process(tmp_path):
     )
     correction_start = events[correction_delta_index - 1]
     assert correction_start.event is EngineEventType.MESSAGE_STARTED
-    assert correction_start.data["presentation_kind"] == "process"
+    assert correction_start.data["presentation_kind"] == "result_summary"

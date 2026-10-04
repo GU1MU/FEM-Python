@@ -744,7 +744,7 @@ def test_runtime_finalizes_streamed_message_presentation_kind(gui_application, t
         runtime.shutdown()
 
 
-def test_runtime_marks_text_before_automatic_patch_as_full_preview(
+def test_runtime_preserves_text_presentation_before_automatic_patch(
     gui_application,
     tmp_path,
 ) -> None:
@@ -801,9 +801,7 @@ def test_runtime_marks_text_before_automatic_patch_as_full_preview(
         )
 
         assert message_start.payload["presentation_kind"] == "process"
-        assert message_complete.payload["presentation_kind"] == (
-            "patch_preview"
-        )
+        assert "presentation_kind" not in message_complete.payload
     finally:
         runtime.shutdown()
 
@@ -868,7 +866,13 @@ def test_pending_proposal_is_only_rendered_in_the_composer(gui_application) -> N
     assert drawer.findChild(QLabel, "agentChatProposalStatus") is None
     assert drawer.composer_stack.currentWidget() is drawer.composer_task_surface
     assert drawer.composer_task_title.text() == "加入偏心孔板"
-    assert drawer.composer_task_summary.isHidden()
-    assert drawer.composer_task_impact.isHidden()
+    assert (
+        not drawer.composer_task_summary.isHidden()
+        and drawer.composer_task_summary.text() == "本地生成的有界摘要"
+    )
+    assert (
+        not drawer.composer_task_impact.isHidden()
+        and drawer.composer_task_impact.text() == "新增一个部件；提案不修改模型"
+    )
     assert drawer.composer_task_status.isHidden()
     drawer.close()

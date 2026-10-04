@@ -9,7 +9,7 @@ import re
 import threading
 import uuid
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -690,7 +690,6 @@ class AgentSessionEngine:
         turn_nonce = uuid.uuid4().hex
         # Hold terminal continuation text until tool publication is checked.
         defer_streamed_text = trusted_terminal is not None
-        previous_tool_failed = False
         latest_user_request = self._latest_user_request()
 
         def local_assistant_recovery(
@@ -777,9 +776,10 @@ class AgentSessionEngine:
                     streamed_reasoning_parts: list[str] = []
                     stream_started = False
                     reasoning_stream_started = False
+                    stream_presentation_kind: str | None = None
 
                     def receive_text_delta(delta: str) -> None:
-                        nonlocal stream_started
+                        nonlocal stream_started, stream_presentation_kind
                         if not isinstance(delta, str) or not delta:
                             raise ProviderMalformedResponseError(
                                 "provider stream emitted an invalid text delta"
@@ -787,14 +787,18 @@ class AgentSessionEngine:
                         streamed_text_parts.append(delta)
                         if defer_streamed_text:
                             return
-                        if not stream_started:
+                        if stream_presentation_kind != "result_summary":
                             events.append(
                                 self._event(
                                     EngineEventType.MESSAGE_STARTED,
-                                    {"role": "assistant"},
+                                    {
+                                        "role": "assistant",
+                                        "presentation_kind": "result_summary",
+                                    },
                                 )
                             )
-                            stream_started = True
+                            stream_presentation_kind = "result_summary"
+                        stream_started = True
                         events.append(
                             self._event(
                                 EngineEventType.MESSAGE_DELTA,
@@ -803,7 +807,7 @@ class AgentSessionEngine:
                         )
 
                     def receive_reasoning_delta(delta: str) -> None:
-                        nonlocal reasoning_stream_started
+                        nonlocal reasoning_stream_started, stream_presentation_kind
                         if not isinstance(delta, str) or not delta:
                             raise ProviderMalformedResponseError(
                                 "provider stream emitted an invalid reasoning delta"
@@ -811,7 +815,7 @@ class AgentSessionEngine:
                         streamed_reasoning_parts.append(delta)
                         if defer_streamed_text:
                             return
-                        if not reasoning_stream_started:
+                        if stream_presentation_kind != "process":
                             events.append(
                                 self._event(
                                     EngineEventType.MESSAGE_STARTED,
@@ -821,7 +825,8 @@ class AgentSessionEngine:
                                     },
                                 )
                             )
-                            reasoning_stream_started = True
+                            stream_presentation_kind = "process"
+                        reasoning_stream_started = True
                         events.append(
                             self._event(
                                 EngineEventType.MESSAGE_DELTA,
@@ -954,22 +959,6 @@ class AgentSessionEngine:
             ):
                 return local_terminal_success_recovery()
 
-            if _message_calls_proposal_prepare_tool(response.message):
-                response = replace(
-                    response,
-                    message=replace(response.message, content=None),
-                )
-                streamed_text_parts.clear()
-                stream_started = False
-
-            if _message_calls_automatic_model_patch_tool(response.message):
-                response = replace(
-                    response,
-                    message=replace(response.message, content=None),
-                )
-                streamed_text_parts.clear()
-                stream_started = False
-
             try:
                 self._append_message(response.message)
             except _ConversationStorageLimit:
@@ -989,47 +978,27 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            presentations = _assistant_message_presentations(
-                response.message,
-                trusted_terminal,
-                previous_tool_failed=previous_tool_failed,
-            )
-            if stream_started:
-                # Live streams begin conservatively as PROCESS.  Finalize
-                # their semantic presentation after the provider response is
-                # complete, without delaying live text deltas.
+            for presentation_kind, content, already_streamed in (
+                ("process", response.message.reasoning_content, reasoning_stream_started),
+                ("result_summary", response.message.content, stream_started),
+            ):
+                if already_streamed or not content:
+                    continue
                 events.append(
                     self._event(
-                        EngineEventType.MESSAGE_PRESENTATION,
+                        EngineEventType.MESSAGE_STARTED,
                         {
-                            "presentation_kind": _assistant_message_presentation_kind(
-                                replace(response.message, reasoning_content=None),
-                                trusted_terminal,
-                                previous_tool_failed=previous_tool_failed,
-                            )
+                            "role": "assistant",
+                            "presentation_kind": presentation_kind,
                         },
                     )
                 )
-            elif reasoning_stream_started:
-                pass
-            else:
-                for presentation_kind, content in presentations:
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_STARTED,
-                            {
-                                "role": "assistant",
-                                "presentation_kind": presentation_kind,
-                            },
-                        )
+                events.append(
+                    self._event(
+                        EngineEventType.MESSAGE_DELTA,
+                        {"text": content},
                     )
-                    if content:
-                        events.append(
-                            self._event(
-                                EngineEventType.MESSAGE_DELTA,
-                                {"text": content},
-                            )
-                        )
+                )
             if not response.message.tool_calls:
                 return tuple(events)
 
@@ -1072,48 +1041,6 @@ class AgentSessionEngine:
                     completed_run=active_run,
                     turn_id=str(turn_nonce),
                 )
-                if call.name in _AUTOMATIC_MODEL_PATCH_TOOL_NAMES:
-                    patch_preview = _model_patch_preview_message(
-                        call.name,
-                        call.arguments,
-                        latest_user_request,
-                    )
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_STARTED,
-                            {
-                                "role": "assistant",
-                                "presentation_kind": "patch_preview",
-                            },
-                        )
-                    )
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_DELTA,
-                            {"text": patch_preview},
-                        )
-                    )
-                elif not (response.message.content or "").strip():
-                    stage_narration = _tool_stage_narration(
-                        call.name,
-                        latest_user_request,
-                        retrying=previous_tool_failed,
-                    )
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_STARTED,
-                            {
-                                "role": "assistant",
-                                "presentation_kind": "process",
-                            },
-                        )
-                    )
-                    events.append(
-                        self._event(
-                            EngineEventType.MESSAGE_DELTA,
-                            {"text": stage_narration},
-                        )
-                    )
                 events.append(
                     self._event(
                         EngineEventType.TOOL_STARTED,
@@ -1132,7 +1059,6 @@ class AgentSessionEngine:
                         context,
                     )
                     self._tool_result_cache[context.idempotency_key] = result
-                previous_tool_failed = not result.ok
                 self._register_continuation_from_result(result)
                 payload = result.to_json()
                 if len(payload.encode("utf-8")) > self.config.max_tool_payload_bytes:
@@ -1164,32 +1090,13 @@ class AgentSessionEngine:
                     return tuple(events)
                 waits_for_confirmation = _tool_result_waits_for_confirmation(result)
                 if waits_for_confirmation:
-                    preview = _proposal_preview_message(
+                    preview = _geometry_proposal_preview_message(
                         call.name,
                         call.arguments,
                         result,
                         latest_user_request,
                     )
                     if preview is not None:
-                        try:
-                            self._append_message(AssistantMessage("assistant", preview))
-                        except _ConversationStorageLimit:
-                            diagnostic = make_diagnostic(
-                                DiagnosticCode.RESOURCE_LIMIT,
-                                (
-                                    "The proposal preview could not fit in the "
-                                    "bounded conversation store."
-                                ),
-                                source="agent.engine",
-                            )
-                            events.append(self._diagnostic_event(diagnostic))
-                            events.append(
-                                self._event(
-                                    EngineEventType.ERROR,
-                                    {"diagnostic": diagnostic.to_dict()},
-                                )
-                            )
-                            return tuple(events)
                         events.append(
                             self._event(
                                 EngineEventType.MESSAGE_STARTED,
@@ -2424,40 +2331,6 @@ def _provider_snapshot_dict(value: object) -> dict[str, Any] | None:
     return dict(projected) if isinstance(projected, Mapping) else None
 
 
-_DECISION_REQUEST_PATTERNS = tuple(
-    re.compile(pattern, re.IGNORECASE | re.DOTALL)
-    for pattern in (
-        r"(?:请|烦请|需要(?:你|您)|能否|可以(?:请)?你|可以(?:请)?您)"
-        r".{0,48}(?:确认|提供|指定|选择|决定|告诉|给出|说明)",
-        r"(?:请|直接).{0,24}(?:给出|回复|选择|确认)",
-        r"(?:^|[。！\n])\s*"
-        r"(?:是否|要不要|需不需要|哪个|哪种|多少|多大|多深|多宽|多高)"
-        r".{0,48}(?:确认|选择|合适|采用|需要|希望)?",
-        r"(?:please|could you|would you|can you|i need you to)"
-        r".{0,64}(?:confirm|provide|specify|choose|decide|tell|state)",
-        r"(?:^|[.!?\n])\s*"
-        r"(?:which|what|how (?:much|many|deep|wide|high|large))\b",
-    )
-)
-_PROPOSAL_PREPARE_TOOL_NAMES = frozenset(
-    {
-        "prepare_delete_proposal",
-        "prepare_geometry_edit",
-        "prepare_geometry_proposal",
-        "prepare_mesh_proposal",
-        "prepare_planar_construction_proposal",
-        "prepare_profile_extrusion",
-        "prepare_profile_path_sweep",
-        "prepare_profile_revolution",
-        "prepare_solve_proposal",
-        "request_project_save",
-    }
-)
-_AUTOMATIC_MODEL_PATCH_TOOL_NAMES = frozenset(
-    {"apply_model_definition", "edit_model_object"}
-)
-
-
 def _planar_retry_limit_reached(result: ToolResult) -> bool:
     data = result.data
     if result.ok or not isinstance(data, Mapping):
@@ -2503,280 +2376,25 @@ def _tool_result_waits_for_confirmation(result: ToolResult) -> bool:
     )
 
 
-def _message_calls_proposal_prepare_tool(message: AssistantMessage) -> bool:
-    return any(call.name in _PROPOSAL_PREPARE_TOOL_NAMES for call in message.tool_calls)
-
-
-def _message_calls_automatic_model_patch_tool(
-    message: AssistantMessage,
-) -> bool:
-    return any(
-        call.name in _AUTOMATIC_MODEL_PATCH_TOOL_NAMES for call in message.tool_calls
-    )
-
-
-def _tool_stage_narration(
-    tool_name: str,
-    user_request: str | None,
-    *,
-    retrying: bool,
-) -> str:
-    """Describe a tool-only round without exposing provider metadata."""
-
-    chinese = _uses_chinese(user_request)
-    if retrying and tool_name in _PROPOSAL_PREPARE_TOOL_NAMES:
-        return (
-            "上一版方案未通过校验，正在根据诊断调整并重新验证。"
-            if chinese
-            else (
-                "The previous plan did not pass validation. Revising it from "
-                "the diagnostics and validating again."
-            )
-        )
-    messages = {
-        "read_authoring_context": (
-            "正在读取当前模型状态和建模约束。",
-            "Reading the current model state and modeling constraints.",
-        ),
-        "read_geometry_edit_context": (
-            "正在读取当前草图的轮廓、尺寸和拓扑关系。",
-            "Reading the current sketch profiles, dimensions, and topology.",
-        ),
-        "read_profile_transform_context": (
-            "正在读取可用于三维变换的草图轮廓。",
-            "Reading the sketch profiles available for the 3D transform.",
-        ),
-        "read_mesh_refinement_context": (
-            "正在读取当前网格及可加密区域。",
-            "Reading the current mesh and available refinement regions.",
-        ),
-        "read_editable_model_objects": (
-            "正在读取当前可修改的模型定义。",
-            "Reading the model definitions that can be edited.",
-        ),
-        "read_deletable_objects": (
-            "正在读取当前可删除的模型对象。",
-            "Reading the model objects that can be removed.",
-        ),
-        "read_geometry_feature_catalog": (
-            "正在读取当前几何特征。",
-            "Reading the current geometry features.",
-        ),
-        "read_workspace_documents": (
-            "正在读取本次请求引用的工作区内容。",
-            "Reading the workspace content referenced by this request.",
-        ),
-        "show_capabilities": (
-            "正在读取当前可用能力。",
-            "Reading the currently available capabilities.",
-        ),
-        "prepare_planar_construction_proposal": (
-            "正在构造二维轮廓，并校验槽、孔洞和材料区域的拓扑关系。",
-            (
-                "Building the 2D profiles and validating the topology of "
-                "slots, holes, and material regions."
-            ),
-        ),
-        "prepare_geometry_edit": (
-            "正在生成草图修改方案，并校验修改后的轮廓拓扑。",
-            "Preparing the sketch edit and validating the resulting topology.",
-        ),
-        "prepare_geometry_proposal": (
-            "正在生成并校验几何方案。",
-            "Preparing and validating the geometry plan.",
-        ),
-        "prepare_mesh_proposal": (
-            "正在生成并校验网格方案。",
-            "Preparing and validating the mesh plan.",
-        ),
-        "prepare_profile_extrusion": (
-            "正在生成拉伸方案，并校验最终三维几何。",
-            "Preparing the extrusion and validating the resulting 3D geometry.",
-        ),
-        "prepare_profile_revolution": (
-            "正在生成旋转方案，并校验最终三维几何。",
-            "Preparing the revolution and validating the resulting 3D geometry.",
-        ),
-        "prepare_profile_path_sweep": (
-            "正在生成路径扫掠方案，并校验最终三维几何。",
-            "Preparing the path sweep and validating the resulting 3D geometry.",
-        ),
-        "prepare_solve_proposal": (
-            "正在检查当前分析状态并生成求解方案。",
-            "Checking the analysis state and preparing the solve plan.",
-        ),
-        "create_native_model_document": (
-            "正在创建新的模型文档。",
-            "Creating a new model document.",
-        ),
-        "inspect_abaqus": (
-            "正在检查当前有限元模型。",
-            "Inspecting the current finite-element model.",
-        ),
-        "get_analysis_summary": (
-            "正在整理当前分析设置。",
-            "Reading the current analysis setup.",
-        ),
-        "validate_analysis": (
-            "正在校验当前分析设置。",
-            "Validating the current analysis setup.",
-        ),
-        "query_results": (
-            "正在读取并整理所请求的计算结果。",
-            "Reading and organizing the requested analysis results.",
-        ),
-    }
-    pair = messages.get(
-        tool_name,
-        (
-            "正在处理当前建模步骤。",
-            "Processing the current modeling step.",
-        ),
-    )
-    return pair[0] if chinese else pair[1]
-
-
-def _assistant_message_presentation_kind(
-    message: AssistantMessage,
-    trusted_terminal: tuple[str, str, str] | None,
-    *,
-    previous_tool_failed: bool = False,
-) -> str:
-    if trusted_terminal is not None:
-        return "result_summary"
-    if message.tool_calls:
-        return "process"
-    if _message_requests_user_decision(message):
-        return "decision_request"
-    if previous_tool_failed:
-        return "process"
-    return "result_summary"
-
-
-def _message_requests_user_decision(message: AssistantMessage) -> bool:
-    """Return whether visible text explicitly asks the user for input."""
-
-    if not isinstance(message.content, str):
-        return False
-    content = message.content.strip()
-    if not content:
-        return False
-    return (
-        "?" in content
-        or "？" in content
-        or any(pattern.search(content) is not None for pattern in _DECISION_REQUEST_PATTERNS)
-    )
-
-
-def _split_failed_process_decision(content: str) -> tuple[str, str] | None:
-    """Split a failed-tool self-correction from its final concise question."""
-
-    boundaries = {
-        match.end()
-        for match in re.finditer(r"\n\s*\n+|[。！？.!?]\s*", content)
-    }
-    for boundary in sorted(boundaries, reverse=True):
-        process = content[:boundary].strip()
-        decision = content[boundary:].strip()
-        if not process or not decision:
-            continue
-        if _message_requests_user_decision(
-            AssistantMessage("assistant", content=decision)
-        ):
-            return process, decision
-    matches = [
-        match
-        for pattern in _DECISION_REQUEST_PATTERNS
-        for match in pattern.finditer(content)
-        if match.start() > 0
-    ]
-    for match in sorted(matches, key=lambda item: item.start(), reverse=True):
-        process = content[: match.start()].strip()
-        decision = content[match.start() :].strip()
-        if process and decision:
-            return process, decision
-    return None
-
-
-def _assistant_message_presentations(
-    message: AssistantMessage,
-    trusted_terminal: tuple[str, str, str] | None,
-    *,
-    previous_tool_failed: bool,
-) -> tuple[tuple[str, str], ...]:
-    """Project one provider message into semantically presented UI sections."""
-
-    reasoning_content = (message.reasoning_content or "").strip()
-    content = message.content or ""
-    requests_decision = _message_requests_user_decision(message)
-    content_presentations: tuple[tuple[str, str], ...]
-    if (
-        (previous_tool_failed or bool(message.tool_calls))
-        and trusted_terminal is None
-        and requests_decision
-    ):
-        split = _split_failed_process_decision(content)
-        if split is not None:
-            process, decision = split
-            content_presentations = (
-                ("process", process),
-                ("decision_request", decision),
-            )
-        else:
-            content_presentations = (("decision_request", content),)
-    else:
-        content_presentations = (
-            (
-                _assistant_message_presentation_kind(
-                    message,
-                    trusted_terminal,
-                    previous_tool_failed=previous_tool_failed,
-                ),
-                content,
-            ),
-        )
-    if not reasoning_content:
-        return content_presentations
-    reasoning_presentation = (("process", reasoning_content),)
-    if not content.strip():
-        return reasoning_presentation
-    return (*reasoning_presentation, *content_presentations)
-
-
-def _proposal_preview_message(
+def _geometry_proposal_preview_message(
     tool_name: str,
     arguments: Mapping[str, Any],
     result: ToolResult,
     user_request: str | None,
 ) -> str | None:
-    """Build one validated plan preview for display before its proposal card."""
+    """Expose geometry parameters not covered by the proposal card summary."""
 
     if not result.ok or not isinstance(result.data, Mapping):
         return None
-    proposal_view = result.data.get("proposal_view")
-    if not isinstance(proposal_view, Mapping):
-        return None
     chinese = _uses_chinese(user_request)
-    summary = str(proposal_view.get("summary", result.summary)).strip()
-    impact = str(proposal_view.get("impact", "")).strip()
-    lines = ["**方案预览**" if chinese else "**Plan preview**"]
-
     if tool_name == "prepare_planar_construction_proposal":
-        lines.extend(_planar_construction_preview(arguments, result.data, chinese))
-        unit_summary = _proposal_unit_summary(summary)
-        if unit_summary:
-            lines.append(
-                f"- 单位制：{unit_summary}"
-                if chinese
-                else f"- Unit system: {unit_summary}"
-            )
+        details = _planar_construction_preview(arguments, result.data, chinese)
     elif tool_name == "prepare_geometry_edit":
-        lines.extend(_geometry_edit_preview(arguments, user_request, chinese))
-    elif summary:
-        lines.append(f"- 方案：{summary}" if chinese else f"- Plan: {summary}")
-    if impact:
-        lines.append(f"- 执行影响：{impact}" if chinese else f"- Effect: {impact}")
-    return "\n".join(lines)[:4_000]
+        details = _geometry_edit_preview(arguments, chinese)
+    else:
+        return None
+    title = "**方案预览**" if chinese else "**Plan preview**"
+    return "\n".join([title, *details])[:4_000]
 
 
 def _planar_construction_preview(
@@ -3001,13 +2619,12 @@ def _pattern_description(pattern: Mapping[str, Any], chinese: bool) -> str:
 
 def _geometry_edit_preview(
     arguments: Mapping[str, Any],
-    user_request: str | None,
     chinese: bool,
 ) -> list[str]:
     lines = ["- 修改对象：当前部件" if chinese else "- Target: current part"]
     edit = arguments.get("edit")
     if isinstance(edit, Mapping):
-        lines.extend(_geometry_edit_description(edit, user_request, chinese))
+        lines.extend(_geometry_edit_description(edit, chinese))
     spatial_relation = arguments.get("spatial_relation")
     if isinstance(spatial_relation, Mapping):
         reference = str(spatial_relation.get("reference_feature_id", "?"))
@@ -3037,7 +2654,6 @@ def _geometry_edit_preview(
 
 def _geometry_edit_description(
     edit: Mapping[str, Any],
-    user_request: str | None,
     chinese: bool,
 ) -> list[str]:
     operation = str(edit.get("operation", ""))
@@ -3059,11 +2675,11 @@ def _geometry_edit_description(
         ]
         for index, item in enumerate(edits[:8], start=1):
             if isinstance(item, Mapping):
-                detail = _single_edit_description(item, user_request, chinese)
+                detail = _single_edit_description(item, chinese)
                 if detail:
                     lines.append(f"  {index}. {detail}")
         return lines
-    detail = _single_edit_description(edit, user_request, chinese)
+    detail = _single_edit_description(edit, chinese)
     return (
         [f"- 修改内容：{detail}" if chinese else f"- Change: {detail}"]
         if detail
@@ -3073,7 +2689,6 @@ def _geometry_edit_description(
 
 def _single_edit_description(
     edit: Mapping[str, Any],
-    user_request: str | None,
     chinese: bool,
 ) -> str:
     operation = str(edit.get("operation", ""))
@@ -3218,158 +2833,6 @@ def _edit_operation_label(operation: str, chinese: bool) -> str:
     return pair[0] if chinese else pair[1]
 
 
-def _model_patch_preview_message(
-    tool_name: str,
-    arguments: Mapping[str, Any],
-    user_request: str | None,
-) -> str:
-    chinese = _uses_chinese(user_request)
-    lines = ["**修改预览**" if chinese else "**Change preview**"]
-    if tool_name == "apply_model_definition":
-        action = str(arguments.get("action", ""))
-        parameters = arguments.get("parameters")
-        parameter_map = parameters if isinstance(parameters, Mapping) else {}
-        action_label = _definition_action_description(action, parameter_map, chinese)
-        lines.append(
-            f"- 修改内容：{action_label}" if chinese else f"- Change: {action_label}"
-        )
-        details = _natural_parameter_details(parameter_map, chinese)
-    else:
-        object_type = str(arguments.get("object_type", ""))
-        object_label = _definition_object_label(object_type, chinese)
-        lines.append(
-            f"- 修改内容：更新当前{object_label}"
-            if chinese
-            else f"- Change: update the current {object_label}"
-        )
-        changes = arguments.get("changes")
-        details = _natural_parameter_details(
-            changes if isinstance(changes, Mapping) else {},
-            chinese,
-        )
-    if details:
-        lines.append(
-            f"- 主要参数：{details}" if chinese else f"- Main values: {details}"
-        )
-    lines.append(
-        "- 执行影响：应用后立即同步到当前模型；该修改可撤销"
-        if chinese
-        else "- Effect: apply immediately to the current model; the change is undoable"
-    )
-    return "\n".join(lines)[:4_000]
-
-
-def _definition_action_description(
-    action: str,
-    parameters: Mapping[str, Any],
-    chinese: bool,
-) -> str:
-    labels = {
-        "create_named_region": ("创建命名区域", "create a named region"),
-        "create_material": ("创建材料", "create a material"),
-        "create_section": ("创建截面", "create a section"),
-        "assign_section": ("分配截面", "assign a section"),
-        "create_static_step": ("创建静力分析步", "create a static analysis step"),
-        "create_boundary_condition": ("创建边界条件", "create a boundary condition"),
-        "create_load": ("创建载荷", "create a load"),
-        "create_result_request": ("创建结果请求", "create a result request"),
-    }
-    pair = labels.get(action, ("更新模型定义", "update the model definition"))
-    label = pair[0] if chinese else pair[1]
-    name = parameters.get("name")
-    if isinstance(name, str) and name.strip():
-        return f"{label}“{name.strip()}”" if chinese else f'{label} "{name.strip()}"'
-    return label
-
-
-def _definition_object_label(object_type: str, chinese: bool) -> str:
-    labels = {
-        "named_region": ("命名区域", "named region"),
-        "material": ("材料", "material"),
-        "section": ("截面", "section"),
-        "section_assignment": ("截面分配", "section assignment"),
-        "analysis_step": ("分析步", "analysis step"),
-        "boundary_condition": ("边界条件", "boundary condition"),
-        "load": ("载荷", "load"),
-        "result_request": ("结果请求", "result request"),
-    }
-    pair = labels.get(object_type, ("模型定义", "model definition"))
-    return pair[0] if chinese else pair[1]
-
-
-def _natural_parameter_details(
-    parameters: Mapping[str, Any],
-    chinese: bool,
-) -> str:
-    labels = {
-        "new_name": ("新名称", "new name"),
-        "material": ("材料", "material"),
-        "section_name": ("截面", "section"),
-        "region_name": ("区域", "region"),
-        "step_name": ("分析步", "analysis step"),
-        "target_scope": ("作用区域", "target region"),
-        "mesh_kind": ("实体类型", "entity type"),
-        "E": ("弹性模量", "elastic modulus"),
-        "nu": ("泊松比", "Poisson ratio"),
-        "density": ("密度", "density"),
-        "thickness": ("厚度", "thickness"),
-        "area": ("面积", "area"),
-        "height": ("高度", "height"),
-        "width": ("宽度", "width"),
-        "radius": ("半径", "radius"),
-        "outer_radius": ("外半径", "outer radius"),
-        "inner_radius": ("内半径", "inner radius"),
-        "vector": ("向量", "vector"),
-        "magnitude": ("大小", "magnitude"),
-        "acceleration": ("加速度", "acceleration"),
-        "direction": ("方向", "direction"),
-        "coordinate_system": ("坐标系", "coordinate system"),
-        "variables": ("结果变量", "result variables"),
-        "unit": ("单位", "unit"),
-        "plane_type": ("平面假设", "plane assumption"),
-        "section_type": ("截面类型", "section type"),
-        "properties": ("属性", "properties"),
-    }
-    ignored = {
-        "name",
-        "confirmed",
-        "distribution",
-        "logical_ids",
-        "target_id",
-        "part_id",
-        "object_id",
-    }
-    fragments: list[str] = []
-    for key, value in parameters.items():
-        if key in ignored or key.endswith("_id") or key.endswith("_ids"):
-            continue
-        if isinstance(value, Mapping):
-            nested = _natural_parameter_details(value, chinese)
-            if not nested:
-                continue
-            value_text = nested
-        else:
-            value_text = _natural_value(value, chinese)
-        pair = labels.get(str(key))
-        if pair is None:
-            continue
-        label = pair[0] if chinese else pair[1]
-        fragments.append(f"{label} {value_text}")
-        if len(fragments) >= 10:
-            break
-    return ("；" if chinese else "; ").join(fragments)
-
-
-def _natural_value(value: object, chinese: bool) -> str:
-    if isinstance(value, bool):
-        return ("是" if value else "否") if chinese else ("yes" if value else "no")
-    if isinstance(value, list):
-        return "、".join(_natural_value(item, chinese) for item in value)
-    if isinstance(value, float):
-        return f"{value:g}"
-    return str(value)
-
-
 def _point_chain(value: object) -> str:
     if not isinstance(value, list):
         return "?"
@@ -3385,13 +2848,6 @@ def _point_chain(value: object) -> str:
         rendered.append(f"({_preview_number(x)}, {_preview_number(y)})")
     suffix = " → …" if len(value) > 12 else ""
     return " → ".join(rendered) + suffix
-
-
-def _proposal_unit_summary(summary: str) -> str | None:
-    match = re.search(r"单位制\s+([^；\n]+)", summary)
-    if match is None:
-        return None
-    return match.group(1).strip()
 
 
 def _uses_chinese(value: str | None) -> bool:
