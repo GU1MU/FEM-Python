@@ -2074,49 +2074,40 @@ def apply_planar_edit_batch(
         "update_circle": _update_planar_circle_sketch,
         "delete_circles": _delete_planar_circles_sketch,
         "replace_circle_pattern": _replace_planar_circle_pattern_sketch,
+        "update_line": _update_planar_line_sketch,
+        "update_arc": _update_planar_arc_sketch,
+        "delete_curves": _delete_planar_curves_sketch,
+        "add_constraint": _add_planar_constraint_sketch,
+        "replace_constraint": _replace_planar_constraint_sketch,
+        "delete_constraints": _delete_planar_constraints_sketch,
     }
     for index, raw_edit in enumerate(values):
         if not isinstance(raw_edit, Mapping):
             raise TypeError(f"edits[{index}] must be an object")
         edit = dict(raw_edit)
         operation = edit.pop("operation", None)
-        if operation == "batch" or operation not in handlers:
-            if operation == "add_line":
-                current = _add_planar_line_sketch(
-                    current, edit.pop("start"), edit.pop("end")
-                )
-            elif operation == "add_arc":
-                current = _add_planar_arc_sketch(
-                    current,
-                    edit.pop("start"),
-                    edit.pop("center"),
-                    edit.pop("end"),
-                    edit.pop("orientation"),
-                )
-            elif operation == "update_line":
-                current = _update_planar_line_sketch(current, **edit)
-                edit.clear()
-            elif operation == "update_arc":
-                current = _update_planar_arc_sketch(current, **edit)
-                edit.clear()
-            elif operation == "delete_curves":
-                current = _delete_planar_curves_sketch(current, **edit)
-                edit.clear()
-            elif operation == "add_constraint":
-                current = _add_planar_constraint_sketch(current, **edit)
-                edit.clear()
-            elif operation == "replace_constraint":
-                current = _replace_planar_constraint_sketch(current, **edit)
-                edit.clear()
-            elif operation == "delete_constraints":
-                current = _delete_planar_constraints_sketch(current, **edit)
-                edit.clear()
-            else:
-                raise ValueError(f"edits[{index}] uses an unsupported operation")
+        # Preserve positional-field diagnostics for line and arc creation.
+        # Defer final draft/topology validation until all edits complete.
+        if operation == "add_line":
+            current = _add_planar_line_sketch(
+                current, edit.pop("start"), edit.pop("end")
+            )
             if edit:
                 raise ValueError(f"edits[{index}] has unsupported fields")
-        else:
+        elif operation == "add_arc":
+            current = _add_planar_arc_sketch(
+                current,
+                edit.pop("start"),
+                edit.pop("center"),
+                edit.pop("end"),
+                edit.pop("orientation"),
+            )
+            if edit:
+                raise ValueError(f"edits[{index}] has unsupported fields")
+        elif operation in handlers:
             current = handlers[str(operation)](current, **edit)
+        else:
+            raise ValueError(f"edits[{index}] uses an unsupported operation")
     return _planar_edit_draft(current)
 
 

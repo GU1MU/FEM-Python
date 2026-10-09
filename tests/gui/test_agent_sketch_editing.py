@@ -7,7 +7,9 @@ import pytest
 from fem.application import ModelSession, UnitContext, derive_feature_history
 from fem.geometry import (
     BooleanGeometry,
+    BoxGeometry,
     ExtrudedGeometry,
+    MovedGeometry,
     SketchArc,
     SketchAngleDimension,
     SketchCircle,
@@ -79,6 +81,53 @@ def _controller(session: ModelSession):
         AgentResultQueryBridge(SessionResultQueryPort(session)),
     )
     return controller, bridge
+
+
+@pytest.mark.parametrize(
+    ("recipe", "expected_operations"),
+    (
+        (
+            _square(),
+            [
+                "planar_boolean", "add_line", "add_arc", "add_circle",
+                "add_rectangle", "add_path_slot", "add_polygon", "update_point",
+                "update_line", "update_arc", "update_circle", "delete_curves",
+                "delete_circles", "replace_circle_pattern", "add_constraint",
+                "replace_constraint", "delete_constraints", "batch", "translate",
+                "rotate",
+            ],
+        ),
+        (
+            MovedGeometry(_square(), 2.0, 0.0),
+            [
+                "planar_boolean", "replace_planar_boolean_feature", "add_path_slot",
+                "translate", "rotate",
+            ],
+        ),
+        (BoxGeometry("Solid", 2.0, 3.0, 4.0), ["part_boolean", "translate", "rotate"]),
+    ),
+)
+def test_edit_context_preserves_supported_operation_order(
+    recipe: object, expected_operations: list[str]
+) -> None:
+    session = ModelSession()
+    session.create_native_project_with_first_part(
+        "Operation catalog",
+        UnitContext("mm", "N", "MPa"),
+        recipe,
+    )
+    controller, _bridge = _controller(session)
+    before = session.snapshot()
+
+    outcome = controller.dispatch(
+        "read_geometry_edit_context",
+        {"part_id": "P1"},
+        ToolExecutionContext(session.session_id, session.session_revision, "read-edits"),
+    )
+
+    assert outcome.ok, outcome.summary
+    assert outcome.data["supported_edits"] == expected_operations
+    assert session.snapshot() == before
 
 
 @pytest.mark.parametrize("constraint", [
