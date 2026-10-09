@@ -1,3 +1,4 @@
+import json
 import threading
 
 import pytest
@@ -290,6 +291,91 @@ def test_unstorable_provider_turn_returns_resource_diagnostic(tmp_path):
         ),
     )
     assert reopened.send_message("继续。")
+
+
+def test_failed_conversation_write_preserves_history_after_turn_trimming(
+    monkeypatch,
+    tmp_path,
+):
+    from fem_agent import conversation_store
+
+    provider = FakeProvider([text_response("old answer" * 16)])
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        provider,
+        session_id="ses_conversation_write_rollback",
+        config=EngineConfig(max_conversation_storage_bytes=1_024),
+    )
+    engine.send_message("old question" * 16)
+    prior_history = engine._history
+    conversation_path = engine._conversation_path()
+    prior_bytes = conversation_path.read_bytes()
+    new_question = "new question" * 55
+
+    def fail_write(path, payload, *, overwrite):
+        assert path == conversation_path
+        assert overwrite is True
+        assert [item["content"] for item in payload["messages"]] == [new_question]
+        raise OSError("conversation write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(conversation_store, "atomic_write_json", fail_write)
+        with pytest.raises(OSError, match="conversation write failed"):
+            engine.send_message(new_question)
+
+    assert engine._history is prior_history
+    assert conversation_path.read_bytes() == prior_bytes
+    assert len(provider.requests) == 1
+    reopened = AgentSessionEngine(
+        engine.workspace,
+        FakeProvider(),
+        session_id=engine.session_id,
+        config=engine.config,
+    )
+    assert reopened._history == prior_history
+
+
+def test_failed_deferred_audit_write_requeues_before_new_turn_and_close_retries(
+    monkeypatch,
+    tmp_path,
+):
+    from fem_agent import tool_audit
+
+    engine = AgentSessionEngine(
+        tmp_path / "workspace",
+        FakeProvider([text_response("first answer"), text_response("second answer")]),
+        session_id="ses_deferred_audit_retry",
+        defer_audit_persistence=True,
+    )
+    engine.send_message("first question")
+    assert not engine._audit_path().exists()
+    original_write = tool_audit.atomic_write_json
+    write_attempts = []
+
+    def fail_once_with_new_turn(path, payload, *, overwrite):
+        write_attempts.append(payload)
+        if len(write_attempts) == 1:
+            assert len(payload["entries"]) == 1
+            assert engine.send_message("second question")
+            raise OSError("audit write failed")
+        original_write(path, payload, overwrite=overwrite)
+
+    monkeypatch.setattr(tool_audit, "atomic_write_json", fail_once_with_new_turn)
+    with pytest.raises(OSError, match="audit write failed"):
+        engine.flush_round_audit()
+
+    assert len(engine._deferred_round_audit_batches) == 2
+    first_entry = engine._deferred_round_audit_batches[0][0]
+    second_entry = engine._deferred_round_audit_batches[1][0]
+    assert first_entry is not second_entry
+    engine.close_session()
+
+    assert engine._deferred_round_audit_batches == []
+    assert len(write_attempts) == 2
+    audit = json.loads(engine._audit_path().read_text(encoding="utf-8"))
+    assert audit["entries"] == [first_entry, second_entry]
+    engine.flush_round_audit()
+    assert len(write_attempts) == 2
 
 
 def test_session_switch_is_rejected_while_provider_operation_is_active(
