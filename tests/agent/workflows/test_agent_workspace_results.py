@@ -25,9 +25,9 @@ from fem_agent.workspace_catalog import (
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     SessionGeometryAuthoringPort,
-    SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
+from fem_gui.agent_result_query import SessionResultQueryPort
 from fem_gui.agent_workspace_catalog import FEMWorkspaceCatalogPort
 from fem_gui.workspace import FEMWorkspace
 from tests.helpers.agent_result_fixtures import make_solved_session

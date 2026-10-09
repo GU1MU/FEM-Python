@@ -16,7 +16,7 @@ from .authoring import (
     OperationKind,
     ProposalKind,
 )
-from .geometry_authoring import geometry_recipe_to_payload
+from .geometry_payload import geometry_recipe_to_payload
 
 
 PART_BOOLEAN_TOOL_HANDLING = "consume_tool_part"

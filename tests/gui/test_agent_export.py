@@ -34,11 +34,11 @@ from fem.application.results import (
 )
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
-    SessionExportPort,
     SessionGeometryAuthoringPort,
-    SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
+from fem_gui.agent_export import SessionExportPort
+from fem_gui.agent_result_query import SessionResultQueryPort
 from fem_gui.agent_workspace import (
     ExportLedgerRecord,
     UserWorkspace,

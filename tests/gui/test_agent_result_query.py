@@ -34,7 +34,7 @@ from fem_agent.result_authoring import (
     AgentResultQuery,
     AgentResultVariable,
 )
-from fem_gui.agent_authoring import SessionResultQueryPort
+from fem_gui.agent_result_query import SessionResultQueryPort
 from fem_gui.main_window import FEMMainWindow
 
 from tests.helpers.agent_session_fixtures import make_defined_plate_session

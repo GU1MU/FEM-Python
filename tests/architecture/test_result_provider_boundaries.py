@@ -222,6 +222,8 @@ def test_agent_imports_are_confined_to_gui_runtime_adapters() -> None:
     # plan.md section 9) and imports the agent export contracts directly.
     runtime_path = Path("src/fem_gui/agent_runtime.py")
     authoring_path = Path("src/fem_gui/agent_authoring.py")
+    result_query_path = Path("src/fem_gui/agent_result_query.py")
+    export_path = Path("src/fem_gui/agent_export.py")
     workspace_catalog_path = Path("src/fem_gui/agent_workspace_catalog.py")
     main_window_path = Path("src/fem_gui/main_window.py")
     actual = set(_forbidden_imports(GUI_ROOT, ("fem_agent",)))
@@ -229,6 +231,8 @@ def test_agent_imports_are_confined_to_gui_runtime_adapters() -> None:
     assert {path for path, _symbol in actual} == {
         runtime_path,
         authoring_path,
+        result_query_path,
+        export_path,
         workspace_catalog_path,
         main_window_path,
     }

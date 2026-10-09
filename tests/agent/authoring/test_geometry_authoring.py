@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from fem_agent import StaticGeometryPreview
+from fem_agent import geometry_authoring, geometry_payload, geometry_preview
 from fem_agent.geometry_authoring import (
     add_planar_circle,
     add_planar_polygon,
@@ -14,6 +16,26 @@ from fem_agent.geometry_authoring import (
     translate_geometry,
     update_planar_point,
 )
+
+
+def test_public_geometry_imports_preserve_payload_and_preview_identity() -> None:
+    assert StaticGeometryPreview is geometry_preview.StaticGeometryPreview
+    assert geometry_authoring.StaticGeometryPreview is StaticGeometryPreview
+    assert (
+        geometry_authoring.geometry_recipe_to_payload
+        is geometry_payload.geometry_recipe_to_payload
+    )
+    assert (
+        geometry_authoring.geometry_recipe_from_payload
+        is geometry_payload.geometry_recipe_from_payload
+    )
+
+    draft = rectangle_geometry("Plate", width=3.0, height=2.0)
+    assert isinstance(draft.preview, StaticGeometryPreview)
+    assert (
+        geometry_payload.geometry_recipe_from_payload(draft.recipe_payload)
+        == draft.recipe
+    )
 
 
 def test_recipe_tools_cover_required_primitives_transforms_and_bounded_preview() -> (

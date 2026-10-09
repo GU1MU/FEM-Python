@@ -203,9 +203,9 @@ from .agent_authoring import (
     AgentSolveTaskRequest,
     ProposalState,
     SessionGeometryAuthoringPort,
-    SessionResultQueryPort,
     create_session_authoring_workflow_controller,
 )
+from .agent_result_query import SessionResultQueryPort
 from .part_boolean import PartBooleanController
 from .planar_boolean import PlanarBooleanController, planar_reference_points
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
