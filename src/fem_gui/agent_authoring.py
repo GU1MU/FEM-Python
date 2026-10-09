@@ -75,11 +75,11 @@ from fem_agent.boolean_authoring import (
     create_body_boolean_proposal,
     create_part_boolean_proposal,
 )
-from fem_agent.authoring_runtime import (
+from fem_agent.authoring_payload import provider_safe_authoring_payload
+from fem_agent.authoring_runtime import AuthoringWorkflowController
+from fem_agent.authoring_values import (
     AuthoringToolOutcome,
-    AuthoringWorkflowController,
     AuthoringWorkflowStage,
-    provider_safe_authoring_payload,
 )
 from fem_agent.definition_authoring import (
     inverse_operations_for_snapshot,

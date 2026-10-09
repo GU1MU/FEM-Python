@@ -8,7 +8,8 @@ from fem.application import ModelSession, UnitContext
 from fem.geometry import RectangleGeometry, WireGeometry, WireMember, WirePoint
 from fem.io import load_project, save_project
 from fem_agent.authoring import AuthoringAuthorizationError, ProposalState
-from fem_agent.authoring_runtime import AuthoringWorkflowStage, _PREPARE_GEOMETRY
+from fem_agent.authoring_runtime import AuthoringWorkflowStage
+from fem_agent.authoring_schemas.geometry import _PREPARE_GEOMETRY
 from fem_agent.geometry_authoring import (
     geometry_recipe_from_payload,
     wire_geometry,

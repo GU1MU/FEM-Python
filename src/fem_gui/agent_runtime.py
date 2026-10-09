@@ -22,10 +22,8 @@ from PySide6.QtCore import QObject, Qt, Signal
 
 from fem_agent.artifacts import ArtifactStore, InputRejectedError
 from fem_agent.authoring import ProposalState
-from fem_agent.authoring_runtime import (
-    AuthoringTurnSnapshot,
-    AuthoringWorkflowController,
-)
+from fem_agent.authoring_runtime import AuthoringWorkflowController
+from fem_agent.authoring_values import AuthoringTurnSnapshot
 from fem_agent.config import (
     ConfigError,
     LocalAgentConfig,
