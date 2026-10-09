@@ -64,11 +64,13 @@ from .tools.registry import (
 )
 from .worker import (
     IsolatedFEMWorker,
-    WorkerResponse,
-    WorkerResponseIntegrityError,
     WorkerRunInProgressError,
+)
+from .worker_integrity import (
+    WorkerResponseIntegrityError,
     load_verified_worker_response,
 )
+from .worker_protocol import WorkerResponse
 
 
 _CREDENTIAL_ASSIGNMENT_PATTERN = re.compile(

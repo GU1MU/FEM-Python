@@ -29,14 +29,16 @@ from ..schemas import (
 )
 from ..state import RevisionRecord, RevisionStore
 from ..worker import (
-    InspectionWorkerError,
     IsolatedFEMInspector,
     IsolatedFEMResultQuerier,
+)
+from ..worker_protocol import (
+    InspectionWorkerError,
     ResultQueryWorkerError,
 )
 
 if TYPE_CHECKING:
-    from ..worker import InspectionResponse, WorkerResponse
+    from ..worker_protocol import InspectionResponse, WorkerResponse
 
 
 class DynamicToolRegistry(Protocol):

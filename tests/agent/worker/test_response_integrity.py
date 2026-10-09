@@ -3,14 +3,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import fem_agent.worker as worker_module
 from fem_agent.artifacts import atomic_write_json, read_json_file
 from fem_agent.diagnostics import DiagnosticCode
-from fem_agent.worker import (
-    IsolatedFEMWorker,
-    WorkerRequest,
+from fem_agent.worker import IsolatedFEMWorker
+from fem_agent.worker_integrity import (
     WorkerResponseIntegrityError,
+    load_verified_worker_response,
 )
+from fem_agent.worker_protocol import WorkerRequest
 
 from tests.helpers.agent_worker_fixtures import (
     _prepared_revision,
@@ -97,7 +97,7 @@ def test_verified_response_loader_rejects_response_tampering(
     atomic_write_json(response_path, payload, overwrite=True)
 
     with pytest.raises(WorkerResponseIntegrityError):
-        worker_module.load_verified_worker_response(
+        load_verified_worker_response(
             artifacts,
             record,
             run.run_id,
@@ -134,7 +134,7 @@ def test_verified_response_loader_rejects_committed_artifact_tampering(
     atomic_write_json(diagnostics_path, payload, overwrite=True)
 
     with pytest.raises(WorkerResponseIntegrityError):
-        worker_module.load_verified_worker_response(
+        load_verified_worker_response(
             artifacts,
             record,
             run.run_id,
@@ -165,7 +165,7 @@ def test_verified_response_loader_rejects_a_response_copied_between_runs(
     )
 
     with pytest.raises(WorkerResponseIntegrityError):
-        worker_module.load_verified_worker_response(
+        load_verified_worker_response(
             artifacts,
             record,
             copied.run_id,

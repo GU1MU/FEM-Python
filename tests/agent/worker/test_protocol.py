@@ -5,7 +5,9 @@ import threading
 import pytest
 
 import fem_agent.worker as worker_module
-from fem_agent.worker import InspectionWorkerError, IsolatedFEMInspector, WorkerRequest
+import fem_agent.worker_protocol as protocol_module
+from fem_agent.worker import IsolatedFEMInspector
+from fem_agent.worker_protocol import InspectionWorkerError, WorkerRequest
 
 from tests.helpers.agent_worker_fixtures import (
     _prepared_revision,
@@ -61,18 +63,18 @@ def test_control_json_uses_utf8_bytes_and_enforces_the_byte_limit():
         "region": "自由端",
     }
 
-    payload = worker_module._encode_control_json(value)
+    payload = protocol_module._encode_control_json(value)
 
     assert json.loads(payload.decode("utf-8")) == value
-    assert worker_module._read_control_json(
+    assert protocol_module._read_control_json(
         io.BytesIO(payload),
         description="inspection request",
     ) == value
     with pytest.raises(ValueError, match="control payload limit"):
-        worker_module._read_control_json(
+        protocol_module._read_control_json(
             io.BytesIO(
                 b"x"
-                * (worker_module._FIXED_CONTROL_PAYLOAD_LIMIT_BYTES + 1)
+                * (protocol_module._FIXED_CONTROL_PAYLOAD_LIMIT_BYTES + 1)
             ),
             description="inspection request",
         )
