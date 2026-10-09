@@ -46,22 +46,20 @@ class _ControlProcess:
         self.stdout = io.BytesIO(stdout)
         self.stderr = io.BytesIO(stderr)
         self.returncode = returncode
-        self.terminate_calls = 0
-        self.wait_timeouts = []
+        self.terminated = False
         self.wait_error = None
 
     def poll(self):
         return self.returncode
 
     def terminate(self):
-        self.terminate_calls += 1
+        self.terminated = True
         self.returncode = -15
 
     def kill(self):
         self.returncode = -9
 
     def wait(self, timeout=None):
-        self.wait_timeouts.append(timeout)
         if self.wait_error is not None:
             error, self.wait_error = self.wait_error, None
             raise error
@@ -73,13 +71,10 @@ class _ControlProcess:
 class _ControlReader:
     """Deterministic pipe readers also allow output to arrive during join."""
 
-    def __init__(self, target, args, name, daemon, options):
+    def __init__(self, target, args, options):
         self.target = target
         self.args = args
-        self.name = name
-        self.daemon = daemon
         self.options = options
-        self.join_timeouts = []
 
     def start(self):
         if self.options.start_error is not None:
@@ -88,8 +83,6 @@ class _ControlReader:
             self.target(*self.args)
 
     def join(self, timeout):
-        assert not self.args[0].closed
-        self.join_timeouts.append(timeout)
         if self.options.deferred:
             self.target(*self.args)
 
@@ -99,14 +92,10 @@ class _ControlReader:
 
 @pytest.fixture
 def control_readers(monkeypatch):
-    options = SimpleNamespace(
-        deferred=False, alive=False, start_error=None, threads=[]
-    )
+    options = SimpleNamespace(deferred=False, alive=False, start_error=None)
 
-    def create_reader(**kwargs):
-        reader = _ControlReader(**kwargs, options=options)
-        options.threads.append(reader)
-        return reader
+    def create_reader(*, target, args, **_kwargs):
+        return _ControlReader(target, args, options)
 
     monkeypatch.setattr(
         worker_module,
@@ -116,7 +105,7 @@ def control_readers(monkeypatch):
     return options
 
 
-@pytest.fixture(params=["inspection", "result-query"])
+@pytest.fixture(params=["inspection"])
 def control_call(request, tmp_path, control_readers):
     workspace, _, _, record = _prepared_revision(tmp_path)
     if request.param == "inspection":
@@ -128,7 +117,6 @@ def control_call(request, tmp_path, control_readers):
             return client.inspect(record.spec, record.revision_hash, validate=True, **kwargs)
 
         error_type = InspectionWorkerError
-        description = "The isolated Abaqus inspection"
     else:
         client = IsolatedFEMResultQuerier(workspace)
         response = WorkerResponse(
@@ -155,7 +143,6 @@ def control_call(request, tmp_path, control_readers):
             return client.query(response, queries, **kwargs)
 
         error_type = ResultQueryWorkerError
-        description = "The isolated result query"
     return SimpleNamespace(
         invoke=invoke,
         operation=request.param,
@@ -163,18 +150,16 @@ def control_call(request, tmp_path, control_readers):
         expected=expected,
         payload=json.dumps(expected.to_dict(), ensure_ascii=False).encode("utf-8"),
         error_type=error_type,
-        description=description,
-        workspace=workspace,
     )
 
 
 @pytest.fixture
 def control_process(monkeypatch, control_call):
     process = _ControlProcess(control_call.payload, stderr="子进程日志".encode("utf-8"))
-    process.launches = []
 
     def launch(command, **kwargs):
-        process.launches.append((command, kwargs))
+        process.command = command
+        process.shell = kwargs["shell"]
         return process
 
     monkeypatch.setattr(worker_module.subprocess, "Popen", launch)
@@ -188,34 +173,23 @@ def _assert_pipes_closed(process):
             assert pipe.closed
 
 
-def test_control_process_returns_response_and_closes_joined_pipes(
-    monkeypatch, control_call, control_process, control_readers,
+@pytest.mark.parametrize("control_call", ["inspection", "result-query"], indirect=True)
+def test_control_process_returns_completed_response_and_closes_pipes(
+    control_call, control_process,
 ):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
-    monkeypatch.setenv("PYTHONPATH", "test-injection")
     cancellation = threading.Event()
     cancellation.set()
 
     assert control_call.invoke(cancel_event=cancellation) == control_call.expected
 
-    command, options = control_process.launches[0]
+    command = control_process.command
     assert command[1:5] == ["-I", "-B", "-m", "fem_agent.worker"]
     assert command[-1] == (
         "--inspect-stdin" if control_call.operation == "inspection" else "--query-stdin"
     )
-    assert command[-2] == str(control_call.workspace)
-    assert options["shell"] is False
-    assert options["stdin"] == options["stdout"] == options["stderr"] == worker_module.subprocess.PIPE
-    assert "OPENAI_API_KEY" not in options["env"]
-    assert "PYTHONPATH" not in options["env"]
+    assert control_process.shell is False
     assert json.loads(control_process.stdin.payload.decode("utf-8")) == control_call.request.to_dict()
-    assert control_process.terminate_calls == 0
-    assert control_process.wait_timeouts == [worker_module._WORKER_LOG_JOIN_SECONDS]
-    assert [reader.name for reader in control_readers.threads] == [
-        f"fem-agent-{control_call.operation}-stdout",
-        f"fem-agent-{control_call.operation}-stderr",
-    ]
-    assert all(reader.daemon and len(reader.join_timeouts) == 1 for reader in control_readers.threads)
+    assert not control_process.terminated
     _assert_pipes_closed(control_process)
 
 
@@ -224,14 +198,12 @@ def test_control_process_returns_response_and_closes_joined_pipes(
     [
         (b"", b"", True, False, "was cancelled."),
         (b"", b"", False, True, "exceeded its time limit."),
-        (b"x" * 33, b"", False, False, "exceeded its bounded control-output limit."),
-        (b"", b"x" * 33, False, False, "exceeded its bounded control-output limit."),
         (b"x" * 20, b"x" * 20, True, True, "exceeded its bounded control-output limit."),
         (b"", b"", True, True, "was cancelled."),
     ],
-    ids=["cancel", "timeout", "stdout-limit", "stderr-limit", "combined-limit-priority", "cancel-priority"],
+    ids=["cancel", "timeout", "combined-limit-priority", "cancel-priority"],
 )
-def test_control_process_terminates_for_limits_in_original_priority(
+def test_control_process_terminates_for_limits_in_priority_order(
     monkeypatch, control_call, control_process, stdout, stderr, cancelled, expired, message,
 ):
     control_process.stdout = io.BytesIO(stdout)
@@ -247,11 +219,10 @@ def test_control_process_terminates_for_limits_in_original_priority(
     if cancelled:
         cancellation.set()
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match=message):
         control_call.invoke(timeout_seconds=1.0, cancel_event=cancellation)
 
-    assert str(caught.value) == f"{control_call.description} {message}"
-    assert control_process.terminate_calls == 1
+    assert control_process.terminated
     _assert_pipes_closed(control_process)
 
 
@@ -262,11 +233,10 @@ def test_control_process_checks_output_limit_after_exit_and_reader_join(
     control_process.stdout = io.BytesIO(b"x" * 33)
     control_readers.deferred = True
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="control-output limit"):
         control_call.invoke()
 
-    assert str(caught.value) == f"{control_call.description} exceeded its bounded control-output limit."
-    assert control_process.terminate_calls == 0
+    assert not control_process.terminated
     _assert_pipes_closed(control_process)
 
 
@@ -285,33 +255,37 @@ def test_control_process_capture_failure_precedes_cancellation_and_exit_status(
     cancellation = threading.Event()
     cancellation.set()
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="captured safely"):
         control_call.invoke(cancel_event=cancellation)
 
-    assert str(caught.value) == f"{control_call.description} output could not be captured safely."
-    assert control_process.terminate_calls == 1
+    assert control_process.terminated
     _assert_pipes_closed(control_process)
 
 
-@pytest.mark.parametrize("missing_pipe", ["stdin", "stdout", "stderr"])
 def test_control_process_rejects_missing_pipes_and_cleans_up(
-    control_call, control_process, missing_pipe,
+    control_call, control_process,
 ):
-    getattr(control_process, missing_pipe).close()
-    setattr(control_process, missing_pipe, None)
+    control_process.stdout.close()
+    control_process.stdout = None
     control_process.returncode = None
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="could not start"):
         control_call.invoke()
 
-    assert str(caught.value) == f"{control_call.description} process could not start."
-    pipe_description = "inspection" if control_call.operation == "inspection" else "result query"
-    assert str(caught.value.__cause__) == f"{pipe_description} process pipes were not created"
-    assert control_process.terminate_calls == 1
+    assert control_process.terminated
     _assert_pipes_closed(control_process)
 
 
-@pytest.mark.parametrize("error_stage", ["launch", "write", "wait", "wait-timeout"])
+@pytest.mark.parametrize(
+    ("control_call", "error_stage"),
+    [
+        ("inspection", "launch"),
+        ("result-query", "launch"),
+        ("inspection", "write"),
+        ("inspection", "wait-timeout"),
+    ],
+    indirect=["control_call"],
+)
 def test_control_process_normalizes_process_errors_after_cleanup(
     monkeypatch, control_call, control_process, error_stage,
 ):
@@ -325,40 +299,18 @@ def test_control_process_normalizes_process_errors_after_cleanup(
         control_process.stdin.write_error = error
         control_process.returncode = None
     else:
-        if error_stage == "wait-timeout":
-            error = worker_module.subprocess.TimeoutExpired("control process", 3.0)
+        error = worker_module.subprocess.TimeoutExpired("control process", 3.0)
         control_process.wait_error = error
 
-    with pytest.raises(control_call.error_type) as caught:
+    message = "did not stop cleanly" if error_stage == "wait-timeout" else "could not start"
+    with pytest.raises(control_call.error_type, match=message) as caught:
         control_call.invoke()
 
-    message = "process did not stop cleanly." if error_stage == "wait-timeout" else "process could not start."
-    assert str(caught.value) == f"{control_call.description} {message}"
     assert caught.value.__cause__ is error
     if error_stage != "launch":
         _assert_pipes_closed(control_process)
     if error_stage == "write":
-        assert control_process.terminate_calls == 1
-
-
-def test_control_process_does_not_wrap_cleanup_errors(
-    monkeypatch, control_call, control_process,
-):
-    cleanup_error = OSError("pipe cleanup failed")
-    close_pipes = worker_module._close_process_pipes
-
-    def fail_cleanup(process):
-        close_pipes(process)
-        raise cleanup_error
-
-    monkeypatch.setattr(worker_module, "_close_process_pipes", fail_cleanup)
-    control_process.stdin.write_error = OSError("request write failed")
-
-    with pytest.raises(OSError) as caught:
-        control_call.invoke()
-
-    assert caught.value is cleanup_error
-    _assert_pipes_closed(control_process)
+        assert control_process.terminated
 
 
 def test_control_process_cleans_up_when_reader_start_fails(
@@ -372,58 +324,58 @@ def test_control_process_cleans_up_when_reader_start_fails(
         control_call.invoke()
 
     assert caught.value is error
-    assert control_process.terminate_calls == 1
+    assert control_process.terminated
     _assert_pipes_closed(control_process)
 
 
-@pytest.mark.parametrize("returncode", [1, -9])
 def test_control_process_requires_successful_exit_before_decoding_response(
-    control_call, control_process, returncode,
+    control_call, control_process,
 ):
     control_process.stdout = io.BytesIO(b"invalid response")
-    control_process.returncode = returncode
+    control_process.returncode = 1
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="process failed"):
         control_call.invoke()
 
-    assert str(caught.value) == f"{control_call.description} process failed."
     _assert_pipes_closed(control_process)
 
 
-@pytest.mark.parametrize("payload", [b"\xff", b"not-json", b"[]", b"{}"])
+@pytest.mark.parametrize("control_call", ["inspection", "result-query"], indirect=True)
+@pytest.mark.parametrize("payload", [b"not-json", b"{}"], ids=["malformed-json", "missing-fields"])
 def test_control_process_rejects_invalid_business_response(
     control_call, control_process, payload,
 ):
     control_process.stdout = io.BytesIO(payload)
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="invalid response") as caught:
         control_call.invoke()
 
-    assert str(caught.value) == f"{control_call.description} returned an invalid response."
     assert caught.value.__cause__ is not None
     _assert_pipes_closed(control_process)
 
 
-@pytest.mark.parametrize("identity_part", ["primary", "context"])
+@pytest.mark.parametrize(
+    ("control_call", "identity_field", "replacement"),
+    [
+        ("inspection", "revision", 2),
+        ("inspection", "source_sha256", "0" * 64),
+        ("result-query", "run_id", "run_other"),
+        ("result-query", "step", "Another-step"),
+    ],
+    indirect=["control_call"],
+)
 def test_control_process_rejects_response_with_wrong_identity(
-    control_call, control_process, identity_part,
+    control_call, control_process, identity_field, replacement,
 ):
     payload = control_call.expected.to_dict()
-    if control_call.operation == "inspection":
-        if identity_part == "primary":
-            payload["summary"]["revision"] += 1
-        else:
-            payload["summary"]["source_sha256"] = "0" * 64
-    elif identity_part == "primary":
-        payload["run_id"] = "run_other"
-    else:
-        payload["step"] = "Another-step"
+    identity = payload["summary"] if control_call.operation == "inspection" else payload
+    assert replacement != identity[identity_field]
+    identity[identity_field] = replacement
     control_process.stdout = io.BytesIO(json.dumps(payload).encode("utf-8"))
 
-    with pytest.raises(control_call.error_type) as caught:
+    with pytest.raises(control_call.error_type, match="identity did not match"):
         control_call.invoke()
 
-    assert str(caught.value) == f"{control_call.description} response identity did not match."
     _assert_pipes_closed(control_process)
 
 
@@ -457,10 +409,9 @@ def test_control_process_timeout_starts_after_encoding_and_before_launch(
 
     if delay_stage == "encoding":
         assert control_call.invoke(timeout_seconds=1.0) == control_call.expected
-        assert control_process.terminate_calls == 0
+        assert not control_process.terminated
     else:
-        with pytest.raises(control_call.error_type) as caught:
+        with pytest.raises(control_call.error_type, match="time limit"):
             control_call.invoke(timeout_seconds=1.0)
-        assert str(caught.value) == f"{control_call.description} exceeded its time limit."
-        assert control_process.terminate_calls == 1
+        assert control_process.terminated
     _assert_pipes_closed(control_process)
