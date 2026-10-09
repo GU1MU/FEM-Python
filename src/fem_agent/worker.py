@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Literal, Mapping
 
 import numpy as np
 import scipy
@@ -191,6 +191,106 @@ class WorkerRunInProgressError(RuntimeError):
     """The same persisted revision already has a live worker process."""
 
 
+def _run_bounded_control_process(
+    command: list[str],
+    request_payload: bytes,
+    *,
+    operation: Literal["inspection", "result-query"],
+    creationflags: int,
+    timeout_seconds: float,
+    cancel_event: threading.Event | None,
+) -> tuple[bytes, str | None, OSError | subprocess.TimeoutExpired | None]:
+    """Return stdout, a control failure reason, and any launch/stop error.
+
+    Cleanup errors propagate directly; the caller translates launch/stop errors
+    and control failures into its own business exception.
+    """
+    process: subprocess.Popen[bytes] | None = None
+    capture = _BoundedWorkerLogCapture(
+        _FIXED_INSPECTION_OUTPUT_LIMIT_BYTES
+    )
+    stdout_buffer = io.BytesIO()
+    stderr_buffer = io.BytesIO()
+    readers: list[threading.Thread] = []
+    failure: str | None = None
+    process_error: OSError | subprocess.TimeoutExpired | None = None
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=Path(__file__).resolve().parents[2],
+            env=scrub_worker_environment(os.environ),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            creationflags=creationflags,
+        )
+        if (
+            process.stdin is None
+            or process.stdout is None
+            or process.stderr is None
+        ):
+            description = "inspection" if operation == "inspection" else "result query"
+            raise OSError(f"{description} process pipes were not created")
+        process.stdin.write(request_payload)
+        process.stdin.close()
+        for name, source, destination in (
+            ("stdout", process.stdout, stdout_buffer),
+            ("stderr", process.stderr, stderr_buffer),
+        ):
+            reader = threading.Thread(
+                target=capture.copy,
+                args=(source, destination),
+                name=f"fem-agent-{operation}-{name}",
+                daemon=True,
+            )
+            reader.start()
+            readers.append(reader)
+
+        while process.poll() is None:
+            if capture.exceeded:
+                failure = "output-limit"
+                _terminate_process(process)
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                failure = "cancelled"
+                _terminate_process(process)
+                break
+            if time.monotonic() - started >= timeout_seconds:
+                failure = "timeout"
+                _terminate_process(process)
+                break
+            time.sleep(_INSPECTION_POLL_SECONDS)
+        if process.poll() is None:
+            _terminate_process(process)
+        process.wait(timeout=_WORKER_LOG_JOIN_SECONDS)
+    except OSError as exc:
+        process_error = exc
+    except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            _terminate_process(process)
+        process_error = exc
+    finally:
+        if process is not None and process.poll() is None:
+            _terminate_process(process)
+        deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
+        for reader in readers:
+            reader.join(max(0.0, deadline - time.monotonic()))
+        _close_process_pipes(process)
+    if process_error is not None:
+        return b"", None, process_error
+    if any(reader.is_alive() for reader in readers) or capture.failure is not None:
+        return b"", "capture", None
+    if capture.exceeded and failure is None:
+        failure = "output-limit"
+    if failure is not None:
+        return b"", failure, None
+    if process is None or process.returncode != 0:
+        return b"", "exit", None
+    return stdout_buffer.getvalue(), None, None
+
+
 class IsolatedFEMInspector:
     """Parse and summarize an attached input outside the Agent process."""
 
@@ -240,103 +340,33 @@ class IsolatedFEMInspector:
             else 0
         )
         request_payload = _encode_control_json(request.to_dict())
-        process: subprocess.Popen[bytes] | None = None
-        capture = _BoundedWorkerLogCapture(
-            _FIXED_INSPECTION_OUTPUT_LIMIT_BYTES
+        stdout_payload, failure, process_error = _run_bounded_control_process(
+            command,
+            request_payload,
+            operation="inspection",
+            creationflags=creationflags,
+            timeout_seconds=timeout,
+            cancel_event=cancel_event,
         )
-        stdout_buffer = io.BytesIO()
-        stderr_buffer = io.BytesIO()
-        readers: list[threading.Thread] = []
-        failure: str | None = None
-        started = time.monotonic()
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=Path(__file__).resolve().parents[2],
-                env=scrub_worker_environment(os.environ),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-                creationflags=creationflags,
-            )
-            if (
-                process.stdin is None
-                or process.stdout is None
-                or process.stderr is None
-            ):
-                raise OSError("inspection process pipes were not created")
-            process.stdin.write(request_payload)
-            process.stdin.close()
-            for name, source, destination in (
-                ("stdout", process.stdout, stdout_buffer),
-                ("stderr", process.stderr, stderr_buffer),
-            ):
-                reader = threading.Thread(
-                    target=capture.copy,
-                    args=(source, destination),
-                    name=f"fem-agent-inspection-{name}",
-                    daemon=True,
-                )
-                reader.start()
-                readers.append(reader)
-
-            while process.poll() is None:
-                if capture.exceeded:
-                    failure = (
-                        "The isolated Abaqus inspection exceeded its "
-                        "bounded control-output limit."
-                    )
-                    _terminate_process(process)
-                    break
-                if cancel_event is not None and cancel_event.is_set():
-                    failure = "The isolated Abaqus inspection was cancelled."
-                    _terminate_process(process)
-                    break
-                if time.monotonic() - started >= timeout:
-                    failure = (
-                        "The isolated Abaqus inspection exceeded its time limit."
-                    )
-                    _terminate_process(process)
-                    break
-                time.sleep(_INSPECTION_POLL_SECONDS)
-            if process.poll() is None:
-                _terminate_process(process)
-            process.wait(timeout=_WORKER_LOG_JOIN_SECONDS)
-        except OSError as exc:
+        if isinstance(process_error, OSError):
             raise InspectionWorkerError(
                 "The isolated Abaqus inspection process could not start."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                _terminate_process(process)
+            ) from process_error
+        if isinstance(process_error, subprocess.TimeoutExpired):
             raise InspectionWorkerError(
                 "The isolated Abaqus inspection process did not stop cleanly."
-            ) from exc
-        finally:
-            if process is not None and process.poll() is None:
-                _terminate_process(process)
-            deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
-            for reader in readers:
-                reader.join(max(0.0, deadline - time.monotonic()))
-            _close_process_pipes(process)
-        if any(reader.is_alive() for reader in readers) or capture.failure is not None:
-            raise InspectionWorkerError(
-                "The isolated Abaqus inspection output could not be captured safely."
-            )
-        if capture.exceeded and failure is None:
-            failure = (
-                "The isolated Abaqus inspection exceeded its bounded "
-                "control-output limit."
-            )
+            ) from process_error
         if failure is not None:
-            raise InspectionWorkerError(failure)
-        if process is None or process.returncode != 0:
-            raise InspectionWorkerError(
-                "The isolated Abaqus inspection process failed."
-            )
+            messages = {
+                "capture": "The isolated Abaqus inspection output could not be captured safely.",
+                "output-limit": "The isolated Abaqus inspection exceeded its bounded control-output limit.",
+                "cancelled": "The isolated Abaqus inspection was cancelled.",
+                "timeout": "The isolated Abaqus inspection exceeded its time limit.",
+                "exit": "The isolated Abaqus inspection process failed.",
+            }
+            raise InspectionWorkerError(messages[failure])
         try:
-            payload = json.loads(stdout_buffer.getvalue().decode("utf-8"))
+            payload = json.loads(stdout_payload.decode("utf-8"))
             response = InspectionResponse.from_dict(
                 _mapping(payload, "inspection response")
             )
@@ -416,101 +446,33 @@ class IsolatedFEMResultQuerier:
             else 0
         )
         request_payload = _encode_control_json(request.to_dict())
-        process: subprocess.Popen[bytes] | None = None
-        capture = _BoundedWorkerLogCapture(
-            _FIXED_INSPECTION_OUTPUT_LIMIT_BYTES
+        stdout_payload, failure, process_error = _run_bounded_control_process(
+            command,
+            request_payload,
+            operation="result-query",
+            creationflags=creationflags,
+            timeout_seconds=timeout,
+            cancel_event=cancel_event,
         )
-        stdout_buffer = io.BytesIO()
-        stderr_buffer = io.BytesIO()
-        readers: list[threading.Thread] = []
-        failure: str | None = None
-        started = time.monotonic()
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=Path(__file__).resolve().parents[2],
-                env=scrub_worker_environment(os.environ),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                shell=False,
-                creationflags=creationflags,
-            )
-            if (
-                process.stdin is None
-                or process.stdout is None
-                or process.stderr is None
-            ):
-                raise OSError("result query process pipes were not created")
-            process.stdin.write(request_payload)
-            process.stdin.close()
-            for name, source, destination in (
-                ("stdout", process.stdout, stdout_buffer),
-                ("stderr", process.stderr, stderr_buffer),
-            ):
-                reader = threading.Thread(
-                    target=capture.copy,
-                    args=(source, destination),
-                    name=f"fem-agent-result-query-{name}",
-                    daemon=True,
-                )
-                reader.start()
-                readers.append(reader)
-
-            while process.poll() is None:
-                if capture.exceeded:
-                    failure = (
-                        "The isolated result query exceeded its bounded "
-                        "control-output limit."
-                    )
-                    _terminate_process(process)
-                    break
-                if cancel_event is not None and cancel_event.is_set():
-                    failure = "The isolated result query was cancelled."
-                    _terminate_process(process)
-                    break
-                if time.monotonic() - started >= timeout:
-                    failure = "The isolated result query exceeded its time limit."
-                    _terminate_process(process)
-                    break
-                time.sleep(_INSPECTION_POLL_SECONDS)
-            if process.poll() is None:
-                _terminate_process(process)
-            process.wait(timeout=_WORKER_LOG_JOIN_SECONDS)
-        except OSError as exc:
+        if isinstance(process_error, OSError):
             raise ResultQueryWorkerError(
                 "The isolated result query process could not start."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            if process is not None:
-                _terminate_process(process)
+            ) from process_error
+        if isinstance(process_error, subprocess.TimeoutExpired):
             raise ResultQueryWorkerError(
                 "The isolated result query process did not stop cleanly."
-            ) from exc
-        finally:
-            if process is not None and process.poll() is None:
-                _terminate_process(process)
-            deadline = time.monotonic() + _WORKER_LOG_JOIN_SECONDS
-            for reader in readers:
-                reader.join(max(0.0, deadline - time.monotonic()))
-            _close_process_pipes(process)
-        if any(reader.is_alive() for reader in readers) or capture.failure is not None:
-            raise ResultQueryWorkerError(
-                "The isolated result query output could not be captured safely."
-            )
-        if capture.exceeded and failure is None:
-            failure = (
-                "The isolated result query exceeded its bounded "
-                "control-output limit."
-            )
+            ) from process_error
         if failure is not None:
-            raise ResultQueryWorkerError(failure)
-        if process is None or process.returncode != 0:
-            raise ResultQueryWorkerError(
-                "The isolated result query process failed."
-            )
+            messages = {
+                "capture": "The isolated result query output could not be captured safely.",
+                "output-limit": "The isolated result query exceeded its bounded control-output limit.",
+                "cancelled": "The isolated result query was cancelled.",
+                "timeout": "The isolated result query exceeded its time limit.",
+                "exit": "The isolated result query process failed.",
+            }
+            raise ResultQueryWorkerError(messages[failure])
         try:
-            payload = json.loads(stdout_buffer.getvalue().decode("utf-8"))
+            payload = json.loads(stdout_payload.decode("utf-8"))
             summary = ResultSummary.from_dict(
                 _mapping(payload, "result summary")
             )
