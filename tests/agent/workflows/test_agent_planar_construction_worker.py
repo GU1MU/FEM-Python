@@ -4,7 +4,7 @@ import threading
 
 from fem.application import ModelSession
 from fem_agent.tools.registry import ToolExecutionContext
-import fem_gui.agent_authoring as agent_authoring
+import fem_gui.agent_handlers.geometry_creation as agent_authoring
 from tests.helpers.agent_planar_construction import (
     make_planar_authoring_controller as _controller,
     build_rectangle_arguments,

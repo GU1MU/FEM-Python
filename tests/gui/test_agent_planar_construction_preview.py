@@ -337,7 +337,7 @@ def test_stable_diagnostics_are_provider_safe(
             )
         )
 
-    monkeypatch.setattr("fem_gui.agent_authoring.compile_planar_construction", fail)
+    monkeypatch.setattr("fem_gui.agent_handlers.geometry_creation.compile_planar_construction", fail)
     bridge, controller = make_planar_authoring_controller(ModelSession())
 
     result = _dispatch(controller, build_rectangle_arguments(), f"diagnostic-{code.replace('.', '-')}")
@@ -459,7 +459,7 @@ def test_invalid_output_is_rejected_before_cad_compilation(
         raise AssertionError("CAD compilation must not start for invalid output")
 
     monkeypatch.setattr(
-        "fem_gui.agent_authoring.compile_planar_construction",
+        "fem_gui.agent_handlers.geometry_creation.compile_planar_construction",
         unexpected_compile,
     )
     bridge, controller = make_planar_authoring_controller(ModelSession())
@@ -493,7 +493,7 @@ def test_fourth_planar_attempt_is_blocked_before_compilation(
         )
 
     monkeypatch.setattr(
-        "fem_gui.agent_authoring.compile_planar_construction",
+        "fem_gui.agent_handlers.geometry_creation.compile_planar_construction",
         fail_compile,
     )
     _bridge, controller = make_planar_authoring_controller(ModelSession())

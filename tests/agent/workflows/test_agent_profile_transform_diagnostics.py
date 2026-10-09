@@ -15,7 +15,7 @@ from fem_agent.geometry_authoring import planar_sketch_geometry
 from fem_agent.authoring import AuthoringContractError
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
-from fem_gui import agent_authoring
+from fem_gui.agent_handlers import geometry_editing, profile_transforms
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     SessionGeometryAuthoringPort,
@@ -403,7 +403,7 @@ def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> No
     before = session.snapshot()
 
     monkeypatch.setattr(
-        agent_authoring,
+        profile_transforms,
         "profile_transform_context",
         lambda *_args, **_kwargs: {
             "dimension": 2,
@@ -432,7 +432,7 @@ def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> No
     assert session.snapshot() == before
 
     monkeypatch.setattr(
-        agent_authoring,
+        profile_transforms,
         "profile_transform_context",
         lambda *_args, **_kwargs: {
             "dimension": 2,
@@ -463,7 +463,7 @@ def test_topology_and_preflight_failures_are_typed_and_atomic(monkeypatch) -> No
 
     monkeypatch.undo()
     monkeypatch.setattr(
-        agent_authoring,
+        geometry_editing,
         "_preflight_profile_extrusions",
         lambda _recipes: (_ for _ in ()).throw(
             RuntimeError("OCC/Gmsh preflight failed at C:\\private\\model.brep")
@@ -502,7 +502,7 @@ def test_unexpected_body_count_diagnostic_preserves_draft(monkeypatch) -> None:
     )
     _bridge, controller = _controller(session)
     monkeypatch.setattr(
-        agent_authoring,
+        geometry_editing,
         "_preflight_derived_geometry",
         lambda _recipe: (_ for _ in ()).throw(
             AuthoringContractError(
@@ -544,7 +544,7 @@ def test_programming_errors_keep_generic_tool_contract(
     def fail(*_args, **_kwargs):
         raise dependency_error
 
-    monkeypatch.setattr(agent_authoring, "profile_transform_context", fail)
+    monkeypatch.setattr(profile_transforms, "profile_transform_context", fail)
     result = controller.dispatch(
         "read_profile_transform_context",
         {"part_id": "P1"},

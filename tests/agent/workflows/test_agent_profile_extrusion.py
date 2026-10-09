@@ -19,7 +19,7 @@ from fem_agent.geometry_authoring import (
 )
 from fem_agent.result_authoring import AgentResultQueryBridge
 from fem_agent.tools.registry import ToolExecutionContext
-from fem_gui import agent_authoring
+from fem_gui.agent_handlers import geometry_editing as agent_authoring
 from fem_gui.agent_authoring import (
     AgentAuthoringBridge,
     SessionGeometryAuthoringPort,

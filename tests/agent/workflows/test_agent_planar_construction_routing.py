@@ -5,7 +5,7 @@ import json
 
 from fem.application import ModelSession
 from fem_agent.tools.registry import ToolExecutionContext
-import fem_gui.agent_authoring as agent_authoring_module
+import fem_gui.agent_handlers.geometry_creation as agent_authoring_module
 
 
 from tests.helpers.agent_planar_construction import (
