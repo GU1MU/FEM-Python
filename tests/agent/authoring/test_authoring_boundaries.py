@@ -12,6 +12,7 @@ def test_authoring_contract_modules_do_not_import_the_workflow_controller() -> N
         package_root / "authoring_payload.py",
         package_root / "authoring_validation.py",
         package_root / "authoring_values.py",
+        package_root / "authoring_tool_policy.py",
         *sorted((package_root / "authoring_schemas").glob("*.py")),
     ]
 

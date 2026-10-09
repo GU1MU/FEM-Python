@@ -58,7 +58,6 @@ from .authoring_schemas.session import (
     _REQUEST_PROJECT_SAVE,
     _REQUIREMENT_SPECS,
     _SET_REQUIREMENTS,
-    _stage_requirement_tool,
 )
 from .authoring_schemas.geometry import (
     _PREPARE_GEOMETRY,
@@ -68,33 +67,32 @@ from .authoring_schemas.geometry import (
     _PREPARE_PROFILE_PATH_SWEEP,
     _PREPARE_PROFILE_REVOLUTION,
     _READ_GEOMETRY_EDIT_CONTEXT,
-    _READ_PROFILE_TRANSFORM_CONTEXT,
-    _geometry_edit_tool_definition,
     _planar_construction_context_capability,
 )
 from .authoring_schemas.definitions import (
     _APPLY_DEFINITION,
     _EDIT_MODEL_OBJECT,
     _PREPARE_DELETE,
-    _READ_DELETABLE_OBJECTS,
-    _READ_EDITABLE_OBJECTS,
-    _READ_MODEL_TOPOLOGY_CONTEXT,
 )
 from .authoring_schemas.analysis import (
     _PREPARE_MESH,
     _PREPARE_SOLVE,
-    _READ_MESH_REFINEMENT_CONTEXT,
     _RUN_PREFLIGHT,
 )
-from .authoring_schemas.catalogs import (
-    _ANALYSIS_RUN_CATALOG,
-    _EXPORT_RESULT_CSV,
-    _GEOMETRY_FEATURE_CATALOG,
-    _READ_RESULT_DISPLAY_CONTEXT,
-    _RESULT_CATALOG,
-    _RESULT_COMPARISON,
-    _RESULT_QUERY,
-    _WORKSPACE_DOCUMENTS,
+from .authoring_schemas.catalogs import _GEOMETRY_FEATURE_CATALOG
+from .authoring_tool_policy import (
+    PROFILE_TRANSFORM_TOOL_NAMES as _PROFILE_TRANSFORM_TOOLS,
+    AuthoringToolPolicyState,
+    GeometryEditSchemaScope as _GeometryEditSchemaScope,
+    capability_enabled as _capability_enabled,
+    current_requirement_group,
+    project_save_available,
+    publication_needs_live_context,
+    publication_needs_workspace_export,
+    publish_authoring_tools,
+    requirement_keys,
+    requirement_spec,
+    requirement_stage as _requirement_stage,
 )
 
 if TYPE_CHECKING:
@@ -113,14 +111,6 @@ class _PlanarConstructionRetryState:
     attempt: int
 
 
-@dataclass(frozen=True, slots=True)
-class _GeometryEditSchemaScope:
-    binding_identity: tuple[str, str, int]
-    part_id: str
-    recipe_kind: str
-    supported_operations: tuple[str, ...]
-
-
 AuthoringToolHandler = Callable[
     [Mapping[str, object], "AuthoringWorkflowController"],
     AuthoringToolOutcome,
@@ -137,260 +127,12 @@ _FORBIDDEN_CONFIRMATION_TOOL_NAMES = frozenset(
         "cancel_operation",
     }
 )
-_GEOMETRY_REQUIREMENTS = (
-    "length_unit",
-    "force_unit",
-    "stress_unit",
-)
 _DEFAULT_GEOMETRY_REQUIREMENTS: dict[str, str] = {
     "length_unit": "mm",
     "force_unit": "N",
     "stress_unit": "MPa",
 }
 _DEFAULT_REQUIREMENT_SOURCE_TURN_ID = "agent-default"
-_MESH_REQUIREMENTS = (
-    "mesh_cell_shape",
-    "mesh_order",
-    "mesh_global_size",
-)
-_LINE_MESH_REQUIREMENTS = (
-    "mesh_cell_shape",
-    "mesh_order",
-    "mesh_global_size",
-    "line_element_type",
-)
-_REQUIREMENT_GROUPS: dict[str, tuple[str, ...]] = {
-    "geometry": _GEOMETRY_REQUIREMENTS,
-    "mesh": _MESH_REQUIREMENTS,
-}
-_REQUIREMENT_GATE_BY_STAGE = {
-    AuthoringWorkflowStage.REQUIREMENTS: "geometry",
-    AuthoringWorkflowStage.GEOMETRY_READY: "geometry",
-    AuthoringWorkflowStage.MESH_READY: "mesh",
-    AuthoringWorkflowStage.DEFINITIONS_READY: "mesh",
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: "mesh",
-    AuthoringWorkflowStage.PREFLIGHT_READY: "mesh",
-    AuthoringWorkflowStage.SOLVE_READY: "mesh",
-    AuthoringWorkflowStage.RESULTS_READY: "mesh",
-}
-_GATED_OPERATIONS_BY_STAGE = {
-    AuthoringWorkflowStage.REQUIREMENTS: frozenset(
-        {"prepare_geometry_proposal", "prepare_planar_construction_proposal"}
-    ),
-    AuthoringWorkflowStage.GEOMETRY_READY: frozenset(
-        {"prepare_geometry_proposal", "prepare_planar_construction_proposal"}
-    ),
-    AuthoringWorkflowStage.MESH_READY: frozenset({"prepare_mesh_proposal"}),
-    AuthoringWorkflowStage.DEFINITIONS_READY: frozenset({"prepare_mesh_proposal"}),
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: frozenset(
-        {"prepare_mesh_proposal"}
-    ),
-    AuthoringWorkflowStage.PREFLIGHT_READY: frozenset({"prepare_mesh_proposal"}),
-    AuthoringWorkflowStage.SOLVE_READY: frozenset({"prepare_mesh_proposal"}),
-    AuthoringWorkflowStage.RESULTS_READY: frozenset({"prepare_mesh_proposal"}),
-}
-
-
-_PROJECT_SAVE_READY_STAGES = frozenset(
-    {
-        AuthoringWorkflowStage.REQUIREMENTS,
-        AuthoringWorkflowStage.GEOMETRY_READY,
-        AuthoringWorkflowStage.MESH_READY,
-        AuthoringWorkflowStage.DEFINITIONS_READY,
-        AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY,
-        AuthoringWorkflowStage.PREFLIGHT_READY,
-        AuthoringWorkflowStage.SOLVE_READY,
-        AuthoringWorkflowStage.RESULTS_READY,
-    }
-)
-_DESTRUCTIVE_EDIT_READY_STAGES = _PROJECT_SAVE_READY_STAGES
-_DESTRUCTIVE_EDIT_TOOLS = frozenset(
-    {_READ_DELETABLE_OBJECTS.name, _PREPARE_DELETE.name}
-)
-_MODEL_EDIT_TOOLS = frozenset({_READ_EDITABLE_OBJECTS.name, _EDIT_MODEL_OBJECT.name})
-_GEOMETRY_EDIT_TOOLS = frozenset(
-    {
-        _READ_GEOMETRY_EDIT_CONTEXT.name,
-        _PREPARE_GEOMETRY_EDIT.name,
-    }
-)
-_GEOMETRY_CATALOG_TOOLS = frozenset({_GEOMETRY_FEATURE_CATALOG.name})
-_PROFILE_TRANSFORM_TOOLS = frozenset(
-    {
-        _READ_PROFILE_TRANSFORM_CONTEXT.name,
-        _PREPARE_PROFILE_EXTRUSION.name,
-        _PREPARE_PROFILE_REVOLUTION.name,
-        _PREPARE_PROFILE_PATH_SWEEP.name,
-    }
-)
-
-
-_STAGE_TOOLS: dict[AuthoringWorkflowStage, tuple[ToolDefinition, ...]] = {
-    AuthoringWorkflowStage.REQUIREMENTS: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _PREPARE_GEOMETRY,
-        _PREPARE_PLANAR_CONSTRUCTION,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _APPLY_DEFINITION,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.GEOMETRY_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _PREPARE_GEOMETRY,
-        _PREPARE_PLANAR_CONSTRUCTION,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _APPLY_DEFINITION,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.GEOMETRY_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.MESH_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _APPLY_DEFINITION,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.MESH_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.DEFINITIONS_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_MODEL_TOPOLOGY_CONTEXT,
-        _APPLY_DEFINITION,
-        _RUN_PREFLIGHT,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.ANALYSIS_DEFINITIONS_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_MODEL_TOPOLOGY_CONTEXT,
-        _APPLY_DEFINITION,
-        _RUN_PREFLIGHT,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.PREFLIGHT_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_MODEL_TOPOLOGY_CONTEXT,
-        _APPLY_DEFINITION,
-        _RUN_PREFLIGHT,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.PREFLIGHT_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.SOLVE_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_MODEL_TOPOLOGY_CONTEXT,
-        _APPLY_DEFINITION,
-        _RUN_PREFLIGHT,
-        _PREPARE_SOLVE,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.SOLVE_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.RESULTS_READY: (
-        _READ_CONTEXT,
-        _GEOMETRY_FEATURE_CATALOG,
-        _SET_REQUIREMENTS,
-        _READ_MESH_REFINEMENT_CONTEXT,
-        _PREPARE_MESH,
-        _READ_MODEL_TOPOLOGY_CONTEXT,
-        _RUN_PREFLIGHT,
-        _PREPARE_SOLVE,
-        _RESULT_CATALOG,
-        _RESULT_QUERY,
-        _RESULT_COMPARISON,
-        _READ_RESULT_DISPLAY_CONTEXT,
-        _EXPORT_RESULT_CSV,
-        _READ_GEOMETRY_EDIT_CONTEXT,
-        _PREPARE_GEOMETRY_EDIT,
-        _APPLY_DEFINITION,
-        _REQUEST_PROJECT_SAVE,
-        _READ_DELETABLE_OBJECTS,
-        _PREPARE_DELETE,
-        _READ_EDITABLE_OBJECTS,
-        _EDIT_MODEL_OBJECT,
-    ),
-    AuthoringWorkflowStage.PROJECT_SAVE_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.DESTRUCTIVE_EDIT_PENDING: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.STALE: (_READ_CONTEXT,),
-    AuthoringWorkflowStage.CANCELLED: (_READ_CONTEXT,),
-}
-
-# Keep the dedicated tools adjacent to the feature catalog in every ready
-# native-authoring stage.  Pending/terminal stages intentionally publish only
-# their read context and cannot create a proposal.
-_PROFILE_TRANSFORM_STAGE_TOOLS = (
-    _READ_PROFILE_TRANSFORM_CONTEXT,
-    _PREPARE_PROFILE_EXTRUSION,
-    _PREPARE_PROFILE_REVOLUTION,
-    _PREPARE_PROFILE_PATH_SWEEP,
-)
-for _stage, _definitions in tuple(_STAGE_TOOLS.items()):
-    if _stage not in _PROJECT_SAVE_READY_STAGES:
-        continue
-    expanded: list[ToolDefinition] = []
-    for _definition in _definitions:
-        expanded.append(_definition)
-        if _definition.name == _GEOMETRY_FEATURE_CATALOG.name:
-            expanded.extend(_PROFILE_TRANSFORM_STAGE_TOOLS)
-    _STAGE_TOOLS[_stage] = tuple(expanded)
 
 
 class AuthoringWorkflowController:
@@ -788,173 +530,36 @@ class AuthoringWorkflowController:
     def definitions(self) -> tuple[ToolDefinition, ...]:
         with self._lock:
             inventory = self._result_inventory()
-            if self._observed_context is None and inventory is not None:
-                run_count, result_count = inventory
-                global_reads = (
-                    *(
-                        (_WORKSPACE_DOCUMENTS,)
-                        if _WORKSPACE_DOCUMENTS.name in self._handlers
-                        else ()
-                    ),
-                    *((_ANALYSIS_RUN_CATALOG,) if run_count > 0 else ()),
-                    *((_RESULT_CATALOG, _RESULT_QUERY) if result_count > 0 else ()),
-                    *((_RESULT_COMPARISON,) if result_count >= 2 else ()),
-                    *(
-                        (_READ_RESULT_DISPLAY_CONTEXT,)
-                        if result_count > 0
-                        else ()
-                    ),
-                    *(
-                        (_EXPORT_RESULT_CSV,)
-                        if result_count > 0
-                        and self._workspace_export_selected()
-                        else ()
-                    ),
-                )
-                return tuple(
-                    item for item in global_reads if item.name in self._handlers
-                )
-            definitions = list(_STAGE_TOOLS[self._stage])
-            if (
-                self._stage in _PROJECT_SAVE_READY_STAGES
-                and _CREATE_NATIVE_MODEL_DOCUMENT.name in self._handlers
-            ):
-                definitions.insert(1, _CREATE_NATIVE_MODEL_DOCUMENT)
-            if _WORKSPACE_DOCUMENTS.name in self._handlers:
-                definitions.append(_WORKSPACE_DOCUMENTS)
-            run_count = (
-                self._observed_context.run_count
-                if inventory is None and self._observed_context is not None
-                else 0
-                if inventory is None
-                else inventory[0]
+            policy_state = AuthoringToolPolicyState(
+                stage=self._stage,
+                registered_tool_names=frozenset(self._handlers),
+                observed_context=self._observed_context,
+                proposed_requirement_keys=frozenset(
+                    item.key
+                    for item in self._ledger.entries
+                    if item.status is RequirementStatus.PROPOSED
+                ),
+                binding_identity=self._binding_identity,
+                geometry_edit_scope=self._geometry_edit_schema_scope,
+                workspace_result_inventory=inventory,
             )
-            result_count = (
-                self._observed_context.result_count
-                if inventory is None and self._observed_context is not None
-                else 0
-                if inventory is None
-                else inventory[1]
+            export_selected = (
+                self._workspace_export_selected()
+                if publication_needs_workspace_export(policy_state)
+                else False
             )
-            if self._stage in _PROJECT_SAVE_READY_STAGES and run_count > 0:
-                historical_definitions = [_ANALYSIS_RUN_CATALOG]
-                if result_count > 0:
-                    historical_definitions.extend((_RESULT_CATALOG, _RESULT_QUERY))
-                    historical_definitions.append(_READ_RESULT_DISPLAY_CONTEXT)
-                    if self._workspace_export_selected():
-                        historical_definitions.append(_EXPORT_RESULT_CSV)
-                if result_count >= 2:
-                    historical_definitions.append(_RESULT_COMPARISON)
-                for result_definition in historical_definitions:
-                    if all(item.name != result_definition.name for item in definitions):
-                        definitions.append(result_definition)
-            requirement_group = self._current_requirement_group()
-            requirements_complete = (
-                requirement_group is not None
-                and self._requirement_group_complete(requirement_group)
-            )
-            gated_operations = _GATED_OPERATIONS_BY_STAGE.get(
-                self._stage,
-                frozenset(),
-            )
-            visible: list[ToolDefinition] = []
-            for item in definitions:
-                if item.name in gated_operations and not requirements_complete:
-                    continue
-                if (
-                    item.name == _APPLY_DEFINITION.name
-                    and self._stage
-                    in {
-                        AuthoringWorkflowStage.REQUIREMENTS,
-                        AuthoringWorkflowStage.GEOMETRY_READY,
-                        AuthoringWorkflowStage.MESH_READY,
-                    }
-                    and not self._current_mesh_available()
-                ):
-                    continue
-                if (
-                    item.name == _SET_REQUIREMENTS.name
-                    and requirement_group is not None
-                ):
-                    keys = self._requirement_keys(requirement_group)
-                    item = _stage_requirement_tool(
-                        requirement_group,
-                        keys,
-                        {key: self._requirement_spec(key) for key in keys},
-                    )
-                if item.name == _PREPARE_GEOMETRY_EDIT.name:
-                    scope = self._geometry_edit_schema_scope
-                    if (
-                        scope is not None
-                        and scope.binding_identity == self._binding_identity
-                    ):
-                        item = _geometry_edit_tool_definition(
-                            scope.part_id,
-                            scope.recipe_kind,
-                            scope.supported_operations,
-                        )
-                visible.append(item)
-            return tuple(
-                item
-                for item in visible
-                if (
-                    (
-                        item.name
-                        in {
-                            _READ_CONTEXT.name,
-                            _SET_REQUIREMENTS.name,
-                        }
-                        or item.name in self._handlers
-                    )
-                    and (item.name != _ANALYSIS_RUN_CATALOG.name or (run_count > 0))
-                    and (
-                        item.name
-                        not in {
-                            _RESULT_CATALOG.name,
-                            _RESULT_QUERY.name,
-                            _RESULT_COMPARISON.name,
-                        }
-                        or (
-                            result_count
-                            >= (2 if item.name == _RESULT_COMPARISON.name else 1)
-                        )
-                    )
-                    and (
-                        item.name != _READ_RESULT_DISPLAY_CONTEXT.name
-                        or result_count > 0
-                    )
-                    and (
-                        item.name != _EXPORT_RESULT_CSV.name
-                        or (
-                            result_count > 0
-                            and self._workspace_export_selected()
-                        )
-                    )
-                    and (
-                        item.name != _REQUEST_PROJECT_SAVE.name
-                        or self._project_save_available()
-                    )
-                    and (
-                        item.name not in _DESTRUCTIVE_EDIT_TOOLS
-                        or self._destructive_edit_available()
-                    )
-                    and (
-                        item.name not in _MODEL_EDIT_TOOLS
-                        or self._model_edit_available()
-                    )
-                    and (
-                        item.name not in _GEOMETRY_EDIT_TOOLS
-                        or self._geometry_edit_available()
-                    )
-                    and (
-                        item.name not in _GEOMETRY_CATALOG_TOOLS
-                        or self._geometry_catalog_available()
-                    )
-                    and (
-                        item.name not in _PROFILE_TRANSFORM_TOOLS
-                        or self._profile_transform_available()
-                    )
-                )
+            live_context = None
+            if publication_needs_live_context(policy_state):
+                try:
+                    raw = self._context_reader()
+                except Exception:
+                    raw = None
+                if type(raw) is AuthoringContext:
+                    live_context = raw
+            return publish_authoring_tools(
+                policy_state,
+                live_context=live_context,
+                workspace_export_selected=export_selected,
             )
 
     def _record_geometry_edit_schema_scope(
@@ -1506,7 +1111,9 @@ class AuthoringWorkflowController:
         if type(context) is not AuthoringContext:
             raise TypeError("context must be AuthoringContext")
         with self._lock:
-            if not self._project_save_available(context):
+            if not project_save_available(
+                self._stage, frozenset(self._handlers), context
+            ):
                 raise ValueError("current native project is not ready to save")
             active = self._project_save_record
             if active is not None and active.state in {
@@ -1664,61 +1271,13 @@ class AuthoringWorkflowController:
         )
 
     def _current_requirement_group(self) -> str | None:
-        return _REQUIREMENT_GATE_BY_STAGE.get(self._stage)
+        return current_requirement_group(self._stage)
 
-    def _active_part_dimension(self) -> int | None:
-        context = self._observed_context
-        if context is None or context.active_part_id is None:
-            return None
-        part = next(
-            (
-                item
-                for item in context.parts
-                if item.part_id == context.active_part_id and not item.suppressed
-            ),
-            None,
-        )
-        return None if part is None else part.dimension
-
-    def _requirement_keys(
-        self,
-        group: str,
-    ) -> tuple[str, ...]:
-        try:
-            keys = _REQUIREMENT_GROUPS[group]
-        except KeyError as exc:
-            raise ValueError("unknown requirement group") from exc
-        if group == "mesh" and self._active_part_dimension() == 1:
-            return _LINE_MESH_REQUIREMENTS
-        return keys
+    def _requirement_keys(self, group: str) -> tuple[str, ...]:
+        return requirement_keys(group, self._observed_context)
 
     def _requirement_spec(self, key: str) -> Mapping[str, object]:
-        spec = _REQUIREMENT_SPECS[key]
-        dimension = self._active_part_dimension()
-        if key == "mesh_cell_shape":
-            if dimension == 1:
-                return {"type": "string", "enum": ["line"]}
-            if dimension == 3:
-                return {
-                    "type": "string",
-                    "enum": ["tetrahedron", "hexahedron"],
-                }
-            return {
-                "type": "string",
-                "enum": ["triangle", "quadrilateral"],
-            }
-        if key == "mesh_order" and dimension == 1:
-            return {"type": "integer", "enum": [1]}
-        return spec
-
-    def _requirement_group_complete(self, group: str) -> bool:
-        required = set(self._requirement_keys(group))
-        recorded = {
-            item.key
-            for item in self._ledger.entries
-            if item.status is RequirementStatus.PROPOSED
-        }
-        return required <= recorded
+        return requirement_spec(key, self._observed_context)
 
     def _seed_default_geometry_requirements(
         self,
@@ -2020,164 +1579,6 @@ class AuthoringWorkflowController:
             self._pending_operation = "destructive_edit"
         self._refresh_turn_snapshot_locked()
 
-    def _project_save_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _PROJECT_SAVE_READY_STAGES
-            or _REQUEST_PROJECT_SAVE.name not in self._handlers
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and _capability_enabled(context, "request_project_save")
-        )
-
-    def _destructive_edit_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _DESTRUCTIVE_EDIT_READY_STAGES
-            or not _DESTRUCTIVE_EDIT_TOOLS.issubset(self._handlers)
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and _capability_enabled(context, "delete_model_objects")
-        )
-
-    def _model_edit_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _DESTRUCTIVE_EDIT_READY_STAGES
-            or not _MODEL_EDIT_TOOLS.issubset(self._handlers)
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and _capability_enabled(context, "edit_model_objects")
-        )
-
-    def _geometry_edit_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _PROJECT_SAVE_READY_STAGES
-            or not _GEOMETRY_EDIT_TOOLS.issubset(self._handlers)
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and bool(context.parts)
-            and _capability_enabled(context, "edit_native_geometry")
-        )
-
-    def _geometry_catalog_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _PROJECT_SAVE_READY_STAGES
-            or not _GEOMETRY_CATALOG_TOOLS.issubset(self._handlers)
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and any(not part.suppressed for part in context.parts)
-            and _capability_enabled(context, "read_geometry_feature_catalog")
-        )
-
-    def _profile_transform_available(
-        self,
-        context: AuthoringContext | None = None,
-    ) -> bool:
-        if (
-            self._stage not in _PROJECT_SAVE_READY_STAGES
-            or not _PROFILE_TRANSFORM_TOOLS.issubset(self._handlers)
-        ):
-            return False
-        if context is None:
-            try:
-                raw = self._context_reader()
-            except Exception:
-                return False
-            if type(raw) is not AuthoringContext:
-                return False
-            context = raw
-        binding = context.binding
-        return bool(
-            binding.supported
-            and binding.source_kind == "native"
-            and any(not part.suppressed for part in context.parts)
-            and _capability_enabled(context, "edit_native_geometry")
-        )
-
-    def _current_mesh_available(self) -> bool:
-        context = self._observed_context
-        return bool(
-            type(context) is AuthoringContext
-            and context.binding.supported
-            and context.binding.source_kind == "native"
-            and context.mesh.present
-            and context.mesh.current
-            and _APPLY_DEFINITION.name in self._handlers
-        )
-
     def _clear_destructive_pending(self) -> None:
         self._destructive_resume_stage = None
         self._pending_destructive_object_type = None
@@ -2267,24 +1668,6 @@ def _job_status_is_active(value: str) -> bool:
         "cancelling",
         "canceling",
     }
-
-
-def _requirement_stage(key: str) -> str:
-    if key == "line_element_type":
-        return "mesh"
-    for stage, keys in _REQUIREMENT_GROUPS.items():
-        if key in keys:
-            return stage
-    raise ValueError("unknown requirement field")
-
-
-def _capability_enabled(
-    context: AuthoringContext,
-    operation: str,
-) -> bool:
-    return any(
-        item.operation == operation and item.enabled for item in context.capabilities
-    )
 
 
 __all__ = [
