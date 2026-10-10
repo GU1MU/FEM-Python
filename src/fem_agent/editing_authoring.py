@@ -63,6 +63,14 @@ from .authoring import (
     OperationKind,
     ProposalKind,
 )
+from .definition_rules import (
+    NODAL_LOAD_DIRECTIONS,
+    boundary_unit,
+    model_dofs_per_node,
+    nodal_load_unit,
+    validate_boundary_components_and_unit,
+    validate_load_components_and_unit,
+)
 from .naming import NamePolicy
 
 
@@ -358,7 +366,7 @@ def editable_object_catalog(
                         "first_component": boundary.first_component,
                         "last_component": boundary.last_component,
                         "value": boundary.value,
-                        "unit": units.length,
+                        "unit": boundary_unit(boundary.first_component, units),
                         "distribution": "uniform",
                         "confirmed": True,
                         "editable_fields": [
@@ -1183,7 +1191,8 @@ def _validated_boundary_edit(
         raise ValueError(
             "boundary target kind does not match its target scope"
         )
-    dimension = _part_dimension_for_region(snapshot, region)
+    _part_dimension_for_region(snapshot, region)
+    dofs_per_node = model_dofs_per_node(getattr(snapshot.artifact, "model", None))
     units = _require_units(snapshot)
     confirmed = ConfirmedDisplacement(
         _controlled_name(replacement.name, "boundary name", "Displacement"),
@@ -1197,12 +1206,7 @@ def _validated_boundary_edit(
         _required_text(changes["distribution"], "distribution"),
         _confirmed(changes["confirmed"]),
     )
-    if confirmed.last_component > dimension:
-        raise ValueError("boundary component exceeds the current Part dimension")
-    if confirmed.unit != units.length:
-        raise ValueError(
-            "boundary unit must exactly match the project length unit"
-        )
+    validate_boundary_components_and_unit(confirmed, dofs_per_node, units)
     normalized.update(
         {
             "unit": confirmed.unit,
@@ -1569,41 +1573,12 @@ def _confirmed_load_after_edit(
     )
     dimension = _part_dimension_for_region(snapshot, region)
     units = _require_units(snapshot)
-    if confirmed.load_type == "nodal":
-        if int(confirmed.component or 0) > dimension:
-            raise ValueError("load component exceeds the current Part dimension")
-        expected_direction = {
-            1: "global_x",
-            2: "global_y",
-            3: "global_z",
-        }[int(confirmed.component)]
-        if confirmed.direction != expected_direction:
-            raise ValueError("load direction does not match its component")
-        expected_unit = units.force
-    elif confirmed.load_type.startswith("edge_"):
-        if dimension != 2:
-            raise ValueError("edge load requires a two-dimensional Part")
-        if (
-            confirmed.load_type == "edge_traction"
-            and confirmed.direction != "global_xy"
-        ):
-            raise ValueError("two-dimensional traction requires global_xy")
-        expected_unit = f"{units.force}/{units.length}"
-    else:
-        if dimension != 3:
-            raise ValueError("surface load requires a three-dimensional Part")
-        if (
-            confirmed.load_type == "surface_traction"
-            and confirmed.direction != "global_xyz"
-        ):
-            raise ValueError(
-                "three-dimensional traction requires global_xyz"
-            )
-        expected_unit = units.stress
-    if confirmed.vector and len(confirmed.vector) != dimension:
-        raise ValueError("load vector dimension does not match the current Part")
-    if confirmed.unit != expected_unit:
-        raise ValueError("load unit does not match the project unit context")
+    dofs_per_node = (
+        model_dofs_per_node(getattr(snapshot.artifact, "model", None))
+        if confirmed.load_type == "nodal"
+        else 0
+    )
+    validate_load_components_and_unit(confirmed, dimension, dofs_per_node, units)
     return confirmed
 
 
@@ -1682,11 +1657,7 @@ def _load_details(
         if load_kind == "nodal":
             component = int(getattr(load, "component"))
             details["load_type"] = "nodal"
-            details["direction"] = {
-                1: "global_x",
-                2: "global_y",
-                3: "global_z",
-            }.get(component)
+            details["direction"] = NODAL_LOAD_DIRECTIONS.get(component)
         else:
             load_type = str(getattr(load, "load_type"))
             details["load_type"] = f"{load_kind}_{load_type}"
@@ -1706,7 +1677,7 @@ def _load_details(
         dimension = _part_dimension_for_region(snapshot, region)
         units = _require_units(snapshot)
         details["unit"] = (
-            units.force
+            nodal_load_unit(component, units)
             if load_kind == "nodal"
             else f"{units.force}/{units.length}"
             if dimension == 2

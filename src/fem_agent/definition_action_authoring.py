@@ -60,6 +60,11 @@ from .authoring import (
     ModelPatch,
 )
 from .definition_authoring import definition_state_operations
+from .definition_rules import (
+    model_dofs_per_node,
+    validate_boundary_components_and_unit,
+    validate_load_components_and_unit,
+)
 from .incremental_authoring import create_incremental_definition_patch
 from .naming import NamePolicy
 
@@ -346,7 +351,7 @@ def _create_analysis_child_patch(
     if steps[0].procedure != "static" or steps[0].metadata.get("nlgeom") is not False:
         raise ValueError("analysis actions require one linear static NLGEOM=false step")
     dimension = _part_dimension(snapshot)
-    dofs_per_node = _model_dofs_per_node(snapshot)
+    dofs_per_node = model_dofs_per_node(getattr(snapshot.artifact, "model", None))
     units = snapshot.unit_context
     assert units is not None
 
@@ -386,25 +391,7 @@ def _create_analysis_child_patch(
             _enum(values["distribution"], "distribution", {"uniform"}),
             _confirmed(values["confirmed"]),
         )
-        if confirmed.last_component > dofs_per_node:
-            raise AnalysisAuthoringError(
-                "displacement DOF exceeds the current model capability"
-            )
-        if confirmed.last_component <= 3 and confirmed.unit != units.length:
-            raise AnalysisAuthoringError(
-                "displacement unit must exactly match the project length unit"
-            )
-        if confirmed.first_component >= 4 and confirmed.unit != "rad":
-            raise AnalysisAuthoringError(
-                "rotation unit must be rad"
-            )
-        if confirmed.first_component <= 3 < confirmed.last_component and (
-            confirmed.value != 0.0 or confirmed.unit != units.length
-        ):
-            raise AnalysisAuthoringError(
-                "a mixed translation/rotation range must be a zero fixed "
-                "constraint using the project length unit"
-            )
+        validate_boundary_components_and_unit(confirmed, dofs_per_node, units)
         child = DisplacementConstraint(
             confirmed.target_scope,
             confirmed.first_component,
@@ -484,7 +471,7 @@ def _create_analysis_child_patch(
                 _nonblank(values["distribution"], "load distribution"),
                 _confirmed(values["confirmed"]),
             )
-            _validate_load_dimension_and_unit(
+            validate_load_components_and_unit(
                 confirmed,
                 dimension,
                 dofs_per_node,
@@ -1011,71 +998,6 @@ def _fixed_vector(
     return vector
 
 
-def _validate_load_dimension_and_unit(
-    load: ConfirmedLoad,
-    dimension: int,
-    dofs_per_node: int,
-    units: UnitContext,
-) -> None:
-    if load.load_type == "nodal":
-        if int(load.component or 0) > dofs_per_node:
-            raise AnalysisAuthoringError(
-                "load component must be an integer from 1 to "
-                f"{dofs_per_node} for the current model capability"
-            )
-        expected_direction = {
-            1: "global_x",
-            2: "global_y",
-            3: "global_z",
-            4: "global_rx",
-            5: "global_ry",
-            6: "global_rz",
-        }[int(load.component)]
-        if load.direction != expected_direction:
-            raise AnalysisAuthoringError(
-                "nodal load direction does not match its component"
-            )
-        expected_unit = (
-            units.force
-            if int(load.component) <= 3
-            else f"{units.force}*{units.length}"
-        )
-    elif load.load_type.startswith("edge_"):
-        if dimension != 2:
-            raise AnalysisAuthoringError(
-                "edge load requires a two-dimensional Part"
-            )
-        if (
-            load.load_type == "edge_traction"
-            and load.direction != "global_xy"
-        ):
-            raise AnalysisAuthoringError(
-                "two-dimensional traction direction must be global_xy"
-            )
-        expected_unit = f"{units.force}/{units.length}"
-    else:
-        if dimension != 3:
-            raise AnalysisAuthoringError(
-                "surface load requires a three-dimensional Part"
-            )
-        if (
-            load.load_type == "surface_traction"
-            and load.direction != "global_xyz"
-        ):
-            raise AnalysisAuthoringError(
-                "three-dimensional traction direction must be global_xyz"
-            )
-        expected_unit = units.stress
-    if load.vector and len(load.vector) != dimension:
-        raise AnalysisAuthoringError(
-            "load vector dimension does not match the current Part"
-        )
-    if load.unit != expected_unit:
-        raise AnalysisAuthoringError(
-            "load unit does not match the project unit context"
-        )
-
-
 def _part_dimension(snapshot: _Snapshot) -> int:
     part = _one_part(snapshot, snapshot.active_part_id)
     recipe = getattr(part, "geometry_recipe", None)
@@ -1084,20 +1006,6 @@ def _part_dimension(snapshot: _Snapshot) -> int:
             "analysis Part dimension must be explicitly two or three"
         )
     return int(geometry_dimension(recipe))
-
-
-def _model_dofs_per_node(snapshot: _Snapshot) -> int:
-    model = getattr(snapshot.artifact, "model", None)
-    if model is None:
-        raise AnalysisAuthoringError(
-            "analysis requires a current realized model capability"
-        )
-    report = describe_model_capabilities(model)
-    if not report.compatible or report.dofs_per_node is None:
-        raise AnalysisAuthoringError(
-            "analysis model has no compatible nodal DOF capability"
-        )
-    return int(report.dofs_per_node)
 
 
 def _require_elastic_material(snapshot: _Snapshot, value: object) -> None:

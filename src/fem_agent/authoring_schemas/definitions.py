@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 
+from ..definition_rules import NODAL_LOAD_DIRECTIONS
 from .common import _NO_ARGUMENTS, _tool
 
 
@@ -170,14 +171,7 @@ _LOAD_PARAMETER_SCHEMAS = [
         direction=direction,
         distribution="concentrated",
     )
-    for component, direction in (
-        (1, "global_x"),
-        (2, "global_y"),
-        (3, "global_z"),
-        (4, "global_rx"),
-        (5, "global_ry"),
-        (6, "global_rz"),
-    )
+    for component, direction in NODAL_LOAD_DIRECTIONS.items()
 ] + [
     _load_parameters(
         entity_type="edge",
@@ -802,17 +796,17 @@ _EDIT_MODEL_OBJECT = _tool(
                     "first_component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 6,
                     },
                     "last_component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 6,
                     },
                     "component": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3,
+                        "maximum": 6,
                     },
                     "value": {"type": "number"},
                     "vector": {
@@ -844,9 +838,7 @@ _EDIT_MODEL_OBJECT = _tool(
                     "direction": {
                         "type": "string",
                         "enum": [
-                            "global_x",
-                            "global_y",
-                            "global_z",
+                            *NODAL_LOAD_DIRECTIONS.values(),
                             "global_xy",
                             "global_xyz",
                             "global",
