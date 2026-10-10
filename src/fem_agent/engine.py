@@ -267,7 +267,6 @@ class AgentSessionEngine:
         self._closed = False
         self._active_run: WorkerResponse | None = None
         self._summary_shown_revision: tuple[int, str] | None = None
-        self._tool_result_cache: dict[str, ToolResult] = {}
         self._continuations: dict[str, ContinuationCheckpoint] = {}
         self._pending_round_audit: list[dict[str, Any]] | None = None
         self._defer_audit_persistence = bool(defer_audit_persistence)
@@ -331,7 +330,6 @@ class AgentSessionEngine:
             self._history = []
             self._active_run = None
             self._summary_shown_revision = None
-            self._tool_result_cache = {}
             self._continuations = {}
         return (self._state_event(),)
 
@@ -588,6 +586,7 @@ class AgentSessionEngine:
         self._reset_provider_cancellation()
         events: list[EngineEvent] = []
         tool_calls_used = 0
+        tool_result_cache: dict[str, ToolResult] = {}
         available_tools = (
             self.registry.available_definitions(self.session_id) if allow_tools else ()
         )
@@ -831,14 +830,14 @@ class AgentSessionEngine:
                         },
                     )
                 )
-                result = self._tool_result_cache.get(context.idempotency_key)
+                result = tool_result_cache.get(context.idempotency_key)
                 if result is None:
                     result = self.registry.dispatch(
                         call.name,
                         call.arguments,
                         context,
                     )
-                    self._tool_result_cache[context.idempotency_key] = result
+                    tool_result_cache[context.idempotency_key] = result
                 self._register_continuation_from_result(result)
                 payload = result.to_json()
                 if len(payload.encode("utf-8")) > self.config.max_tool_payload_bytes:
