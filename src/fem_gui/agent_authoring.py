@@ -834,287 +834,344 @@ class SessionGeometryAuthoringPort:
         if proposal.proposal_kind is ProposalKind.SOLVE:
             return self._accept_solve(record)
         if proposal.proposal_kind is ProposalKind.DESTRUCTIVE_EDIT:
-            if len(proposal.operations) == 1:
-                operation = proposal.operations[0]
-                if operation.kind is OperationKind.DELETE_MODEL_OBJECT:
-                    delta = apply_delete_operation(
-                        self._session,
-                        operation,
-                        base_session_revision=proposal.base_session_revision,
-                    )
-                    if operation.parameters["object_type"] not in {
-                        "part",
-                        "feature",
-                        "generated_mesh",
-                    }:
-                        self._project_definition_delta(delta)
-                elif operation.kind is OperationKind.EDIT_MODEL_OBJECT:
-                    delta = apply_edit_operation(
-                        self._session,
-                        operation,
-                        base_session_revision=proposal.base_session_revision,
-                    )
-                    self._project_definition_delta(delta)
-                else:
-                    raise AuthoringContractError(
-                        "unsupported destructive edit operation"
-                    )
-            else:
-                batch = scoped_definition_batch_from_operations(
-                    proposal.operations,
-                    base_session_revision=proposal.base_session_revision,
-                )
-                authoring_mode = proposal.preconditions.get("authoring_mode")
-                if authoring_mode == "strict_incremental":
-                    require_strict_definition_batch(
-                        self._session.snapshot(),
-                        batch,
-                        proposal.preconditions.get("direct_action"),
-                    )
-                elif authoring_mode == "direct_incremental":
-                    require_incremental_definition_batch(
-                        self._session.snapshot(),
-                        batch,
-                        proposal.preconditions.get("direct_action"),
-                    )
-                delta = self._session.apply_scoped_definition_batch(batch)
-                self._project_definition_delta(delta)
-            succeeded = replace(record, state=ProposalState.SUCCEEDED)
-            self._records[proposal_id] = succeeded
-            return succeeded
+            return self._accept_destructive_edit(record)
         operation = proposal.operations[0]
         parameters = operation.parameters
         if operation.kind is OperationKind.APPLY_PART_BOOLEAN:
-            if parameters["tool_handling"] != PART_BOOLEAN_TOOL_HANDLING:
-                raise AuthoringContractError(
-                    "Part Boolean tool handling does not match canonical policy"
-                )
-            recipe = geometry_recipe_from_payload(
-                json.loads(str(parameters["recipe_json"]))
-            )
-            if not isinstance(recipe, BooleanGeometry):
-                raise AuthoringContractError(
-                    "Part Boolean proposal recipe is not BooleanGeometry"
-                )
-
-            def commit_part_boolean(
-                session: ModelSession,
-                expected_revision: int,
-            ) -> None:
-                session.apply_part_boolean(
-                    str(parameters["target_part_id"]),
-                    str(parameters["tool_part_id"]),
-                    str(parameters["operation"]),
-                    str(parameters["result_name"]),
-                    result_recipe=recipe,
-                    expected_session_revision=expected_revision,
-                )
-
-            return self._accept_geometry_mutation(
-                record,
-                AgentGeometryMutation(
-                    operation.kind,
-                    (
-                        str(parameters["target_part_id"]),
-                        str(parameters["tool_part_id"]),
-                        str(parameters["result_part_id"]),
-                    ),
-                    commit_part_boolean,
-                ),
-            )
+            return self._accept_part_boolean(record)
         if operation.kind is OperationKind.APPLY_BODY_BOOLEAN:
-            if parameters["tool_handling"] != BODY_BOOLEAN_TOOL_HANDLING:
-                raise AuthoringContractError(
-                    "Body Boolean tool handling does not match canonical policy"
-                )
-            geometry = geometry_recipe_from_payload(
-                json.loads(str(parameters["recipe_json"]))
-            )
-            if type(geometry) is not MultiBodyGeometry:
-                raise AuthoringContractError(
-                    "Body Boolean proposal recipe is not MultiBodyGeometry"
-                )
-
-            def commit_body_boolean(
-                session: ModelSession,
-                expected_revision: int,
-            ) -> None:
-                session.apply_body_boolean(
-                    str(parameters["part_id"]),
-                    str(parameters["target_body_id"]),
-                    str(parameters["tool_body_id"]),
-                    str(parameters["operation"]),
-                    str(parameters["result_name"]),
-                    result=geometry,
-                    expected_session_revision=expected_revision,
-                )
-
-            return self._accept_geometry_mutation(
-                record,
-                AgentGeometryMutation(
-                    operation.kind,
-                    (str(parameters["part_id"]),),
-                    commit_body_boolean,
-                ),
-            )
+            return self._accept_body_boolean(record)
         if operation.kind is OperationKind.EXTRUDE_PART_PROFILES:
-            base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
-            raw_source_ids = parameters["source_face_ids"]
-            if not isinstance(raw_source_ids, list) or not raw_source_ids:
-                raise AuthoringContractError(
-                    "Profile extrusion requires explicit source_face_ids"
-                )
-            source_face_ids = tuple(str(item) for item in raw_source_ids)
-            selection = resolve_extrusion_source_faces(
-                base_recipe,
-                source_face_ids,
-            )
-            if selection.face_ids != source_face_ids:
-                raise AuthoringContractError(
-                    "Profile extrusion sources are not canonical"
-                )
-            part_id = str(parameters["part_id"])
-            snapshot = self._session.snapshot()
-            source_part = next(
-                (
-                    part
-                    for part in snapshot.parts
-                    if str(part.id) == part_id and not part.suppressed
-                ),
-                None,
-            )
-            if source_part is None:
-                raise AuthoringContractError(
-                    "Profile extrusion source Part no longer matches its proposal"
-                )
-            source_recipe = _canonical_profile_source_recipe(
-                source_part.geometry_recipe
-            )
-            if source_recipe != base_recipe:
-                raise AuthoringContractError(
-                    "Profile extrusion source Part no longer matches its proposal"
-                )
-            recipes = tuple(
-                ExtrudedGeometry(
-                    base_recipe,
-                    parameters["height"],
-                    (face_id,),
-                )
-                for face_id in source_face_ids
-            )
-
-            def commit_profile_extrusion(
-                session: ModelSession,
-                expected_revision: int,
-            ) -> None:
-                session.replace_part_with_extruded_siblings(
-                    part_id,
-                    recipes,
-                    expected_session_revision=expected_revision,
-                )
-
-            return self._accept_geometry_mutation(
-                record,
-                AgentGeometryMutation(
-                    operation.kind,
-                    (part_id,),
-                    commit_profile_extrusion,
-                ),
-            )
+            return self._accept_profile_extrusion(record)
         if operation.kind in {
             OperationKind.REVOLVE_PART_PROFILE,
             OperationKind.SWEEP_PART_PROFILE,
         }:
-            base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
-            source_face_id = str(parameters["source_face_id"])
-            selection = resolve_extrusion_source_faces(
-                base_recipe,
-                (source_face_id,),
-            )
-            if selection.face_ids != (source_face_id,):
-                raise AuthoringContractError("derived Profile source is not canonical")
-            part_id = str(parameters["part_id"])
-            snapshot = self._session.snapshot()
-            source_part = next(
-                (
-                    part
-                    for part in snapshot.parts
-                    if str(part.id) == part_id and not part.suppressed
-                ),
-                None,
-            )
-            if source_part is None:
-                raise AuthoringContractError(
-                    "derived Profile source Part no longer matches its proposal"
-                )
-            source_recipe = _canonical_profile_source_recipe(
-                source_part.geometry_recipe
-            )
-            if source_recipe != base_recipe:
-                raise AuthoringContractError(
-                    "derived Profile source Part no longer matches its proposal"
-                )
-            if operation.kind is OperationKind.REVOLVE_PART_PROFILE:
-                recipe = RevolvedGeometry(
-                    base_recipe,
-                    str(parameters["axis"]),
-                    parameters["angle_degrees"],
-                    (source_face_id,),
-                )
-            else:
-                path = geometry_recipe_from_payload(parameters["ordered_wire"])
-                if type(path) is not WireGeometry:
-                    raise AuthoringContractError(
-                        "path sweep proposal path is not an explicit WireGeometry"
-                    )
-                recipe = PathSweptGeometry(
-                    base_recipe,
-                    path,
-                    (source_face_id,),
-                    str(parameters["frame_strategy"]),
-                )
-
-            def commit_derived_feature(
-                session: ModelSession,
-                expected_revision: int,
-            ) -> None:
-                session.replace_part_geometry(
-                    part_id,
-                    recipe,
-                    expected_session_revision=expected_revision,
-                )
-
-            return self._accept_geometry_mutation(
-                record,
-                AgentGeometryMutation(
-                    operation.kind,
-                    (part_id,),
-                    commit_derived_feature,
-                ),
-            )
+            return self._accept_derived_profile_feature(record)
         recipe = geometry_recipe_from_payload(parameters["recipe"])
         snapshot = self._session.snapshot()
         if operation.kind is OperationKind.REPLACE_PART_GEOMETRY:
-            part_id = str(parameters["part_id"])
+            return self._accept_geometry_replacement(record, recipe)
+        return self._accept_geometry_creation(record, recipe, snapshot)
 
-            def commit_replacement(
-                session: ModelSession,
-                expected_revision: int,
-            ) -> None:
-                session.replace_part_geometry(
-                    part_id,
-                    recipe,
-                    expected_session_revision=expected_revision,
+    def _accept_destructive_edit(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        proposal = record.proposal
+        if len(proposal.operations) == 1:
+            operation = proposal.operations[0]
+            if operation.kind is OperationKind.DELETE_MODEL_OBJECT:
+                delta = apply_delete_operation(
+                    self._session,
+                    operation,
+                    base_session_revision=proposal.base_session_revision,
                 )
-
-            return self._accept_geometry_mutation(
-                record,
-                AgentGeometryMutation(
-                    operation.kind,
-                    (part_id,),
-                    commit_replacement,
-                ),
+                if operation.parameters["object_type"] not in {
+                    "part",
+                    "feature",
+                    "generated_mesh",
+                }:
+                    self._project_definition_delta(delta)
+            elif operation.kind is OperationKind.EDIT_MODEL_OBJECT:
+                delta = apply_edit_operation(
+                    self._session,
+                    operation,
+                    base_session_revision=proposal.base_session_revision,
+                )
+                self._project_definition_delta(delta)
+            else:
+                raise AuthoringContractError(
+                    "unsupported destructive edit operation"
+                )
+        else:
+            batch = scoped_definition_batch_from_operations(
+                proposal.operations,
+                base_session_revision=proposal.base_session_revision,
             )
+            authoring_mode = proposal.preconditions.get("authoring_mode")
+            if authoring_mode == "strict_incremental":
+                require_strict_definition_batch(
+                    self._session.snapshot(),
+                    batch,
+                    proposal.preconditions.get("direct_action"),
+                )
+            elif authoring_mode == "direct_incremental":
+                require_incremental_definition_batch(
+                    self._session.snapshot(),
+                    batch,
+                    proposal.preconditions.get("direct_action"),
+                )
+            delta = self._session.apply_scoped_definition_batch(batch)
+            self._project_definition_delta(delta)
+        succeeded = replace(record, state=ProposalState.SUCCEEDED)
+        self._records[proposal.proposal_id] = succeeded
+        return succeeded
+
+    def _accept_part_boolean(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        operation = record.proposal.operations[0]
+        parameters = operation.parameters
+        if parameters["tool_handling"] != PART_BOOLEAN_TOOL_HANDLING:
+            raise AuthoringContractError(
+                "Part Boolean tool handling does not match canonical policy"
+            )
+        recipe = geometry_recipe_from_payload(
+            json.loads(str(parameters["recipe_json"]))
+        )
+        if not isinstance(recipe, BooleanGeometry):
+            raise AuthoringContractError(
+                "Part Boolean proposal recipe is not BooleanGeometry"
+            )
+
+        def commit_part_boolean(
+            session: ModelSession,
+            expected_revision: int,
+        ) -> None:
+            session.apply_part_boolean(
+                str(parameters["target_part_id"]),
+                str(parameters["tool_part_id"]),
+                str(parameters["operation"]),
+                str(parameters["result_name"]),
+                result_recipe=recipe,
+                expected_session_revision=expected_revision,
+            )
+
+        return self._accept_geometry_mutation(
+            record,
+            AgentGeometryMutation(
+                operation.kind,
+                (
+                    str(parameters["target_part_id"]),
+                    str(parameters["tool_part_id"]),
+                    str(parameters["result_part_id"]),
+                ),
+                commit_part_boolean,
+            ),
+        )
+
+    def _accept_body_boolean(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        operation = record.proposal.operations[0]
+        parameters = operation.parameters
+        if parameters["tool_handling"] != BODY_BOOLEAN_TOOL_HANDLING:
+            raise AuthoringContractError(
+                "Body Boolean tool handling does not match canonical policy"
+            )
+        geometry = geometry_recipe_from_payload(
+            json.loads(str(parameters["recipe_json"]))
+        )
+        if type(geometry) is not MultiBodyGeometry:
+            raise AuthoringContractError(
+                "Body Boolean proposal recipe is not MultiBodyGeometry"
+            )
+
+        def commit_body_boolean(
+            session: ModelSession,
+            expected_revision: int,
+        ) -> None:
+            session.apply_body_boolean(
+                str(parameters["part_id"]),
+                str(parameters["target_body_id"]),
+                str(parameters["tool_body_id"]),
+                str(parameters["operation"]),
+                str(parameters["result_name"]),
+                result=geometry,
+                expected_session_revision=expected_revision,
+            )
+
+        return self._accept_geometry_mutation(
+            record,
+            AgentGeometryMutation(
+                operation.kind,
+                (str(parameters["part_id"]),),
+                commit_body_boolean,
+            ),
+        )
+
+    def _accept_profile_extrusion(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        operation = record.proposal.operations[0]
+        parameters = operation.parameters
+        base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
+        raw_source_ids = parameters["source_face_ids"]
+        if not isinstance(raw_source_ids, list) or not raw_source_ids:
+            raise AuthoringContractError(
+                "Profile extrusion requires explicit source_face_ids"
+            )
+        source_face_ids = tuple(str(item) for item in raw_source_ids)
+        selection = resolve_extrusion_source_faces(
+            base_recipe,
+            source_face_ids,
+        )
+        if selection.face_ids != source_face_ids:
+            raise AuthoringContractError(
+                "Profile extrusion sources are not canonical"
+            )
+        part_id = str(parameters["part_id"])
+        self._require_current_profile_source(
+            part_id,
+            base_recipe,
+            mismatch_message=(
+                "Profile extrusion source Part no longer matches its proposal"
+            ),
+        )
+        recipes = tuple(
+            ExtrudedGeometry(
+                base_recipe,
+                parameters["height"],
+                (face_id,),
+            )
+            for face_id in source_face_ids
+        )
+
+        def commit_profile_extrusion(
+            session: ModelSession,
+            expected_revision: int,
+        ) -> None:
+            session.replace_part_with_extruded_siblings(
+                part_id,
+                recipes,
+                expected_session_revision=expected_revision,
+            )
+
+        return self._accept_geometry_mutation(
+            record,
+            AgentGeometryMutation(
+                operation.kind,
+                (part_id,),
+                commit_profile_extrusion,
+            ),
+        )
+
+    def _accept_derived_profile_feature(
+        self,
+        record: ProposalPortRecord,
+    ) -> ProposalPortRecord:
+        operation = record.proposal.operations[0]
+        parameters = operation.parameters
+        base_recipe = geometry_recipe_from_payload(parameters["base_recipe"])
+        source_face_id = str(parameters["source_face_id"])
+        selection = resolve_extrusion_source_faces(
+            base_recipe,
+            (source_face_id,),
+        )
+        if selection.face_ids != (source_face_id,):
+            raise AuthoringContractError("derived Profile source is not canonical")
+        part_id = str(parameters["part_id"])
+        self._require_current_profile_source(
+            part_id,
+            base_recipe,
+            mismatch_message=(
+                "derived Profile source Part no longer matches its proposal"
+            ),
+        )
+        if operation.kind is OperationKind.REVOLVE_PART_PROFILE:
+            recipe = RevolvedGeometry(
+                base_recipe,
+                str(parameters["axis"]),
+                parameters["angle_degrees"],
+                (source_face_id,),
+            )
+        else:
+            path = geometry_recipe_from_payload(parameters["ordered_wire"])
+            if type(path) is not WireGeometry:
+                raise AuthoringContractError(
+                    "path sweep proposal path is not an explicit WireGeometry"
+                )
+            recipe = PathSweptGeometry(
+                base_recipe,
+                path,
+                (source_face_id,),
+                str(parameters["frame_strategy"]),
+            )
+
+        def commit_derived_feature(
+            session: ModelSession,
+            expected_revision: int,
+        ) -> None:
+            session.replace_part_geometry(
+                part_id,
+                recipe,
+                expected_session_revision=expected_revision,
+            )
+
+        return self._accept_geometry_mutation(
+            record,
+            AgentGeometryMutation(
+                operation.kind,
+                (part_id,),
+                commit_derived_feature,
+            ),
+        )
+
+    def _require_current_profile_source(
+        self,
+        part_id: str,
+        base_recipe: object,
+        *,
+        mismatch_message: str,
+    ) -> None:
+        snapshot = self._session.snapshot()
+        source_part = next(
+            (
+                part
+                for part in snapshot.parts
+                if str(part.id) == part_id and not part.suppressed
+            ),
+            None,
+        )
+        if source_part is None:
+            raise AuthoringContractError(mismatch_message)
+        source_recipe = _canonical_profile_source_recipe(
+            source_part.geometry_recipe
+        )
+        if source_recipe != base_recipe:
+            raise AuthoringContractError(mismatch_message)
+
+    def _accept_geometry_replacement(
+        self,
+        record: ProposalPortRecord,
+        recipe: object,
+    ) -> ProposalPortRecord:
+        operation = record.proposal.operations[0]
+        parameters = operation.parameters
+        part_id = str(parameters["part_id"])
+
+        def commit_replacement(
+            session: ModelSession,
+            expected_revision: int,
+        ) -> None:
+            session.replace_part_geometry(
+                part_id,
+                recipe,
+                expected_session_revision=expected_revision,
+            )
+
+        return self._accept_geometry_mutation(
+            record,
+            AgentGeometryMutation(
+                operation.kind,
+                (part_id,),
+                commit_replacement,
+            ),
+        )
+
+    def _accept_geometry_creation(
+        self,
+        record: ProposalPortRecord,
+        recipe: object,
+        snapshot: _SessionSnapshot,
+    ) -> ProposalPortRecord:
+        proposal = record.proposal
+        operation = proposal.operations[0]
+        parameters = operation.parameters
         part_name = NameAllocator(
             {"parts": (part.name for part in snapshot.parts)}
         ).require_next(
@@ -1157,7 +1214,7 @@ class SessionGeometryAuthoringPort:
                 unit_context=units,
             )
         succeeded = replace(record, state=ProposalState.SUCCEEDED)
-        self._records[proposal_id] = succeeded
+        self._records[proposal.proposal_id] = succeeded
         return succeeded
 
     def _accept_geometry_mutation(
