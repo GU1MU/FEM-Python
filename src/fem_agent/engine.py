@@ -42,9 +42,11 @@ from .providers.base import (
     ProviderMalformedResponseError,
     ProviderPaymentRequiredError,
     ProviderRateLimitError,
+    ProviderResponse,
     ProviderTimeoutError,
     ProviderUnavailableError,
     ToolCall,
+    ToolDefinition,
 )
 from .schemas import (
     AnalysisSummary,
@@ -161,6 +163,15 @@ class ContinuationCheckpoint:
     proposal_hash: str
     model_revision: int
     proposal_kind: str = ""
+
+
+@dataclass(frozen=True)
+class _ProviderRequestResult:
+    response: ProviderResponse
+    streamed_text_parts: tuple[str, ...]
+    streamed_reasoning_parts: tuple[str, ...]
+    text_presented: bool
+    reasoning_presented: bool
 
 
 @dataclass(frozen=True)
@@ -656,107 +667,12 @@ class AgentSessionEngine:
                 )
                 return tuple(events)
             try:
-                self._provider_active = True
-                try:
-                    streamed_text_parts: list[str] = []
-                    streamed_reasoning_parts: list[str] = []
-                    stream_started = False
-                    reasoning_stream_started = False
-                    stream_presentation_kind: str | None = None
-
-                    def receive_text_delta(delta: str) -> None:
-                        nonlocal stream_started, stream_presentation_kind
-                        if not isinstance(delta, str) or not delta:
-                            raise ProviderMalformedResponseError(
-                                "provider stream emitted an invalid text delta"
-                            )
-                        streamed_text_parts.append(delta)
-                        if defer_streamed_text:
-                            return
-                        if stream_presentation_kind != "result_summary":
-                            events.append(
-                                self._event(
-                                    EngineEventType.MESSAGE_STARTED,
-                                    {
-                                        "role": "assistant",
-                                        "presentation_kind": "result_summary",
-                                    },
-                                )
-                            )
-                            stream_presentation_kind = "result_summary"
-                        stream_started = True
-                        events.append(
-                            self._event(
-                                EngineEventType.MESSAGE_DELTA,
-                                {"text": delta},
-                            )
-                        )
-
-                    def receive_reasoning_delta(delta: str) -> None:
-                        nonlocal reasoning_stream_started, stream_presentation_kind
-                        if not isinstance(delta, str) or not delta:
-                            raise ProviderMalformedResponseError(
-                                "provider stream emitted an invalid reasoning delta"
-                            )
-                        streamed_reasoning_parts.append(delta)
-                        if defer_streamed_text:
-                            return
-                        if stream_presentation_kind != "process":
-                            events.append(
-                                self._event(
-                                    EngineEventType.MESSAGE_STARTED,
-                                    {
-                                        "role": "assistant",
-                                        "presentation_kind": "process",
-                                    },
-                                )
-                            )
-                            stream_presentation_kind = "process"
-                        reasoning_stream_started = True
-                        events.append(
-                            self._event(
-                                EngineEventType.MESSAGE_DELTA,
-                                {"text": delta},
-                            )
-                        )
-
-                    stream_completion = getattr(
-                        self.provider,
-                        "complete_stream",
-                        None,
-                    )
-                    if callable(stream_completion):
-                        provider_messages = self._provider_messages(
-                            request_context=request_context,
-                        )
-                        if bool(
-                            getattr(
-                                self.provider,
-                                "supports_reasoning_stream",
-                                False,
-                            )
-                        ):
-                            response = stream_completion(
-                                provider_messages,
-                                available_tools,
-                                receive_text_delta,
-                                receive_reasoning_delta,
-                            )
-                        else:
-                            response = stream_completion(
-                                provider_messages,
-                                available_tools,
-                                receive_text_delta,
-                            )
-                    else:
-                        response = self.provider.complete(
-                            self._provider_messages(
-                                request_context=request_context,
-                            ),
-                            available_tools,
-                        )
-                finally:
-                    self._provider_active = False
+                request_result = self._request_provider_response(
+                    request_context=request_context,
+                    available_tools=available_tools,
+                    defer_streamed_text=defer_streamed_text,
+                    events=events,
+                )
             except Exception as error:
                 if self._cancel_event.is_set():
                     events.append(
@@ -783,10 +699,13 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
+            response = request_result.response
             response_error = self._provider_response_error(
                 response.message,
                 remaining_tool_calls=(self.config.max_tool_calls - tool_calls_used),
             )
+            if response_error is None:
+                response_error = self._provider_stream_error(request_result)
             if response_error is not None:
                 events.append(self._diagnostic_event(response_error))
                 events.append(
@@ -796,39 +715,6 @@ class AgentSessionEngine:
                     )
                 )
                 return tuple(events)
-            if streamed_text_parts and "".join(streamed_text_parts) != (
-                response.message.content or ""
-            ):
-                diagnostic = make_diagnostic(
-                    DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
-                    "The provider stream did not match its final response.",
-                    source="agent.provider",
-                )
-                events.append(self._diagnostic_event(diagnostic))
-                events.append(
-                    self._event(
-                        EngineEventType.ERROR,
-                        {"diagnostic": diagnostic.to_dict()},
-                    )
-                )
-                return tuple(events)
-            if streamed_reasoning_parts and "".join(
-                streamed_reasoning_parts
-            ) != (response.message.reasoning_content or ""):
-                diagnostic = make_diagnostic(
-                    DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
-                    "The provider reasoning stream did not match its final response.",
-                    source="agent.provider",
-                )
-                events.append(self._diagnostic_event(diagnostic))
-                events.append(
-                    self._event(
-                        EngineEventType.ERROR,
-                        {"diagnostic": diagnostic.to_dict()},
-                    )
-                )
-                return tuple(events)
-
             # Keep one privacy-safe record per provider round.  This is
             # intentionally written before dispatching any local tool so an
             # empty tool-call response remains auditable as "published but not
@@ -865,8 +751,16 @@ class AgentSessionEngine:
                 )
                 return tuple(events)
             for presentation_kind, content, already_streamed in (
-                ("process", response.message.reasoning_content, reasoning_stream_started),
-                ("result_summary", response.message.content, stream_started),
+                (
+                    "process",
+                    response.message.reasoning_content,
+                    request_result.reasoning_presented,
+                ),
+                (
+                    "result_summary",
+                    response.message.content,
+                    request_result.text_presented,
+                ),
             ):
                 if already_streamed or not content:
                     continue
@@ -1063,6 +957,133 @@ class AgentSessionEngine:
         )
         events.append(self._diagnostic_event(diagnostic))
         return tuple(events)
+
+    def _request_provider_response(
+        self,
+        *,
+        request_context: str | None,
+        available_tools: Sequence[ToolDefinition],
+        defer_streamed_text: bool,
+        events: list[EngineEvent],
+    ) -> _ProviderRequestResult:
+        """Receive one response, publishing accepted deltas as they arrive."""
+
+        self._provider_active = True
+        try:
+            streamed_text_parts: list[str] = []
+            streamed_reasoning_parts: list[str] = []
+            stream_started = False
+            reasoning_stream_started = False
+            stream_presentation_kind: str | None = None
+
+            def receive_delta(delta: str, *, reasoning: bool) -> None:
+                nonlocal stream_started, reasoning_stream_started
+                nonlocal stream_presentation_kind
+                delta_kind = "reasoning" if reasoning else "text"
+                if not isinstance(delta, str) or not delta:
+                    raise ProviderMalformedResponseError(
+                        f"provider stream emitted an invalid {delta_kind} delta"
+                    )
+                parts = streamed_reasoning_parts if reasoning else streamed_text_parts
+                parts.append(delta)
+                if defer_streamed_text:
+                    return
+                presentation_kind = "process" if reasoning else "result_summary"
+                if stream_presentation_kind != presentation_kind:
+                    events.append(
+                        self._event(
+                            EngineEventType.MESSAGE_STARTED,
+                            {
+                                "role": "assistant",
+                                "presentation_kind": presentation_kind,
+                            },
+                        )
+                    )
+                    stream_presentation_kind = presentation_kind
+                if reasoning:
+                    reasoning_stream_started = True
+                else:
+                    stream_started = True
+                events.append(
+                    self._event(
+                        EngineEventType.MESSAGE_DELTA,
+                        {"text": delta},
+                    )
+                )
+
+            def receive_text_delta(delta: str) -> None:
+                receive_delta(delta, reasoning=False)
+
+            def receive_reasoning_delta(delta: str) -> None:
+                receive_delta(delta, reasoning=True)
+
+            stream_completion = getattr(
+                self.provider,
+                "complete_stream",
+                None,
+            )
+            if callable(stream_completion):
+                provider_messages = self._provider_messages(
+                    request_context=request_context,
+                )
+                if bool(
+                    getattr(
+                        self.provider,
+                        "supports_reasoning_stream",
+                        False,
+                    )
+                ):
+                    response = stream_completion(
+                        provider_messages,
+                        available_tools,
+                        receive_text_delta,
+                        receive_reasoning_delta,
+                    )
+                else:
+                    response = stream_completion(
+                        provider_messages,
+                        available_tools,
+                        receive_text_delta,
+                    )
+            else:
+                response = self.provider.complete(
+                    self._provider_messages(
+                        request_context=request_context,
+                    ),
+                    available_tools,
+                )
+        finally:
+            self._provider_active = False
+        return _ProviderRequestResult(
+            response=response,
+            streamed_text_parts=tuple(streamed_text_parts),
+            streamed_reasoning_parts=tuple(streamed_reasoning_parts),
+            text_presented=stream_started,
+            reasoning_presented=reasoning_stream_started,
+        )
+
+    def _provider_stream_error(
+        self,
+        request_result: _ProviderRequestResult,
+    ) -> Diagnostic | None:
+        message = request_result.response.message
+        if request_result.streamed_text_parts and "".join(
+            request_result.streamed_text_parts
+        ) != (message.content or ""):
+            return make_diagnostic(
+                DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
+                "The provider stream did not match its final response.",
+                source="agent.provider",
+            )
+        if request_result.streamed_reasoning_parts and "".join(
+            request_result.streamed_reasoning_parts
+        ) != (message.reasoning_content or ""):
+            return make_diagnostic(
+                DiagnosticCode.PROVIDER_MALFORMED_RESPONSE,
+                "The provider reasoning stream did not match its final response.",
+                source="agent.provider",
+            )
+        return None
 
     def continue_after_proposal(
         self,
