@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
-import time
 from threading import Event, Thread
 from typing import Any
 
@@ -16,61 +15,58 @@ class TaskCancelled(RuntimeError):
     """Internal control-flow exception for cooperative task cancellation."""
 
 
-class OwnedWorkerTimeout(RuntimeError):
-    """One dedicated worker exceeded its bounded wall-clock budget."""
+class OwnedWorker:
+    """Own detached work until the thread really exits, including cancellation.
 
-
-def run_owned_worker(
-    workload: Callable[[], Any],
-    *,
-    name: str,
-    timeout_seconds: float,
-    cancel_event: Event | None = None,
-    should_cancel: Callable[[], bool] | None = None,
-    poll_seconds: float = 0.05,
-) -> Any:
-    """Run one workload on a fresh dedicated thread and return its plain result.
-
-    Mirrors the ``inspect_abaqus`` isolation contract without a subprocess:
-    the caller blocks in a bounded poll loop, only plain data crosses back,
-    and budget exhaustion raises ``OwnedWorkerTimeout`` instead of leaking the
-    worker thread.  Workload exceptions propagate unchanged so existing error
-    contracts keep working.  Each invocation gets its own thread so one
-    CAD-owning workload never inherits global state from a previous run; the
-    workload owns every resource it opens (context managers close CAD models
-    when cancellation or another exception unwinds the call).
+    Cancellation is cooperative. The runtime retains this owner after rejecting
+    a result, until the thread and its CAD resources have actually exited.
+    No Qt objects or owner callbacks are used by the thread.
     """
 
-    outcome: dict[str, Any] = {}
-    done = Event()
+    def __init__(
+        self,
+        workload: Callable[[], Any],
+        *,
+        name: str,
+        cancel_event: Event | None = None,
+    ) -> None:
+        self.cancel_event = cancel_event if cancel_event is not None else Event()
+        self._workload = workload
+        self._result: Any = None
+        self._error: BaseException | None = None
+        self._thread = Thread(target=self._run, name=name, daemon=False)
 
-    def target() -> None:
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
         try:
-            outcome["result"] = workload()
+            if not self.cancel_event.is_set():
+                self._result = self._workload()
+            else:
+                raise TaskCancelled()
         except BaseException as error:
-            outcome["error"] = error
+            self._error = error
         finally:
-            done.set()
+            self._workload = None
 
-    thread = Thread(target=target, name=name, daemon=True)
-    thread.start()
-    deadline = time.monotonic() + timeout_seconds
-    while not done.wait(timeout=poll_seconds):
-        if should_cancel is not None and should_cancel():
-            if cancel_event is not None:
-                cancel_event.set()
-        if time.monotonic() >= deadline:
-            if cancel_event is not None:
-                # Make the abandoned workload unwind at its next checkpoint so
-                # it closes every resource it owns instead of running on
-                # unsupervised (e.g. holding live CAD entities on its thread).
-                cancel_event.set()
-            raise OwnedWorkerTimeout(
-                f"{name} exceeded its {timeout_seconds:.0f}s worker budget"
-            )
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["result"]
+    @property
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def request_cancel(self) -> None:
+        self.cancel_event.set()
+
+    def wait(self, timeout: float) -> bool:
+        self._thread.join(timeout)
+        return not self.is_alive
+
+    def take_outcome(self) -> tuple[Any, BaseException | None]:
+        if self.is_alive:
+            raise RuntimeError("detached worker has not exited")
+        result, error = self._result, self._error
+        self._result = self._error = None
+        return result, error
 
 
 @dataclass(slots=True)

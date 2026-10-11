@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Callable
 from fem_agent.authoring import AuthoringContractError
 from fem_agent.authoring_payload import provider_safe_authoring_payload
 from fem_agent.authoring_runtime import AuthoringWorkflowController
-from fem_agent.authoring_values import AuthoringToolOutcome
+from fem_agent.authoring_values import AuthoringToolOutcome, AuthoringToolPreparation
 from fem_agent.diagnostics import profile_transform_diagnostic
 from fem_agent.geometry_authoring import _as_strict_planar_sketch, profile_transform_context
 from fem.geometry import (
@@ -16,6 +17,24 @@ from fem.geometry import (
     resolve_extrusion_source_faces,
 )
 from .binding import AuthoringHandlerBinding
+
+
+def _profile_preflight_outcome(
+    outcome: AuthoringToolOutcome | AuthoringToolPreparation,
+    *, operation: str, first_failed_member: str | None = None,
+) -> AuthoringToolOutcome | AuthoringToolPreparation:
+    if type(outcome) is not AuthoringToolPreparation:
+        return outcome
+
+    def finalize(result: object, error: BaseException | None) -> AuthoringToolOutcome:
+        try:
+            return outcome.finalize(result, error)
+        except (AuthoringContractError, TypeError, ValueError) as failure:
+            return _profile_transform_error(
+                failure, operation=operation, first_failed_member=first_failed_member,
+            )
+
+    return replace(outcome, finalize=finalize)
 
 
 def _strict_profile_recipe(part):
@@ -328,7 +347,7 @@ class ProfileTransformHandlers:
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         try:
             required = {"part_id", "profile_selection", "height"}
             missing = required - set(arguments)
@@ -363,7 +382,7 @@ class ProfileTransformHandlers:
             selected = _profile_selection(arguments, snapshot=snapshot, part=part)
             height = arguments["height"]
             base_recipe = _strict_profile_recipe(part)
-            return self.prepare_geometry_edit(
+            outcome = self.prepare_geometry_edit(
                 {
                     "part_id": str(part.id),
                     "_canonical_base_recipe": base_recipe,
@@ -375,6 +394,7 @@ class ProfileTransformHandlers:
                 },
                 controller,
             )
+            return _profile_preflight_outcome(outcome, operation="Profile extrusion")
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(
                 error,
@@ -385,7 +405,7 @@ class ProfileTransformHandlers:
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         try:
             required = {"part_id", "profile_selection", "axis", "angle_degrees"}
             missing = required - set(arguments)
@@ -402,7 +422,7 @@ class ProfileTransformHandlers:
                     "requires exactly one canonical material Profile"
                 )
             base_recipe = _strict_profile_recipe(part)
-            return self.prepare_geometry_edit(
+            outcome = self.prepare_geometry_edit(
                 {
                     "part_id": str(part.id),
                     "_canonical_base_recipe": base_recipe,
@@ -415,6 +435,7 @@ class ProfileTransformHandlers:
                 },
                 controller,
             )
+            return _profile_preflight_outcome(outcome, operation="Profile revolution")
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(error, operation="Profile revolution")
 
@@ -422,7 +443,7 @@ class ProfileTransformHandlers:
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         try:
             required = {
                 "part_id",
@@ -450,7 +471,7 @@ class ProfileTransformHandlers:
                     "requires exactly one canonical material Profile"
                 )
             base_recipe = _strict_profile_recipe(part)
-            return self.prepare_geometry_edit(
+            outcome = self.prepare_geometry_edit(
                 {
                     "part_id": str(part.id),
                     "_canonical_base_recipe": base_recipe,
@@ -462,6 +483,11 @@ class ProfileTransformHandlers:
                     },
                 },
                 controller,
+            )
+            return _profile_preflight_outcome(
+                outcome,
+                operation="Profile path sweep",
+                first_failed_member=_first_failed_path_member(arguments.get("path")),
             )
         except (AuthoringContractError, TypeError, ValueError) as error:
             return _profile_transform_error(

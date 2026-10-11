@@ -12,7 +12,7 @@ from fem.application import (
 )
 from fem_agent.authoring import AuthoringContractError, UnitContextSummary
 from fem_agent.authoring_runtime import AuthoringWorkflowController
-from fem_agent.authoring_values import AuthoringToolOutcome
+from fem_agent.authoring_values import AuthoringToolOutcome, AuthoringToolPreparation
 from fem_agent.geometry_authoring import (
     box_geometry,
     create_geometry_proposal,
@@ -34,7 +34,6 @@ from fem.geometry import (
     WirePoint,
     resolve_extrusion_source_faces,
 )
-from ..workers import OwnedWorkerTimeout, run_owned_worker
 from .binding import AuthoringHandlerBinding, envelope
 from .geometry_support import (
     PlanarCompileCancelled,
@@ -471,7 +470,7 @@ class GeometryCreationHandlers:
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(arguments) != {"part_function", "construction", "output"}:
             raise AuthoringContractError(
                 "prepare_planar_construction_proposal fields do not match"
@@ -576,186 +575,188 @@ class GeometryCreationHandlers:
                 local_mesh,
             )
 
-        try:
-            (
-                compiled,
-                feature_recipe,
-                output_kind,
-                output_recipe,
-                output_mesh,
-            ) = run_owned_worker(
-                compile_detached,
-                name="fem-agent-planar-compile",
-                timeout_seconds=_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS,
-                cancel_event=compile_cancel,
-                # cancel_requested is lock-free: this dispatch holds the
-                # controller lock, so cancel_turn cannot flip the stage yet.
-                should_cancel=lambda: controller.cancel_requested,
-            )
-        except PlanarCompileCancelled:
-            return AuthoringToolOutcome(
-                "2D construction compilation cancelled; model unchanged.",
-                {
-                    "diagnostic": {
-                        "code": "planar-ir.cancelled",
-                        "message": (
-                            "The planar construction compile stopped at a "
-                            "cancellation checkpoint."
-                        ),
-                        "model_unchanged": True,
-                    },
-                    "authoring_path": "planar_construction_ir_v1",
-                    "required_action": "wait_for_next_request",
+        cancelled_outcome = AuthoringToolOutcome(
+            "2D construction compilation cancelled; model unchanged.",
+            {
+                "diagnostic": {
+                    "code": "planar-ir.cancelled",
+                    "message": (
+                        "The planar construction compile stopped at a "
+                        "cancellation checkpoint."
+                    ),
+                    "model_unchanged": True,
                 },
-                ok=False,
-            )
-        except OwnedWorkerTimeout:
-            return AuthoringToolOutcome(
-                "2D construction compilation exceeded the local time limit; model unchanged.",
-                {
-                    "diagnostic": {
-                        "code": "planar-ir.compile-timeout",
-                        "message": (
-                            "The planar construction compile exceeded its "
-                            f"{_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS:.0f}s "
-                            "worker budget."
-                        ),
-                        "model_unchanged": True,
-                    },
-                    "authoring_path": "planar_construction_ir_v1",
-                    "required_action": "simplify_construction_and_retry",
-                },
-                ok=False,
-            )
-        except PlanarConstructionCompileError as error:
-            return _planar_construction_failure(
-                error.diagnostic,
-                arguments,
-                controller,
-            )
-        except (AuthoringContractError, TypeError, ValueError) as error:
-            code = (
-                "planar-ir.preflight-failed"
-                if "preflight" in str(error).casefold()
-                else "planar-ir.transform-invalid"
-            )
-            return _planar_construction_failure(
-                geometry_runtime.PlanarIRDiagnostic(
-                    code,
-                    str(error),
-                    None,
-                    True,
-                    ("output",),
-                ),
-                arguments,
-                controller,
-            )
-
-        current = self.binding.current_context()
-        if (
-            initial_context.binding.document_id,
-            initial_context.binding.session_id,
-            initial_context.binding.session_revision,
-        ) != (
-            current.binding.document_id,
-            current.binding.session_id,
-            current.binding.session_revision,
-        ):
-            return _planar_construction_failure(
-                geometry_runtime.PlanarIRDiagnostic(
-                    "planar-ir.stale-context",
-                    "The document, session, or revision changed during compilation.",
-                    None,
-                    True,
-                    ("construction",),
-                ),
-                arguments,
-                controller,
-            )
-
-        evidence = planar_construction_proposal_evidence(
-            construction,
-            compiled,
-            output_kind=output_kind,
-            output_recipe=output_recipe,
-        )
-        source_preview = compiled.preview if output_mesh is None else output_mesh
-        detached_preview = AgentProposalPreview(
-            dimension=2 if output_kind == "planar" else 3,
-            points=source_preview.points,
-            faces=source_preview.faces,
-            edges=source_preview.edges,
-            recipe_digest=str(evidence["output_recipe_digest"]),
-            proof_digest=str(evidence["output_proof_digest"]),
-        )
-        draft = geometry_draft(output_recipe)
-        requirements = controller.collected_requirements("geometry")
-        defaulted_keys = controller.defaulted_requirement_keys("geometry")
-        construction_summary = evidence["construction_summary"]
-        proof_summary = evidence["proof_summary"]
-        output_label = {
-            "planar": "2D planar construction",
-            "extrusion": "3D Profile extrusion",
-            "revolution": "3D Profile revolution",
-            "path_sweep": "3D Profile path sweep",
-        }[output_kind]
-        proposal_summary = (
-            f"Design proposal: {output_label}"
-            f"(nodes={construction_summary['node_count']}, "
-            f"material regions={proof_summary['material_profile_count']}, "
-            f"holes={proof_summary['hole_count']}); units "
-            f"{_geometry_unit_summary(requirements, defaulted_keys)}"
-        )
-        metadata = envelope(controller, "planar-construction")
-        suffix = str(metadata.pop("identity_suffix"))
-        proposal = create_geometry_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=current,
-            draft=draft,
-            part_function=part_function,
-            project_function=(
-                part_function if current.binding.source_kind == "blank" else None
-            ),
-            summary=proposal_summary,
-            unit_context=UnitContextSummary(
-                str(requirements["length_unit"]),
-                str(requirements["force_unit"]),
-                str(requirements["stress_unit"]),
-                convention=(
-                    f"{requirements['force_unit']}-"
-                    f"{requirements['length_unit']}-"
-                    f"{requirements['stress_unit']}"
-                ),
-            ),
-            local_evidence=evidence,
-            include_static_preview=False,
-            **metadata,
-        )
-        outcome = self.binding.proposal_outcome(
-            proposal,
-            summary=proposal_summary,
-            impact=(
-                "Confirm to create this 2D geometry and refresh the GUI"
-                if output_kind == "planar"
-                else "Confirm to create the final 3D geometry directly and refresh the GUI"
-            ),
-            confirm_label="Add part",
-            detached_preview=detached_preview,
-            extra_data={
                 "authoring_path": "planar_construction_ir_v1",
-                "output_kind": output_kind,
-                "construction_summary": construction_summary,
-                "proof_summary": proof_summary,
-                "construction_digest_short": str(evidence["construction_digest"])[:12],
-                "recipe_proof_digest_short": str(evidence["recipe_proof_digest"])[:12],
-                "output_recipe_digest_short": str(evidence["output_recipe_digest"])[
-                    :12
-                ],
-                "output_proof_digest_short": str(evidence["output_proof_digest"])[:12],
+                "required_action": "wait_for_next_request",
             },
+            ok=False,
         )
-        controller.record_planar_construction_proposal(
-            str(evidence["construction_digest"]),
-            proposal.proposal_id,
+        timeout_outcome = AuthoringToolOutcome(
+            "2D construction compilation exceeded the local time limit; model unchanged.",
+            {
+                "diagnostic": {
+                    "code": "planar-ir.compile-timeout",
+                    "message": (
+                        "The planar construction compile exceeded its "
+                        f"{_PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS:.0f}s "
+                        "worker budget."
+                    ),
+                    "model_unchanged": True,
+                },
+                "authoring_path": "planar_construction_ir_v1",
+                "required_action": "simplify_construction_and_retry",
+            },
+            ok=False,
         )
-        return outcome
+
+        def finalize(result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            try:
+                if error is not None:
+                    raise error
+                compiled, feature_recipe, output_kind, output_recipe, output_mesh = result
+            except PlanarCompileCancelled:
+                return cancelled_outcome
+            except TimeoutError:
+                return timeout_outcome
+            except PlanarConstructionCompileError as error:
+                return _planar_construction_failure(
+                    error.diagnostic,
+                    arguments,
+                    controller,
+                )
+            except (AuthoringContractError, TypeError, ValueError) as error:
+                code = (
+                    "planar-ir.preflight-failed"
+                    if "preflight" in str(error).casefold()
+                    else "planar-ir.transform-invalid"
+                )
+                return _planar_construction_failure(
+                    geometry_runtime.PlanarIRDiagnostic(
+                        code,
+                        str(error),
+                        None,
+                        True,
+                        ("output",),
+                    ),
+                    arguments,
+                    controller,
+                )
+
+            current = self.binding.current_context()
+            if (
+                initial_context.binding.document_id,
+                initial_context.binding.session_id,
+                initial_context.binding.session_revision,
+            ) != (
+                current.binding.document_id,
+                current.binding.session_id,
+                current.binding.session_revision,
+            ):
+                return _planar_construction_failure(
+                    geometry_runtime.PlanarIRDiagnostic(
+                        "planar-ir.stale-context",
+                        "The document, session, or revision changed during compilation.",
+                        None,
+                        True,
+                        ("construction",),
+                    ),
+                    arguments,
+                    controller,
+                )
+
+            evidence = planar_construction_proposal_evidence(
+                construction,
+                compiled,
+                output_kind=output_kind,
+                output_recipe=output_recipe,
+            )
+            source_preview = compiled.preview if output_mesh is None else output_mesh
+            detached_preview = AgentProposalPreview(
+                dimension=2 if output_kind == "planar" else 3,
+                points=source_preview.points,
+                faces=source_preview.faces,
+                edges=source_preview.edges,
+                recipe_digest=str(evidence["output_recipe_digest"]),
+                proof_digest=str(evidence["output_proof_digest"]),
+            )
+            draft = geometry_draft(output_recipe)
+            requirements = controller.collected_requirements("geometry")
+            defaulted_keys = controller.defaulted_requirement_keys("geometry")
+            construction_summary = evidence["construction_summary"]
+            proof_summary = evidence["proof_summary"]
+            output_label = {
+                "planar": "2D planar construction",
+                "extrusion": "3D Profile extrusion",
+                "revolution": "3D Profile revolution",
+                "path_sweep": "3D Profile path sweep",
+            }[output_kind]
+            proposal_summary = (
+                f"Design proposal: {output_label}"
+                f"(nodes={construction_summary['node_count']}, "
+                f"material regions={proof_summary['material_profile_count']}, "
+                f"holes={proof_summary['hole_count']}); units "
+                f"{_geometry_unit_summary(requirements, defaulted_keys)}"
+            )
+            metadata = envelope(controller, "planar-construction")
+            suffix = str(metadata.pop("identity_suffix"))
+            proposal = create_geometry_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=current,
+                draft=draft,
+                part_function=part_function,
+                project_function=(
+                    part_function if current.binding.source_kind == "blank" else None
+                ),
+                summary=proposal_summary,
+                unit_context=UnitContextSummary(
+                    str(requirements["length_unit"]),
+                    str(requirements["force_unit"]),
+                    str(requirements["stress_unit"]),
+                    convention=(
+                        f"{requirements['force_unit']}-"
+                        f"{requirements['length_unit']}-"
+                        f"{requirements['stress_unit']}"
+                    ),
+                ),
+                local_evidence=evidence,
+                include_static_preview=False,
+                **metadata,
+            )
+            outcome = self.binding.proposal_outcome(
+                proposal,
+                summary=proposal_summary,
+                impact=(
+                    "Confirm to create this 2D geometry and refresh the GUI"
+                    if output_kind == "planar"
+                    else "Confirm to create the final 3D geometry directly and refresh the GUI"
+                ),
+                confirm_label="Add part",
+                detached_preview=detached_preview,
+                extra_data={
+                    "authoring_path": "planar_construction_ir_v1",
+                    "output_kind": output_kind,
+                    "construction_summary": construction_summary,
+                    "proof_summary": proof_summary,
+                    "construction_digest_short": str(evidence["construction_digest"])[:12],
+                    "recipe_proof_digest_short": str(evidence["recipe_proof_digest"])[:12],
+                    "output_recipe_digest_short": str(evidence["output_recipe_digest"])[
+                        :12
+                    ],
+                    "output_proof_digest_short": str(evidence["output_proof_digest"])[:12],
+                },
+            )
+            controller.record_planar_construction_proposal(
+                str(evidence["construction_digest"]),
+                proposal.proposal_id,
+            )
+            return outcome
+
+        return AuthoringToolPreparation(
+            compile_detached,
+            finalize,
+            compile_cancel,
+            "fem-agent-planar-compile",
+            _PLANAR_COMPILE_WORKER_TIMEOUT_SECONDS,
+            cancelled_outcome=cancelled_outcome,
+            timeout_outcome=timeout_outcome,
+        )

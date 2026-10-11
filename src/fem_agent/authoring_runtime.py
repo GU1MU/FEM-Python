@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import hashlib
 import json
 import re
@@ -37,6 +38,7 @@ from .authoring_values import (
     AuthoringTerminalRecord,
     AuthoringTurnSnapshot,
     AuthoringToolOutcome,
+    AuthoringToolPreparation,
     AuthoringWorkflowStage,
     PlanarConstructionAuditRecord,
     ProjectSaveProposalRecord,
@@ -113,7 +115,7 @@ class _PlanarConstructionRetryState:
 
 AuthoringToolHandler = Callable[
     [Mapping[str, object], "AuthoringWorkflowController"],
-    AuthoringToolOutcome,
+    AuthoringToolOutcome | AuthoringToolPreparation,
 ]
 ContextReader = Callable[[], AuthoringContext | Mapping[str, object]]
 
@@ -192,10 +194,11 @@ class AuthoringWorkflowController:
         self._snapshot_generation = 0
         self._turn_snapshot = AuthoringTurnSnapshot.unavailable()
         self._lock = threading.RLock()
-        # Set before cancel_turn takes the workflow lock: dispatch holds that
-        # lock for the whole handler call, so long-running handlers need one
-        # lock-free signal that a cancellation was requested.
+        # Keep the turn signal for callers observing cancellation. Each detached
+        # preparation owns a separate event that survives clearing this signal.
         self._cancel_requested = threading.Event()
+        self._preparation_generation = 0
+        self._preparation_cancel_events: set[threading.Event] = set()
 
     @property
     def cancel_requested(self) -> bool:
@@ -622,6 +625,42 @@ class AuthoringWorkflowController:
         arguments: Mapping[str, Any],
         context: ToolExecutionContext,
     ) -> ToolResult:
+        """Synchronous adapter for non-Qt callers; live effects stay here.
+
+        A timeout rejects the result and requests cancellation, but this adapter
+        waits for actual thread exit before returning. Qt uses prepare_dispatch.
+        """
+        prepared = self.prepare_dispatch(name, arguments, context)
+        if type(prepared) is ToolResult:
+            return prepared
+        result, error = None, None
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=prepared.name,
+        ) as executor:
+            future = executor.submit(prepared.workload)
+            try:
+                result = future.result(timeout=prepared.timeout_seconds)
+            except FutureTimeout:
+                prepared.cancel_event.set()
+                error = TimeoutError(
+                    "detached authoring preparation exceeded its time limit"
+                )
+            except BaseException as failure:
+                error = failure
+        if isinstance(error, TimeoutError):
+            timeout_result = self.preparation_timeout_result(prepared, context)
+            if timeout_result is not None:
+                self.abandon_preparation(prepared)
+                return timeout_result
+        return prepared.finalize(result, error)
+
+    def prepare_dispatch(
+        self,
+        name: str,
+        arguments: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult | AuthoringToolPreparation:
+        """Validate and prepare on the owner, releasing the lock before CAD work."""
         with self._lock:
             definitions = {item.name: item for item in self.definitions}
             available = set(definitions)
@@ -689,6 +728,8 @@ class AuthoringWorkflowController:
                         outcome = self._handlers[name](dict(arguments), self)
                     finally:
                         self._active_tool_context = None
+                    if type(outcome) is AuthoringToolPreparation:
+                        return self._prepare_handler_continuation(name, context, outcome)
                     if type(outcome) is not AuthoringToolOutcome:
                         raise TypeError(
                             "authoring handler must return AuthoringToolOutcome"
@@ -696,26 +737,7 @@ class AuthoringWorkflowController:
                     if name == _READ_GEOMETRY_EDIT_CONTEXT.name:
                         self._record_geometry_edit_schema_scope(outcome)
                     self._advance_after_success(name, outcome)
-                safe_data = provider_safe_authoring_payload(outcome.data)
-                return ToolResult(
-                    ok=outcome.ok,
-                    session_id=context.session_id,
-                    input_revision=max(context.expected_revision, 0),
-                    idempotency_key=context.idempotency_key,
-                    summary=outcome.summary,
-                    data=safe_data,
-                    diagnostics=(
-                        ()
-                        if outcome.ok
-                        else (
-                            make_diagnostic(
-                                DiagnosticCode.INVALID_INPUT,
-                                outcome.summary,
-                                source="agent.authoring_runtime",
-                            ),
-                        )
-                    ),
-                )
+                return self._outcome_result(outcome, context)
             except _AuthoringArgumentSchemaError as error:
                 allowed_values = list(error.allowed_values)
                 summary = f"Invalid geometry edit argument at {error.path}: {error.reason}."
@@ -746,45 +768,140 @@ class AuthoringWorkflowController:
                     ),
                 )
             except Exception as error:
-                error_type = (
-                    re.sub(
-                        r"[^A-Za-z0-9_]",
-                        "",
-                        type(error).__name__,
-                    )[:64]
-                    or "LocalAuthoringError"
-                )
-                # Curated contract/validation errors carry provider-safe,
-                # actionable detail; surface them instead of the masked
-                # placeholder so failures can be diagnosed in one turn.
-                # Unexpected exception types stay masked, and curated detail
-                # that carries local-only content (filesystem paths or
-                # credential markers) falls back to the masked form too.
-                detail = ""
-                if isinstance(
-                    error,
-                    (AuthoringContractError, ValueError, TypeError, KeyError),
-                ):
-                    detail = _provider_safe_error_detail(str(error))
-                rejection_message = (
-                    f"{error_type}: {detail}"
-                    if detail
-                    else f"{error_type}: the local authoring request was rejected."
-                )
-                return ToolResult(
-                    ok=False,
-                    session_id=context.session_id,
-                    input_revision=max(context.expected_revision, 0),
-                    idempotency_key=context.idempotency_key,
-                    summary="The local authoring tool rejected the request.",
-                    diagnostics=(
-                        make_diagnostic(
-                            DiagnosticCode.INVALID_TOOL_ARGUMENTS,
-                            rejection_message,
-                            source="agent.authoring_runtime",
-                        ),
-                    ),
-                )
+                return self._handler_error_result(error, context)
+
+    def _handler_error_result(
+        self, error: Exception, context: ToolExecutionContext,
+    ) -> ToolResult:
+        error_type = (
+            re.sub(
+                r"[^A-Za-z0-9_]",
+                "",
+                type(error).__name__,
+            )[:64]
+            or "LocalAuthoringError"
+        )
+        # Curated contract/validation errors carry provider-safe,
+        # actionable detail; surface them instead of the masked
+        # placeholder so failures can be diagnosed in one turn.
+        # Unexpected exception types stay masked, and curated detail
+        # that carries local-only content (filesystem paths or
+        # credential markers) falls back to the masked form too.
+        detail = ""
+        if isinstance(
+            error,
+            (AuthoringContractError, ValueError, TypeError, KeyError),
+        ):
+            detail = _provider_safe_error_detail(str(error))
+        rejection_message = (
+            f"{error_type}: {detail}"
+            if detail
+            else f"{error_type}: the local authoring request was rejected."
+        )
+        return ToolResult(
+            ok=False,
+            session_id=context.session_id,
+            input_revision=max(context.expected_revision, 0),
+            idempotency_key=context.idempotency_key,
+            summary="The local authoring tool rejected the request.",
+            diagnostics=(
+                make_diagnostic(
+                    DiagnosticCode.INVALID_TOOL_ARGUMENTS,
+                    rejection_message,
+                    source="agent.authoring_runtime",
+                ),
+            ),
+        )
+
+    def _outcome_result(
+        self, outcome: AuthoringToolOutcome, context: ToolExecutionContext,
+    ) -> ToolResult:
+        if type(outcome) is not AuthoringToolOutcome:
+            raise TypeError("authoring handler must return AuthoringToolOutcome")
+        safe_data = provider_safe_authoring_payload(outcome.data)
+        return ToolResult(
+            ok=outcome.ok,
+            session_id=context.session_id,
+            input_revision=max(context.expected_revision, 0),
+            idempotency_key=context.idempotency_key,
+            summary=outcome.summary,
+            data=safe_data,
+            diagnostics=() if outcome.ok else (
+                make_diagnostic(
+                    DiagnosticCode.INVALID_INPUT, outcome.summary,
+                    source="agent.authoring_runtime",
+                ),
+            ),
+        )
+
+    def abandon_preparation(self, preparation: AuthoringToolPreparation) -> None:
+        """Invalidate a detached result without claiming that its thread exited."""
+        preparation.cancel_event.set()
+        with self._lock:
+            self._preparation_cancel_events.discard(preparation.cancel_event)
+
+    def preparation_timeout_result(
+        self,
+        preparation: AuthoringToolPreparation,
+        context: ToolExecutionContext,
+    ) -> ToolResult | None:
+        """Serialize a captured failure; this reads no live authoring state."""
+        if preparation.timeout_outcome is None:
+            return None
+        return self._outcome_result(preparation.timeout_outcome, context)
+
+    def _cancel_preparations_locked(self) -> None:
+        self._preparation_generation += 1
+        for cancel_event in self._preparation_cancel_events:
+            cancel_event.set()
+        self._preparation_cancel_events.clear()
+
+    def _prepare_handler_continuation(
+        self,
+        name: str,
+        context: ToolExecutionContext,
+        preparation: AuthoringToolPreparation,
+    ) -> AuthoringToolPreparation:
+        generation = self._preparation_generation
+        initial_context = self._context_reader()
+        initial_stage = self._stage
+        self._preparation_cancel_events.add(preparation.cancel_event)
+
+        def finalize(result: object, error: BaseException | None) -> ToolResult:
+            with self._lock:
+                self._preparation_cancel_events.discard(preparation.cancel_event)
+                try:
+                    current_context = self._context_reader()
+                    if (
+                        generation != self._preparation_generation
+                        or initial_context != current_context
+                        or initial_stage != self._stage
+                        or (preparation.cancel_event.is_set() and error is None)
+                    ):
+                        if (
+                            preparation.cancel_event.is_set()
+                            and preparation.cancelled_outcome is not None
+                            and initial_context == current_context
+                        ):
+                            return self._outcome_result(preparation.cancelled_outcome, context)
+                        return self._failure(
+                            context, DiagnosticCode.INVALID_MODEL,
+                            "Detached authoring preparation was cancelled or its "
+                            "context changed; model unchanged.",
+                        )
+                    self._active_tool_context = context
+                    try:
+                        outcome = preparation.finalize(result, error)
+                        if type(outcome) is not AuthoringToolOutcome:
+                            raise TypeError("authoring continuation must return AuthoringToolOutcome")
+                        self._advance_after_success(name, outcome)
+                        return self._outcome_result(outcome, context)
+                    finally:
+                        self._active_tool_context = None
+                except Exception as failure:
+                    return self._handler_error_result(failure, context)
+
+        return replace(preparation, finalize=finalize)
 
     def observe_binding(
         self,
@@ -1006,6 +1123,7 @@ class AuthoringWorkflowController:
         if not normalized:
             raise ValueError("stale reason must be non-blank")
         with self._lock:
+            self._cancel_preparations_locked()
             operation = self._pending_operation or "binding"
             if self._pending_operation == "project_save":
                 self._mark_project_save_terminal(
@@ -1058,8 +1176,8 @@ class AuthoringWorkflowController:
         normalized = str(reason).strip()
         self._cancel_requested.set()
         with self._lock:
-            # The workflow lock is only acquired after any in-flight dispatch
-            # released it, so the in-flight handler already observed the flag.
+            self._cancel_preparations_locked()
+            # Detached invocations retain their own cancellation events.
             self._cancel_requested.clear()
             self._record_terminal("provider_turn", "cancelled", normalized)
             if self._stage not in {
@@ -1074,6 +1192,7 @@ class AuthoringWorkflowController:
 
     def reset_for_binding(self) -> None:
         with self._lock:
+            self._cancel_preparations_locked()
             self._ledger = RequirementLedger()
             self._pending_operation = None
             self._project_save_record = None

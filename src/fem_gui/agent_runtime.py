@@ -18,12 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
 from fem_agent.artifacts import ArtifactStore, InputRejectedError
 from fem_agent.authoring import ProposalState
 from fem_agent.authoring_runtime import AuthoringWorkflowController
-from fem_agent.authoring_values import AuthoringTurnSnapshot
+from fem_agent.authoring_values import AuthoringToolPreparation, AuthoringTurnSnapshot
 from fem_agent.config import (
     ConfigError,
     LocalAgentConfig,
@@ -58,6 +58,7 @@ from .agent_events import (
     safe_tool_summary,
 )
 from .agent_workspace import WorkspaceFileReference
+from .workers import OwnedWorker
 
 
 class AgentEnginePort(Protocol):
@@ -121,17 +122,13 @@ _MAX_MESSAGE_DELTA_CHARACTERS = 8_000
 _MAX_ADAPTIVE_MESSAGE_DELTA_CHARACTERS = 64_000
 _MESSAGE_DELTA_FRAME_SECONDS = 0.03
 _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS = 30.0
-# Planar-construction compiles run their CAD work on a dedicated worker
-# thread, but the owner dispatch still holds until the plain-data result
-# returns.  Give exactly those dynamic tools one high budget; every other
-# authoring tool keeps the interactive default above.
+# Planar construction receives a longer detached preparation budget.
 _AUTHORING_TOOL_LONG_OWNER_TIMEOUT_SECONDS = 120.0
 # Whitelist of dynamic tool names dispatched with the long owner budget.
 # Keep it in sync with the dynamic tool registry: every entry must remain a
 # registered authoring tool (asserted in
 # tests/gui/test_agent_authoring_dispatch_timeout.py).
-# ``run_native_preflight`` holds the GUI owner while the deterministic model
-# check runs in the background, so it needs the high budget too.
+# Native preflight returns its existing asynchronous request receipt.
 _AUTHORING_TOOL_LONG_TIMEOUT_NAMES = frozenset(
     {"prepare_planar_construction_proposal", "run_native_preflight"}
 )
@@ -256,6 +253,12 @@ class _AuthoringToolInvocation:
     error: BaseException | None = None
     cancelled: bool = False
     started: bool = False
+    generation: int = 0
+    target_identity: tuple[str, str] | None = None
+    deadline: float = 0.0
+    timeout_seconds: float = 0.0
+    preparation: AuthoringToolPreparation | None = None
+    worker: OwnedWorker | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def claim(self) -> bool:
@@ -270,6 +273,8 @@ class _AuthoringToolInvocation:
             if self.completed.is_set():
                 return False
             self.cancelled = True
+            if self.preparation is not None:
+                self.preparation.cancel_event.set()
             self.error = error
             self.completed.set()
             return True
@@ -395,6 +400,7 @@ class QtAgentRuntime(QObject):
     operationRejected = Signal(str)
     eventRejected = Signal(str)
     shutdownFinished = Signal()
+    authoringWorkFinished = Signal()
     authoringToolRequested = Signal(object)
 
     def __init__(
@@ -460,6 +466,12 @@ class QtAgentRuntime(QObject):
         self._cancel_requested = False
         self._shutdown = False
         self._authoring_invocations: dict[int, _AuthoringToolInvocation] = {}
+        self._authoring_workers: dict[int, _AuthoringToolInvocation] = {}
+        self._authoring_worker_timer = QTimer(self)
+        self._authoring_worker_timer.setInterval(20)
+        self._authoring_worker_timer.timeout.connect(self._poll_authoring_workers)
+        self._shutdown_futures: tuple[Any, ...] = ()
+        self._shutdown_finished = False
         self._owner_authoring_dispatch_depth = 0
         self._authoring_snapshot = AuthoringTurnSnapshot.unavailable()
         self._authoring_definitions: tuple[ToolDefinition, ...] = ()
@@ -498,7 +510,13 @@ class QtAgentRuntime(QObject):
     @property
     def busy(self) -> bool:
         with self._lock:
-            return self._busy
+            return self._busy or bool(self._authoring_workers)
+
+    @property
+    def has_live_authoring_work(self) -> bool:
+        """Include cancelled/timed-out CAD preparation until actual thread exit."""
+        with self._lock:
+            return bool(self._authoring_workers)
 
     @property
     def is_shutdown(self) -> bool:
@@ -536,7 +554,7 @@ class QtAgentRuntime(QObject):
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("Agent runtime is shut down")
-            if self._busy:
+            if self._busy or self._authoring_workers:
                 raise RuntimeError("Agent runtime must be idle before rebinding")
             self._target_document_id = normalized_document
             self._target_session_id = normalized_session
@@ -751,7 +769,7 @@ class QtAgentRuntime(QObject):
             if self._shutdown:
                 self.operationRejected.emit("Agent runtime is closed")
                 return False
-            if self._busy:
+            if self._busy or self._authoring_workers:
                 self.operationRejected.emit("An operation is already running in this session")
                 return False
             self._busy = True
@@ -791,7 +809,7 @@ class QtAgentRuntime(QObject):
             if self._shutdown:
                 self.operationRejected.emit("Agent runtime is closed")
                 return False
-            if self._busy:
+            if self._busy or self._authoring_workers:
                 self.operationRejected.emit("An operation is already running in this session")
                 return False
             if self._engine is None:
@@ -816,7 +834,7 @@ class QtAgentRuntime(QObject):
             if self._shutdown:
                 self.operationRejected.emit("Agent runtime is closed")
                 return False
-            if self._busy:
+            if self._busy or self._authoring_workers:
                 self.operationRejected.emit("An operation is already running in this session")
                 return False
             self._busy = True
@@ -833,16 +851,21 @@ class QtAgentRuntime(QObject):
     def cancel(self) -> bool:
         """Request cooperative cancellation without blocking the UI thread."""
         with self._lock:
-            if self._shutdown or not self._busy:
+            if self._shutdown or not (self._busy or self._authoring_workers):
                 return False
             if self._cancel_requested:
                 return True
             self._cancel_requested = True
+            for invocation in self._authoring_invocations.values():
+                invocation.cancel(
+                    RuntimeError("Agent authoring tool call was cancelled")
+                )
             generation = self._generation
-            self._control_executor.submit(
-                self._run_cancel,
-                generation,
-            )
+            if self._busy:
+                self._control_executor.submit(
+                    self._run_cancel,
+                    generation,
+                )
         controller = self._authoring_controller
         if controller is not None:
             controller.cancel_turn()
@@ -1111,7 +1134,8 @@ class QtAgentRuntime(QObject):
         self._try_publish_authoring_tool_cache_owner_thread()
 
     def shutdown(self, *, wait: bool = True) -> None:
-        """Cancel and close the engine without an unbounded executor join."""
+        """Request cooperative shutdown; signal completion only after actual exit."""
+        self._require_owner_thread()
         with self._lock:
             if self._shutdown:
                 return
@@ -1119,56 +1143,63 @@ class QtAgentRuntime(QObject):
             self._cancel_requested = True
             if self._active_turn is not None:
                 self._cancel_delta_timer_locked(self._active_turn)
-            authoring_invocations = tuple(self._authoring_invocations.values())
-            self._authoring_invocations.clear()
+            for invocation in self._authoring_invocations.values():
+                invocation.cancel(
+                    RuntimeError("Agent runtime closed during an authoring tool call")
+                )
             generation = self._generation
             cancel_future = (
-                self._control_executor.submit(
-                    self._run_cancel,
-                    generation,
-                )
-                if self._busy
-                else None
+                self._control_executor.submit(self._run_cancel, generation)
+                if self._busy else None
             )
-            should_close = self._engine is not None or self._busy
             close_future = (
                 self._session_executor.submit(self._run_close)
-                if should_close
-                else None
+                if self._engine is not None or self._busy else None
             )
-        for invocation in authoring_invocations:
-            invocation.cancel(
-                RuntimeError(
-                    "Agent runtime closed during an authoring tool call"
+            self._shutdown_futures = tuple(
+                future
+                for future in (cancel_future, close_future)
+                if future is not None
+            )
+            workers = tuple(
+                invocation.worker
+                for invocation in self._authoring_workers.values()
+            )
+        if wait:
+            deadline = time.monotonic() + _RUNTIME_SHUTDOWN_TIMEOUT_SECONDS
+            if self._shutdown_futures:
+                wait_for_futures(
+                    self._shutdown_futures,
+                    timeout=max(0.0, deadline - time.monotonic()),
                 )
+            for worker in workers:
+                worker.wait(max(0.0, deadline - time.monotonic()))
+        # Executor shutdown never claims that a running thread has stopped.
+        self._session_executor.shutdown(wait=False)
+        self._control_executor.shutdown(wait=False)
+        self._authoring_worker_timer.start()
+        self._poll_authoring_workers()
+        if wait and not self._shutdown_finished:
+            self.operationRejected.emit(
+                "Agent runtime shutdown is still waiting for background work to exit"
             )
-        close_failed = False
-        shutdown_timed_out = False
-        futures = tuple(
-            future
-            for future in (cancel_future, close_future)
-            if future is not None
-        )
-        if wait and futures:
-            completed, pending = wait_for_futures(
-                futures,
-                timeout=_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS,
-            )
-            shutdown_timed_out = bool(pending)
-            if close_future in completed:
-                try:
-                    close_future.result()
-                except Exception:
-                    close_failed = True
-        join_executors = wait and not shutdown_timed_out
-        try:
-            self._session_executor.shutdown(wait=join_executors)
-        finally:
-            self._control_executor.shutdown(wait=join_executors)
-        if close_failed:
+
+    def _finish_shutdown_if_idle(self) -> None:
+        self._require_owner_thread()
+        with self._lock:
+            if (
+                not self._shutdown or self._shutdown_finished
+                or self._authoring_workers
+                or any(not future.done() for future in self._shutdown_futures)
+            ):
+                return
+            failures = tuple(future.exception() for future in self._shutdown_futures)
+            self._shutdown_futures = ()
+            self._authoring_invocations.clear()
+            self._shutdown_finished = True
+        self._authoring_worker_timer.stop()
+        if any(failures):
             self.operationRejected.emit("Error shutting down Agent runtime")
-        elif shutdown_timed_out:
-            self.operationRejected.emit("Agent runtime shutdown timed out")
         self.shutdownFinished.emit()
 
     def _provider_safe_text(
@@ -1253,7 +1284,12 @@ class QtAgentRuntime(QObject):
                     raise RuntimeError("Agent runtime is closed")
                 self._owner_authoring_dispatch_depth += 1
             try:
-                result = controller.dispatch(name, arguments, context)
+                result = controller.prepare_dispatch(name, arguments, context)
+                if type(result) is AuthoringToolPreparation:
+                    controller.abandon_preparation(result)
+                    raise RuntimeError(
+                        "Detached authoring tools must be invoked by the Agent background session"
+                    )
             finally:
                 with self._lock:
                     self._owner_authoring_dispatch_depth -= 1
@@ -1268,16 +1304,23 @@ class QtAgentRuntime(QObject):
             dict(arguments),
             context,
         )
-        with self._lock:
-            if self._shutdown:
-                raise RuntimeError("Agent runtime is closed")
-            self._authoring_invocations[id(invocation)] = invocation
         long_running = name in _AUTHORING_TOOL_LONG_TIMEOUT_NAMES
         timeout_seconds = (
             _AUTHORING_TOOL_LONG_OWNER_TIMEOUT_SECONDS
             if long_running
             else _AUTHORING_TOOL_OWNER_TIMEOUT_SECONDS
         )
+        started = time.monotonic()
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Agent runtime is closed")
+            if self._authoring_workers:
+                raise RuntimeError("Previous detached authoring work is still exiting")
+            invocation.generation = self._generation
+            invocation.target_identity = self.target_identity
+            invocation.deadline = started + timeout_seconds
+            invocation.timeout_seconds = timeout_seconds
+            self._authoring_invocations[id(invocation)] = invocation
         if long_running:
             self._narrate_authoring_tool_progress(
                 _AUTHORING_LONG_TOOL_NARRATIONS.get(
@@ -1286,8 +1329,6 @@ class QtAgentRuntime(QObject):
                 ),
             )
         self.authoringToolRequested.emit(invocation)
-        started = time.monotonic()
-        deadline = started + timeout_seconds
         next_heartbeat = started + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
         while not invocation.completed.wait(timeout=0.05):
             with self._lock:
@@ -1308,23 +1349,37 @@ class QtAgentRuntime(QObject):
                     f"({subject} still running, {int(now - started)} s elapsed…)",
                 )
                 next_heartbeat = now + _AUTHORING_PROGRESS_HEARTBEAT_SECONDS
-            if now >= deadline:
+            if now >= invocation.deadline:
                 elapsed = now - started
-                invocation.cancel(
-                    TimeoutError(
-                        "Agent authoring tool exceeded its owner-thread budget"
-                    )
-                )
                 with self._lock:
-                    self._authoring_invocations.pop(id(invocation), None)
+                    cancelled = invocation.cancel(TimeoutError(
+                        "Agent authoring tool exceeded its preparation/owner budget"
+                    ))
+                    if cancelled and invocation.preparation is not None:
+                        invocation.result = controller.preparation_timeout_result(
+                            invocation.preparation, context,
+                        )
+                    if invocation.worker is None:
+                        self._authoring_invocations.pop(id(invocation), None)
+                if not cancelled:
+                    break
+                if invocation.result is not None:
+                    return invocation.result
                 return self._authoring_tool_timeout_result(
                     name,
                     context,
-                    timeout_seconds,
+                    invocation.timeout_seconds,
                     elapsed,
                 )
         with self._lock:
-            self._authoring_invocations.pop(id(invocation), None)
+            if invocation.worker is None:
+                self._authoring_invocations.pop(id(invocation), None)
+        if invocation.cancelled and invocation.result is not None:
+            return invocation.result
+        if isinstance(invocation.error, TimeoutError):
+            return self._authoring_tool_timeout_result(
+                name, context, invocation.timeout_seconds, time.monotonic() - started,
+            )
         if invocation.cancelled:
             if invocation.error is None:
                 raise RuntimeError("Agent authoring tool call was cancelled")
@@ -1420,45 +1475,157 @@ class QtAgentRuntime(QObject):
             )
         )
 
-    def _execute_authoring_tool(
-        self,
-        invocation: _AuthoringToolInvocation,
-    ) -> None:
+    def _execute_authoring_tool(self, invocation: _AuthoringToolInvocation) -> None:
+        self._require_owner_thread()
         with self._lock:
-            shutdown = self._shutdown
-        if shutdown:
-            invocation.cancel(
-                RuntimeError(
-                    "Agent runtime closed before an authoring tool call"
+            if time.monotonic() >= invocation.deadline:
+                invocation.cancel(TimeoutError(
+                    "Agent authoring tool exceeded its owner dispatch budget"
+                ))
+                self._authoring_invocations.pop(id(invocation), None)
+                return
+            if not self._invocation_is_current_locked(invocation):
+                invocation.cancel(
+                    RuntimeError("Authoring invocation is no longer current")
                 )
-            )
-            return
-        if not invocation.claim():
-            return
-        try:
-            controller = self._authoring_controller
-            if controller is None:
-                raise RuntimeError("authoring controller is not configured")
-            result = controller.dispatch(
-                invocation.name,
-                invocation.arguments,
-                invocation.context,
-            )
-        except BaseException as error:
-            invocation.finish(error=error)
-        else:
+                self._authoring_invocations.pop(id(invocation), None)
+                return
+            if not invocation.claim():
+                self._authoring_invocations.pop(id(invocation), None)
+                return
+            try:
+                controller = self._authoring_controller
+                if controller is None:
+                    raise RuntimeError("authoring controller is not configured")
+                self._owner_authoring_dispatch_depth += 1
+                try:
+                    prepared = controller.prepare_dispatch(
+                        invocation.name, invocation.arguments, invocation.context,
+                    )
+                finally:
+                    self._owner_authoring_dispatch_depth -= 1
+                if type(prepared) is AuthoringToolPreparation:
+                    invocation.preparation = prepared
+                    invocation.deadline = min(
+                        invocation.deadline, time.monotonic() + prepared.timeout_seconds,
+                    )
+                    invocation.timeout_seconds = min(
+                        invocation.timeout_seconds, prepared.timeout_seconds,
+                    )
+                    if time.monotonic() >= invocation.deadline:
+                        invocation.cancel(TimeoutError(
+                            "Agent authoring tool exceeded its preparation/owner budget"
+                        ))
+                        invocation.result = controller.preparation_timeout_result(
+                            prepared, invocation.context,
+                        )
+                        controller.abandon_preparation(prepared)
+                        invocation.preparation = None
+                        self._authoring_invocations.pop(id(invocation), None)
+                        return
+                    invocation.worker = OwnedWorker(
+                        prepared.workload,
+                        name=prepared.name,
+                        cancel_event=prepared.cancel_event,
+                    )
+                    self._authoring_workers[id(invocation)] = invocation
+                    invocation.worker.start()
+                    self._authoring_worker_timer.start()
+                    self.busyChanged.emit(True)
+                    return
+                self._finish_authoring_invocation_owner_thread(
+                    invocation, result=prepared,
+                )
+            except BaseException as error:
+                if invocation.worker is not None and not invocation.worker.is_alive:
+                    self._authoring_workers.pop(id(invocation), None)
+                    controller.abandon_preparation(invocation.preparation)
+                    invocation.preparation = invocation.worker = None
+                self._finish_authoring_invocation_owner_thread(
+                    invocation, error=error,
+                )
+
+    def _invocation_is_current_locked(
+        self, invocation: _AuthoringToolInvocation,
+    ) -> bool:
+        return (
+            not self._shutdown and not self._cancel_requested
+            and not invocation.cancelled
+            and invocation.generation == self._generation
+            and invocation.target_identity == self.target_identity
+        )
+
+    def _finish_authoring_invocation_owner_thread(
+        self, invocation: _AuthoringToolInvocation, *,
+        result: ToolResult | None = None, error: BaseException | None = None,
+    ) -> None:
+        if result is not None and not invocation.cancelled:
             try:
                 self._publish_authoring_tool_cache_owner_thread()
             except Exception:
-                # The tool result remains authoritative, but a failed
-                # projection must never leave a previous document cache live.
                 if self.authoring_turn_snapshot.available:
                     self._invalidate_authoring_tool_cache_owner_thread()
             self._notify_export_receipt_owner_thread(result)
-            invocation.finish(result=result)
-        finally:
-            with self._lock:
-                self._authoring_invocations.pop(id(invocation), None)
+        invocation.finish(result=result, error=error)
+        self._authoring_invocations.pop(id(invocation), None)
+
+    def _poll_authoring_workers(self) -> None:
+        self._require_owner_thread()
+        finished_work = False
+        with self._lock:
+            for key, invocation in tuple(self._authoring_workers.items()):
+                worker = invocation.worker
+                preparation = invocation.preparation
+                if not self._invocation_is_current_locked(invocation):
+                    invocation.cancel(RuntimeError(
+                        "Authoring preparation was cancelled or superseded"
+                    ))
+                if time.monotonic() >= invocation.deadline:
+                    if invocation.cancel(TimeoutError(
+                        "Agent authoring preparation exceeded its time limit"
+                    )):
+                        invocation.result = self._authoring_controller.preparation_timeout_result(
+                            preparation, invocation.context,
+                        )
+                if worker.is_alive:
+                    continue
+                result, error = worker.take_outcome()
+                try:
+                    # Holding the runtime lock makes deadline/cancel and the
+                    # owner commit choose one outcome before proposal registration.
+                    if not invocation.cancelled:
+                        self._owner_authoring_dispatch_depth += 1
+                        try:
+                            result = preparation.finalize(result, error)
+                        finally:
+                            self._owner_authoring_dispatch_depth -= 1
+                        self._finish_authoring_invocation_owner_thread(
+                            invocation, result=result,
+                        )
+                    elif self._authoring_controller is not None:
+                        self._authoring_controller.abandon_preparation(preparation)
+                except BaseException as failure:
+                    self._finish_authoring_invocation_owner_thread(
+                        invocation, error=failure,
+                    )
+                finally:
+                    self._authoring_workers.pop(key, None)
+                    self._authoring_invocations.pop(key, None)
+                    invocation.preparation = invocation.worker = None
+                    result = error = None
+                    finished_work = True
+            work_idle = not self._authoring_workers
+            if work_idle:
+                self._start_pending_continuation_locked()
+            busy = self._busy or not work_idle
+            shutdown = self._shutdown
+        if work_idle and finished_work:
+            self.authoringWorkFinished.emit()
+            self.busyChanged.emit(busy)
+        if shutdown:
+            self._finish_shutdown_if_idle()
+        elif work_idle:
+            self._authoring_worker_timer.stop()
 
     def _notify_export_receipt_owner_thread(self, result: object) -> None:
         listener = self._export_receipt_listener
@@ -1807,7 +1974,7 @@ class QtAgentRuntime(QObject):
                 discard = True
             elif self._pending_continuation is not None:
                 discard = True
-            elif self._busy:
+            elif self._busy or self._authoring_workers:
                 self._pending_continuation = continuation
             else:
                 self._busy = True
@@ -2780,7 +2947,6 @@ class QtAgentRuntime(QObject):
         return created
 
     def _finish_operation(self, generation: int) -> None:
-        continuation: _ProposalContinuation | None = None
         with self._lock:
             if generation != self._generation:
                 return
@@ -2790,20 +2956,24 @@ class QtAgentRuntime(QObject):
                 )
             self._active_turn = None
             self._cancel_requested = False
-            continuation = self._pending_continuation
+            self._busy = False
+            self._start_pending_continuation_locked()
+            busy = self._busy or bool(self._authoring_workers)
+        self.busyChanged.emit(busy)
+
+    def _start_pending_continuation_locked(self) -> None:
+        if self._shutdown:
             self._pending_continuation = None
-            if continuation is None or self._shutdown:
-                self._busy = False
-            else:
-                self._generation += 1
-                next_generation = self._generation
-                self._session_executor.submit(
-                    self._run_continuation,
-                    next_generation,
-                    continuation,
-                )
-        if continuation is None or self._shutdown:
-            self.busyChanged.emit(False)
+            return
+        if self._busy or self._authoring_workers or self._pending_continuation is None:
+            return
+        continuation = self._pending_continuation
+        self._pending_continuation = None
+        self._busy = True
+        self._generation += 1
+        self._session_executor.submit(
+            self._run_continuation, self._generation, continuation,
+        )
 
     def _current_generation(self) -> int:
         with self._lock:

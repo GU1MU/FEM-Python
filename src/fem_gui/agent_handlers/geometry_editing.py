@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Mapping
 from dataclasses import replace
 from fem import geometry as geometry_runtime
@@ -21,7 +22,7 @@ from fem_agent.boolean_authoring import (
 )
 from fem_agent.authoring_payload import provider_safe_authoring_payload
 from fem_agent.authoring_runtime import AuthoringWorkflowController
-from fem_agent.authoring_values import AuthoringToolOutcome
+from fem_agent.authoring_values import AuthoringToolOutcome, AuthoringToolPreparation
 from fem_agent.geometry_authoring import (
     GeometryDraft,
     apply_planar_edit_batch,
@@ -651,7 +652,7 @@ class GeometryEditingHandlers:
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         part_id = str(arguments["part_id"])
         raw_edit = arguments["edit"]
         if not isinstance(raw_edit, Mapping):
@@ -731,7 +732,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         raw_spatial_relation: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {"boolean_operation", "tool"}:
             raise ValueError("planar_boolean fields do not match")
         if part.dimension != 2:
@@ -743,61 +744,73 @@ class GeometryEditingHandlers:
             raise AuthoringContractError(
                 "planar_boolean operation must be fuse or cut"
             )
-        compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
-        target_faces = resolve_extrusion_source_faces(part.geometry_recipe).face_ids
-        tool_faces = resolve_extrusion_source_faces(compiled_tool).face_ids
-        if len(target_faces) != 1:
-            raise AuthoringContractError(
-                "planar_boolean requires one material target Profile"
-            )
-        with geometry_runtime.model(
-            f"{part.name}-{boolean_operation}-agent-feature",
-            dimension=2,
-        ) as cad:
-            prepared = prepare_planar_boolean(
-                cad,
+        def prepare_detached():
+            compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
+            target_faces = resolve_extrusion_source_faces(part.geometry_recipe).face_ids
+            tool_faces = resolve_extrusion_source_faces(compiled_tool).face_ids
+            if len(target_faces) != 1:
+                raise AuthoringContractError(
+                    "planar_boolean requires one material target Profile"
+                )
+            with geometry_runtime.model(
+                f"{part.name}-{boolean_operation}-agent-feature",
+                dimension=2,
+            ) as cad:
+                prepared = prepare_planar_boolean(
+                    cad,
+                    part.geometry_recipe,
+                    target_faces[0],
+                    compiled_tool,
+                    tool_faces,
+                    boolean_operation,
+                )
+            return prepared, kind
+
+        def finalize(result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            prepared, kind = result
+            draft = geometry_draft(prepared.geometry)
+            spatial_proof = verify_spatial_relation(
                 part.geometry_recipe,
-                target_faces[0],
-                compiled_tool,
-                tool_faces,
-                boolean_operation,
+                draft.recipe,
+                raw_spatial_relation,
             )
-        draft = geometry_draft(prepared.geometry)
-        spatial_proof = verify_spatial_relation(
-            part.geometry_recipe,
-            draft.recipe,
-            raw_spatial_relation,
-        )
-        action = "cut" if boolean_operation == "cut" else "union"
-        summary = f"Append a 2D {action} feature to part {part.name}: tool profile is {kind}"
-        metadata = envelope(controller, "geometry-planar-boolean")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_geometry_edit_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            draft=draft,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                f"Confirm to append a 2D {action} feature and invalidate the old mesh and results",
-            ),
-            confirm_label=f"Append {action}",
-            extra_data={
-                "geometry_edit_mode": edit_mode,
-                **(
-                    {"spatial_relation_proof": spatial_proof}
-                    if spatial_proof is not None
-                    else {}
+            action = "cut" if boolean_operation == "cut" else "union"
+            summary = f"Append a 2D {action} feature to part {part.name}: tool profile is {kind}"
+            metadata = envelope(controller, "geometry-planar-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_geometry_edit_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                draft=draft,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    f"Confirm to append a 2D {action} feature and invalidate the old mesh and results",
                 ),
-            },
+                confirm_label=f"Append {action}",
+                extra_data={
+                    "geometry_edit_mode": edit_mode,
+                    **(
+                        {"spatial_relation_proof": spatial_proof}
+                        if spatial_proof is not None
+                        else {}
+                    ),
+                },
+            )
+
+        return AuthoringToolPreparation(
+            prepare_detached, finalize, threading.Event(),
+            "fem-agent-planar-boolean-preflight", 30.0,
         )
 
 
@@ -808,7 +821,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         raw_spatial_relation: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {"feature_id", "tool"}:
             raise ValueError(
                 "replace_planar_boolean_feature fields do not match"
@@ -823,44 +836,56 @@ class GeometryEditingHandlers:
                 "only when appending one new planar Boolean feature"
             )
         feature_id = str(edit["feature_id"])
-        compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
-        rebuilt_recipe, replayed_feature_count = (
-            replace_planar_boolean_feature_tool(
-                part.geometry_recipe,
-                feature_id,
-                compiled_tool,
+        def prepare_detached():
+            compiled_tool, kind = compile_planar_boolean_tool(edit["tool"])
+            rebuilt_recipe, replayed_feature_count = (
+                replace_planar_boolean_feature_tool(
+                    part.geometry_recipe,
+                    feature_id,
+                    compiled_tool,
+                )
             )
-        )
-        draft = geometry_draft(rebuilt_recipe)
-        summary = (
-            f"Replace 2D Boolean feature {feature_id} in part {part.name}: "
-            f"tool profile is {kind}; replay later features"
-        )
-        metadata = envelope(controller, "geometry-feature-replacement")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_geometry_edit_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            draft=draft,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to replace the selected 2D Boolean feature, replay later features, and invalidate the old mesh and results",
-            ),
-            confirm_label="Replace feature",
-            extra_data={
-                "geometry_edit_mode": edit_mode,
-                "replaced_feature_id": feature_id,
-                "replayed_feature_count": replayed_feature_count,
-            },
+            return rebuilt_recipe, replayed_feature_count, kind
+
+        def finalize(result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            rebuilt_recipe, replayed_feature_count, kind = result
+            draft = geometry_draft(rebuilt_recipe)
+            summary = (
+                f"Replace 2D Boolean feature {feature_id} in part {part.name}: "
+                f"tool profile is {kind}; replay later features"
+            )
+            metadata = envelope(controller, "geometry-feature-replacement")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_geometry_edit_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                draft=draft,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to replace the selected 2D Boolean feature, replay later features, and invalidate the old mesh and results",
+                ),
+                confirm_label="Replace feature",
+                extra_data={
+                    "geometry_edit_mode": edit_mode,
+                    "replaced_feature_id": feature_id,
+                    "replayed_feature_count": replayed_feature_count,
+                },
+            )
+
+        return AuthoringToolPreparation(
+            prepare_detached, finalize, threading.Event(),
+            "fem-agent-planar-boolean-preflight", 30.0,
         )
 
 
@@ -870,7 +895,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         snapshot: SessionSnapshot,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {
             "boolean_operation",
             "tool_part_id",
@@ -913,54 +938,65 @@ class GeometryEditingHandlers:
             raise AuthoringContractError(
                 f"tool_handling must be {PART_BOOLEAN_TOOL_HANDLING!r}"
             )
-        try:
-            prepared = _preflight_part_boolean(
-                part,
-                tool,
-                boolean_operation,
-                result_part_id=self.binding.current_session().next_native_part_id,
-                feature_id=self.binding.current_session().next_part_boolean_feature_id,
+        session = self.binding.current_session()
+        result_part_id = session.next_native_part_id
+        feature_id = session.next_part_boolean_feature_id
+
+        def prepare_detached():
+            return _preflight_part_boolean(
+                part, tool, boolean_operation,
+                result_part_id=result_part_id,
+                feature_id=feature_id,
                 result_name=result_name,
             )
-        except BooleanLineageResolutionError as error:
-            return AuthoringToolOutcome(str(error), {}, ok=False)
-        summary = (
-            f"Exact {boolean_operation}: target Part {part.name} [{part.id}], "
-            f"tool Part {tool.name} [{tool.id}]; result {result_name} "
-            f"[{prepared.context.result_part_id}]; both source Parts are suppressed and can be restored by undo, "
-            f"tool policy={tool_handling}"
-        )
-        metadata = envelope(controller, "geometry-part-boolean")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_part_boolean_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            target_part_id=part.id,
-            tool_part_id=tool.id,
-            operation=boolean_operation,
-            result_name=result_name,
-            tool_handling=tool_handling,
-            prepared=prepared,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to create a proven result Part, suppress target/tool source Parts, "
-                "and invalidate the old mesh, definitions, and results",
-            ),
-            confirm_label="Exact Part Boolean",
-            extra_data={
-                "result_part_id": prepared.context.result_part_id,
-                "feature_id": prepared.context.feature_id,
-                "lineage_proven": True,
-                "geometry_edit_mode": edit_mode,
-            },
+
+        def finalize(prepared: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if isinstance(error, BooleanLineageResolutionError):
+                return AuthoringToolOutcome(str(error), {}, ok=False)
+            if error is not None:
+                raise error
+            summary = (
+                f"Exact {boolean_operation}: target Part {part.name} [{part.id}], "
+                f"tool Part {tool.name} [{tool.id}]; result {result_name} "
+                f"[{prepared.context.result_part_id}]; both source Parts are suppressed and can be restored by undo, "
+                f"tool policy={tool_handling}"
+            )
+            metadata = envelope(controller, "geometry-part-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_part_boolean_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                target_part_id=part.id,
+                tool_part_id=tool.id,
+                operation=boolean_operation,
+                result_name=result_name,
+                tool_handling=tool_handling,
+                prepared=prepared,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to create a proven result Part, suppress target/tool source Parts, "
+                    "and invalidate the old mesh, definitions, and results",
+                ),
+                confirm_label="Exact Part Boolean",
+                extra_data={
+                    "result_part_id": prepared.context.result_part_id,
+                    "feature_id": prepared.context.feature_id,
+                    "lineage_proven": True,
+                    "geometry_edit_mode": edit_mode,
+                },
+            )
+
+        return AuthoringToolPreparation(
+            prepare_detached, finalize, threading.Event(),
+            "fem-agent-boolean-preflight", 30.0,
         )
 
 
@@ -969,7 +1005,7 @@ class GeometryEditingHandlers:
         part: NativePart,
         edit: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {
             "boolean_operation",
             "target_body_id",
@@ -1001,54 +1037,60 @@ class GeometryEditingHandlers:
             raise AuthoringContractError(
                 f"tool_handling must be {BODY_BOOLEAN_TOOL_HANDLING!r}"
             )
-        try:
-            prepared = _preflight_body_boolean(
-                geometry,
-                target_body_id,
-                tool_body_id,
-                boolean_operation,
+        def prepare_detached():
+            return _preflight_body_boolean(
+                geometry, target_body_id, tool_body_id, boolean_operation,
                 result_name=result_name,
             )
-        except BooleanLineageResolutionError as error:
-            return AuthoringToolOutcome(str(error), {}, ok=False)
-        summary = (
-            f"Exact {boolean_operation}: within Part {part.name} [{part.id}] "
-            f"target Body {target_body_id}, tool Body {tool_body_id}; "
-            f"result feature {result_name}, preserving target ID and consuming tool, "
-            f"policy={tool_handling}"
-        )
-        metadata = envelope(controller, "geometry-body-boolean")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_body_boolean_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part.id,
-            target_body_id=target_body_id,
-            tool_body_id=tool_body_id,
-            operation=boolean_operation,
-            result_name=result_name,
-            tool_handling=tool_handling,
-            prepared=prepared,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to preserve the target Body ID and consume the tool Body within the same Part, "
-                "and invalidate the old mesh, definitions, and results",
-            ),
-            confirm_label="Exact Body Boolean",
-            extra_data={
-                "target_body_id": target_body_id,
-                "consumed_tool_body_id": tool_body_id,
-                "lineage_proven": True,
-                "geometry_edit_mode": edit_mode,
-            },
+
+        def finalize(prepared: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if isinstance(error, BooleanLineageResolutionError):
+                return AuthoringToolOutcome(str(error), {}, ok=False)
+            if error is not None:
+                raise error
+            summary = (
+                f"Exact {boolean_operation}: within Part {part.name} [{part.id}] "
+                f"target Body {target_body_id}, tool Body {tool_body_id}; "
+                f"result feature {result_name}, preserving target ID and consuming tool, "
+                f"policy={tool_handling}"
+            )
+            metadata = envelope(controller, "geometry-body-boolean")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_body_boolean_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part.id,
+                target_body_id=target_body_id,
+                tool_body_id=tool_body_id,
+                operation=boolean_operation,
+                result_name=result_name,
+                tool_handling=tool_handling,
+                prepared=prepared,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to preserve the target Body ID and consume the tool Body within the same Part, "
+                    "and invalidate the old mesh, definitions, and results",
+                ),
+                confirm_label="Exact Body Boolean",
+                extra_data={
+                    "target_body_id": target_body_id,
+                    "consumed_tool_body_id": tool_body_id,
+                    "lineage_proven": True,
+                    "geometry_edit_mode": edit_mode,
+                },
+            )
+
+        return AuthoringToolPreparation(
+            prepare_detached, finalize, threading.Event(),
+            "fem-agent-boolean-preflight", 30.0,
         )
 
 
@@ -1059,7 +1101,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         base_recipe_override: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {"source_face_ids", "height"}:
             raise ValueError("extrude_profiles fields do not match")
         base_recipe = (
@@ -1100,39 +1142,46 @@ class GeometryEditingHandlers:
             ExtrudedGeometry(base_recipe, height, (face_id,))
             for face_id in selection.face_ids
         )
-        _run_profile_transform_preflight(
-            _preflight_profile_extrusions,
-            recipes,
-        )
-        summary = (
-            f"Extrude {len(selection.face_ids)} selected "
-            f"Profiles in part {part.name}: height {_display_number(height)}, along the positive sketch normal, "
-            f"creating {len(selection.face_ids)} separate Parts"
-        )
-        metadata = envelope(controller, "geometry-edit")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_profile_extrusion_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            base_recipe=base_recipe,
-            source_face_ids=selection.face_ids,
-            height=height,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to atomically convert selected Profiles to separate solid Parts, "
-                "and invalidate the old mesh, definitions, and results",
-            ),
-            confirm_label="Extrude Profiles",
-            extra_data={"geometry_edit_mode": edit_mode},
+        def finalize(_result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            summary = (
+                f"Extrude {len(selection.face_ids)} selected "
+                f"Profiles in part {part.name}: height {_display_number(height)}, along the positive sketch normal, "
+                f"creating {len(selection.face_ids)} separate Parts"
+            )
+            metadata = envelope(controller, "geometry-edit")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_profile_extrusion_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_ids=selection.face_ids,
+                height=height,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to atomically convert selected Profiles to separate solid Parts, "
+                    "and invalidate the old mesh, definitions, and results",
+                ),
+                confirm_label="Extrude Profiles",
+                extra_data={"geometry_edit_mode": edit_mode},
+            )
+
+        return AuthoringToolPreparation(
+            lambda: _run_profile_transform_preflight(_preflight_profile_extrusions, recipes),
+            finalize,
+            threading.Event(),
+            "fem-agent-profile-preflight",
+            30.0,
         )
 
 
@@ -1143,7 +1192,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         base_recipe_override: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {"source_face_id", "axis", "angle_degrees"}:
             raise ValueError("revolve_profile fields do not match")
         base_recipe = (
@@ -1173,39 +1222,46 @@ class GeometryEditingHandlers:
             edit["angle_degrees"],
             (source_face_id,),
         )
-        _run_profile_transform_preflight(
-            _preflight_derived_geometry,
-            recipe,
-        )
-        summary = (
-            f"Revolve part {part.name} around the {recipe.axis.upper()} axis, "
-            f"Profile {source_face_id}: angle {recipe.angle_degrees:g}°, "
-            "creating 1 solid Part"
-        )
-        metadata = envelope(controller, "geometry-revolve")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_profile_revolution_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            base_recipe=base_recipe,
-            source_face_id=source_face_id,
-            axis=recipe.axis,
-            angle_degrees=recipe.angle_degrees,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to atomically replace the Profile with a revolved solid and invalidate the old mesh, definitions, and results",
-            ),
-            confirm_label="Revolve Profile",
-            extra_data={"geometry_edit_mode": edit_mode},
+        def finalize(_result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            summary = (
+                f"Revolve part {part.name} around the {recipe.axis.upper()} axis, "
+                f"Profile {source_face_id}: angle {recipe.angle_degrees:g}°, "
+                "creating 1 solid Part"
+            )
+            metadata = envelope(controller, "geometry-revolve")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_profile_revolution_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_id=source_face_id,
+                axis=recipe.axis,
+                angle_degrees=recipe.angle_degrees,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to atomically replace the Profile with a revolved solid and invalidate the old mesh, definitions, and results",
+                ),
+                confirm_label="Revolve Profile",
+                extra_data={"geometry_edit_mode": edit_mode},
+            )
+
+        return AuthoringToolPreparation(
+            lambda: _run_profile_transform_preflight(_preflight_derived_geometry, recipe),
+            finalize,
+            threading.Event(),
+            "fem-agent-profile-preflight",
+            30.0,
         )
 
 
@@ -1216,7 +1272,7 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         base_recipe_override: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         if set(edit) != {"source_face_id", "path", "frame_strategy"}:
             raise ValueError("path_sweep_profile fields do not match")
         base_recipe = (
@@ -1277,41 +1333,49 @@ class GeometryEditingHandlers:
             (source_face_id,),
             str(edit["frame_strategy"]),
         )
-        _run_profile_transform_preflight(
-            _preflight_derived_geometry,
-            recipe,
+        def finalize(_result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            summary = (
+                f"Sweep along an explicit open polyline with {len(path.members)} segments: part "
+                f"{part.name}, Profile {source_face_id}; "
+                f"frame={recipe.frame_strategy}, creating 1 solid Part"
+            )
+            metadata = envelope(controller, "geometry-path-sweep")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_profile_path_sweep_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                base_recipe=base_recipe,
+                source_face_id=source_face_id,
+                path=path,
+                frame_strategy=recipe.frame_strategy,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to atomically replace the Profile with a path-swept solid, "
+                    "and invalidate the old mesh, definitions, and results",
+                ),
+                confirm_label="Sweep Profile",
+                extra_data={"geometry_edit_mode": edit_mode},
+            )
+
+        return AuthoringToolPreparation(
+            lambda: _run_profile_transform_preflight(_preflight_derived_geometry, recipe),
+            finalize,
+            threading.Event(),
+            "fem-agent-profile-preflight",
+            30.0,
         )
-        summary = (
-            f"Sweep along an explicit open polyline with {len(path.members)} segments: part "
-            f"{part.name}, Profile {source_face_id}; "
-            f"frame={recipe.frame_strategy}, creating 1 solid Part"
-        )
-        metadata = envelope(controller, "geometry-path-sweep")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_profile_path_sweep_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            base_recipe=base_recipe,
-            source_face_id=source_face_id,
-            path=path,
-            frame_strategy=recipe.frame_strategy,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to atomically replace the Profile with a path-swept solid, "
-                "and invalidate the old mesh, definitions, and results",
-            ),
-            confirm_label="Sweep Profile",
-            extra_data={"geometry_edit_mode": edit_mode},
-        )
+
 
     def _prepare_incremental_geometry_edit(
         self,
@@ -1321,59 +1385,71 @@ class GeometryEditingHandlers:
         edit: Mapping[str, object],
         raw_spatial_relation: object,
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
-        if operation in _SKETCH_ENTITY_ADDITION_OPERATIONS:
-            draft, summary = _prepare_sketch_entity_addition(part, operation, edit)
-        elif operation in _SKETCH_ENTITY_MODIFICATION_OPERATIONS:
-            draft, summary = _prepare_sketch_entity_modification(part, operation, edit)
-        elif operation in _SKETCH_CONSTRAINT_EDIT_OPERATIONS:
-            draft, summary = _prepare_sketch_constraint_edit(part, operation, edit)
-        elif operation in _RIGID_GEOMETRY_TRANSFORM_OPERATIONS:
-            draft, summary = _prepare_rigid_geometry_transform(part, operation, edit)
-        elif operation == "batch":
-            draft, summary = _prepare_planar_sketch_batch(part, edit)
-        else:
-            raise ValueError("unsupported incremental geometry edit")
-        spatial_proof = verify_spatial_relation(
-            part.geometry_recipe,
-            draft.recipe,
-            raw_spatial_relation,
-        )
-        metadata = envelope(controller, "geometry-edit")
-        suffix = str(metadata.pop("identity_suffix"))
-        edit_mode = self.binding.planned_geometry_edit_mode()
-        proposal = create_geometry_edit_proposal(
-            proposal_id=f"proposal-{suffix}",
-            context=self.binding.current_context(),
-            part_id=part_id,
-            draft=draft,
-            summary=summary,
-            edit_mode=edit_mode,
-            **metadata,
-        )
-        return self.binding.proposal_outcome(
-            proposal,
-            summary=summary,
-            impact=geometry_edit_impact(
-                edit_mode,
-                "Confirm to update this part in the current model and invalidate the old mesh and results",
-            ),
-            confirm_label="Apply changes",
-            extra_data={
-                "geometry_edit_mode": edit_mode,
-                **(
-                    {"spatial_relation_proof": spatial_proof}
-                    if spatial_proof is not None
-                    else {}
+    ) -> AuthoringToolPreparation:
+        def prepare_detached():
+            if operation in _SKETCH_ENTITY_ADDITION_OPERATIONS:
+                draft, summary = _prepare_sketch_entity_addition(part, operation, edit)
+            elif operation in _SKETCH_ENTITY_MODIFICATION_OPERATIONS:
+                draft, summary = _prepare_sketch_entity_modification(part, operation, edit)
+            elif operation in _SKETCH_CONSTRAINT_EDIT_OPERATIONS:
+                draft, summary = _prepare_sketch_constraint_edit(part, operation, edit)
+            elif operation in _RIGID_GEOMETRY_TRANSFORM_OPERATIONS:
+                draft, summary = _prepare_rigid_geometry_transform(part, operation, edit)
+            elif operation == "batch":
+                draft, summary = _prepare_planar_sketch_batch(part, edit)
+            else:
+                raise ValueError("unsupported incremental geometry edit")
+            spatial_proof = verify_spatial_relation(
+                part.geometry_recipe,
+                draft.recipe,
+                raw_spatial_relation,
+            )
+            return draft, summary, spatial_proof
+
+        def finalize(result: object, error: BaseException | None) -> AuthoringToolOutcome:
+            if error is not None:
+                raise error
+            draft, summary, spatial_proof = result
+            metadata = envelope(controller, "geometry-edit")
+            suffix = str(metadata.pop("identity_suffix"))
+            edit_mode = self.binding.planned_geometry_edit_mode()
+            proposal = create_geometry_edit_proposal(
+                proposal_id=f"proposal-{suffix}",
+                context=self.binding.current_context(),
+                part_id=part_id,
+                draft=draft,
+                summary=summary,
+                edit_mode=edit_mode,
+                **metadata,
+            )
+            return self.binding.proposal_outcome(
+                proposal,
+                summary=summary,
+                impact=geometry_edit_impact(
+                    edit_mode,
+                    "Confirm to update this part in the current model and invalidate the old mesh and results",
                 ),
-            },
+                confirm_label="Apply changes",
+                extra_data={
+                    "geometry_edit_mode": edit_mode,
+                    **(
+                        {"spatial_relation_proof": spatial_proof}
+                        if spatial_proof is not None
+                        else {}
+                    ),
+                },
+            )
+
+        return AuthoringToolPreparation(
+            prepare_detached, finalize, threading.Event(),
+            "fem-agent-sketch-edit-preflight", 30.0,
         )
 
     def prepare_geometry_edit_with_diagnostics(
         self,
         arguments: Mapping[str, object],
         controller: AuthoringWorkflowController,
-    ) -> AuthoringToolOutcome:
+    ) -> AuthoringToolOutcome | AuthoringToolPreparation:
         edit = arguments.get("edit")
         operation = (
             str(edit.get("operation", "")) if isinstance(edit, Mapping) else ""
@@ -1426,101 +1502,110 @@ class GeometryEditingHandlers:
                 ok=False,
             )
 
-        try:
-            return self.prepare_geometry_edit(arguments, controller)
-        except PlanarEditValidationError as error:
-            data = error.to_provider_dict()
-            first = error.diagnostics[0]
-            code = str(first["code"])
-            path_slot_outcome = path_slot_validation_outcome(
-                code=code,
-                reason=str(first["message"]),
-                error_type=type(error).__name__,
-                evidence={},
-            )
-            if path_slot_outcome is not None:
-                return path_slot_outcome
-            affected = ", ".join(str(item) for item in first["affected_logical_ids"])
-            location = f" ({affected})" if affected else ""
-            return AuthoringToolOutcome(
-                "Exact planar Profile validation rejected the edit: "
-                f"{code}{location}.",
-                data,
-                ok=False,
-            )
-        except PlanarIRValidationError as error:
-            diagnostic = error.diagnostic
-            raw_evidence = getattr(diagnostic, "evidence", ())
-            evidence = (
-                dict(raw_evidence)
-                if isinstance(raw_evidence, (Mapping, tuple, list))
-                else {}
-            )
-            path_slot_outcome = path_slot_validation_outcome(
-                code=diagnostic.code,
-                reason=diagnostic.message,
-                error_type=type(error).__name__,
-                evidence=evidence,
-            )
-            if path_slot_outcome is not None:
-                return path_slot_outcome
-            return AuthoringToolOutcome(
-                "Planar validation rejected the geometry edit.",
-                {
-                    "error": {
-                        "code": diagnostic.code,
-                        "failed_operation": operation,
-                        "reason": diagnostic.message,
-                        "error_type": type(error).__name__,
-                        "evidence": evidence,
-                        "allowed_operations": list(
-                            controller.geometry_edit_supported_operations
-                        ),
-                    }
-                },
-                ok=False,
-            )
-        except PlanarBooleanLineageResolutionError as error:
-            operation = ""
-            edit = arguments.get("edit")
-            if isinstance(edit, Mapping):
-                operation = str(edit.get("operation", ""))
-            reason = str(error).strip()[:1_000]
-            return AuthoringToolOutcome(
-                "Planar Boolean validation rejected the geometry edit.",
-                {
-                    "error": {
-                        "code": "geometry-edit.planar-boolean-lineage",
-                        "failed_operation": operation,
-                        "reason": reason,
-                        "allowed_operations": list(
-                            controller.geometry_edit_supported_operations
-                        ),
-                    }
-                },
-                ok=False,
-            )
-        except (AuthoringContractError, TypeError, ValueError, KeyError) as error:
-            operation = ""
-            edit = arguments.get("edit")
-            if isinstance(edit, Mapping):
-                operation = str(edit.get("operation", ""))
-            reason = str(error).strip()[:1_000]
-            return AuthoringToolOutcome(
-                "Geometry edit execution was rejected.",
-                {
-                    "error": {
-                        "code": "geometry-edit.execution-rejected",
-                        "failed_operation": operation,
-                        "reason": reason,
-                        "error_type": type(error).__name__,
-                        "allowed_operations": list(
-                            controller.geometry_edit_supported_operations
-                        ),
-                    }
-                },
-                ok=False,
-            )
+        def guarded(callback):
+            try:
+                return callback()
+            except PlanarEditValidationError as error:
+                data = error.to_provider_dict()
+                first = error.diagnostics[0]
+                code = str(first["code"])
+                path_slot_outcome = path_slot_validation_outcome(
+                    code=code,
+                    reason=str(first["message"]),
+                    error_type=type(error).__name__,
+                    evidence={},
+                )
+                if path_slot_outcome is not None:
+                    return path_slot_outcome
+                affected = ", ".join(str(item) for item in first["affected_logical_ids"])
+                location = f" ({affected})" if affected else ""
+                return AuthoringToolOutcome(
+                    "Exact planar Profile validation rejected the edit: "
+                    f"{code}{location}.",
+                    data,
+                    ok=False,
+                )
+            except PlanarIRValidationError as error:
+                diagnostic = error.diagnostic
+                raw_evidence = getattr(diagnostic, "evidence", ())
+                evidence = (
+                    dict(raw_evidence)
+                    if isinstance(raw_evidence, (Mapping, tuple, list))
+                    else {}
+                )
+                path_slot_outcome = path_slot_validation_outcome(
+                    code=diagnostic.code,
+                    reason=diagnostic.message,
+                    error_type=type(error).__name__,
+                    evidence=evidence,
+                )
+                if path_slot_outcome is not None:
+                    return path_slot_outcome
+                return AuthoringToolOutcome(
+                    "Planar validation rejected the geometry edit.",
+                    {
+                        "error": {
+                            "code": diagnostic.code,
+                            "failed_operation": operation,
+                            "reason": diagnostic.message,
+                            "error_type": type(error).__name__,
+                            "evidence": evidence,
+                            "allowed_operations": list(
+                                controller.geometry_edit_supported_operations
+                            ),
+                        }
+                    },
+                    ok=False,
+                )
+            except PlanarBooleanLineageResolutionError as error:
+                operation = ""
+                edit = arguments.get("edit")
+                if isinstance(edit, Mapping):
+                    operation = str(edit.get("operation", ""))
+                reason = str(error).strip()[:1_000]
+                return AuthoringToolOutcome(
+                    "Planar Boolean validation rejected the geometry edit.",
+                    {
+                        "error": {
+                            "code": "geometry-edit.planar-boolean-lineage",
+                            "failed_operation": operation,
+                            "reason": reason,
+                            "allowed_operations": list(
+                                controller.geometry_edit_supported_operations
+                            ),
+                        }
+                    },
+                    ok=False,
+                )
+            except (AuthoringContractError, TypeError, ValueError, KeyError) as error:
+                operation = ""
+                edit = arguments.get("edit")
+                if isinstance(edit, Mapping):
+                    operation = str(edit.get("operation", ""))
+                reason = str(error).strip()[:1_000]
+                return AuthoringToolOutcome(
+                    "Geometry edit execution was rejected.",
+                    {
+                        "error": {
+                            "code": "geometry-edit.execution-rejected",
+                            "failed_operation": operation,
+                            "reason": reason,
+                            "error_type": type(error).__name__,
+                            "allowed_operations": list(
+                                controller.geometry_edit_supported_operations
+                            ),
+                        }
+                    },
+                    ok=False,
+                )
+
+        outcome = guarded(lambda: self.prepare_geometry_edit(arguments, controller))
+        if type(outcome) is AuthoringToolPreparation:
+            return replace(outcome, finalize=lambda result, error: guarded(
+                lambda: outcome.finalize(result, error)
+            ))
+        return outcome
+
 
     def read_geometry_feature_catalog(
         self,

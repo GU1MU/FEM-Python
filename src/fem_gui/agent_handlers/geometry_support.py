@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -97,18 +96,14 @@ def _preflight_profile_extrusions(
                 compile_recipe(cad, recipe)
 
     try:
-        with ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="agent-extrusion-preflight",
-        ) as executor:
-            executor.submit(compile_all).result()
+        compile_all()
     except Exception as error:
         raise _normalize_profile_preflight_error(error) from error
 
 def _preflight_derived_geometry(
     recipe: RevolvedGeometry | PathSweptGeometry,
 ) -> None:
-    """Compile OCC evidence off the GUI owner thread and finalize there."""
+    """Compile OCC evidence on the detached preparation thread."""
 
     def compile_one() -> None:
         with geometry_runtime.model(
@@ -122,11 +117,7 @@ def _preflight_derived_geometry(
                 )
 
     try:
-        with ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="agent-derived-preflight",
-        ) as executor:
-            executor.submit(compile_one).result()
+        compile_one()
     except Exception as error:
         raise _normalize_profile_preflight_error(error) from error
 
@@ -179,11 +170,7 @@ def _preflight_composite_geometry(
                     tessellation.edges,
                 )
 
-        with ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="agent-composite-preflight",
-        ) as executor:
-            return executor.submit(compile_one).result()
+        return compile_one()
     except Exception as error:
         raise _normalize_profile_preflight_error(error) from error
 
@@ -213,11 +200,7 @@ def _preflight_part_boolean(
                 result_name=result_name,
             )
 
-    with ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="agent-part-boolean-preflight",
-    ) as executor:
-        return executor.submit(compile_one).result()
+    return compile_one()
 
 def _preflight_body_boolean(
     geometry: MultiBodyGeometry,
@@ -243,11 +226,7 @@ def _preflight_body_boolean(
                 result_name=result_name,
             )
 
-    with ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="agent-body-boolean-preflight",
-    ) as executor:
-        return executor.submit(compile_one).result()
+    return compile_one()
 
 def _display_number(value: object) -> str:
     normalized = float(value)

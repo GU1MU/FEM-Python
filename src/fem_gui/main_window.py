@@ -920,6 +920,7 @@ class FEMMainWindow(QMainWindow):
         self._agent_proposal_preview_id: str | None = None
         self._closing = False
         self._exit_pending = False
+        self._agent_exit_waiting = False
         self._shared_resources_shutdown = False
         self._deferred_ui_callbacks: list[Callable[[], None]] = []
         self._deferred_ui_timer = QTimer(self)
@@ -17636,6 +17637,15 @@ class FEMMainWindow(QMainWindow):
             return
         if self.workspace.any_busy():
             return
+        if self._agent_exit_waiting:
+            return
+        runtime = self.viewport_panel.agent_chat_drawer.agent_runtime
+        if runtime.has_live_authoring_work:
+            self._exit_pending = True
+            self._agent_exit_waiting = True
+            runtime.shutdownFinished.connect(self._finish_agent_shutdown_for_exit)
+            runtime.shutdown(wait=False)
+            return
         for context in tuple(self.workspace.documents()):
             if not self._release_workspace_context_for_exit(context):
                 return
@@ -17649,6 +17659,13 @@ class FEMMainWindow(QMainWindow):
         self._close_job_manager()
         self._shutdown_shared_resources()
         self.close()
+
+    def _finish_agent_shutdown_for_exit(self) -> None:
+        runtime = self.viewport_panel.agent_chat_drawer.agent_runtime
+        runtime.shutdownFinished.disconnect(self._finish_agent_shutdown_for_exit)
+        self._agent_exit_waiting = False
+        if self._exit_pending:
+            self._finish_workspace_exit()
 
     def _release_workspace_context_for_exit(
         self,

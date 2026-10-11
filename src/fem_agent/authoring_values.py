@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 import json
 import re
+from threading import Event
 
 from .authoring import AuthoringContext, ProposalState
 from .authoring_payload import _provider_safe_summary
@@ -67,6 +68,24 @@ class AuthoringToolOutcome:
             _provider_safe_summary(self.summary),
         )
         object.__setattr__(self, "data", dict(self.data))
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoringToolPreparation:
+    """Detached CAD work followed by a continuation on the authoring owner.
+
+    The workload must capture only immutable geometry/plain inputs and its
+    cancellation event. The continuation may access the live binding, and is
+    called only after the owner has validated that binding and invocation.
+    """
+
+    workload: Callable[[], object]
+    finalize: Callable[[object, BaseException | None], object]
+    cancel_event: Event
+    name: str
+    timeout_seconds: float
+    cancelled_outcome: AuthoringToolOutcome | None = None
+    timeout_outcome: AuthoringToolOutcome | None = None
 
 
 @dataclass(frozen=True, slots=True)
