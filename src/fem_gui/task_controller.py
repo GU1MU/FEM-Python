@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import logging
 from typing import Any
@@ -524,6 +524,10 @@ class BackgroundTaskController(QObject):
         callbacks = tuple(active.after_cleanup)
         was_cancelling = active.cancel_requested
         self._active = None
+        # Terminal subscribers have already received the original value. Keep
+        # only diagnostics here; a completed document must not pin its model,
+        # result adapters, or a newly opened WorkspaceDocument through history.
+        self._last_completion = replace(active.completion, value=None)
         if was_cancelling:
             self.cancelling_changed.emit(False)
         self.state_changed.emit(BackgroundTaskState.IDLE)

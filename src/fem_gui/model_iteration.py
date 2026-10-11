@@ -450,18 +450,9 @@ class ModelIterationService:
         document_ids, active_id, active_kind, next_document_id, next_model_number = (
             state
         )
-        for registry, path_index in (
-            (self._workspace.models, self._workspace.model_paths),
-            (self._workspace.results, self._workspace.result_paths),
-        ):
-            for document_id in tuple(registry):
-                if document_id in document_ids:
-                    continue
-                removed = registry.pop(document_id)
-                if removed.source_path is not None:
-                    from .workspace import canonical_path
-
-                    path_index.pop(canonical_path(removed.source_path), None)
+        for document in self._workspace.documents():
+            if document.document_id not in document_ids:
+                self._workspace.remove(document)
         self._workspace.active_document_id = active_id
         self._workspace.active_kind = active_kind
         self._workspace._next_document_id = next_document_id

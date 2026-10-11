@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+from PySide6.QtCore import QObject
+
 from fem.application import ModelSession, SessionSnapshot
 
 from .task_controller import BackgroundTaskController
@@ -192,6 +194,16 @@ class DocumentLineage:
 ControllerFactory = Callable[[object | None], BackgroundTaskController]
 
 
+@dataclass(eq=False, slots=True)
+class WorkspacePathReservation:
+    """One file operation's claim, held until its controller becomes idle."""
+
+    key: str
+    document_id: int | None
+    controller: BackgroundTaskController
+    on_idle: Callable[[bool], None] | None = None
+
+
 class FEMWorkspace:
     """Own document contexts while preserving the single-document GUI path."""
 
@@ -208,6 +220,9 @@ class FEMWorkspace:
         self.results: dict[int, WorkspaceDocument] = {}
         self.model_paths: dict[str, int] = {}
         self.result_paths: dict[str, int] = {}
+        self._path_documents: dict[str, set[int]] = {}
+        self._document_paths: dict[int, set[str]] = {}
+        self._path_reservations: dict[str, WorkspacePathReservation] = {}
         self.active_kind: str | None = None
         self.active_document_id: int | None = None
         self._next_document_id = 1
@@ -318,6 +333,7 @@ class FEMWorkspace:
         source_path: str | os.PathLike[str] | Path | None = None,
         task_controller: BackgroundTaskController | None = None,
         lineage: DocumentLineage | None = None,
+        path_reservation: WorkspacePathReservation | None = None,
     ) -> WorkspaceDocument:
         """Add or return a model context without copying Session data."""
 
@@ -329,6 +345,7 @@ class FEMWorkspace:
             source_path=source_path,
             task_controller=task_controller,
             lineage=lineage,
+            path_reservation=path_reservation,
         )
 
     def add_result(
@@ -339,6 +356,7 @@ class FEMWorkspace:
         display_name: str | None = None,
         source_path: str | os.PathLike[str] | Path | None = None,
         task_controller: BackgroundTaskController | None = None,
+        path_reservation: WorkspacePathReservation | None = None,
     ) -> WorkspaceDocument:
         """Add or return an external result context."""
 
@@ -350,7 +368,49 @@ class FEMWorkspace:
             source_path=source_path,
             task_controller=task_controller,
             lineage=None,
+            path_reservation=path_reservation,
         )
+
+    def reserve_path(
+        self,
+        path: str | os.PathLike[str] | Path,
+        *,
+        controller: BackgroundTaskController,
+        document_id: int | None = None,
+    ) -> WorkspacePathReservation:
+        """Reserve a read, or a document's write, before filesystem access.
+
+        Readers may inspect an archive also referenced by a model. Writers
+        require exclusive document ownership, including every run archive.
+        A reservation outlives terminal notification until the worker exits.
+        """
+
+        key = canonical_path(path)
+        if key in self._path_reservations:
+            raise RuntimeError(f"A file operation is already using this path: {path}")
+        if document_id is not None:
+            self.document(document_id)
+            if self._path_documents.get(key, set()) - {document_id}:
+                raise ValueError(f"Another open document owns this path: {path}")
+        reservation = WorkspacePathReservation(key, document_id, controller)
+
+        def on_idle(busy: bool) -> None:
+            if not busy:
+                self.release_path(reservation)
+
+        reservation.on_idle = on_idle
+        self._path_reservations[key] = reservation
+        controller.busy_changed.connect(on_idle)
+        return reservation
+
+    def release_path(self, reservation: WorkspacePathReservation) -> None:
+        """Release one reservation after cleanup or an unstarted operation."""
+
+        if self._path_reservations.get(reservation.key) is not reservation:
+            return
+        self._path_reservations.pop(reservation.key)
+        reservation.controller.busy_changed.disconnect(reservation.on_idle)
+        reservation.on_idle = None
 
     def ensure_open_controller(self) -> BackgroundTaskController:
         """Return the one workspace-owned detached file-open controller."""
@@ -388,6 +448,10 @@ class FEMWorkspace:
             else self.document(document_id)
         )
         kind = self._kind_for(context.document_id)
+        if self.document(context.document_id) is not context:
+            raise ValueError("Removal target must be a live workspace document")
+        if context.task_controller.busy:
+            raise RuntimeError("A document cannot be removed before its task exits")
         registry = self.models if kind == "model" else self.results
         registry.pop(context.document_id)
         path_index = self.model_paths if kind == "model" else self.result_paths
@@ -395,6 +459,19 @@ class FEMWorkspace:
             key = canonical_path(context.source_path)
             if path_index.get(key) == context.document_id:
                 path_index.pop(key, None)
+        self._remove_path_ownership(context.document_id)
+        for reservation in tuple(self._path_reservations.values()):
+            if reservation.document_id == context.document_id:
+                self.release_path(reservation)
+        context.presentation_cache.invalidate_model()
+        context.presentation_cache.invalidate_result()
+        context.presentation_state = DocumentPresentationState()
+        controller = context.task_controller
+        # Qt's parent and signal closures otherwise retain this context after
+        # its registry entry has gone. No worker may remain at this boundary.
+        QObject.disconnect(controller, None, None, None)
+        controller.setParent(None)
+        controller.deleteLater()
 
         if self.active_document_id == context.document_id:
             replacement = next(iter(self.models.values()), None)
@@ -449,7 +526,16 @@ class FEMWorkspace:
             if isinstance(context, WorkspaceDocument)
             else self.document(context)
         )
+        if self.document(target.document_id) is not target:
+            raise ValueError("Projection target must be a live workspace document")
         path_index = self.model_paths if target.kind == "model" else self.result_paths
+        path = (
+            getattr(projection, "path", None)
+            or getattr(projection, "source_path", None)
+            or getattr(projection, "project_path", None)
+        )
+        new_path = None if path is None else Path(path)
+        self._check_source_path(new_path, path_index, target.document_id)
         old_path = target.source_path
         old_model_name = str(getattr(target.projection, "model_name", "") or "").strip()
         if old_path is not None:
@@ -470,14 +556,10 @@ class FEMWorkspace:
                 exclude_document_id=target.document_id,
             )
         self._remember_projection_job_names(projection)
-        path = (
-            getattr(projection, "path", None)
-            or getattr(projection, "source_path", None)
-            or getattr(projection, "project_path", None)
-        )
-        target.source_path = None if path is None else Path(path)
+        target.source_path = new_path
         if target.source_path is not None:
             path_index[canonical_path(target.source_path)] = target.document_id
+        self._index_document_paths(target)
         return target
 
     def _add(
@@ -490,6 +572,7 @@ class FEMWorkspace:
         source_path: str | os.PathLike[str] | Path | None,
         task_controller: BackgroundTaskController | None,
         lineage: DocumentLineage | None,
+        path_reservation: WorkspacePathReservation | None,
     ) -> WorkspaceDocument:
         if kind not in {"model", "result"}:
             raise ValueError("workspace document kind must be model or result")
@@ -510,6 +593,9 @@ class FEMWorkspace:
         registry = self.models if kind == "model" else self.results
         if path is not None:
             key = canonical_path(path)
+            reservation = self._path_reservations.get(key)
+            if reservation is not None and reservation is not path_reservation:
+                raise RuntimeError(f"A file operation is already using this path: {path}")
             existing_id = path_index.get(key)
             if existing_id is not None:
                 existing = registry[existing_id]
@@ -552,9 +638,45 @@ class FEMWorkspace:
         self._remember_projection_job_names(projection)
         if path is not None:
             path_index[canonical_path(path)] = document_id
+        self._index_document_paths(context)
         if self.active_document_id is None:
             self.activate(context)
         return context
+
+    def _check_source_path(
+        self,
+        path: Path | None,
+        path_index: dict[str, int],
+        document_id: int,
+    ) -> None:
+        if path is None:
+            return
+        key = canonical_path(path)
+        owner = path_index.get(key)
+        if owner is not None and owner != document_id:
+            raise ValueError(f"Another open document owns this source path: {path}")
+        reservation = self._path_reservations.get(key)
+        if reservation is not None and reservation.document_id != document_id:
+            # A detached read already installed this document during its
+            # success callback and still owns cleanup of that read operation.
+            if owner != document_id:
+                raise RuntimeError(f"A file operation is already using this path: {path}")
+
+    def _remove_path_ownership(self, document_id: int) -> None:
+        for key in self._document_paths.pop(document_id, set()):
+            owners = self._path_documents[key]
+            owners.remove(document_id)
+            if not owners:
+                self._path_documents.pop(key)
+
+    def _index_document_paths(self, context: WorkspaceDocument) -> None:
+        self._remove_path_ownership(context.document_id)
+        paths = [context.source_path]
+        paths.extend(state.path for state in context.projection.result_file_states.values())
+        keys = {canonical_path(path) for path in paths if path is not None}
+        self._document_paths[context.document_id] = keys
+        for key in keys:
+            self._path_documents.setdefault(key, set()).add(context.document_id)
 
     def _unique_display_name(
         self,

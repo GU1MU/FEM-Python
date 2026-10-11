@@ -318,7 +318,6 @@ from .task_controller import (
     TaskCompletion,
 )
 from .workspace import (
-    DocumentPresentationState,
     FEMWorkspace,
     WorkspaceDocument,
     canonical_path,
@@ -720,7 +719,6 @@ class FEMMainWindow(QMainWindow):
             session=self._session_alias,
             projection=self._document_alias,
             display_name="Model-1",
-            task_controller=self._task_controller_alias,
         )
         self.workspace.activate(self._active_context)
         self.agent_result_query_bridge = AgentResultQueryBridge(
@@ -1628,10 +1626,11 @@ class FEMMainWindow(QMainWindow):
 
     @task_controller.setter
     def task_controller(self, value: BackgroundTaskController) -> None:
-        self._task_controller_alias = value
         context = self._active_workspace_context()
         if context is not None:
             context.task_controller = value
+        else:
+            self._task_controller_alias = value
 
     def _defer_ui(self, callback: Callable[[], None]) -> None:
         if self._closing:
@@ -1857,6 +1856,12 @@ class FEMMainWindow(QMainWindow):
                 "task.busy",
                 "a project open task is already running",
             )
+        try:
+            path_reservation = self.workspace.reserve_path(
+                target, controller=open_controller,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._rejected_command(command_id, "project.open.rejected", error)
         completion = GuiCommandCompletion(command_id)
         accepted_context: WorkspaceDocument | None = None
 
@@ -1893,6 +1898,7 @@ class FEMMainWindow(QMainWindow):
                         or target.stem
                     ),
                     source_path=loaded.path or target,
+                    path_reservation=path_reservation,
                 )
                 delta = session.replace_from_snapshot(loaded.snapshot)
             except (RevisionConflictError, TypeError, ValueError) as error:
@@ -1956,6 +1962,9 @@ class FEMMainWindow(QMainWindow):
                 error,
                 "Check the project file version and contents.",
             )
+        finally:
+            if not open_controller.busy:
+                self.workspace.release_path(path_reservation)
         if not started:
             return self._rejected_command(
                 command_id,
@@ -1972,6 +1981,7 @@ class FEMMainWindow(QMainWindow):
                 "editor.active",
                 "Finish or cancel the current edit before opening an INP",
             )
+        path_reservation = None
         try:
             target = Path(path)
             existing_id = self.workspace.model_paths.get(canonical_path(target))
@@ -1997,6 +2007,9 @@ class FEMMainWindow(QMainWindow):
                     "task.busy",
                     "a model open task is already running",
                 )
+            path_reservation = self.workspace.reserve_path(
+                target, controller=open_controller,
+            )
             session = ModelSession()
             task = session.prepare_import(target)
             completion = GuiCommandCompletion(command_id)
@@ -2030,6 +2043,7 @@ class FEMMainWindow(QMainWindow):
                         session=session,
                         display_name=target.stem,
                         source_path=target,
+                        path_reservation=path_reservation,
                     )
                     delta = session.accept_imported_model_transfer(
                         task.token,
@@ -2103,6 +2117,9 @@ class FEMMainWindow(QMainWindow):
                 "import.open.rejected",
                 error,
             )
+        finally:
+            if path_reservation is not None and not open_controller.busy:
+                self.workspace.release_path(path_reservation)
         if not started:
             return self._rejected_command(
                 command_id,
@@ -2165,6 +2182,10 @@ class FEMMainWindow(QMainWindow):
                 "no model context is available",
             )
         target_document = target_context.projection
+        if target_context.task_controller.busy:
+            return self._rejected_command(
+                command_id, "task.busy", "a background task is already running",
+            )
         if not target_document.can_save:
             return self._rejected_command(
                 command_id,
@@ -2174,7 +2195,15 @@ class FEMMainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.casefold() != MODEL_FILE_SUFFIX:
             target = target.with_suffix(MODEL_FILE_SUFFIX)
+        path_reservation = None
+        save_snapshot = None
+        started = False
         try:
+            path_reservation = self.workspace.reserve_path(
+                target,
+                controller=target_context.task_controller,
+                document_id=target_context.document_id,
+            )
             save_snapshot = target_context.session.prepare_project_save()
 
             completion = GuiCommandCompletion(command_id)
@@ -2248,12 +2277,19 @@ class FEMMainWindow(QMainWindow):
                 context=target_context,
             )
         except Exception as error:
+            if save_snapshot is not None and not target_context.task_controller.busy:
+                self._target_session_task_cancelled(target_context, save_snapshot.token)
             return self._rejected_command(
                 command_id,
                 "project.save.rejected",
                 error,
             )
+        finally:
+            if path_reservation is not None and not target_context.task_controller.busy:
+                self.workspace.release_path(path_reservation)
         if not started:
+            if save_snapshot is not None:
+                self._target_session_task_cancelled(target_context, save_snapshot.token)
             return self._rejected_command(
                 command_id,
                 "task.start.rejected",
@@ -2272,9 +2308,18 @@ class FEMMainWindow(QMainWindow):
                 "a background task is already running",
             )
         save_snapshot = None
+        target_context = self.workspace.active_document()
+        path_reservation = None
         started = False
         try:
             spec = ResultArchiveSaveSpec(Path(path))
+            if target_context is None:
+                raise RuntimeError("No document is available to save")
+            path_reservation = self.workspace.reserve_path(
+                spec.path,
+                controller=target_context.task_controller,
+                document_id=target_context.document_id,
+            )
             run_id = self.document.displayed_result_run_id
             if run_id is None:
                 raise RuntimeError("No successful results are available to save")
@@ -2350,6 +2395,9 @@ class FEMMainWindow(QMainWindow):
                 "result.save.rejected",
                 error,
             )
+        finally:
+            if path_reservation is not None and not target_context.task_controller.busy:
+                self.workspace.release_path(path_reservation)
         if not started:
             if save_snapshot is not None:
                 self.session.accept_result_archive_save_cancelled(
@@ -11166,6 +11214,7 @@ class FEMMainWindow(QMainWindow):
                 "editor.active",
                 "active editor must be completed before opening a result",
             )
+        path_reservation = None
         try:
             spec = ResultArchiveOpenSpec(Path(path))
             existing_id = self.workspace.result_paths.get(canonical_path(spec.path))
@@ -11189,6 +11238,9 @@ class FEMMainWindow(QMainWindow):
                     "task.busy",
                     "a result archive is already being opened",
                 )
+            path_reservation = self.workspace.reserve_path(
+                spec.path, controller=open_controller,
+            )
             completion = GuiCommandCompletion(command_id)
 
             def workload(task_context: TaskContext):
@@ -11233,6 +11285,7 @@ class FEMMainWindow(QMainWindow):
                     projection=projection,
                     display_name=display_name,
                     source_path=spec.path,
+                    path_reservation=path_reservation,
                 )
                 context.presentation_state.module_name = "Results"
                 artifact = projection.artifact
@@ -11283,6 +11336,9 @@ class FEMMainWindow(QMainWindow):
             )
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(command_id, "result.open.rejected", error)
+        finally:
+            if path_reservation is not None and not open_controller.busy:
+                self.workspace.release_path(path_reservation)
         if not started:
             return self._rejected_command(
                 command_id,
@@ -11697,9 +11753,6 @@ class FEMMainWindow(QMainWindow):
                 self._show_command_rejection("Close Model", receipt)
                 return False
         closed_id = target_context.document_id
-        target_context.presentation_cache.invalidate_model()
-        target_context.presentation_cache.invalidate_result()
-        target_context.presentation_state = DocumentPresentationState()
         if target_context.is_result:
             self.result_tree.remove_archive(closed_id)
         else:
@@ -17613,9 +17666,6 @@ class FEMMainWindow(QMainWindow):
             except (RevisionConflictError, RuntimeError, TypeError, ValueError):
                 logging.exception("workspace document could not close during exit")
                 return False
-        context.presentation_cache.invalidate_model()
-        context.presentation_cache.invalidate_result()
-        context.presentation_state = DocumentPresentationState()
         if context.is_result:
             self.result_tree.remove_archive(context.document_id)
         else:
