@@ -251,6 +251,8 @@ class ResultTree(QTreeWidget):
         for run in runs:
             run_id = str(getattr(run, "run_id", ""))
             key = (document_id, run_id)
+            file_state = getattr(projection, "result_file_states", {}).get(run_id)
+            result_path = getattr(file_state, "path", None) or path
             run_catalog = (
                 catalog
                 if source is not None and str(source.run_id) == run_id
@@ -262,7 +264,7 @@ class ResultTree(QTreeWidget):
                     run_id,
                     name=_run_label(run),
                     step_name=str(getattr(run, "step_name", "")),
-                    source_path=path,
+                    source_path=result_path,
                     catalog=run_catalog,
                     section_point_labels=labels,
                     kind="model",
@@ -399,7 +401,16 @@ class ResultTree(QTreeWidget):
             tuple(labels.items()),
             kind,
         )
-        if old is not None and self._root_signatures.get(key) == signature:
+        previous_signature = self._root_signatures.get(key)
+        if (
+            old is not None
+            and previous_signature is not None
+            and previous_signature[1] == signature[1]
+            and previous_signature[3:] == signature[3:]
+        ):
+            old.setText(0, display_name)
+            old.setToolTip(0, "" if source_path is None else str(source_path))
+            self._root_signatures[key] = signature
             if catalog is not None:
                 self._active_run_ids[document_id] = run_id
                 if self._active_document_id in {None, document_id}:

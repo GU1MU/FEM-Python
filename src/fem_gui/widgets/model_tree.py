@@ -398,6 +398,22 @@ class ModelTree(QTreeWidget):
             **projection_options,
         )
 
+    def update_document_metadata(
+        self,
+        document_id: int,
+        *,
+        name: str,
+        source_path: str | Path | None,
+    ) -> bool:
+        """Update a root's label/path without replacing its hierarchy or selection."""
+
+        root = self._roots.get(int(document_id))
+        if root is None:
+            return False
+        root.setText(0, self._display_name(name))
+        root.setToolTip(0, "" if source_path is None else str(Path(source_path)))
+        return True
+
     def remove_document(self, document_id: int) -> bool:
         """Remove one root by integer identity, leaving every other root."""
 

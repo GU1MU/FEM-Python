@@ -286,6 +286,7 @@ from .result_presentation import (
     visible_result_fields,
 )
 from .result_csv_export_dialog import ResultCsvExportDialog
+from .session_projection import plan_session_projection
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -3655,15 +3656,26 @@ class FEMMainWindow(QMainWindow):
         if target_context is not active_context:
             if revision <= target_context.projection.session_revision:
                 return False
-            previous_target_artifact = target_context.projection.artifact
+            previous_snapshot = target_context.projection
+            previous_target_artifact = previous_snapshot.artifact
             snapshot = self._snapshot_for_delta(
                 delta,
                 revision,
                 context=target_context,
             )
-            if snapshot.session_revision < revision:
+            plan = plan_session_projection(
+                previous_snapshot,
+                snapshot,
+                requested_revision=requested_revision,
+                applied_revision=previous_snapshot.session_revision,
+                delta=delta if isinstance(delta, SessionDelta) else None,
+            )
+            if plan is None:
                 return False
             self.workspace.update_projection(target_context, snapshot)
+            if plan.scope == "metadata":
+                self._refresh_session_tree_metadata(target_context, plan.changed)
+                return True
             next_artifact = snapshot.artifact
             if (
                 previous_target_artifact is None
@@ -3681,18 +3693,22 @@ class FEMMainWindow(QMainWindow):
             return True
         if revision <= self._applied_session_revision:
             return False
-
+        previous_snapshot = self.document
         snapshot = self._snapshot_for_delta(
             delta,
             revision,
             context=target_context,
         )
-        if snapshot.session_revision < revision:
+        plan = plan_session_projection(
+            previous_snapshot,
+            snapshot,
+            requested_revision=requested_revision,
+            applied_revision=self._applied_session_revision,
+            delta=delta if isinstance(delta, SessionDelta) else None,
+        )
+        if plan is None:
             return False
-        if snapshot.session_revision > revision:
-            # A newer transition was already accepted.  Project only the newest
-            # state and let the older delta become an ordered no-op.
-            revision = snapshot.session_revision
+        revision = plan.session_revision
 
         if geometry_preview is not None:
             if type(geometry_preview) is not GeometryPreview:
@@ -3748,24 +3764,18 @@ class FEMMainWindow(QMainWindow):
             self.agent_authoring_controller.observe_binding(
                 current_authoring_context,
                 proposal_staled=bool(stale_agent_proposals),
-                saved_state_transition=(
-                    isinstance(delta, SessionDelta)
-                    and delta.changed
-                    == frozenset({ChangeKind.SAVED_STATE})
-                ),
-                project_save_terminal_transition=(
-                    isinstance(delta, SessionDelta)
-                    and delta.changed
-                    == frozenset({ChangeKind.SESSION})
-                    and delta.reason
-                    in {
-                        "project_save task failed",
-                        "project_save task cancelled",
-                    }
-                ),
+                saved_state_transition=plan.saved_state_transition,
+                project_save_terminal_transition=plan.project_save_terminal_transition,
             )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
+        if plan.scope == "metadata":
+            self._refresh_session_tree_metadata(target_context, plan.changed)
+            if ChangeKind.RUNS in plan.changed:
+                self._refresh_job_manager()
+            self._update_action_states()
+            self._applied_session_revision = revision
+            return True
         if (
             snapshot.artifact is None
             or previous_artifact_id
@@ -4038,6 +4048,25 @@ class FEMMainWindow(QMainWindow):
         self.model_tree.set_active_document(target_context.document_id)
         self._applied_session_revision = revision
         return True
+
+    def _refresh_session_tree_metadata(
+        self,
+        context: WorkspaceDocument,
+        changed: frozenset[ChangeKind],
+    ) -> None:
+        """Update saved paths and run metadata while retaining tree context."""
+
+        if ChangeKind.SAVED_STATE in changed and not context.is_result:
+            snapshot = context.projection
+            updated = self.model_tree.update_document_metadata(
+                context.document_id,
+                name=str(context.display_name or snapshot.model_name or "Model"),
+                source_path=snapshot.source_path or snapshot.project_path,
+            )
+            if not updated:
+                self._refresh_model_tree_for_context(context)
+        if changed & {ChangeKind.SAVED_STATE, ChangeKind.RUNS}:
+            self._refresh_result_tree_for_context(context)
 
     def _snapshot_for_delta(
         self,
