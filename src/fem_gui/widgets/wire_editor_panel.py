@@ -27,7 +27,7 @@ from ..wire_editor import (
     WireDraftSnapshot,
     snap_work_plane_point,
 )
-from .viewport import WireDraftRenderData
+from ..viewport_drafting import WireDraftRenderData
 
 
 def _finite_spin_box(parent: QWidget, value: float = 0.0) -> QDoubleSpinBox:

@@ -359,11 +359,7 @@ from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
-from .widgets.viewport import (
-    FEMViewport,
-    _capture_camera_state,
-    _restore_camera_state,
-)
+from .widgets.viewport import FEMViewport
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
@@ -1118,81 +1114,68 @@ class FEMMainWindow(QMainWindow):
             "selected_mesh_scope_refs": set(self._selected_mesh_scope_refs),
         }
 
-        viewport_render_suppressed = getattr(
-            self.viewport,
-            "_render_suppressed",
-            False,
-        )
         try:
-            self._clear_workspace_transients()
-            self.workspace.activate(context)
-            self._active_context = context
-            self._applied_session_revision = -1
-            self._legacy_project_extension = bool(
-                context.projection.project_path is not None
-                and context.projection.project_path.suffix.casefold()
-                in LEGACY_MODEL_FILE_SUFFIXES
-            )
-            self._prepare_document_presentation(context)
-            cache = context.presentation_cache
-            artifact = context.projection.artifact
-            artifact_id = None if artifact is None else artifact.artifact_id
-            model_geometry = (
-                cache.model_geometry
-                if cache.matches_artifact(artifact_id)
-                else None
-            )
-            result_identity = context.session.current_result_identity()
-            result_model_view = None
-            if result_identity is not None and cache.matches_result(*result_identity):
-                result_model_view = cache.result_model_view
+            with self.viewport.batch_scene_updates():
+                self._clear_workspace_transients()
+                self.workspace.activate(context)
+                self._active_context = context
+                self._applied_session_revision = -1
+                self._legacy_project_extension = bool(
+                    context.projection.project_path is not None
+                    and context.projection.project_path.suffix.casefold()
+                    in LEGACY_MODEL_FILE_SUFFIXES
+                )
+                self._prepare_document_presentation(context)
+                cache = context.presentation_cache
+                artifact = context.projection.artifact
+                artifact_id = None if artifact is None else artifact.artifact_id
+                model_geometry = (
+                    cache.model_geometry
+                    if cache.matches_artifact(artifact_id)
+                    else None
+                )
+                result_identity = context.session.current_result_identity()
+                result_model_view = None
+                if result_identity is not None and cache.matches_result(*result_identity):
+                    result_model_view = cache.result_model_view
 
-            self._workspace_activation = True
-            self.viewport._render_suppressed = True
-            delta = SessionDelta(
-                session_revision=int(context.session.session_revision),
-                reason="workspace document activated",
-            )
-            applied = self._apply_session_delta(
-                delta,
-                context=context,
-                model_geometry=model_geometry,
-                result_model_view=result_model_view,
-            )
-            if not applied:
-                raise RuntimeError("target context projection could not be installed")
-            self._restore_document_presentation(context, render=False)
-            self._project_viewport_for_module(
-                context.presentation_state.module_name
-                or self._current_module_name(),
-                render=False,
-                reset_camera=False,
-            )
-            self._set_ribbon_module_silent(
-                context.presentation_state.module_name
-                or self._current_module_name()
-            )
-            self._apply_module_symbol_policy(
-                context.presentation_state.module_name
-                or self._current_module_name(),
-                render=False,
-            )
-            # First display fits once; warm displays restore the saved camera
-            # and do not reset/fit it.  All preceding calls use render=False.
-            self.viewport._render_suppressed = viewport_render_suppressed
-            camera_state = context.presentation_state.camera_state
-            if camera_state is not None and self.viewport._plotter is not None:
-                _restore_camera_state(self.viewport._plotter, camera_state)
-                self.viewport._refresh_symbols_for_camera(render=False)
-                self.viewport.render()
-            else:
-                try:
+                self._workspace_activation = True
+                delta = SessionDelta(
+                    session_revision=int(context.session.session_revision),
+                    reason="workspace document activated",
+                )
+                applied = self._apply_session_delta(
+                    delta,
+                    context=context,
+                    model_geometry=model_geometry,
+                    result_model_view=result_model_view,
+                )
+                if not applied:
+                    raise RuntimeError("target context projection could not be installed")
+                self._restore_document_presentation(context, render=False)
+                self._project_viewport_for_module(
+                    context.presentation_state.module_name
+                    or self._current_module_name(),
+                    render=False,
+                    reset_camera=False,
+                )
+                self._set_ribbon_module_silent(
+                    context.presentation_state.module_name
+                    or self._current_module_name()
+                )
+                self._apply_module_symbol_policy(
+                    context.presentation_state.module_name
+                    or self._current_module_name(),
+                    render=False,
+                )
+                # Warm displays restore framing; the first display fits once.
+                camera_state = context.presentation_state.camera_state
+                if camera_state is None or not self.viewport.restore_camera_state(
+                    camera_state,
+                    render=False,
+                ):
                     self.viewport.fit(render=False)
-                except TypeError:
-                    # Keep compatibility with lightweight viewport probes in
-                    # existing GUI tests that expose ``fit()`` only.
-                    self.viewport.fit()
-                self.viewport.render()
+            self.viewport.render()
             self.model_tree.set_active_document(context.document_id)
             self.result_tree.set_active_document(context.document_id)
             self._task_busy_changed(context.task_controller.busy)
@@ -1204,7 +1187,6 @@ class FEMMainWindow(QMainWindow):
             applied = False
         finally:
             self._workspace_activation = False
-            self.viewport._render_suppressed = viewport_render_suppressed
 
         # Activation can fail after the workspace registry has already moved.
         # Restore the previous pair so aliases and registries stay in lockstep.
@@ -1242,7 +1224,6 @@ class FEMMainWindow(QMainWindow):
         self._restore_failed_workspace_activation(
             previous_context,
             previous_aliases,
-            viewport_render_suppressed=viewport_render_suppressed,
         )
         if previous_context is None:
             self.model_tree.set_active_document(None)
@@ -1256,8 +1237,6 @@ class FEMMainWindow(QMainWindow):
         self,
         previous_context: WorkspaceDocument | None,
         previous_aliases: dict[str, object],
-        *,
-        viewport_render_suppressed: bool,
     ) -> None:
         """Restore aliases and the previous scene after a failed activation."""
 
@@ -1299,51 +1278,48 @@ class FEMMainWindow(QMainWindow):
 
         # Rebuild only the shared viewport scene.  All actor and display
         # mutations remain render-suppressed until the final explicit repaint.
-        self.viewport._render_suppressed = True
         try:
-            if previous_context is None:
-                FEMViewport.clear_model(self.viewport)
-            elif self.document.artifact is not None and self.geometry is not None:
-                self._restore_viewport_model_scene(
-                    render=False,
-                    reset_camera=False,
-                )
-            else:
-                preview = self._current_native_geometry_preview()
-                if preview is not None:
-                    self.viewport.show_geometry_preview(
-                        preview,
+            with self.viewport.batch_scene_updates():
+                if previous_context is None:
+                    FEMViewport.clear_model(self.viewport)
+                elif self.document.artifact is not None and self.geometry is not None:
+                    self._restore_viewport_model_scene(
                         render=False,
                         reset_camera=False,
                     )
                 else:
-                    FEMViewport.clear_model(self.viewport)
-            if self.result_provider is not None and self.result_selection is not None:
-                try:
-                    self._apply_display(render=False)
-                except Exception:
-                    logging.exception(
-                        "failed to restore previous result display after activation"
-                    )
-            self._sync_step_combos()
-            self._refresh_result_controls()
-            self.status_panel.set_step(self._current_step_name)
-            self._update_action_states()
+                    preview = self._current_native_geometry_preview()
+                    if preview is not None:
+                        self.viewport.show_geometry_preview(
+                            preview,
+                            render=False,
+                            reset_camera=False,
+                        )
+                    else:
+                        FEMViewport.clear_model(self.viewport)
+                if self.result_provider is not None and self.result_selection is not None:
+                    try:
+                        self._apply_display(render=False)
+                    except Exception:
+                        logging.exception(
+                            "failed to restore previous result display after activation"
+                        )
+                self._sync_step_combos()
+                self._refresh_result_controls()
+                self.status_panel.set_step(self._current_step_name)
+                self._update_action_states()
         except Exception:
             logging.exception(
                 "failed to restore previous viewport after activation failure"
             )
-        finally:
-            self.viewport._render_suppressed = viewport_render_suppressed
         camera_state = (
             previous_context.presentation_state.camera_state
             if previous_context is not None
             else None
         )
-        if camera_state is not None and self.viewport._plotter is not None:
+        if camera_state is not None:
             try:
-                _restore_camera_state(self.viewport._plotter, camera_state)
-                self.viewport._refresh_symbols_for_camera(render=False)
+                self.viewport.restore_camera_state(camera_state, render=False)
             except Exception:
                 logging.exception(
                     "failed to restore previous camera after activation failure"
@@ -1366,15 +1342,12 @@ class FEMMainWindow(QMainWindow):
         state.step_name = self._current_step_name
         state.result_selection = self.result_selection
         state.display_state = self._display
-        state.selection_mode = getattr(self.viewport, "_selection_mode", None)
+        state.selection_mode = self.viewport.selection_mode
         state.result_scale_mode = str(self._scale_mode)
         state.result_scale_value = float(self._scale_value)
         state.contour_options = dict(self._contour_options)
         state.overlay_undeformed = bool(self._overlay_undeformed)
-        plotter = getattr(self.viewport, "_plotter", None)
-        state.camera_state = (
-            _capture_camera_state(plotter) if plotter is not None else None
-        )
+        state.camera_state = self.viewport.capture_camera_state()
 
         cache = context.presentation_cache
         artifact = context.projection.artifact
@@ -4004,7 +3977,7 @@ class FEMMainWindow(QMainWindow):
                 provider,
                 self.result_selection,
             )
-            viewport_payload = self.viewport._result_render_payload
+            viewport_payload = self.viewport.result_render_payload
             viewport_is_current = (
                 type(viewport_payload) is ResultRenderPayload
                 and viewport_payload.topology.source == provider.source
@@ -4167,7 +4140,7 @@ class FEMMainWindow(QMainWindow):
             self.inspection_service.update_result_provider(None)
         had_projection = not (
             self.result_provider is None
-            and self.viewport._result_render_payload is None
+            and self.viewport.result_render_payload is None
         )
         self.result_provider = None
         self.result_selection = None
@@ -6678,7 +6651,7 @@ class FEMMainWindow(QMainWindow):
             return
         if not self._confirm_result_invalidation(preserve_editor=True):
             return
-        rendered_draft = self.viewport._sketch_draft_render_data
+        rendered_draft = self.viewport.sketch_draft_render_data
         local_preview = (
             GeometryPreview(
                 rendered_draft.points,
@@ -14022,7 +13995,7 @@ class FEMMainWindow(QMainWindow):
         self._show_model_in_tree(model)
         had_result_projection = not (
             self.result_provider is None
-            and self.viewport._result_render_payload is None
+            and self.viewport.result_render_payload is None
         )
         self._clear_result_projection()
         if not had_result_projection:
@@ -14152,7 +14125,7 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         self.viewport.set_geometry_ghost_preview(preview)
-        current = self.viewport._geometry_preview
+        current = self.viewport.geometry_preview
         if current is not None:
             self.viewport.show_geometry_preview(current)
 
@@ -14371,7 +14344,7 @@ class FEMMainWindow(QMainWindow):
         normalized = "element" if mode == "element" else "node"
         if (
             self._selected_geometry_refs
-            or self.viewport._selection_mode != normalized
+            or self.viewport.selection_mode != normalized
         ):
             self.selection.clear()
             self._selected_geometry_refs.clear()
@@ -14784,7 +14757,7 @@ class FEMMainWindow(QMainWindow):
         return tuple(groups_by_identity.values())
 
     def _active_mesh_selection_filter(self) -> str:
-        mode = self.viewport._selection_mode
+        mode = self.viewport.selection_mode
         if mode.startswith("mesh_"):
             semantic_filter = mode.removeprefix("mesh_")
             return "point" if semantic_filter == "node" else semantic_filter
@@ -14803,9 +14776,7 @@ class FEMMainWindow(QMainWindow):
         ):
             return (reference,)
         if semantic_filter == "element" and reference.element_id is not None:
-            owner = self.viewport._mesh_body_owner_by_element_id.get(
-                int(reference.element_id)
-            )
+            owner = self.viewport.mesh_body_owner(reference.element_id)
             if owner is not None:
                 return (
                     MeshEntityRef.element(
@@ -15454,7 +15425,7 @@ class FEMMainWindow(QMainWindow):
             scale_mode=scale_mode,
             scale_value=scale_value,
         )
-        current_payload = self.viewport._result_render_payload
+        current_payload = self.viewport.result_render_payload
         if current_payload is not None:
             current_topology = current_payload.topology
             if (
@@ -15490,7 +15461,7 @@ class FEMMainWindow(QMainWindow):
             )
         return build_result_render_payload(
             topology,
-            reusable=self.viewport._result_render_payload,
+            reusable=self.viewport.result_render_payload,
         )
 
     def _result_averaging_visual_selection(
@@ -15782,44 +15753,20 @@ class FEMMainWindow(QMainWindow):
         *,
         shape_mode: str,
         contour_enabled: bool,
+        render: bool = True,
     ) -> None:
-        """Install one payload and restore the prior scene on renderer failure."""
+        """Install a result scene using the viewport's recovery transaction."""
 
-        previous_payload = self.viewport._result_render_payload
-        previous_display = self.viewport._display
-        try:
-            if payload is not previous_payload:
-                self.viewport.set_result_render_payload(payload)
-            self.viewport.set_display(
-                shape_mode,
-                contour_enabled,
-                render=not self._workspace_activation,
-            )
-        except Exception:
-            if previous_payload is not None:
-                try:
-                    FEMViewport.set_result_render_payload(
-                        self.viewport,
-                        previous_payload,
-                    )
-                    FEMViewport.set_display(
-                        self.viewport,
-                        previous_display.shape_mode,
-                        previous_display.contour_enabled,
-                        render=not self._workspace_activation,
-                    )
-                except Exception:
-                    logging.exception(
-                        "failed to restore viewport result payload"
-                    )
-            else:
-                try:
-                    self._restore_viewport_model_scene()
-                except Exception:
-                    logging.exception(
-                        "failed to restore the model viewport scene"
-                    )
-            raise
+        self.viewport.install_result_display(
+            payload,
+            shape_mode=shape_mode,
+            contour_enabled=contour_enabled,
+            render=render and not self._workspace_activation,
+            restore_model_scene=lambda: self._restore_viewport_model_scene(
+                render=False,
+                reset_camera=False,
+            ),
+        )
 
     def _restore_viewport_model_scene(
         self,
@@ -16085,11 +16032,10 @@ class FEMMainWindow(QMainWindow):
         self.actions["edges"].setChecked(show_edges)
         self._prepare_viewport_for_result_source(render_provider.source)
         self.viewport.set_edges_visible(show_edges, render=False)
-        if payload is not self.viewport._result_render_payload:
-            self.viewport.set_result_render_payload(payload)
-        self.viewport.set_display(
-            self._display.shape_mode,
-            self._display.contour_enabled,
+        self._install_viewport_result_payload(
+            payload,
+            shape_mode=self._display.shape_mode,
+            contour_enabled=self._display.contour_enabled,
             render=render,
         )
         self.status_panel.set_result(self._result_status_text())

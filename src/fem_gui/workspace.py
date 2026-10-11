@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject
 from fem.application import ModelSession, SessionSnapshot
 
 from .task_controller import BackgroundTaskController
+from .viewport_camera import ViewportCameraState
 
 
 def canonical_path(path: str | os.PathLike[str] | Path) -> str:
@@ -48,7 +49,7 @@ class DocumentPresentationState:
     step_name: str | None = None
     result_selection: object | None = None
     display_state: object | None = None
-    camera_state: object | None = None
+    camera_state: ViewportCameraState | None = None
     selection_mode: str | None = None
     result_scale_mode: str = "auto"
     result_scale_value: float = 1.0

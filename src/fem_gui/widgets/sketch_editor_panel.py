@@ -80,7 +80,7 @@ from ..sketch_constraint_ui import (
     measured_dimension_value,
     solve_status_text,
 )
-from .viewport import SketchDraftRenderData
+from ..viewport_drafting import SketchDraftRenderData
 
 
 _SKETCH_SCROLL_ICON_ROOT = (
