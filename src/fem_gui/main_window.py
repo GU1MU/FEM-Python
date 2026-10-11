@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable
-from weakref import WeakSet
 
 import numpy as np
 from PySide6.QtCore import QSignalBlocker, QSettings, Qt, QTimer, Signal
@@ -75,7 +74,6 @@ from fem.application import (
     prepare_strict_planar_recipe_preview,
 )
 from fem.application.definitions import mesh_entity_ref_sort_key
-from fem.application.preprocessing import generate_fem_model
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.changes import ChangeKind
 from fem.application.results import (
@@ -159,14 +157,12 @@ from fem.geometry import (
     resolve_face_workplane,
     undo_solid_body_feature,
 )
-from fem.geometry.gmsh_coordinator import GmshExecutionCancelled
 from fem.geometry.part_namespace import part_id_sort_key
 from fem.io.project import (
     LEGACY_MODEL_FILE_SUFFIXES,
     MODEL_FILE_SUFFIX,
     LoadedProject,
     load_project,
-    save_project,
 )
 from fem.io.result_csv import write_result_table_csv
 from fem_agent.export_authoring import (
@@ -184,7 +180,6 @@ from fem.io.result_archive import (
     LoadedResultArchive,
     RESULT_FILE_SUFFIX,
     load_result_archive,
-    save_result_archive,
 )
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
@@ -370,6 +365,9 @@ from .widgets.viewport import (
 )
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
+from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
+from .document_files import DocumentFileCommands
+from .mesh_tasks import prepare_mesh_display
 
 
 _IMPORTED_OUTPUT_REQUEST_WARNING = (
@@ -665,7 +663,7 @@ class AgentExportFacade:
         return Path(self._workspace_commands.agent_data_root)
 
     def document_id(self) -> str | None:
-        context = self._window._task_context_or_active()
+        context = self._window._active_workspace_context()
         return None if context is None else context.document_id
 
     def result_display_context(self) -> ResultDisplayContext:
@@ -707,10 +705,6 @@ class FEMMainWindow(QMainWindow):
         self._session_alias = ModelSession()
         self._document_alias = self._session_alias.projection_snapshot()
         self.workspace = FEMWorkspace(parent=self)
-        self._task_callback_context: WorkspaceDocument | None = None
-        self._task_controller_connections: WeakSet[BackgroundTaskController] = (
-            WeakSet()
-        )
         # A context switch batches every viewport mutation and emits one
         # explicit render after the target presentation has been installed.
         self._workspace_activation = False
@@ -721,6 +715,19 @@ class FEMMainWindow(QMainWindow):
             display_name="Model-1",
         )
         self.workspace.activate(self._active_context)
+        self.document_tasks = DocumentTaskRouter(
+            self.workspace,
+            DocumentTaskPresentation(
+                set_status=lambda message, duration: self.status_panel.set_state(message, duration),
+                show_error=lambda title, message: self._show_error(title, message),
+                project_delta=lambda context, delta: self._apply_session_delta(delta, context=context),
+                rebuild=lambda: self._rebuild_full_projection(),
+                projection_failed=lambda message: self._task_projection_failed(message),
+                busy_changed=lambda busy: self._task_busy_changed(busy),
+                cancelling_changed=lambda cancelling: self._task_cancelling_changed(cancelling),
+            ),
+        )
+        self.document_files = DocumentFileCommands(self.document_tasks)
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session, self.workspace)
         )
@@ -867,7 +874,7 @@ class FEMMainWindow(QMainWindow):
         self._pending_mesh_topology_selection_filter: str | None = None
         self._pending_mesh_topology_callback: Callable[[], None] | None = None
         self._queued_named_region_edit: (
-            tuple[int, NamedRegionEditTaskSnapshot, GuiCommandCompletion] | None
+            tuple[WorkspaceDocument, int, NamedRegionEditTaskSnapshot, GuiCommandCompletion, int] | None
         ) = None
         self._command_counter = 0
         self._job_manager: JobManagerDialog | None = None
@@ -946,47 +953,13 @@ class FEMMainWindow(QMainWindow):
     def busy(self) -> bool:
         return self.task_controller.busy
 
-    def _task_context_or_active(self) -> WorkspaceDocument | None:
-        return self._task_callback_context or self._active_workspace_context()
 
     def _bind_task_controller(self, context: WorkspaceDocument) -> None:
-        """Connect one document controller without duplicating signal slots."""
-
-        controller = context.task_controller
-        if controller in self._task_controller_connections:
-            return
-        self._task_controller_connections.add(controller)
-        controller.busy_changed.connect(
-            lambda busy, target=context: self._task_busy_changed_for_context(
-                target,
-                bool(busy),
-            )
-        )
-        controller.cancelling_changed.connect(
-            lambda cancelling, target=context: self._task_cancelling_changed_for_context(
-                target,
-                bool(cancelling),
-            )
-        )
+        self.document_tasks.bind(context)
 
     def _task_context_is_active(self, context: WorkspaceDocument) -> bool:
-        return self.workspace.active_document_id == context.document_id
+        return self.document_tasks.is_active(context)
 
-    def _task_busy_changed_for_context(
-        self,
-        context: WorkspaceDocument,
-        busy: bool,
-    ) -> None:
-        if self._task_context_is_active(context):
-            self._task_busy_changed(busy)
-
-    def _task_cancelling_changed_for_context(
-        self,
-        context: WorkspaceDocument,
-        cancelling: bool,
-    ) -> None:
-        if self._task_context_is_active(context):
-            self._task_cancelling_changed(cancelling)
 
     def _bind_agent_document(
         self,
@@ -1588,7 +1561,7 @@ class FEMMainWindow(QMainWindow):
     def session(self) -> ModelSession:
         """Compatibility alias for the active workspace Session."""
 
-        context = self._task_context_or_active()
+        context = self._active_workspace_context()
         if context is not None:
             return context.session
         return self._session_alias
@@ -1604,7 +1577,7 @@ class FEMMainWindow(QMainWindow):
     def document(self) -> object:
         """Compatibility alias for the active context projection."""
 
-        context = self._task_context_or_active()
+        context = self._active_workspace_context()
         if context is not None:
             return context.projection
         return self._document_alias
@@ -1620,7 +1593,7 @@ class FEMMainWindow(QMainWindow):
     def task_controller(self) -> BackgroundTaskController:
         """Compatibility alias for the active context task controller."""
 
-        context = self._task_context_or_active()
+        context = self._active_workspace_context()
         if context is not None:
             return context.task_controller
         return self._task_controller_alias
@@ -2171,245 +2144,39 @@ class FEMMainWindow(QMainWindow):
         document_id: int | None = None,
     ) -> GuiCommandReceipt:
         command_id = self._next_command_id()
-        target_context = (
+        context = (
             self.workspace.active_document()
             if document_id is None
             else self.workspace.document(int(document_id))
         )
-        if target_context is None:
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "workspace.document.missing",
-                "no model context is available",
+                command_id, "workspace.document.missing", "no model context is available",
             )
-        target_document = target_context.projection
-        if target_context.task_controller.busy:
-            return self._rejected_command(
-                command_id, "task.busy", "a background task is already running",
-            )
-        if not target_document.can_save:
-            return self._rejected_command(
-                command_id,
-                "project.save.unavailable",
-                "current session cannot be saved as a native project",
-            )
-        target = Path(path)
-        if target.suffix.casefold() != MODEL_FILE_SUFFIX:
-            target = target.with_suffix(MODEL_FILE_SUFFIX)
-        path_reservation = None
-        save_snapshot = None
-        started = False
-        try:
-            path_reservation = self.workspace.reserve_path(
-                target,
-                controller=target_context.task_controller,
-                document_id=target_context.document_id,
-            )
-            save_snapshot = target_context.session.prepare_project_save()
+        return self.document_files.save_project(command_id, context, path)
 
-            completion = GuiCommandCompletion(command_id)
-
-            def workload(context: TaskContext) -> Path:
-                context.report("Validating and saving native project...")
-                return save_project(
-                    target,
-                    save_snapshot,
-                    checkpoint=context.checkpoint,
-                )
-
-            def apply_result(payload: object) -> TaskApplyOutcome:
-                if not isinstance(payload, Path):
-                    raise TypeError(
-                        "project save worker must return pathlib.Path"
-                    )
-                return self._session_task_outcome(
-                    target_context.session.accept_project_saved(
-                        save_snapshot.token,
-                        payload,
-                    ),
-                    payload,
-                )
-
-            def on_success(value: object) -> None:
-                if (
-                    type(value) is not tuple
-                    or len(value) != 2
-                    or type(value[0]) is not SessionDelta
-                    or not isinstance(value[1], Path)
-                ):
-                    raise TypeError(
-                        "accepted project save must carry SessionDelta and Path"
-                    )
-                delta, _saved_path = value
-                self._accepted_command(
-                    command_id,
-                    delta,
-                    context=target_context,
-                )
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "Failed to save native project",
-                lambda message: self._target_session_task_failed(
-                    target_context,
-                    save_snapshot.token,
-                    "Failed to save native project",
-                    message,
-                ),
-                task_name="Save Native Project",
-                on_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context,
-                    save_snapshot.token,
-                ),
-                on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                    save_snapshot.token,
-                    "Failed to save native project",
-                    message,
-                ),
-                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context,
-                    save_snapshot.token,
-                ),
-                apply_result=apply_result,
-                completion=completion,
-                controller=target_context.task_controller,
-                context=target_context,
-            )
-        except Exception as error:
-            if save_snapshot is not None and not target_context.task_controller.busy:
-                self._target_session_task_cancelled(target_context, save_snapshot.token)
-            return self._rejected_command(
-                command_id,
-                "project.save.rejected",
-                error,
-            )
-        finally:
-            if path_reservation is not None and not target_context.task_controller.busy:
-                self.workspace.release_path(path_reservation)
-        if not started:
-            if save_snapshot is not None:
-                self._target_session_task_cancelled(target_context, save_snapshot.token)
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the project save task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
-
-    def save_result_path(self, path: str | Path) -> GuiCommandReceipt:
-        """Save the displayed successful result through the shared worker."""
+    def save_result_path(
+        self,
+        path: str | Path,
+        *,
+        document_id: int | None = None,
+    ) -> GuiCommandReceipt:
+        """Save one document's displayed result through its owning controller."""
 
         command_id = self._next_command_id()
-        if self.busy:
+        context = (
+            self.workspace.active_document()
+            if document_id is None
+            else self.workspace.document(int(document_id))
+        )
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
+                command_id, "workspace.document.missing", "no document is available to save",
             )
-        save_snapshot = None
-        target_context = self.workspace.active_document()
-        path_reservation = None
-        started = False
         try:
-            spec = ResultArchiveSaveSpec(Path(path))
-            if target_context is None:
-                raise RuntimeError("No document is available to save")
-            path_reservation = self.workspace.reserve_path(
-                spec.path,
-                controller=target_context.task_controller,
-                document_id=target_context.document_id,
-            )
-            run_id = self.document.displayed_result_run_id
-            if run_id is None:
-                raise RuntimeError("No successful results are available to save")
-            snapshot = self.session.prepare_result_archive_save(run_id)
-            save_snapshot = snapshot
-            completion = GuiCommandCompletion(command_id)
-
-            def workload(context: TaskContext) -> Path:
-                context.report("Encoding and saving analysis results...")
-                return save_result_archive(
-                    spec.path,
-                    snapshot.archive,
-                    checkpoint=context.checkpoint,
-                )
-
-            def apply_result(payload: object) -> TaskApplyOutcome:
-                if not isinstance(payload, Path):
-                    raise TypeError("result save worker must return pathlib.Path")
-                return self._session_task_outcome(
-                    self.session.accept_result_archive_saved(
-                        snapshot.token,
-                        payload,
-                    ),
-                    payload,
-                )
-
-            def on_success(value: object) -> None:
-                if (
-                    type(value) is not tuple
-                    or len(value) != 2
-                    or type(value[0]) is not SessionDelta
-                    or not isinstance(value[1], Path)
-                ):
-                    raise TypeError(
-                        "accepted result save must carry SessionDelta and Path"
-                    )
-                delta, saved_path = value
-                self._accepted_command(command_id, delta)
-                self.status_panel.set_state(
-                    f"Analysis results saved: {saved_path.name}",
-                    5000,
-                )
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "Failed to save analysis results",
-                lambda message: self._session_task_failed(
-                    snapshot.token,
-                    "Failed to save analysis results",
-                    message,
-                ),
-                task_name="Save Analysis Results",
-                on_cancelled=lambda: self._session_task_cancelled(snapshot.token),
-                on_inactive_failure=lambda message: self._session_task_failed(
-                    snapshot.token,
-                    "Failed to save analysis results",
-                    message,
-                ),
-                on_inactive_cancelled=lambda: self._session_task_cancelled(
-                    snapshot.token
-                ),
-                apply_result=apply_result,
-                completion=completion,
-            )
+            return self.document_files.save_result(command_id, context, path)
         except (OSError, RuntimeError, TypeError, ValueError) as error:
-            if save_snapshot is not None:
-                self.session.accept_result_archive_save_cancelled(
-                    save_snapshot.token
-                )
-            return self._rejected_command(
-                command_id,
-                "result.save.rejected",
-                error,
-            )
-        finally:
-            if path_reservation is not None and not target_context.task_controller.busy:
-                self.workspace.release_path(path_reservation)
-        if not started:
-            if save_snapshot is not None:
-                self.session.accept_result_archive_save_cancelled(
-                    save_snapshot.token
-                )
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result save task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+            return self._rejected_command(command_id, "result.save.rejected", error)
 
     def apply_native_geometry_edit(
         self,
@@ -2515,6 +2282,11 @@ class FEMMainWindow(QMainWindow):
     ) -> GuiCommandReceipt:
         """Start one revision-bound large scope materialization task."""
 
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            return self._rejected_command(
+                command_id, "workspace.document.missing", "no model context is available",
+            )
         if self.busy:
             if (
                 self.task_controller.current_task_name != "Commit Scope"
@@ -2540,9 +2312,11 @@ class FEMMainWindow(QMainWindow):
                     error,
                 )
             self._queued_named_region_edit = (
+                target_context,
                 command_id,
                 task,
                 completion,
+                target_context.task_controller.current_task_id,
             )
             self.task_controller.request_cancel(
                 after_cleanup=self._launch_queued_named_region_edit
@@ -2555,6 +2329,7 @@ class FEMMainWindow(QMainWindow):
                 command_id,
                 task,
                 completion,
+                context=target_context,
             )
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
             return self._rejected_command(
@@ -2579,28 +2354,42 @@ class FEMMainWindow(QMainWindow):
         self._queued_named_region_edit = None
         if queued is None:
             return
-        command_id, task, completion = queued
-        if not self._start_named_region_edit_task(
-            command_id,
-            task,
-            completion,
-        ):
-            self.session.terminate_named_region_edit(
+        context, command_id, task, completion, predecessor_task_id = queued
+        try:
+            started = self._start_named_region_edit_task(
+                command_id, task, completion, context=context,
+            )
+        except Exception:
+            logging.exception("queued scope task could not start")
+            started = False
+        if not started:
+            context.session.terminate_named_region_edit(
                 task,
                 "queued named-region task start rejected",
             )
-            self.status_panel.set_state(
-                "Could not start the subsequent scope commit",
-                5000,
-            )
+            completion.complete(TaskCompletion(
+                predecessor_task_id,
+                "Commit Scope",
+                BackgroundTaskState.FAILED,
+                message="queued named-region task could not be started",
+            ))
+            if self.document_tasks.is_active(context):
+                self.status_panel.set_state(
+                    "Could not start the subsequent scope commit",
+                    5000,
+                )
 
     def _start_named_region_edit_task(
         self,
         command_id: int,
         task: NamedRegionEditTaskSnapshot,
         completion: GuiCommandCompletion,
+        *,
+        context: WorkspaceDocument,
     ) -> bool:
         """Launch one already-prepared scope snapshot on the shared worker."""
+        target_context = context
+        target_session = target_context.session
 
         def workload(context: TaskContext) -> object:
             context.report("Committing scope in the background...")
@@ -2613,7 +2402,7 @@ class FEMMainWindow(QMainWindow):
                 raise TypeError(
                     "scope worker must return PreparedNamedRegionEdit"
                 )
-            delta = self.session.accept_named_region_edit(task, payload)
+            delta = target_session.accept_named_region_edit(task, payload)
             if not delta.accepted:
                 return TaskApplyOutcome.stale(
                     "Scope commit result is stale and was not applied"
@@ -2629,7 +2418,7 @@ class FEMMainWindow(QMainWindow):
             self.status_panel.set_state("Scope updated", 5000)
 
         def on_failure(message: str) -> None:
-            terminated = self.session.terminate_named_region_edit(
+            terminated = target_session.terminate_named_region_edit(
                 task,
                 message,
             )
@@ -2637,13 +2426,13 @@ class FEMMainWindow(QMainWindow):
                 self._show_error("Failed to commit scope", message)
 
         def on_cancelled() -> None:
-            self.session.terminate_named_region_edit(
+            target_session.terminate_named_region_edit(
                 task,
                 "named-region edit cancelled",
             )
 
         def on_inactive_failure(message: str) -> None:
-            self.session.terminate_named_region_edit(task, message)
+            target_session.terminate_named_region_edit(task, message)
 
         return self._start_task(
             workload,
@@ -2656,6 +2445,7 @@ class FEMMainWindow(QMainWindow):
             on_inactive_cancelled=on_cancelled,
             apply_result=apply_result,
             completion=completion,
+            context=target_context,
         )
 
     def apply_definition_edit(
@@ -3024,6 +2814,10 @@ class FEMMainWindow(QMainWindow):
         selection: ScalarFieldSelection,
     ) -> GuiCommandReceipt:
         """Start one exact-key, generation-bound lazy field request."""
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
 
         task = None
         try:
@@ -3031,7 +2825,7 @@ class FEMMainWindow(QMainWindow):
                 provider,
                 selection,
             )
-            task = self.session.prepare_result_materialization(
+            task = target_session.prepare_result_materialization(
                 provider.source.run_id,
                 field_keys,
             )
@@ -3060,7 +2854,7 @@ class FEMMainWindow(QMainWindow):
                         "result materialization worker must return "
                         "ResultMaterializationPatch"
                     )
-                delta = self.session.accept_result_materialization(
+                delta = target_session.accept_result_materialization(
                     task.token,
                     value,
                 )
@@ -3110,7 +2904,7 @@ class FEMMainWindow(QMainWindow):
                     raise RuntimeError(
                         "accepted result materialization has no outcome"
                     )
-                if not self._apply_session_delta(accepted_delta):
+                if not self._apply_session_delta(accepted_delta, context=target_context):
                     raise RuntimeError(
                         "accepted result materialization could not be projected"
                     )
@@ -3135,29 +2929,35 @@ class FEMMainWindow(QMainWindow):
                 workload,
                 succeeded,
                 "Failed to load result fields on demand",
-                lambda message: self._session_task_failed(
+                lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Failed to load result fields on demand",
                     message,
                 ),
                 task_name="Load Result Fields on Demand",
-                on_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
-                on_inactive_failure=lambda message: self._session_task_failed(
+                on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Failed to load result fields on demand",
                     message,
                 ),
-                on_inactive_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
                 apply_result=apply_result,
+                on_inactive_success=lambda _value: self._apply_session_delta(
+                    accepted_delta, context=target_context,
+                ),
                 completion=completion,
+                context=target_context,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             if task is not None:
-                failure = self.session.accept_task_failed(
+                failure = target_session.accept_task_failed(
                     task.token,
                     error,
                 )
@@ -3171,7 +2971,7 @@ class FEMMainWindow(QMainWindow):
             )
 
         if not started:
-            cancelled = self.session.accept_task_cancelled(task.token)
+            cancelled = target_session.accept_task_cancelled(task.token)
             self._apply_revision_neutral_task_receipt(cancelled)
             self._clear_pending_result_materialization()
             self._update_action_states()
@@ -3380,10 +3180,14 @@ class FEMMainWindow(QMainWindow):
         query: ResultQuery,
     ) -> GuiCommandReceipt:
         """Materialize one lazy query field through the Session CAS gate."""
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
 
         task = None
         try:
-            task = self.session.prepare_result_materialization(
+            task = target_session.prepare_result_materialization(
                 provider.source.run_id,
                 (query.field_key,),
             )
@@ -3415,7 +3219,7 @@ class FEMMainWindow(QMainWindow):
                         "result query worker must return "
                         "ResultMaterializationPatch"
                     )
-                delta = self.session.accept_result_materialization(
+                delta = target_session.accept_result_materialization(
                     task.token,
                     value,
                 )
@@ -3443,7 +3247,7 @@ class FEMMainWindow(QMainWindow):
                         result,
                     )
                 except Exception:
-                    self._project_accepted_result_query_delta(delta)
+                    self._project_accepted_result_query_delta(delta, context=target_context)
                     raise
 
                 accepted_result = result
@@ -3461,7 +3265,8 @@ class FEMMainWindow(QMainWindow):
                         "accepted result query has no typed outcome"
                     )
                 if not self._project_accepted_result_query_delta(
-                    accepted_delta
+                    accepted_delta,
+                    context=target_context,
                 ):
                     raise RuntimeError(
                         "accepted result query could not be projected"
@@ -3484,29 +3289,35 @@ class FEMMainWindow(QMainWindow):
                 workload,
                 succeeded,
                 "Result query failed",
-                lambda message: self._session_task_failed(
+                lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Result query failed",
                     message,
                 ),
                 task_name="Result Query",
-                on_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
-                on_inactive_failure=lambda message: self._session_task_failed(
+                on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Result query failed",
                     message,
                 ),
-                on_inactive_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
                 apply_result=apply_result,
+                on_inactive_success=lambda _value: self._apply_session_delta(
+                    accepted_delta, context=target_context,
+                ),
                 completion=completion,
+                context=target_context,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             if task is not None:
-                failure = self.session.accept_task_failed(
+                failure = target_session.accept_task_failed(
                     task.token,
                     error,
                 )
@@ -3520,7 +3331,7 @@ class FEMMainWindow(QMainWindow):
             )
 
         if not started:
-            cancelled = self.session.accept_task_cancelled(task.token)
+            cancelled = target_session.accept_task_cancelled(task.token)
             self._apply_revision_neutral_task_receipt(cancelled)
             self._clear_pending_result_query_materialization()
             self._update_action_states()
@@ -3565,9 +3376,11 @@ class FEMMainWindow(QMainWindow):
     def _project_accepted_result_query_delta(
         self,
         delta: SessionDelta,
+        *,
+        context: WorkspaceDocument | None = None,
     ) -> bool:
         if delta.changed or delta.invalidated:
-            return self._apply_session_delta(delta)
+            return self._apply_session_delta(delta, context=context)
         return self._apply_revision_neutral_task_receipt(delta)
 
     @staticmethod
@@ -3832,8 +3645,6 @@ class FEMMainWindow(QMainWindow):
         if not bool(getattr(delta, "accepted", True)):
             return False
         target_context = context
-        if target_context is None:
-            target_context = self._task_callback_context
         if target_context is None:
             target_context = self.workspace.active_document()
         if target_context is None:
@@ -4278,22 +4089,6 @@ class FEMMainWindow(QMainWindow):
         model = self.document.model
         return str(getattr(model, "name", "") or "Model")
 
-    @staticmethod
-    def _session_task_outcome(
-        delta: SessionDelta,
-        projection_value: object,
-    ) -> TaskApplyOutcome:
-        if type(delta) is not SessionDelta:
-            raise TypeError("Session task acceptance must return SessionDelta")
-        if delta.accepted:
-            return TaskApplyOutcome.accepted((delta, projection_value))
-        status = delta.token_status
-        message = delta.reason or (
-            status.value if status is not None else "task result was rejected"
-        )
-        if status in {TokenStatus.WRONG_KIND, TokenStatus.INVALID_STATE}:
-            return TaskApplyOutcome.rejected(message)
-        return TaskApplyOutcome.stale(message)
 
     def _clear_model_projection(self, *, clear_tree: bool = True) -> None:
         self._close_inspection_windows()
@@ -10205,8 +10000,11 @@ class FEMMainWindow(QMainWindow):
         self,
         request: AgentMeshTaskRequest,
     ) -> bool:
-        """Start the A3 detached task after the bridge consumed GUI authority."""
+        """Start the document-owned task after the bridge consumed GUI authority."""
 
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
         task = request.task
         port = self.agent_authoring_bridge.port
         complete_mesh = getattr(port, "complete_mesh", None)
@@ -10219,31 +10017,13 @@ class FEMMainWindow(QMainWindow):
             raise RuntimeError("Agent mesh lifecycle port is unavailable")
 
         def workload(context: TaskContext) -> object:
-            context.report("Generating Agent mesh...")
-            started = perf_counter()
-            try:
-                model = generate_fem_model(
-                    task,
-                    cancelled=lambda: context.is_cancelled,
-                )
-            except GmshExecutionCancelled:
-                context.checkpoint()
-                raise
-            timings = {
-                "Gmsh geometry and mesh": perf_counter() - started,
-            }
-            context.report("Preparing display mesh...")
-            started = perf_counter()
-            display_geometry = build_model_geometry(model)
-            timings["VTK display geometry construction"] = perf_counter() - started
-            context.checkpoint()
-            return model, display_geometry, timings
+            return prepare_mesh_display(task, context)
 
         def apply_result(value: object) -> TaskApplyOutcome:
             model, _geometry, _timings, _notices = self._unpack_model_load(
                 value
             )
-            outcome = self._session_task_outcome(
+            outcome = session_task_outcome(
                 accept_mesh_result(request.proposal_id, model),
                 value,
             )
@@ -10256,6 +10036,7 @@ class FEMMainWindow(QMainWindow):
             )
             if not self._apply_session_delta(
                 delta,
+                context=target_context,
                 model_geometry=geometry,
                 timings=timings,
                 source_label=str(
@@ -10267,11 +10048,12 @@ class FEMMainWindow(QMainWindow):
 
         def terminal(record: TaskCompletion) -> None:
             if record.state is BackgroundTaskState.SUCCEEDED:
-                self._record_agent_workflow_proposal_state(
-                    "mesh",
-                    ProposalState.SUCCEEDED,
-                    "Agent mesh installed atomically",
-                )
+                if self.document_tasks.is_active(target_context):
+                    self._record_agent_workflow_proposal_state(
+                        "mesh",
+                        ProposalState.SUCCEEDED,
+                        "Agent mesh installed atomically",
+                    )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
@@ -10282,11 +10064,14 @@ class FEMMainWindow(QMainWindow):
                 state,
                 record.message or record.state.value,
             )
-            self._record_agent_workflow_proposal_state(
-                "mesh",
-                state,
-                record.message or record.state.value,
-            )
+            if self.document_tasks.is_active(target_context):
+                self._record_agent_workflow_proposal_state(
+                    "mesh",
+                    state,
+                    record.message or record.state.value,
+                )
+            if not self.document_tasks.is_active(target_context):
+                return
             if record.state is BackgroundTaskState.FAILED:
                 self.status_panel.set_state(
                     record.message or "Agent mesh generation failed",
@@ -10300,23 +10085,26 @@ class FEMMainWindow(QMainWindow):
                     5000,
                 )
 
-        task_id = self.task_controller.start(
+        return self._start_task(
             workload,
+            project_result,
+            "Agent mesh generation failed",
+            lambda _message: None,
             task_name="Agent Mesh Generation",
             apply_result=apply_result,
-            project_result=project_result,
-            rebuild_projection=self._rebuild_full_projection,
             on_terminal=terminal,
-            on_progress=self.status_panel.set_state,
-            on_projection_error=self._task_projection_failed,
+            context=target_context,
         )
-        return task_id is not None
 
     def _begin_mesh_generation(
         self,
         *,
         completion: GuiCommandCompletion | None = None,
     ) -> bool:
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
         recipe = self.document.geometry_recipe
         settings = self.document.mesh_settings
         if not isinstance(recipe, NATIVE_GEOMETRY_TYPES) or not isinstance(
@@ -10324,21 +10112,11 @@ class FEMMainWindow(QMainWindow):
             MeshSettings,
         ):
             raise RuntimeError("native geometry and mesh settings are required")
-        task = self.session.prepare_mesh_generation()
+        task = target_session.prepare_mesh_generation()
         self.status_panel.set_state("Generating mesh...")
 
-        def workload(context: TaskContext):
-            timings: dict[str, float] = {}
-            context.report("Generating mesh...")
-            started = perf_counter()
-            model = generate_fem_model(task)
-            timings["Gmsh geometry and mesh"] = perf_counter() - started
-            context.report("Preparing display mesh...")
-            started = perf_counter()
-            display_geometry = build_model_geometry(model)
-            timings["VTK display geometry construction"] = perf_counter() - started
-            context.checkpoint()
-            return model, display_geometry, timings
+        def workload(context: TaskContext) -> object:
+            return prepare_mesh_display(task, context)
 
         def succeeded(value: object) -> None:
             delta, payload = value
@@ -10352,6 +10130,7 @@ class FEMMainWindow(QMainWindow):
                 source_label=str(
                     getattr(model, "name", None) or "Untitled Model"
                 ),
+                context=target_context,
             ):
                 raise RuntimeError("Cannot project the accepted mesh result")
             self._import_notices = ()
@@ -10361,8 +10140,8 @@ class FEMMainWindow(QMainWindow):
             model, _geometry, _timings, _notices = self._unpack_model_load(
                 value
             )
-            return self._session_task_outcome(
-                self.session.accept_generated_model(task.token, model),
+            return session_task_outcome(
+                target_session.accept_generated_model(task.token, model),
                 value,
             )
 
@@ -10370,23 +10149,26 @@ class FEMMainWindow(QMainWindow):
             workload,
             succeeded,
             "Mesh generation failed",
-            lambda message: self._session_task_failed(
+            lambda message: self._target_session_task_failed(
+                    target_context,
                 task.token,
                 "Mesh generation failed",
                 message,
             ),
             task_name="Mesh Generation",
-            on_cancelled=lambda: self._session_task_cancelled(task.token),
-            on_inactive_failure=lambda message: self._session_task_failed(
+            on_cancelled=lambda: self._target_session_task_cancelled(target_context, task.token),
+            on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
                 task.token,
                 "Mesh generation failed",
                 message,
             ),
-            on_inactive_cancelled=lambda: self._session_task_cancelled(
-                task.token
+            on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                target_context, task.token,
             ),
             apply_result=apply_result,
             completion=completion,
+            context=target_context,
         )
 
     def open_inp(self) -> None:
@@ -10406,11 +10188,13 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         """Save the displayed result, prompting when no target exists."""
 
-        if self.busy or self._current_result_provider() is None:
+        target_context = self._active_workspace_context()
+        if target_context is None or self.busy or self._current_result_provider() is None:
             return False
-        path = self.document.result_path
-        run = self.session.find_run(self.document.displayed_result_run_id)
-        model_name = str(self.document.model_name or "Model").strip() or "Model"
+        target_document = target_context.projection
+        path = target_document.result_path
+        run = target_context.session.find_run(target_document.displayed_result_run_id)
+        model_name = str(target_document.model_name or "Model").strip() or "Model"
         job_name = str(getattr(run, "name", None) or "Results").strip() or "Results"
         if force_save_as or path is None:
             default_name = (
@@ -10430,7 +10214,9 @@ class FEMMainWindow(QMainWindow):
         path = Path(path)
         if path.suffix.casefold() != RESULT_FILE_SUFFIX:
             path = path.with_suffix(RESULT_FILE_SUFFIX)
-        receipt = self.save_result_path(path)
+        if not self.document_tasks.is_live(target_context):
+            return False
+        receipt = self.save_result_path(path, document_id=target_context.document_id)
         if receipt.diagnostic is not None:
             self._show_command_rejection("Failed to save analysis results", receipt)
             return False
@@ -10439,26 +10225,28 @@ class FEMMainWindow(QMainWindow):
             return False
 
         def result_saved(record: TaskCompletion) -> None:
-            if record.state is BackgroundTaskState.SUCCEEDED:
+            if (
+                record.state is BackgroundTaskState.SUCCEEDED
+                and self.document_tasks.is_active(target_context)
+            ):
                 self._show_save_success("Analysis Results", path)
 
         completion.observe(result_saved)
         if not wait:
             return True
-        try:
-            terminal = completion.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
-        except TimeoutError:
-            self.cancel_current_task()
-            self.status_panel.set_state("Saving analysis results timed out; canceling task", 5000)
+        terminal = self.document_files.wait_for_save(
+            target_context, completion, _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS,
+        )
+        if terminal is None:
+            if self.document_tasks.is_active(target_context):
+                self.status_panel.set_state("Saving analysis results timed out; canceling task", 5000)
             return False
-        deadline = perf_counter() + 5.0
-        while self.busy and perf_counter() < deadline:
-            QApplication.processEvents()
-            sleep(0.001)
-        QApplication.processEvents()
         return (
             terminal.state is BackgroundTaskState.SUCCEEDED
-            and not self.busy
+            and (
+                not self.document_tasks.is_live(target_context)
+                or not target_context.task_controller.busy
+            )
         )
 
     def save_current_result_as(self, *, wait: bool = False) -> bool:
@@ -10741,14 +10529,17 @@ class FEMMainWindow(QMainWindow):
             Callable[[ProposalState, str], None] | None
         ) = None,
     ) -> bool:
-        if not self.document.can_save:
+        target_context = self._active_workspace_context()
+        target_document = None if target_context is None else target_context.projection
+        if target_document is None or not target_document.can_save:
             if agent_terminal is not None:
                 agent_terminal(
                     ProposalState.FAILED,
                     "Cannot save the current project",
                 )
             return False
-        path = self.document.project_path
+        target_session = target_context.session
+        path = target_document.project_path
         save_as = (
             force_save_as
             or
@@ -10760,7 +10551,7 @@ class FEMMainWindow(QMainWindow):
             default_name = (
                 Path(path).with_suffix(MODEL_FILE_SUFFIX).name
                 if path is not None
-                else f"{self.document.model_name or 'Model-1'}{MODEL_FILE_SUFFIX}"
+                else f"{target_document.model_name or 'Model-1'}{MODEL_FILE_SUFFIX}"
             )
             filename, _filter = QFileDialog.getSaveFileName(
                 self,
@@ -10778,7 +10569,11 @@ class FEMMainWindow(QMainWindow):
             path = Path(filename)
             if path.suffix.casefold() != MODEL_FILE_SUFFIX:
                 path = path.with_suffix(MODEL_FILE_SUFFIX)
-        receipt = self.save_project_path(path)
+        if not self.document_tasks.is_live(target_context):
+            if agent_terminal is not None:
+                agent_terminal(ProposalState.CANCELLED, "Save target was closed")
+            return False
+        receipt = self.save_project_path(path, document_id=target_context.document_id)
         if receipt.diagnostic is not None:
             self._show_command_rejection("Failed to save native project", receipt)
             if agent_terminal is not None:
@@ -10799,7 +10594,9 @@ class FEMMainWindow(QMainWindow):
         def project_saved(record: TaskCompletion) -> None:
             if record.state is not BackgroundTaskState.SUCCEEDED:
                 return
-            if self.document.dirty:
+            if not self.document_tasks.is_active(target_context):
+                return
+            if target_session.dirty:
                 self.status_panel.set_state(
                     "Project snapshot saved; current changes are unsaved",
                     6000,
@@ -10832,15 +10629,16 @@ class FEMMainWindow(QMainWindow):
             completion.observe(agent_save_finished)
         if not wait:
             return True
-        try:
-            terminal = completion.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
-        except TimeoutError:
-            self.cancel_current_task()
-            self.status_panel.set_state("Saving native project timed out; canceling task", 5000)
+        terminal = self.document_files.wait_for_save(
+            target_context, completion, _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS,
+        )
+        if terminal is None:
+            if self.document_tasks.is_active(target_context):
+                self.status_panel.set_state("Saving native project timed out; canceling task", 5000)
             return False
         return (
             terminal.state is BackgroundTaskState.SUCCEEDED
-            and not self.document.dirty
+            and not target_session.dirty
         )
 
     def save_native_project_as(self, *, wait: bool = False) -> bool:
@@ -10876,7 +10674,11 @@ class FEMMainWindow(QMainWindow):
         *,
         completion: GuiCommandCompletion | None = None,
     ) -> bool:
-        task = self.session.prepare_import(path)
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
+        task = target_session.prepare_import(path)
         self.status_panel.set_state("Importing model...")
 
         self.status_panel.set_state("Parsing INP...")
@@ -10894,7 +10696,7 @@ class FEMMainWindow(QMainWindow):
             timings["VTK display geometry construction"] = perf_counter() - started
             context.report("Preparing session model...")
             started = perf_counter()
-            prepared = self.session.prepare_owned_imported_model_transfer(
+            prepared = target_session.prepare_owned_imported_model_transfer(
                 model
             )
             timings["Session model ownership preparation"] = perf_counter() - started
@@ -10905,8 +10707,8 @@ class FEMMainWindow(QMainWindow):
             prepared, _geometry, _timings, _notices = self._unpack_model_load(
                 value
             )
-            return self._session_task_outcome(
-                self.session.accept_imported_model_transfer(
+            return session_task_outcome(
+                target_session.accept_imported_model_transfer(
                     task.token,
                     prepared,
                 ),
@@ -10923,6 +10725,7 @@ class FEMMainWindow(QMainWindow):
                 model_geometry=geometry,
                 timings=timings,
                 source_label=path.name,
+                context=target_context,
             ):
                 raise RuntimeError("Cannot project the accepted import result")
             self._install_import_notices(notices)
@@ -10931,23 +10734,26 @@ class FEMMainWindow(QMainWindow):
             workload,
             project_result,
             "Failed to load model",
-            lambda message: self._session_task_failed(
+            lambda message: self._target_session_task_failed(
+                    target_context,
                 task.token,
                 "Failed to load model",
                 message,
             ),
             task_name="INP Import",
-            on_cancelled=lambda: self._session_task_cancelled(task.token),
-            on_inactive_failure=lambda message: self._session_task_failed(
+            on_cancelled=lambda: self._target_session_task_cancelled(target_context, task.token),
+            on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
                 task.token,
                 "Failed to load model",
                 message,
             ),
-            on_inactive_cancelled=lambda: self._session_task_cancelled(
-                task.token
+            on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                target_context, task.token,
             ),
             apply_result=apply_result,
             completion=completion,
+            context=target_context,
         )
 
     def _model_loaded(
@@ -11655,6 +11461,15 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         """Request cooperative cancellation for one document-owned task."""
 
+        queued = self._queued_named_region_edit
+        if queued is not None and queued[0] is context:
+            self._queued_named_region_edit = None
+            _target, _command_id, task, completion, predecessor_task_id = queued
+            context.session.terminate_named_region_edit(task, "queued named-region edit cancelled")
+            completion.complete(TaskCompletion(
+                predecessor_task_id, "Commit Scope", BackgroundTaskState.CANCELLED,
+                message="queued named-region edit cancelled",
+            ))
         running = next(
             (
                 run
@@ -13017,6 +12832,10 @@ class FEMMainWindow(QMainWindow):
         expected_session_revision: int | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> bool:
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
         task = self._prepare_model_check(
             step_name,
             expected_session_revision=expected_session_revision,
@@ -13050,8 +12869,8 @@ class FEMMainWindow(QMainWindow):
         def apply_result(value: object) -> TaskApplyOutcome:
             if type(value) is not PreparedPreflight:
                 raise TypeError("model check must return PreparedPreflight")
-            return self._session_task_outcome(
-                self.session.accept_validation_with_prepared_system(
+            return session_task_outcome(
+                target_session.accept_validation_with_prepared_system(
                     task.token,
                     value.report,
                     value.prepared_system,
@@ -13061,26 +12880,30 @@ class FEMMainWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self._apply_session_delta(
-                self.session.accept_task_failed(
+                target_session.accept_task_failed(
                     task.token,
                     message,
-                )
+                ),
+                context=target_context,
             )
             self._show_error("Model check failed", message)
 
         def cancelled() -> None:
             self._apply_session_delta(
-                self.session.accept_task_cancelled(task.token)
+                target_session.accept_task_cancelled(task.token),
+                context=target_context,
             )
 
         def inactive_failed(message: str) -> None:
             self._apply_session_delta(
-                self.session.accept_task_failed(task.token, message)
+                target_session.accept_task_failed(task.token, message),
+                context=target_context,
             )
 
         def inactive_cancelled() -> None:
             self._apply_session_delta(
-                self.session.accept_task_cancelled(task.token)
+                target_session.accept_task_cancelled(task.token),
+                context=target_context,
             )
 
         return self._start_task(
@@ -13095,6 +12918,7 @@ class FEMMainWindow(QMainWindow):
             apply_result=apply_result,
             completion=completion,
             on_progress=on_progress,
+            context=target_context,
         )
 
     def _prepare_model_check(
@@ -13117,6 +12941,10 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         """Run A6 preflight automatically through the existing GUI task."""
 
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            return False
+        target_session = target_context.session
         if type(request) is not AgentPreflightTaskRequest:
             raise TypeError("request must be exactly AgentPreflightTaskRequest")
         if self.busy:
@@ -13129,7 +12957,7 @@ class FEMMainWindow(QMainWindow):
 
         def terminal(record: TaskCompletion) -> None:
             if record.state is BackgroundTaskState.SUCCEEDED:
-                validation = self.session.validation_for(request.step_name)
+                validation = target_session.validation_for(request.step_name)
                 if validation is None:
                     completed = complete_preflight(
                         request.request_id,
@@ -13151,10 +12979,11 @@ class FEMMainWindow(QMainWindow):
                             " blocking diagnostics"
                         ),
                     )
-                self._record_agent_workflow_preflight_state(
-                    completed.state.value,
-                    completed.message,
-                )
+                if self.document_tasks.is_active(target_context):
+                    self._record_agent_workflow_preflight_state(
+                        completed.state.value,
+                        completed.message,
+                    )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: AgentPreflightState.CANCELLED,
@@ -13165,10 +12994,11 @@ class FEMMainWindow(QMainWindow):
                 state,
                 record.message or record.state.value,
             )
-            self._record_agent_workflow_preflight_state(
-                completed.state.value,
-                completed.message,
-            )
+            if self.document_tasks.is_active(target_context):
+                self._record_agent_workflow_preflight_state(
+                    completed.state.value,
+                    completed.message,
+                )
 
         completion.observe(terminal)
         started = self._begin_model_check(
@@ -13466,6 +13296,10 @@ class FEMMainWindow(QMainWindow):
         on_progress: Callable[[str], None] | None = None,
         existing_run: bool = False,
     ) -> AnalysisRun | None:
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
         if self.document.model is None or self.geometry is None or self.busy:
             raise RuntimeError("a current model is required and the task controller must be idle")
         if type(name) is not str or type(step_name) is not str:
@@ -13478,15 +13312,15 @@ class FEMMainWindow(QMainWindow):
             raise ValueError("Job name cannot exceed 64 characters.")
         if not existing_run and self.workspace.job_name_exists(clean_name):
             raise ValueError(f"Job name already exists: {clean_name}")
-        if clean_step not in self.session.runnable_step_names():
+        if clean_step not in target_session.runnable_step_names():
             raise ValueError(f"Step does not exist: {clean_step}")
         task = (
-            self.session.prepare_run_solve(
+            target_session.prepare_run_solve(
                 clean_name,
                 expected_session_revision=expected_session_revision,
             )
             if existing_run
-            else self.session.prepare_solve(
+            else target_session.prepare_solve(
                 clean_step,
                 clean_name,
                 expected_session_revision=expected_session_revision,
@@ -13495,9 +13329,9 @@ class FEMMainWindow(QMainWindow):
         if not existing_run:
             self.workspace.remember_job_name(clean_name)
         if task.delta is not None:
-            self._apply_session_delta(task.delta)
-        self._apply_session_delta(self.session.begin_run(task.token))
-        job = self.session.find_run(task.run_id)
+            self._apply_session_delta(task.delta, context=target_context)
+        self._apply_session_delta(target_session.begin_run(task.token), context=target_context)
+        job = target_session.find_run(task.run_id)
         if job is None:
             return None
         self.status_panel.set_state(f"Analyzing: {job.name}")
@@ -13543,23 +13377,23 @@ class FEMMainWindow(QMainWindow):
 
         def apply_result(value: object) -> TaskApplyOutcome:
             bundle, timings, run_prepared, cache_candidate = value
-            delta = self.session.accept_run_succeeded_with_prepared_system(
+            delta = target_session.accept_run_succeeded_with_prepared_system(
                 task.token,
                 bundle,
                 run_prepared,
                 cache_candidate=cache_candidate,
                 timings=timings,
             )
-            return self._session_task_outcome(
+            return session_task_outcome(
                 delta,
                 timings,
             )
 
         def project_result(value: object) -> None:
             delta, timings = value
-            if not self._apply_session_delta(delta):
+            if not self._apply_session_delta(delta, context=target_context):
                 raise RuntimeError("Cannot project the accepted solver result")
-            completed = self.session.find_run(task.token.run_id)
+            completed = target_session.find_run(task.token.run_id)
             if completed is None:
                 raise RuntimeError("The accepted analysis job does not exist")
             activation_started = perf_counter()
@@ -13577,30 +13411,34 @@ class FEMMainWindow(QMainWindow):
                 token,
                 message,
                 validation_failure=current_stage["name"] == "Model validation",
+                context=target_context,
             ),
             task_name=f"Job {job.name}",
-            on_cancelled=lambda token=task.token: self._job_cancelled(token),
+            on_cancelled=lambda token=task.token: self._job_cancelled(token, context=target_context),
             on_inactive_failure=(
                 lambda message, token=task.token, current_stage=stage: self._job_failed(
                     token,
                     message,
                     validation_failure=current_stage["name"] == "Model validation",
+                    context=target_context,
                 )
             ),
             on_inactive_cancelled=(
-                lambda token=task.token: self._job_cancelled(token)
+                lambda token=task.token: self._job_cancelled(token, context=target_context)
             ),
             apply_result=apply_result,
             completion=completion,
             on_progress=on_progress,
+            context=target_context,
         )
         if started:
             return job
         self._apply_session_delta(
-            self.session.accept_run_failed(
+            target_session.accept_run_failed(
                 task.token,
                 "analysis task could not be started",
-            )
+            ),
+            context=target_context,
         )
         return None
 
@@ -13609,6 +13447,10 @@ class FEMMainWindow(QMainWindow):
         request: AgentSolveTaskRequest,
     ) -> bool:
         """Submit one A6 proposal through the existing GUI job lifecycle."""
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
 
         if type(request) is not AgentSolveTaskRequest:
             raise TypeError("request must be exactly AgentSolveTaskRequest")
@@ -13621,11 +13463,11 @@ class FEMMainWindow(QMainWindow):
 
         def terminal(record: TaskCompletion) -> None:
             if record.state is BackgroundTaskState.SUCCEEDED:
-                run = self.session.find_run(request.job_name)
+                run = target_session.find_run(request.job_name)
                 provenance = (
                     None
                     if run is None
-                    else self.session.result_provenance_for(run.run_id)
+                    else target_session.result_provenance_for(run.run_id)
                 )
                 if (
                     run is None
@@ -13634,7 +13476,7 @@ class FEMMainWindow(QMainWindow):
                     or run.model_revision != request.model_revision
                     or run.step_name != request.step_name
                     or provenance is None
-                    or provenance.session_id != self.document.session_id
+                    or provenance.session_id != target_session.session_id
                     or provenance.artifact_id != request.artifact_id
                     or provenance.model_revision != request.model_revision
                     or provenance.step_name != request.step_name
@@ -13645,11 +13487,12 @@ class FEMMainWindow(QMainWindow):
                         ProposalState.FAILED,
                         "Successful solver terminal state lacks exact artifact/run/model provenance",
                     )
-                    self._record_agent_workflow_proposal_state(
-                        "solve",
-                        ProposalState.FAILED,
-                        "Successful solver terminal state lacks exact provenance",
-                    )
+                    if self.document_tasks.is_active(target_context):
+                        self._record_agent_workflow_proposal_state(
+                            "solve",
+                            ProposalState.FAILED,
+                            "Successful solver terminal state lacks exact provenance",
+                        )
                     return
                 completed = complete_solve(
                     request.proposal_id,
@@ -13660,11 +13503,12 @@ class FEMMainWindow(QMainWindow):
                         f"{request.model_revision}"
                     ),
                 )
-                self._record_agent_workflow_proposal_state(
-                    "solve",
-                    completed.state,
-                    completed.message,
-                )
+                if self.document_tasks.is_active(target_context):
+                    self._record_agent_workflow_proposal_state(
+                        "solve",
+                        completed.state,
+                        completed.message,
+                    )
                 return
             state = {
                 BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
@@ -13675,11 +13519,12 @@ class FEMMainWindow(QMainWindow):
                 state,
                 record.message or record.state.value,
             )
-            self._record_agent_workflow_proposal_state(
-                "solve",
-                completed.state,
-                completed.message,
-            )
+            if self.document_tasks.is_active(target_context):
+                self._record_agent_workflow_proposal_state(
+                    "solve",
+                    completed.state,
+                    completed.message,
+                )
 
         completion.observe(terminal)
         job = self._begin_submit_run(
@@ -13723,12 +13568,16 @@ class FEMMainWindow(QMainWindow):
         message: str,
         *,
         validation_failure: bool = False,
+        context: WorkspaceDocument | None = None,
     ) -> None:
-        target_context = self._task_context_or_active()
+        target_context = context or self._active_workspace_context()
+        if target_context is None:
+            return
+        target_session = target_context.session
         self._apply_session_delta(
-            self.session.accept_run_failed(token, message)
+            target_session.accept_run_failed(token, message), context=target_context
         )
-        job = self.session.find_run(token.run_id)
+        job = target_session.find_run(token.run_id)
         if job is None:
             return
         if target_context is not None and not self._task_context_is_active(
@@ -13743,12 +13592,15 @@ class FEMMainWindow(QMainWindow):
             message,
         )
 
-    def _job_cancelled(self, token: object) -> None:
-        target_context = self._task_context_or_active()
+    def _job_cancelled(self, token: object, *, context: WorkspaceDocument | None = None) -> None:
+        target_context = context or self._active_workspace_context()
+        if target_context is None:
+            return
+        target_session = target_context.session
         self._apply_session_delta(
-            self.session.accept_run_cancelled(token)
+            target_session.accept_run_cancelled(token), context=target_context
         )
-        job = self.session.find_run(token.run_id)
+        job = target_session.find_run(token.run_id)
         if job is None:
             return
         if target_context is not None and not self._task_context_is_active(
@@ -13893,28 +13745,6 @@ class FEMMainWindow(QMainWindow):
         self._refresh_job_manager()
         self.ribbon.set_current("Results")
 
-    def _session_task_failed(
-        self,
-        token: object,
-        title: str,
-        message: str,
-    ) -> None:
-        delta = self.session.accept_task_failed(token, message)
-        applied = (
-            self._apply_revision_neutral_task_receipt(delta)
-            if not delta.changed and not delta.invalidated
-            else self._apply_session_delta(delta)
-        )
-        target = self._task_context_or_active()
-        if applied and (target is None or self._task_context_is_active(target)):
-            self._show_error(title, message)
-
-    def _session_task_cancelled(self, token: object) -> None:
-        delta = self.session.accept_task_cancelled(token)
-        if not delta.changed and not delta.invalidated:
-            self._apply_revision_neutral_task_receipt(delta)
-            return
-        self._apply_session_delta(delta)
 
     def _target_session_task_failed(
         self,
@@ -13943,58 +13773,6 @@ class FEMMainWindow(QMainWindow):
             return
         self._apply_session_delta(delta, context=context)
 
-    def _task_target_is_live(self, context: WorkspaceDocument) -> bool:
-        try:
-            registered = self.workspace.document(context.document_id)
-        except (KeyError, TypeError, ValueError):
-            return False
-        return registered is context and registered.session is context.session
-
-    @staticmethod
-    def _session_delta_from_task_value(value: object) -> SessionDelta | None:
-        if type(value) is SessionDelta:
-            return value
-        if isinstance(value, (tuple, list)):
-            for item in value:
-                found = FEMMainWindow._session_delta_from_task_value(item)
-                if found is not None:
-                    return found
-        if isinstance(value, dict):
-            for item in value.values():
-                found = FEMMainWindow._session_delta_from_task_value(item)
-                if found is not None:
-                    return found
-        return None
-
-    def _apply_inactive_task_projection(
-        self,
-        value: object,
-        context: WorkspaceDocument,
-    ) -> None:
-        """Apply only the target projection/tree portion of a late task."""
-
-        delta = self._session_delta_from_task_value(value)
-        if delta is None or not self._task_target_is_live(context):
-            return
-        previous = self._task_callback_context
-        self._task_callback_context = context
-        try:
-            self._apply_session_delta(delta, context=context)
-        finally:
-            self._task_callback_context = previous
-
-    def _invoke_task_callback(
-        self,
-        context: WorkspaceDocument | None,
-        callback: Callable[..., object],
-        *args: object,
-    ) -> object:
-        previous = self._task_callback_context
-        self._task_callback_context = context
-        try:
-            return callback(*args)
-        finally:
-            self._task_callback_context = previous
 
     def _start_task(
         self,
@@ -14010,174 +13788,28 @@ class FEMMainWindow(QMainWindow):
         apply_result: Callable[[object], TaskApplyOutcome] | None = None,
         completion: GuiCommandCompletion | None = None,
         on_progress: Callable[[str], None] | None = None,
+        on_inactive_success: Callable[[object], None] | None = None,
+        on_terminal: Callable[[TaskCompletion], None] | None = None,
         controller: BackgroundTaskController | None = None,
         context: WorkspaceDocument | None = None,
     ) -> bool:
-        target_context = context
-        if target_context is None and controller is None:
-            target_context = self._active_workspace_context()
-        if target_context is not None:
-            self._bind_task_controller(target_context)
-        task_controller = (
-            controller
-            or (
-                target_context.task_controller
-                if target_context is not None
-                else self.task_controller
-            )
+        target = context
+        if target is None and controller is None:
+            target = self._active_workspace_context()
+        task_controller = controller or (
+            target.task_controller if target is not None else self.task_controller
         )
-        if task_controller.busy:
-            if target_context is None or self._task_context_is_active(target_context):
-                self.status_panel.set_state(
-                    f"Task running: {task_controller.current_task_name or 'Background Task'}",
-                    4000,
-                )
-            return False
-        result_applier = apply_result or TaskApplyOutcome.accepted
-
-        def apply(value: object) -> TaskApplyOutcome:
-            if target_context is not None and not self._task_target_is_live(
-                target_context
-            ):
-                return TaskApplyOutcome.stale("Target document closed")
-            outcome = self._invoke_task_callback(
-                target_context,
-                result_applier,
-                value,
-            )
-            if type(outcome) is not TaskApplyOutcome:
-                raise TypeError("apply_result must return a TaskApplyOutcome")
-            return outcome
-
-        def project_terminal(record: TaskCompletion) -> None:
-            active_target = (
-                target_context is None
-                or self._task_context_is_active(target_context)
-            )
-            if record.state is BackgroundTaskState.FAILED:
-                message = record.message or "Background task failed"
-                try:
-                    failure_callback = (
-                        on_failure if active_target else on_inactive_failure
-                    )
-                    if failure_callback is None:
-                        if active_target:
-                            self._show_error(error_title, message)
-                    else:
-                        self._invoke_task_callback(
-                            target_context,
-                            failure_callback,
-                            message,
-                        )
-                except Exception:
-                    logging.exception(
-                        "GUI background task failure callback failed"
-                    )
-                    if active_target:
-                        self._show_error(error_title, message)
-            elif record.state is BackgroundTaskState.CANCELLED:
-                try:
-                    cancelled_callback = (
-                        on_cancelled if active_target else on_inactive_cancelled
-                    )
-                    if cancelled_callback is not None:
-                        self._invoke_task_callback(
-                            target_context,
-                            cancelled_callback,
-                        )
-                except Exception as error:
-                    logging.exception(
-                        "GUI background task cancellation callback failed"
-                    )
-                    if active_target:
-                        self._show_error(
-                            error_title,
-                            str(error).strip() or type(error).__name__,
-                        )
-                if active_target:
-                    self.status_panel.set_state(
-                        f"Canceled: {record.task_name}",
-                        4000,
-                    )
-            elif record.state is BackgroundTaskState.DISCARDED:
-                if active_target:
-                    self.status_panel.set_state(
-                        record.message or "Task result is stale and was not applied",
-                        5000,
-                    )
-
-        def terminal(record: TaskCompletion) -> None:
-            try:
-                project_terminal(record)
-            finally:
-                if completion is not None:
-                    completion.complete(record)
-
-        def progress(message: str) -> None:
-            if target_context is None or self._task_context_is_active(target_context):
-                self.status_panel.set_state(message)
-                if on_progress is not None:
-                    self._invoke_task_callback(target_context, on_progress, message)
-
-        project_callback = (
-            None
-            if on_success is None
-            else self._task_project_result_wrapper(target_context, on_success)
+        return self.document_tasks.start(
+            workload, on_success, error_title, on_failure,
+            context=target, controller=task_controller, task_name=task_name,
+            on_cancelled=on_cancelled,
+            on_inactive_failure=on_inactive_failure,
+            on_inactive_cancelled=on_inactive_cancelled,
+            on_inactive_success=on_inactive_success,
+            apply_result=apply_result, completion=completion,
+            on_progress=on_progress, on_terminal=on_terminal,
         )
-        task_id = task_controller.start(
-            workload,
-            task_name=task_name,
-            apply_result=apply,
-            project_result=project_callback,
-            rebuild_projection=self._task_rebuild_projection_wrapper(
-                target_context,
-            ),
-            on_terminal=terminal,
-            on_progress=progress,
-            on_projection_error=self._task_projection_failed_wrapper(
-                target_context,
-            ),
-        )
-        if task_id is not None and completion is not None:
-            completion.bind_task_id(task_id)
-        return task_id is not None
 
-    def _task_project_result_wrapper(
-        self,
-        context: WorkspaceDocument | None,
-        callback: Callable[[object], None],
-    ) -> Callable[[object], None]:
-        def project(value: object) -> None:
-            if context is not None and not self._task_target_is_live(context):
-                return
-            if context is not None and not self._task_context_is_active(context):
-                self._apply_inactive_task_projection(value, context)
-                return
-            self._invoke_task_callback(context, callback, value)
-
-        return project
-
-    def _task_rebuild_projection_wrapper(
-        self,
-        context: WorkspaceDocument | None,
-    ) -> Callable[[], None]:
-        def rebuild() -> None:
-            if context is not None and not self._task_context_is_active(context):
-                return
-            self._invoke_task_callback(context, self._rebuild_full_projection)
-
-        return rebuild
-
-    def _task_projection_failed_wrapper(
-        self,
-        context: WorkspaceDocument | None,
-    ) -> Callable[[str], None]:
-        def report(message: str) -> None:
-            if context is not None and not self._task_context_is_active(context):
-                return
-            self._invoke_task_callback(context, self._task_projection_failed, message)
-
-        return report
 
     def _task_busy_changed(self, busy: bool) -> None:
         self.status_panel.set_task_active(bool(busy))
@@ -14316,7 +13948,7 @@ class FEMMainWindow(QMainWindow):
             )
 
         self.document = snapshot
-        bound_context = self._task_context_or_active()
+        bound_context = self._active_workspace_context()
         stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
             snapshot,
             document_id=(
@@ -15939,13 +15571,17 @@ class FEMMainWindow(QMainWindow):
         selection: ScalarFieldSelection,
         visual_selection: ScalarFieldSelection,
     ) -> None:
+        target_context = self._active_workspace_context()
+        if target_context is None:
+            raise RuntimeError("No document is available for this task")
+        target_session = target_context.session
         task = None
         try:
-            task = self.session.prepare_result_projection(
+            task = target_session.prepare_result_projection(
                 provider.source.run_id
             )
             if (
-                self.session.current_result_identity()
+                target_session.current_result_identity()
                 != (provider.source, provider.snapshot.generation)
                 or task.token.result_id != provider.source.result_id
                 or dict(task.token.dependency_revisions).get(
@@ -15972,8 +15608,8 @@ class FEMMainWindow(QMainWindow):
                         "averaging visualization must return "
                         "ResultMaterializationPatch"
                     )
-                return self._session_task_outcome(
-                    self.session.accept_result_projection(task.token),
+                return session_task_outcome(
+                    target_session.accept_result_projection(task.token),
                     value,
                 )
 
@@ -16022,28 +15658,31 @@ class FEMMainWindow(QMainWindow):
                 workload,
                 succeeded,
                 "Failed to compute averaged nodal stress contours",
-                lambda message: self._session_task_failed(
+                lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Failed to compute averaged nodal stress contours",
                     message,
                 ),
                 task_name="Averaged Nodal Stress Contours",
-                on_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
-                on_inactive_failure=lambda message: self._session_task_failed(
+                on_inactive_failure=lambda message: self._target_session_task_failed(
+                    target_context,
                     task.token,
                     "Failed to compute averaged nodal stress contours",
                     message,
                 ),
-                on_inactive_cancelled=lambda: self._session_task_cancelled(
-                    task.token
+                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
+                    target_context, task.token,
                 ),
                 apply_result=apply_result,
+                context=target_context,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             if task is not None:
-                failure = self.session.accept_task_failed(
+                failure = target_session.accept_task_failed(
                     task.token,
                     error,
                 )
@@ -16051,7 +15690,7 @@ class FEMMainWindow(QMainWindow):
             self._show_error("Failed to compute averaged nodal stress contours", str(error))
             return
         if not started:
-            cancelled = self.session.accept_task_cancelled(task.token)
+            cancelled = target_session.accept_task_cancelled(task.token)
             self._apply_revision_neutral_task_receipt(cancelled)
 
     def _install_ready_result_selection(
@@ -17600,14 +17239,16 @@ class FEMMainWindow(QMainWindow):
         for window in windows:
             window.close()
 
-    def _confirm_workspace_task_exit(self, context: WorkspaceDocument) -> bool:
-        """Ask whether one document-owned task may be cancelled for exit."""
+    def _confirm_workspace_task_exit(self, context: WorkspaceDocument | None) -> bool:
+        """Ask whether one document task or detached open may be cancelled."""
 
         box = QMessageBox(self)
         box.setWindowTitle("Task Running")
         box.setIcon(QMessageBox.Icon.Question)
         box.setText(
-            f"Document '{context.display_name}' has a background task running. Cancel the task and exit?"
+            "A file is being opened. Cancel the task and exit?"
+            if context is None
+            else f"Document '{context.display_name}' has a background task running. Cancel the task and exit?"
         )
         cancel_button = box.addButton(
             "Cancel Task and Exit",
@@ -17712,30 +17353,39 @@ class FEMMainWindow(QMainWindow):
                 ):
                     event.ignore()
                     return
+            open_controller = self.workspace.open_controller
+            if (
+                open_controller is not None and open_controller.busy
+                and not self._confirm_workspace_task_exit(None)
+            ):
+                event.ignore()
+                return
         busy_contexts = tuple(
             context for context in contexts if context.task_controller.busy
         )
-        if busy_contexts:
+        open_controller = self.workspace.open_controller
+        detached_busy = open_controller is not None and open_controller.busy
+        if busy_contexts or detached_busy:
             self._exit_pending = True
-            pending_ids = {context.document_id for context in busy_contexts}
+            pending_controllers = {context.task_controller for context in busy_contexts}
+            if detached_busy:
+                pending_controllers.add(open_controller)
 
-            def release_after_cancel(document_id: int) -> None:
-                pending_ids.discard(document_id)
-                if pending_ids or not self._exit_pending:
+            def release_after_cancel(controller: BackgroundTaskController) -> None:
+                pending_controllers.discard(controller)
+                if pending_controllers or not self._exit_pending:
                     return
                 self._finish_workspace_exit()
 
-            for context in busy_contexts:
-                requested = self._request_workspace_context_cancel(
-                    context,
-                    after_cleanup=lambda document_id=context.document_id: release_after_cancel(
-                        document_id
-                    ),
+            for controller in tuple(pending_controllers):
+                self.document_tasks.after_idle(
+                    controller,
+                    lambda target=controller: release_after_cancel(target),
                 )
-                if not requested and not context.task_controller.cancel_requested:
-                    self._exit_pending = False
-                    event.ignore()
-                    return
+            for context in busy_contexts:
+                self._request_workspace_context_cancel(context)
+            if detached_busy:
+                open_controller.request_cancel()
             event.ignore()
             return
         self._finish_workspace_exit()

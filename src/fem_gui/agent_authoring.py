@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Protocol
 
-from fem.application import ModelSession, UnitContext
+from fem.application import MeshTaskSnapshot, ModelSession, UnitContext
 from fem.application.feature_history import (
     derive_feature_history,
     remove_terminal_feature,
@@ -87,6 +87,12 @@ from .agent_handlers.mesh_solve import MeshSolveHandlers
 from .agent_handlers.model_definitions import ModelDefinitionHandlers
 from .agent_handlers.profile_transforms import ProfileTransformHandlers
 from .agent_handlers.workspace_results import WorkspaceResultHandlers
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingMeshTask:
+    session: ModelSession
+    snapshot: MeshTaskSnapshot
 
 
 class _SessionSnapshot(Protocol):
@@ -633,7 +639,7 @@ class SessionGeometryAuthoringPort:
         self._apply_definition_delta = apply_definition_delta
         self._context: AuthoringContext | None = None
         self._records: dict[str, ProposalPortRecord] = {}
-        self._mesh_tasks: dict[str, object] = {}
+        self._mesh_tasks: dict[str, _PendingMeshTask] = {}
         self._patch_records: dict[str, AppliedPatchRecord] = {}
         self._feature_proposal_records: dict[str, FeatureProposalUndoRecord] = {}
         self._preflight_records: dict[str, AgentPreflightRecord] = {}
@@ -1733,7 +1739,8 @@ class SessionGeometryAuthoringPort:
             intent.intent_hash,
             expected_session_revision=proposal.base_session_revision,
         )
-        self._mesh_tasks[proposal.proposal_id] = task
+        target_session = self._session
+        self._mesh_tasks[proposal.proposal_id] = _PendingMeshTask(target_session, task)
         running = replace(record, state=ProposalState.RUNNING)
         self._records[proposal.proposal_id] = running
         try:
@@ -1745,11 +1752,11 @@ class SessionGeometryAuthoringPort:
                 )
             )
         except Exception as error:
-            self._session.terminate_agent_mesh_task(task.token, str(error))
+            target_session.terminate_agent_mesh_task(task.token, str(error))
             self._mesh_tasks.pop(proposal.proposal_id, None)
             raise
         if not started:
-            self._session.terminate_agent_mesh_task(
+            target_session.terminate_agent_mesh_task(
                 task.token,
                 "GUI background task controller is busy",
             )
@@ -1894,8 +1901,8 @@ class SessionGeometryAuthoringPort:
         record = self._records.get(proposal_id)
         if record is None or record.state is not ProposalState.RUNNING:
             raise AuthoringAuthorizationError("mesh result requires a running proposal")
-        task = self._mesh_tasks[proposal_id]
-        delta = self._session.accept_agent_generated_model(task.token, model)
+        pending = self._mesh_tasks[proposal_id]
+        delta = pending.session.accept_agent_generated_model(pending.snapshot.token, model)
         if delta.accepted:
             self.complete_mesh(
                 proposal_id,
@@ -1916,8 +1923,8 @@ class SessionGeometryAuthoringPort:
             ProposalState.STALE,
         }:
             raise ValueError("terminated mesh proposal requires a failure state")
-        task = self._mesh_tasks[proposal_id]
-        delta = self._session.terminate_agent_mesh_task(task.token, message)
+        pending = self._mesh_tasks[proposal_id]
+        delta = pending.session.terminate_agent_mesh_task(pending.snapshot.token, message)
         self.complete_mesh(proposal_id, state, message)
         return delta
 

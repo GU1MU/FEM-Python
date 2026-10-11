@@ -502,7 +502,7 @@ class GeometryEditingHandlers:
         _controller: AuthoringWorkflowController,
     ) -> AuthoringToolOutcome:
         part_id = str(arguments["part_id"])
-        snapshot = self.binding.current_session().snapshot()
+        snapshot = self.binding.current_session().projection_snapshot()
         part = next(
             (
                 candidate
@@ -671,7 +671,7 @@ class GeometryEditingHandlers:
                 "geometry.spatial-relation-operation: spatial_relation "
                 "applies only to one new planar Boolean feature"
             )
-        snapshot = self.binding.current_session().snapshot()
+        snapshot = self.binding.current_session().projection_snapshot()
         part = next(
             (
                 candidate
@@ -1622,7 +1622,7 @@ class GeometryEditingHandlers:
             or not requested_part_id.strip()
         ):
             raise AuthoringContractError("part_id must be a non-empty string")
-        snapshot = self.binding.current_session().snapshot()
+        snapshot = self.binding.current_session().projection_snapshot()
         active_parts = tuple(
             part
             for part in snapshot.parts

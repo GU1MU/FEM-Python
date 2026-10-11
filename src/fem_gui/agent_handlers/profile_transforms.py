@@ -294,7 +294,7 @@ class ProfileTransformHandlers:
 
     def _profile_transform_part(self, part_id: object):
         normalized_part_id = str(part_id).strip()
-        snapshot = self.binding.current_session().snapshot()
+        snapshot = self.binding.current_session().projection_snapshot()
         if snapshot.source_kind != "native":
             raise AuthoringContractError(
                 "profile-transform.part-not-found: current document is not a "

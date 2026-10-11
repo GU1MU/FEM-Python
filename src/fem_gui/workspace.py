@@ -320,9 +320,11 @@ class FEMWorkspace:
         )
 
     def any_busy(self) -> bool:
-        """Return whether any model/result context owns a running task."""
+        """Include detached file decoding in the workspace lifetime guard."""
 
-        return any(context.task_controller.busy for context in self.documents())
+        return any(context.task_controller.busy for context in self.documents()) or (
+            self.open_controller is not None and self.open_controller.busy
+        )
 
     def add_model(
         self,
