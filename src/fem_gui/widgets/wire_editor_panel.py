@@ -270,6 +270,10 @@ class WireEditorPanel(QWidget):
     def end(self) -> None:
         if self._viewport is not None:
             self._viewport.stop_wire_authoring()
+            self._disconnect_viewport(self._viewport)
+        self._viewport = None
+        self._controller = None
+        self._base_snapshot = None
         self.hide()
 
     def set_mode(self, mode: str) -> None:

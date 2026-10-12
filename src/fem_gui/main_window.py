@@ -53,10 +53,8 @@ from fem.application import (
     SessionDelta,
     SessionSnapshot,
     StrictBodyBooleanPreview,
-    StrictPartBooleanResult,
     StrictPlanarBooleanPreview,
     StrictPlanarBooleanResult,
-    FaceSketchBooleanResult,
     TransitionEffect,
     describe_model_capabilities,
     describe_session_authoring,
@@ -69,11 +67,8 @@ from fem.application import (
     safe_static_preflight,
     safe_prepare_static_preflight,
     compile_named_region_edit,
-    prepare_part_boolean,
     prepare_strict_part_recipe_preview,
     prepare_strict_body_recipe_preview,
-    prepare_planar_boolean,
-    prepare_face_sketch_boolean,
     prepare_strict_planar_recipe_preview,
 )
 from fem.application.definitions import mesh_entity_ref_sort_key
@@ -118,9 +113,7 @@ from fem.geometry import (
     ExtrudedGeometry,
     ExtrusionSourceResolutionError,
     LogicalEntityRef,
-    FaceSketchBooleanDirection,
     FaceSketchBooleanGeometry,
-    FaceSketchBooleanOperation,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -133,7 +126,6 @@ from fem.geometry import (
     SketchReferencePoint,
     WireGeometry,
     geometry_dimension,
-    analyze_sketch_profiles,
     logical_ref_sort_key,
     recipe_characteristic_size,
     resolve_extrusion_source_faces,
@@ -184,8 +176,6 @@ from .agent_authoring import (
     create_session_authoring_workflow_controller,
 )
 from .agent_result_query import SessionResultQueryPort
-from .part_boolean import PartBooleanController
-from .planar_boolean import PlanarBooleanController, planar_reference_points
 from .analysis_dialogs import JobManagerDialog, JobSubmitDialog
 from .analysis_definition_dialogs import (
     AnalysisDefinitionManagerDialog,
@@ -225,29 +215,27 @@ from .model_iteration import ModelIterationService, geometry_edit_policy
 from .geometry_preview import (
     GeometryPreview,
     build_geometry_preview,
-    build_face_sketch_boolean_committed_preview,
     build_face_sketch_boolean_display,
     build_face_sketch_boolean_result_preview,
     namespace_part_geometry_preview,
     build_strict_body_boolean_previews,
     build_strict_part_boolean_preview,
     build_strict_planar_boolean_preview,
-    build_strict_sketch_draft_preview,
+)
+from .geometry_editing import (
+    GeometryEditCoordinator,
+    GeometryEditPresentation,
+    GeometryEditLaunch,
+    FaceBooleanDisplay,
+    SketchPurpose,
 )
 from .geometry_tasks import (
-    PreparedFaceSketchWorkplane,
-    prepare_face_sketch_workplane,
     prepare_profile_solid_geometry,
 )
 from .agent_workspace_catalog import create_workspace_catalog_bridge
 from .agent_workspace import UserWorkspace, WorkspaceCommandHandler
 from .face_sketch_boolean_dialog import (
     FaceSketchBooleanDialog,
-    FaceSketchBooleanParameters,
-)
-from .face_sketch_editor import (
-    FaceSketchBooleanFeatureRequest,
-    FaceSupportedSketchController,
 )
 from .part_geometry_preview import (
     build_multi_part_geometry_preview,
@@ -312,8 +300,6 @@ from .viewport_background import (
 )
 from .viewport_background_dialog import ViewportBackgroundDialog
 from .viewport_image_export_dialog import ViewportImageExportDialog
-from .sketch_editor import SketchDraftController, SketchDraftValidationError
-from .wire_editor import WireDraftController, WireDraftValidationError
 from .visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
     CONTOUR_EDGE_NONE,
@@ -336,7 +322,6 @@ from .widgets.model_tree import (
     native_feature_kind_label,
     native_feature_label,
 )
-from .widgets.boolean_feature_panel import BooleanFeaturePanel
 from .widgets.planar_boolean_panel import PlanarBooleanPanel
 from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
@@ -831,45 +816,6 @@ class FEMMainWindow(QMainWindow):
         self._result_model_capability_cache: (
             tuple[object, object, ModelCapabilityReport] | None
         ) = None
-        self._wire_editor_controller: WireDraftController | None = None
-        self._wire_editor_original_recipe: object | None = None
-        self._wire_editor_base_revision: int | None = None
-        self._wire_editor_part_name: str | None = None
-        self._sketch_editor_controller: SketchDraftController | None = None
-        self._sketch_editor_original_recipe: object | None = None
-        self._sketch_editor_base_revision: int | None = None
-        self._sketch_editor_part_name: str | None = None
-        self._body_boolean_controller: PartBooleanController | None = None
-        self._body_boolean_preview_result: object | None = None
-        self._body_boolean_preview_generation = 0
-        self._planar_boolean_controller: PlanarBooleanController | None = None
-        self._planar_boolean_preview_result: StrictPlanarBooleanResult | None = None
-        self._planar_boolean_preview_generation = 0
-        self._planar_boolean_original_selection: set[LogicalEntityRef] = set()
-        self._sketch_editor_is_planar_boolean_tool = False
-        self._sketch_editor_is_face_sketch = False
-        self._face_sketch_controller: FaceSupportedSketchController | None = None
-        self._face_sketch_dialog: FaceSketchBooleanDialog | None = None
-        self._face_sketch_parameters: FaceSketchBooleanParameters | None = None
-        self._face_sketch_preview_result: FaceSketchBooleanResult | None = None
-        self._face_sketch_preview_generation = 0
-        self._face_sketch_reference_points: tuple[SketchReferencePoint, ...] = ()
-        self._face_sketch_original_selection: set[LogicalEntityRef] = set()
-        self._solid_face_boolean_operation: (
-            FaceSketchBooleanOperation | None
-        ) = None
-        self._solid_face_boolean_original_selection: set[
-            LogicalEntityRef
-        ] = set()
-        self._face_sketch_selection_cache: dict[
-            tuple[int, str, str, int, str], PreparedFaceSketchWorkplane | str
-        ] = {}
-        self._pending_face_sketch_selections: set[
-            tuple[int, str, str, int, str]
-        ] = set()
-        self.faceSketchBooleanFeatureRequested.connect(
-            self._commit_face_sketch_boolean_feature
-        )
         self._geometry_preview_cache: (
             tuple[str, object, GeometryPreview] | None
         ) = None
@@ -1716,11 +1662,7 @@ class FEMMainWindow(QMainWindow):
     def open_project_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
         if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._body_boolean_controller is not None
-            or self._planar_boolean_controller is not None
-            or self._solid_face_boolean_operation is not None
+            self.geometry_edits.active
         ):
             return self._rejected_command(
                 command_id,
@@ -3088,8 +3030,8 @@ class FEMMainWindow(QMainWindow):
                         )
                 try:
                     if (
-                        self._sketch_editor_controller is not None
-                        or self._wire_editor_controller is not None
+                        self.geometry_edits.sketch_active
+                        or self.geometry_edits.wire_active
                     ):
                         self.viewport.show_geometry_preview(
                             preview,
@@ -4004,12 +3946,6 @@ class FEMMainWindow(QMainWindow):
         self.viewport_panel.scope_creation_bar.cancelRequested.connect(
             self._cancel_guided_selection
         )
-        self.viewport_panel.planar_boolean_face_bar.cancelRequested.connect(
-            self._cancel_boolean_face_prompt
-        )
-        self.viewport_panel.planar_boolean_face_bar.confirmRequested.connect(
-            self._confirm_boolean_face_prompt
-        )
         self.wire_editor_panel = WireEditorPanel(parent=self)
         self.wire_editor_panel.hide()
         self.sketch_editor_panel = SketchEditorPanel(
@@ -4017,7 +3953,6 @@ class FEMMainWindow(QMainWindow):
             settings=self._application_settings,
         )
         self.sketch_editor_panel.hide()
-        self.boolean_feature_panel = BooleanFeaturePanel(parent=self)
         self.planar_boolean_panel = PlanarBooleanPanel(parent=self)
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setObjectName("mainSplitter")
@@ -4025,7 +3960,6 @@ class FEMMainWindow(QMainWindow):
         splitter.addWidget(self.viewport_panel)
         splitter.addWidget(self.wire_editor_panel)
         splitter.addWidget(self.sketch_editor_panel)
-        splitter.addWidget(self.boolean_feature_panel)
         splitter.addWidget(self.planar_boolean_panel)
         # Keep the VTK viewport at a stable size while the user drags a handle.
         # Qt shows a rubber-band preview and commits the new layout on release.
@@ -4041,18 +3975,16 @@ class FEMMainWindow(QMainWindow):
         self._main_splitter_viewport_repaint_timer.timeout.connect(
             self.viewport.schedule_resize_repaint
         )
-        splitter.setSizes([260, 1020, 0, 0, 0, 0])
+        splitter.setSizes([260, 1020, 0, 0, 0])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
         splitter.setStretchFactor(3, 0)
         splitter.setStretchFactor(4, 0)
-        splitter.setStretchFactor(5, 0)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(2, True)
         splitter.setCollapsible(3, True)
         splitter.setCollapsible(4, True)
-        splitter.setCollapsible(5, True)
         self.main_splitter = splitter
         host = QWidget(self)
         host.setObjectName("centralWorkspace")
@@ -4062,6 +3994,7 @@ class FEMMainWindow(QMainWindow):
         layout.addWidget(self.ribbon)
         layout.addWidget(splitter, 1)
         self.setCentralWidget(host)
+        self._build_geometry_edit_coordinator()
         self.model_tree.highlightRequested[int, str, object].connect(
             self._highlight_tree_entry
         )
@@ -4125,32 +4058,20 @@ class FEMMainWindow(QMainWindow):
         self.sketch_editor_panel.entityFocusRequested.connect(
             self.viewport.focus_sketch_draft_entity
         )
-        self.boolean_feature_panel.selectionRequested.connect(
-            self._request_body_boolean_selection
-        )
-        self.boolean_feature_panel.operationChanged.connect(
-            self._body_boolean_operation_changed
-        )
-        self.boolean_feature_panel.finishRequested.connect(
-            self.finish_body_boolean
-        )
-        self.boolean_feature_panel.cancelRequested.connect(
-            self.cancel_body_boolean
-        )
         self.planar_boolean_panel.targetSelectionRequested.connect(
-            self._request_planar_boolean_target
+            self.geometry_edits.request_planar_target
         )
         self.planar_boolean_panel.targetSelectionCleared.connect(
-            self._clear_planar_boolean_target
+            self.geometry_edits.clear_planar_target
         )
         self.planar_boolean_panel.toolSketchRequested.connect(
-            self._edit_planar_boolean_tool
+            self.geometry_edits.edit_planar_tool
         )
         self.planar_boolean_panel.toolSketchDeleted.connect(
-            self._delete_planar_boolean_tool
+            self.geometry_edits.delete_planar_tool
         )
         self.planar_boolean_panel.operationChanged.connect(
-            self._planar_boolean_operation_changed
+            self.geometry_edits.change_planar_operation
         )
         self.planar_boolean_panel.finishRequested.connect(
             self.finish_planar_boolean
@@ -4158,6 +4079,114 @@ class FEMMainWindow(QMainWindow):
         self.planar_boolean_panel.cancelRequested.connect(
             self.cancel_planar_boolean
         )
+
+    def _build_geometry_edit_coordinator(self) -> None:
+        self.geometry_edits = GeometryEditCoordinator(
+            self.document_tasks,
+            GeometryEditPresentation(
+                active_document=self._active_workspace_context,
+                selected_references=self._canonical_geometry_selection,
+                set_selection=self._set_editor_geometry_selection,
+                set_selection_mode=self._set_geometry_selection_mode,
+                project_delta=lambda target, delta, preview: self._apply_session_delta(
+                    delta, context=target, geometry_preview=preview,
+                ),
+                restore_scene=lambda target: self._rebuild_full_projection()
+                if self.document_tasks.is_active(target) else None,
+                source_preview=self._geometry_editor_source_preview,
+                show_preview=self.viewport.show_geometry_preview,
+                show_reference=self._show_editor_reference_preview,
+                show_face_preview=self._show_editor_face_preview,
+                draft_render_data=lambda: self.viewport.sketch_draft_render_data,
+                enter_wire=self._enter_wire_editor_layout,
+                enter_sketch=self._enter_sketch_editor_layout,
+                exit_editor=self._exit_geometry_editor_layout,
+                begin_face_prompt=self.viewport_panel.planar_boolean_face_bar.begin,
+                end_face_prompt=self.viewport_panel.planar_boolean_face_bar.finish,
+                face_selection_ready=self.viewport_panel.planar_boolean_face_bar.set_selection_ready,
+                create_face_dialog=lambda: FaceSketchBooleanDialog(self),
+                feature_requested=self.faceSketchBooleanFeatureRequested.emit,
+                confirm_discard=self._confirm_geometry_draft_discard,
+                commit_allowed=lambda: self._confirm_result_invalidation(preserve_editor=True),
+                geometry_committed=self._finish_native_geometry_update,
+                set_status=lambda message, timeout: self.status_panel.set_state(message, timeout),
+                show_error=self._show_error,
+                refresh_actions=self._update_action_states,
+                defer=self._defer_ui,
+                shutting_down=lambda: self._closing or self._exit_pending,
+            ),
+            self.wire_editor_panel, self.sketch_editor_panel, self.planar_boolean_panel,
+        )
+        self.faceSketchBooleanFeatureRequested.connect(self.geometry_edits.commit_face_feature)
+        self.viewport_panel.planar_boolean_face_bar.confirmRequested.connect(self.geometry_edits.confirm_target)
+        self.viewport_panel.planar_boolean_face_bar.cancelRequested.connect(lambda: self.geometry_edits.cancel(confirm=False))
+
+    def _set_editor_geometry_selection(self, references: tuple[LogicalEntityRef, ...]) -> None:
+        self._selected_geometry_refs = set(references)
+        self._selected_mesh_scope_refs.clear()
+        if references:
+            self.viewport.highlight_geometry_entities(references)
+        else:
+            self.viewport.clear_selection()
+
+    def _geometry_editor_source_preview(self, launch: GeometryEditLaunch) -> GeometryPreview:
+        cached = self._geometry_preview_cache
+        snapshot = launch.session.projection_snapshot()
+        if (
+            self.document_tasks.is_active(launch.document)
+            and cached is not None and cached[0] == launch.session_id
+            and cached[1] == self._native_part_preview_cache_key(snapshot)
+        ):
+            return localize_part_geometry_preview(launch.part_id, cached[2])
+        return build_geometry_preview(launch.source_recipe)
+
+    def _show_editor_face_preview(self, value: FaceBooleanDisplay) -> None:
+        inputs, workplane = value.inputs, value.workplane
+        parameters = inputs.parameters
+        display = build_face_sketch_boolean_display(
+            inputs.recipe.sketch, parameters.participating_profile_ids,
+            workplane.direction_vector(parameters.direction), parameters.distance,
+        )
+        exact = build_face_sketch_boolean_result_preview(value.result.preview)
+        self.viewport.show_face_sketch_boolean_preview(
+            value.target, display, exact, target_body_id=workplane.target_body_id,
+            origin=workplane.origin, direction=workplane.direction_vector(parameters.direction),
+            distance=parameters.distance, operation_name=parameters.operation.display_name,
+        )
+
+    def _show_editor_reference_preview(self, preview: GeometryPreview, face_id: str | None, body_id: str | None) -> None:
+        if face_id is None and body_id is None:
+            self.viewport.show_sketch_reference_preview(preview)
+        else:
+            self.viewport.show_sketch_reference_preview(preview, support_face_id=face_id, target_body_id=body_id)
+
+    def _enter_wire_editor_layout(self, display_size: float | None) -> None:
+        self.wire_editor_panel.begin(self.viewport, display_size=display_size)
+        self.main_splitter.setSizes([260, 760, 360, 0, 0])
+        self._wire_editor_work_plane_changed(str(self.wire_editor_panel.work_plane_combo.currentData()))
+        self.ribbon.set_current("Geometry")
+
+    def _enter_sketch_editor_layout(self, purpose: SketchPurpose, display_size: float | None) -> None:
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
+        self.sketch_editor_panel.begin(self.viewport, purpose=purpose, display_size=display_size)
+        self.main_splitter.setSizes([260, 720, 0, 400, 0])
+        self.ribbon.set_current("Geometry")
+        if purpose != "face_sketch":
+            self.viewport.set_view("front")
+        self._schedule_viewport_fit()
+
+    def _exit_geometry_editor_layout(self) -> None:
+        self.viewport_panel.overlay_host.set_agent_chat_enabled(True)
+        self.main_splitter.setSizes([260, 1020, 0, 0, 0])
+        self._schedule_viewport_fit()
+
+    def _confirm_geometry_draft_discard(self, label: str) -> bool:
+        answer = QMessageBox.question(
+            self, f"Discard {label}", f"The {label.lower()} has unsaved changes. Discard them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def _main_splitter_moved(self, _position: int, _index: int) -> None:
         """Repaint after Qt has finished releasing its non-opaque marker."""
@@ -4240,16 +4269,7 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         """Project the stable geometry, mesh, or result scene for a module."""
 
-        if self._temporary_selection_context is not None or any(
-            controller is not None
-            for controller in (
-                self._wire_editor_controller,
-                self._sketch_editor_controller,
-                self._body_boolean_controller,
-                self._planar_boolean_controller,
-                self._face_sketch_controller,
-            )
-        ):
+        if self._temporary_selection_context is not None or self.geometry_edits.active:
             return
         if module_name == "Results":
             provider = self._current_result_provider()
@@ -4746,152 +4766,6 @@ class FEMMainWindow(QMainWindow):
             provider is not None and preferences.scale_mode == "custom"
         )
 
-    def _face_sketch_selection_key(self) -> tuple[int, str, str, int, str] | None:
-        target = self._active_workspace_context()
-        if (
-            target is None
-            or self._face_sketch_controller is not None
-            or self.document.source_kind != "native"
-            or len(self._selected_geometry_refs) != 1
-        ):
-            return None
-        reference = next(iter(self._selected_geometry_refs))
-        if reference.kind != "face":
-            return None
-        part_id = part_id_from_logical_id(reference.logical_id)
-        if part_id is None:
-            part_id = self.document.active_part_id
-            local_id = reference.logical_id
-        else:
-            try:
-                local_id = strip_part_logical_id(part_id, reference.logical_id)
-            except ValueError:
-                return None
-        if part_id is None or part_id != self.document.active_part_id:
-            return None
-        try:
-            part = self.document.part(part_id)
-            part_revision = self.document.part_revision(part_id)
-        except KeyError:
-            return None
-        recipe = part.geometry_recipe
-        if recipe is None or part.suppressed or geometry_dimension(recipe) != 3:
-            return None
-        return (
-            target.document_id,
-            self.document.session_id,
-            part_id,
-            part_revision,
-            local_id,
-        )
-
-    def _face_sketch_selection_is_valid(self) -> bool:
-        key = self._face_sketch_selection_key()
-        # Keep only the current selection; detached CAD references must not
-        # accumulate across document changes or closed documents.
-        self._face_sketch_selection_cache = {
-            cached_key: value
-            for cached_key, value in self._face_sketch_selection_cache.items()
-            if cached_key == key
-        }
-        if key is None or self.busy or self._closing or self._exit_pending:
-            return False
-        if key not in self._face_sketch_selection_cache:
-            if key not in self._pending_face_sketch_selections:
-                self._pending_face_sketch_selections.add(key)
-                # Launch after action projection has finished capturing its
-                # busy state; starting inline would re-enter that projection.
-                self._defer_ui(lambda: self._prepare_face_sketch_selection(key))
-            return False
-        return isinstance(self._face_sketch_selection_cache[key], PreparedFaceSketchWorkplane)
-
-    def _prepare_face_sketch_selection(
-        self, key: tuple[int, str, str, int, str],
-    ) -> None:
-        target = self._active_workspace_context()
-        if (
-            target is None
-            or self._face_sketch_selection_key() != key
-            or self.busy
-            or self._closing
-            or self._exit_pending
-        ):
-            self._pending_face_sketch_selections.discard(key)
-            return
-        target_session = target.session
-        _document_id, session_id, part_id, part_revision, face_id = key
-        session_revision = target_session.session_revision
-        recipe = self.document.part(part_id).geometry_recipe
-        self._pending_face_sketch_selections.add(key)
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            current = target_session.projection_snapshot()
-            if (
-                self._closing
-                or self._exit_pending
-                or not self.document_tasks.is_active(target)
-                or current.session_id != session_id
-                or current.session_revision != session_revision
-                or self._face_sketch_selection_key() != key
-                or current.part_revision(part_id) != part_revision
-                or current.part(part_id).geometry_recipe != recipe
-            ):
-                return TaskApplyOutcome.stale("Workplane result is stale; sketch not opened")
-            if type(payload) is not PreparedFaceSketchWorkplane:
-                raise TypeError("workplane preparation returned invalid data")
-            self._face_sketch_selection_cache[key] = payload
-            return TaskApplyOutcome.accepted(payload)
-
-        def failed(message: str) -> None:
-            if self._face_sketch_selection_key() == key:
-                self._face_sketch_selection_cache[key] = message
-
-        def terminal(record: TaskCompletion) -> None:
-            self._pending_face_sketch_selections.discard(key)
-            if record.state is BackgroundTaskState.CANCELLED:
-                failed("Workplane check canceled; select the face again")
-
-        if not self._start_task(
-            lambda context: prepare_face_sketch_workplane(recipe, face_id, context),
-            lambda _payload: None,
-            "Create Sketch on Face",
-            failed,
-            task_name="Resolve Face Sketch Workplane",
-            apply_result=apply_result,
-            on_terminal=terminal,
-            context=target,
-        ):
-            self._pending_face_sketch_selections.discard(key)
-            failed("Another background task is running")
-
-    def _refresh_solid_face_boolean_prompt(self) -> None:
-        if (
-            self._solid_face_boolean_operation is None
-            or self._face_sketch_controller is not None
-            or self._closing
-            or self._exit_pending
-        ):
-            return
-        valid = self._face_sketch_selection_is_valid()
-        key = self._face_sketch_selection_key()
-        pending = key in self._pending_face_sketch_selections
-        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(valid)
-        failure = self._face_sketch_selection_cache.get(key)
-        self.status_panel.set_state(
-            "Target face selected; confirm to continue"
-            if valid
-            else "Resolving sketch workplane..."
-            if pending
-            else f"Invalid planar face; select again: {failure}"
-            if isinstance(failure, str)
-            else "Select a target face",
-            4000 if isinstance(failure, str) else 0,
-        )
-
-    def _retry_failed_face_sketch_selection(self) -> None:
-        key = self._face_sketch_selection_key()
-        if isinstance(self._face_sketch_selection_cache.get(key), str):
-            self._face_sketch_selection_cache.pop(key)
 
     def _update_action_states(self) -> None:
         authoring = self._session_authoring_projection()
@@ -4965,16 +4839,11 @@ class FEMMainWindow(QMainWindow):
             materialization_pending=pending_result is not None,
             result_task_busy=pending_result is not None,
             viewport_scene_available=self.viewport.can_capture,
-            wire_editor_active=self._wire_editor_controller is not None,
-            sketch_editor_active=self._sketch_editor_controller is not None,
-            boolean_editor_active=(
-                self._body_boolean_controller is not None
-                or self._planar_boolean_controller is not None
-                or self._face_sketch_controller is not None
-                or self._solid_face_boolean_operation is not None
-            ),
+            wire_editor_active=self.geometry_edits.wire_active,
+            sketch_editor_active=self.geometry_edits.sketch_active,
+            boolean_editor_active=self.geometry_edits.boolean_active,
             planar_solid_face_selected=(
-                self._face_sketch_selection_is_valid()
+                self.geometry_edits.face_selection_valid()
             ),
             selection_space=self._selection_context.space,
             selection_filter=self._selection_context.active_filter,
@@ -5062,8 +4931,8 @@ class FEMMainWindow(QMainWindow):
 
         if (
             self.busy
-            or self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
+            or self.geometry_edits.wire_active
+            or self.geometry_edits.sketch_active
         ):
             return
         if not self._ensure_native_model_for_new_part("New Wire"):
@@ -5079,127 +4948,19 @@ class FEMMainWindow(QMainWindow):
         )
         if not accepted or not part_name.strip():
             return
-        self._begin_wire_editor(
+        self.geometry_edits.begin_wire(
             None,
             original_recipe=None,
             part_name=part_name.strip(),
         )
 
-    def _begin_wire_editor(
-        self,
-        root: WireGeometry | None,
-        *,
-        original_recipe: object | None,
-        part_name: str | None = None,
-        display_size: float | None = None,
-    ) -> None:
-        if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._planar_boolean_controller is not None
-        ):
-            return
-        controller = (
-            WireDraftController(root=root)
-            if root is not None
-            else WireDraftController(name="Wire-1")
-        )
-        self._wire_editor_controller = controller
-        self._wire_editor_original_recipe = original_recipe
-        self._wire_editor_base_revision = self.document.session_revision
-        self._wire_editor_part_name = part_name
-        self.wire_editor_panel.set_controller(
-            controller,
-            base_snapshot=controller.snapshot(),
-        )
-        self.wire_editor_panel.begin(
-            self.viewport,
-            display_size=display_size,
-        )
-        self.main_splitter.setSizes([260, 760, 360, 0, 0, 0])
-        self._wire_editor_work_plane_changed(
-            str(self.wire_editor_panel.work_plane_combo.currentData())
-        )
-        self.ribbon.set_current("Geometry")
-        self.status_panel.set_state("Wire editor: add points and connect members", 0)
-        self._update_action_states()
 
     def finish_wire_geometry(self) -> None:
-        controller = self._wire_editor_controller
-        base_revision = self._wire_editor_base_revision
-        if controller is None or base_revision is None:
-            return
-        try:
-            root = controller.to_geometry()
-        except WireDraftValidationError as error:
-            self.wire_editor_panel.show_status(str(error))
-            return
-        original = self._wire_editor_original_recipe
-        recipe = (
-            self._replace_root_geometry(original, root)
-            if original is not None
-            else root
-        )
-        if not self._confirm_result_invalidation(preserve_editor=True):
-            return
-        try:
-            if original is None:
-                delta = self.session.add_native_part(
-                    recipe,
-                    name=self._wire_editor_part_name,
-                    expected_session_revision=base_revision,
-                )
-            else:
-                active_id = self.document.active_part_id
-                if active_id is None:
-                    raise RuntimeError("No current part")
-                delta = self.session.replace_part_geometry(
-                    active_id,
-                    recipe,
-                    expected_part_revision=self.document.part_revision(
-                        active_id
-                    ),
-                    expected_session_revision=base_revision,
-                )
-            self._apply_session_delta(delta)
-        except (RuntimeError, TypeError, ValueError, KeyError) as error:
-            self.wire_editor_panel.show_status(
-                f"geometry.part.edit-rejected: {error}"
-            )
-            return
-        self._exit_wire_editor()
-        self.status_panel.set_state("Wire created; select truss or beam elements", 6000)
-        self.ribbon.set_current("Geometry")
+        self.geometry_edits.finish_wire()
 
     def cancel_wire_geometry(self) -> None:
-        controller = self._wire_editor_controller
-        if controller is None:
-            return
-        if controller.dirty and not self._confirm_wire_editor_discard():
-            return
-        self._exit_wire_editor()
-        self._rebuild_full_projection()
-        self.status_panel.set_state("Wire editing canceled", 4000)
+        self.geometry_edits.cancel()
 
-    def _exit_wire_editor(self) -> None:
-        self.wire_editor_panel.end()
-        self._wire_editor_controller = None
-        self._wire_editor_original_recipe = None
-        self._wire_editor_base_revision = None
-        self._wire_editor_part_name = None
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
-        self._update_action_states()
-        self._schedule_viewport_fit()
-
-    def _confirm_wire_editor_discard(self) -> bool:
-        answer = QMessageBox.question(
-            self,
-            "Discard Wire Sketch",
-            "The wire sketch has unsaved changes. Discard them?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return answer == QMessageBox.StandardButton.Yes
 
     def _wire_editor_work_plane_changed(self, plane: str) -> None:
         views = {"XY": "front", "XZ": "bottom", "YZ": "left"}
@@ -5212,8 +4973,8 @@ class FEMMainWindow(QMainWindow):
 
         if (
             self.busy
-            or self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
+            or self.geometry_edits.wire_active
+            or self.geometry_edits.sketch_active
         ):
             return
         if not self._ensure_native_model_for_new_part("New Part"):
@@ -5234,14 +4995,14 @@ class FEMMainWindow(QMainWindow):
                 return
             creation_kind = f"3d_{solid_dialog.solid_kind()}"
         if creation_kind == "1d":
-            self._begin_wire_editor(
+            self.geometry_edits.begin_wire(
                 None,
                 original_recipe=None,
                 part_name=part_name,
                 display_size=dialog.sketch_size(),
             )
         elif creation_kind == "2d":
-            self._begin_sketch_editor(
+            self.geometry_edits.begin_sketch(
                 None,
                 original_recipe=None,
                 part_name=part_name,
@@ -5286,518 +5047,17 @@ class FEMMainWindow(QMainWindow):
         self.start_sketch_geometry()
 
     def start_face_sketch_boolean(self) -> None:
-        """Resolve the selected solid plane Face before opening a detached draft."""
+        self.geometry_edits.begin_face_sketch()
 
-        if (
-            self.busy
-            or self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._face_sketch_controller is not None
-            or not self._face_sketch_selection_is_valid()
-        ):
-            return
-        target = self._active_workspace_context()
-        key = self._face_sketch_selection_key()
-        if target is None or key is None:
-            return
-        prepared = self._face_sketch_selection_cache.get(key)
-        if type(prepared) is not PreparedFaceSketchWorkplane:
-            return
-        _document_id, session_id, part_id, part_revision, _face_id = key
-        current = target.session.projection_snapshot()
-        if (
-            current.session_id != session_id
-            or current.part_revision(part_id) != part_revision
-        ):
-            self.status_panel.set_state("Workplane result is stale; sketch not opened", 5000)
-            return
-        original_selection = set(self._selected_geometry_refs)
-        try:
-            controller = FaceSupportedSketchController(
-                current,
-                part_id,
-                prepared.workplane,
-                reference_points=prepared.reference_points,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            self._show_error("Create Sketch on Face", str(error))
-            return
-        self._face_sketch_controller = controller
-        self._face_sketch_reference_points = prepared.reference_points
-        self._face_sketch_original_selection = original_selection
-        self._face_sketch_parameters = None
-        self._face_sketch_preview_result = None
-        self._begin_face_sketch_editor()
-
-    def _begin_face_sketch_editor(self) -> None:
-        controller = self._face_sketch_controller
-        if controller is None:
-            return
-        draft = controller.draft
-        self._sketch_editor_controller = draft
-        self._sketch_editor_original_recipe = None
-        self._sketch_editor_base_revision = controller.launch_snapshot.session_revision
-        self._sketch_editor_part_name = None
-        self._sketch_editor_is_face_sketch = True
-        self.sketch_editor_panel.set_controller(
-            draft,
-            base_snapshot=draft.snapshot(),
-        )
-        self.sketch_editor_panel.set_reference_points(
-            self._face_sketch_reference_points,
-            refresh_controller=False,
-        )
-        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
-        self.sketch_editor_panel.begin(self.viewport, purpose="face_sketch")
-        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
-        launch = controller.launch_snapshot
-        cached = self._geometry_preview_cache
-        preview_key = self._native_part_preview_cache_key(self.document)
-        source_preview = (
-            localize_part_geometry_preview(launch.part_id, cached[2])
-            if (
-                cached is not None
-                and cached[0] == self.document.session_id
-                and cached[1] == preview_key
-            )
-            else build_geometry_preview(launch.part.geometry_recipe)
-        )
-        self.viewport.show_sketch_reference_preview(
-            source_preview,
-            support_face_id=launch.workplane.support_face_id,
-            target_body_id=launch.workplane.target_body_id,
-        )
-        self.ribbon.set_current("Geometry")
-        self._schedule_viewport_fit()
-        self.status_panel.set_state("Face sketch editor: draw contours, then create", 0)
-        self._update_action_states()
-
-    def _open_face_sketch_boolean_dialog(self, sketch: SketchGeometry) -> None:
-        controller = self._face_sketch_controller
-        if controller is None:
-            return
-        analysis = (
-            controller.draft.derive_profiles()
-            if type(controller) is FaceSupportedSketchController
-            else analyze_sketch_profiles(sketch)
-        )
-        material_ids = tuple(
-            profile.id
-            for profile in analysis.profiles
-            if profile.is_material
-        )
-        previous = self._face_sketch_parameters
-        selected_ids = (
-            material_ids
-            if previous is None
-            else tuple(
-                profile_id
-                for profile_id in previous.participating_profile_ids
-                if profile_id in material_ids
-            )
-        )
-        if not selected_ids:
-            selected_ids = material_ids
-        dialog = FaceSketchBooleanDialog(self)
-        dialog.set_profiles(material_ids, selected_ids=selected_ids)
-        operation = self._solid_face_boolean_operation
-        if previous is not None or operation is not None:
-            defaults = dialog.parameters()
-            if defaults is not None:
-                dialog.set_parameters(
-                    FaceSketchBooleanParameters(
-                        (
-                            operation
-                            if operation is not None
-                            else previous.operation
-                        ),
-                        (
-                            previous.direction
-                            if previous is not None
-                            else FaceSketchBooleanDirection.INWARD
-                            if operation is FaceSketchBooleanOperation.CUT
-                            else defaults.direction
-                        ),
-                        (
-                            previous.distance
-                            if previous is not None
-                            else defaults.distance
-                        ),
-                        selected_ids,
-                    )
-                )
-        if operation is not None:
-            dialog.fix_operation(operation)
-        dialog.parametersChanged.connect(
-            self._face_sketch_boolean_parameters_changed
-        )
-        dialog.createFeatureRequested.connect(
-            self._request_face_sketch_boolean_feature
-        )
-        dialog.returnSketchRequested.connect(
-            self._return_to_face_sketch
-        )
-        dialog.cancelRequested.connect(self.cancel_face_sketch_boolean)
-        self._face_sketch_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-        self._face_sketch_boolean_parameters_changed(dialog.parameters())
-        self.status_panel.set_state("Preparing extrude boolean preview", 0)
-        self._update_action_states()
-
-    def _face_sketch_boolean_parameters_changed(self, payload: object) -> None:
-        dialog = self._face_sketch_dialog
-        controller = self._face_sketch_controller
-        if dialog is None or controller is None:
-            return
-        self._face_sketch_preview_generation += 1
-        generation = self._face_sketch_preview_generation
-        self._face_sketch_preview_result = None
-        dialog.set_preview_running(generation)
-        if type(payload) is not FaceSketchBooleanParameters:
-            self._face_sketch_parameters = None
-            dialog.set_preview_invalid(generation, dialog.validation_reason())
-            return
-        self._face_sketch_parameters = payload
-        self._launch_face_sketch_boolean_preview(payload, generation)
-
-    def _launch_face_sketch_boolean_preview(
-        self,
-        parameters: FaceSketchBooleanParameters,
-        generation: int,
-    ) -> None:
-        controller = self._face_sketch_controller
-        dialog = self._face_sketch_dialog
-        if controller is None or dialog is None:
-            return
-        if generation != self._face_sketch_preview_generation:
-            return
-        if self.busy:
-            dialog.set_preview_invalid(generation, "Waiting for the previous exact preview to finish...")
-            return
-        try:
-            sketch = controller.draft.to_sketch_geometry()
-            sketch_snapshot = controller.sketch_snapshot()
-            launch = controller.launch_snapshot
-            feature_ids = {
-                str(record.payload.get("feature_id"))
-                for record in launch.part.feature_history
-                if record.payload.get("feature_id")
-            }
-            feature_index = 1
-            while f"FSB{feature_index}" in feature_ids:
-                feature_index += 1
-            operation_kind = (
-                "face_sketch_boolean_fuse"
-                if parameters.operation is FaceSketchBooleanOperation.FUSE
-                else "face_sketch_boolean_cut"
-            )
-            operation_index = 1 + sum(
-                record.kind == operation_kind
-                for record in launch.part.feature_history
-            )
-            recipe = FaceSketchBooleanGeometry(
-                launch.part.geometry_recipe,
-                f"FSB{feature_index}",
-                (
-                    f"Extrude-Fuse-{operation_index}"
-                    if parameters.operation is FaceSketchBooleanOperation.FUSE
-                    else f"Extrude-Cut-{operation_index}"
-                ),
-                launch.workplane.support_face_id,
-                launch.workplane.strategy,
-                sketch,
-                parameters.operation,
-                parameters.direction,
-                parameters.distance,
-                parameters.participating_profile_ids,
-                sketch_snapshot.external_references,
-                sketch_snapshot.external_coincidences,
-            )
-        except (RuntimeError, TypeError, ValueError) as error:
-            dialog.set_preview_invalid(generation, str(error))
-            return
-        sketch_revision = sketch_snapshot.revision
-        dialog.set_preview_running(generation)
-
-        def workload(context: TaskContext) -> FaceSketchBooleanResult:
-            context.report("Performing exact extrude boolean and validating topology...")
-            with geometry_runtime.model(
-                f"{recipe.name}-{generation}",
-                dimension=3,
-            ) as cad:
-                result = prepare_face_sketch_boolean(cad, recipe)
-            context.checkpoint()
-            return result
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            return TaskApplyOutcome.accepted(payload)
-
-        def on_success(payload: object) -> None:
-            current = self._face_sketch_controller
-            current_dialog = self._face_sketch_dialog
-            is_current = (
-                type(payload) is FaceSketchBooleanResult
-                and current is controller
-                and current_dialog is dialog
-                and generation == self._face_sketch_preview_generation
-                and current.sketch_snapshot().revision == sketch_revision
-                and self._face_sketch_parameters == parameters
-                and current.launch_is_current(self.document)
-            )
-            if not is_current:
-                self._defer_ui(self._refresh_current_face_sketch_preview)
-                return
-            display = build_face_sketch_boolean_display(
-                sketch,
-                parameters.participating_profile_ids,
-                launch.workplane.direction_vector(parameters.direction),
-                parameters.distance,
-            )
-            exact = build_face_sketch_boolean_result_preview(payload.preview)
-            cached = self._geometry_preview_cache
-            preview_key = self._native_part_preview_cache_key(self.document)
-            target = (
-                localize_part_geometry_preview(launch.part_id, cached[2])
-                if (
-                    cached is not None
-                    and cached[0] == self.document.session_id
-                    and cached[1] == preview_key
-                )
-                else build_geometry_preview(launch.part.geometry_recipe)
-            )
-            self._face_sketch_preview_result = payload
-            self.viewport.show_face_sketch_boolean_preview(
-                target,
-                display,
-                exact,
-                target_body_id=launch.workplane.target_body_id,
-                origin=launch.workplane.origin,
-                direction=launch.workplane.direction_vector(parameters.direction),
-                distance=parameters.distance,
-                operation_name=parameters.operation.display_name,
-            )
-            dialog.set_preview_valid(generation)
-
-        def on_failure(message: str) -> None:
-            if (
-                self._face_sketch_controller is controller
-                and self._face_sketch_dialog is dialog
-                and generation == self._face_sketch_preview_generation
-            ):
-                self._face_sketch_preview_result = None
-                dialog.set_preview_invalid(
-                    generation,
-                    f"Exact preview failed: {message}",
-                )
-            else:
-                self._defer_ui(self._refresh_current_face_sketch_preview)
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "Extrude Boolean",
-            on_failure,
-            task_name="Exact Extrude Boolean Preview",
-            on_cancelled=self._refresh_current_face_sketch_preview,
-            apply_result=apply_result,
-        )
-        if not started:
-            dialog.set_preview_invalid(generation, "Waiting for the previous exact preview to finish...")
-
-    def _refresh_current_face_sketch_preview(self) -> None:
-        parameters = self._face_sketch_parameters
-        dialog = self._face_sketch_dialog
-        if parameters is None or dialog is None:
-            return
-        generation = self._face_sketch_preview_generation
-        if dialog.preview_is_valid:
-            return
-        self._launch_face_sketch_boolean_preview(parameters, generation)
-
-    def _request_face_sketch_boolean_feature(
-        self,
-        parameters: object,
-        generation: int,
-    ) -> None:
-        controller = self._face_sketch_controller
-        result = self._face_sketch_preview_result
-        dialog = self._face_sketch_dialog
-        if (
-            controller is None
-            or result is None
-            or dialog is None
-            or type(parameters) is not FaceSketchBooleanParameters
-            or parameters != self._face_sketch_parameters
-            or int(generation) != self._face_sketch_preview_generation
-            or not dialog.preview_is_valid
-        ):
-            return
-        request = FaceSketchBooleanFeatureRequest(
-            controller.launch_snapshot,
-            result.geometry,
-            controller.sketch_snapshot().revision,
-            int(generation),
-        )
-        self.faceSketchBooleanFeatureRequested.emit(request)
-        self.status_panel.set_state("Extrude boolean ready to commit", 5000)
-
-    def _commit_face_sketch_boolean_feature(self, payload: object) -> None:
-        controller = self._face_sketch_controller
-        result = self._face_sketch_preview_result
-        dialog = self._face_sketch_dialog
-        parameters = self._face_sketch_parameters
-        if (
-            type(payload) is not FaceSketchBooleanFeatureRequest
-            or controller is None
-            or result is None
-            or dialog is None
-            or parameters is None
-        ):
-            return
-        launch = controller.launch_snapshot
-        current_sketch = controller.sketch_snapshot()
-        request_is_current = (
-            payload.launch == launch
-            and payload.geometry == result.geometry
-            and payload.sketch_revision == current_sketch.revision
-            and payload.preview_generation == self._face_sketch_preview_generation
-            and dialog.preview_is_valid
-            and controller.launch_is_current(self.document)
-            and payload.geometry.sketch == controller.draft.to_sketch_geometry()
-            and payload.geometry.external_references
-            == current_sketch.external_references
-            and payload.geometry.external_coincidences
-            == current_sketch.external_coincidences
-            and payload.geometry.support_face_id == launch.workplane.support_face_id
-            and payload.geometry.workplane_strategy == launch.workplane.strategy
-            and payload.geometry.operation is parameters.operation
-            and payload.geometry.direction is parameters.direction
-            and payload.geometry.distance == parameters.distance
-            and payload.geometry.participating_profile_ids
-            == tuple(sorted(parameters.participating_profile_ids))
-        )
-        if not request_is_current:
-            dialog.set_preview_invalid(
-                self._face_sketch_preview_generation,
-                "State changed before commit; exact preview is stale. Regenerate the preview",
-            )
-            self.status_panel.set_state("State changed; rebuild the preview", 6000)
-            return
-        if not self._confirm_result_invalidation(preserve_editor=True):
-            return
-        try:
-            delta = self.session.commit_face_sketch_boolean(
-                launch.part_id,
-                launch.body_id,
-                payload.geometry,
-                expected_session_id=launch.session_id,
-                expected_part_revision=launch.part_revision,
-                expected_session_revision=launch.session_revision,
-                expected_body_recipe=launch.body.recipe,
-                expected_support_face_id=launch.workplane.support_face_id,
-                expected_workplane_strategy=launch.workplane.strategy,
-                expected_sketch_revision=payload.sketch_revision,
-                sketch_revision=current_sketch.revision,
-                expected_preview_generation=payload.preview_generation,
-                preview_generation=self._face_sketch_preview_generation,
-            )
-            committed_preview = namespace_part_geometry_preview(
-                launch.part_id,
-                build_face_sketch_boolean_committed_preview(
-                    payload.geometry,
-                    result.preview,
-                ),
-            )
-            if not self._apply_session_delta(
-                delta,
-                geometry_preview=committed_preview,
-            ):
-                raise RuntimeError("Session did not accept the extrude boolean commit")
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            dialog.set_preview_invalid(
-                self._face_sketch_preview_generation,
-                f"Commit rejected: {error}",
-            )
-            self.status_panel.set_state(
-                f"Extrude boolean commit rejected; model unchanged: {error}",
-                7000,
-            )
-            return
-
-        feature_name = self.document.part(launch.part_id).feature_history[-1].name
-        dialog.close_for_workflow()
-        self._face_sketch_dialog = None
-        self._face_sketch_controller = None
-        self._face_sketch_parameters = None
-        self._face_sketch_preview_result = None
-        self._face_sketch_reference_points = ()
-        self._face_sketch_original_selection = set()
-        self._solid_face_boolean_operation = None
-        self._solid_face_boolean_original_selection = set()
-        self._selected_geometry_refs.clear()
-        self._selected_mesh_scope_refs.clear()
-        self.status_panel.set_state(
-            f"{feature_name} committed as a single undo unit",
-            6000,
-        )
-        self._update_action_states()
-
-    def _return_to_face_sketch(self, parameters: object) -> None:
-        if (
-            type(parameters) is not FaceSketchBooleanParameters
-            or self._face_sketch_controller is None
-        ):
-            return
-        self._face_sketch_parameters = parameters
-        self._face_sketch_preview_result = None
-        self._face_sketch_preview_generation += 1
-        dialog = self._face_sketch_dialog
-        self._face_sketch_dialog = None
-        if dialog is not None:
-            dialog.close_for_workflow()
-        self._begin_face_sketch_editor()
 
     def cancel_face_sketch_boolean(self) -> None:
-        if self._face_sketch_controller is None:
-            return
-        self._face_sketch_preview_generation += 1
-        original_selection = set(self._face_sketch_original_selection)
-        dialog = self._face_sketch_dialog
-        self._face_sketch_dialog = None
-        if dialog is not None:
-            dialog.close_for_workflow()
-
-        def cleanup() -> None:
-            if self._sketch_editor_is_face_sketch:
-                self._exit_sketch_editor()
-            self._face_sketch_controller = None
-            self._face_sketch_parameters = None
-            self._face_sketch_preview_result = None
-            self._face_sketch_reference_points = ()
-            self._face_sketch_original_selection = set()
-            self._solid_face_boolean_operation = None
-            self._solid_face_boolean_original_selection = set()
-            self._rebuild_full_projection()
-            self._selected_geometry_refs = original_selection
-            if original_selection:
-                self.viewport.highlight_geometry_entities(
-                    tuple(sorted(original_selection, key=logical_ref_sort_key))
-                )
-            self.status_panel.set_state("Extrude boolean canceled", 4000)
-            self._update_action_states()
-
-        if self.task_controller.current_task_name == "Exact Extrude Boolean Preview":
-            if self.cancel_current_task(after_cleanup=cleanup):
-                return
-        cleanup()
+        self.geometry_edits.cancel(confirm=False)
 
     def start_sketch_geometry(self) -> None:
         if (
             self.busy
-            or self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
+            or self.geometry_edits.wire_active
+            or self.geometry_edits.sketch_active
         ):
             return
         if not self._ensure_native_model_for_new_part("New 2D Sketch"):
@@ -5817,263 +5077,19 @@ class FEMMainWindow(QMainWindow):
         if not part_name:
             self._show_error("New 2D Sketch", "Part name cannot be empty.")
             return
-        self._begin_sketch_editor(
+        self.geometry_edits.begin_sketch(
             None,
             original_recipe=None,
             part_name=part_name,
         )
 
-    def _begin_sketch_editor(
-        self,
-        root: SketchGeometry | None,
-        *,
-        original_recipe: object | None,
-        part_name: str | None = None,
-        display_size: float | None = None,
-    ) -> None:
-        if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-        ):
-            return
-        controller = (
-            SketchDraftController(root=root)
-            if root is not None
-            else SketchDraftController(name="Sketch-1")
-        )
-        self._sketch_editor_controller = controller
-        self._sketch_editor_original_recipe = original_recipe
-        self._sketch_editor_base_revision = self.document.session_revision
-        self._sketch_editor_part_name = part_name
-        self.sketch_editor_panel.set_controller(
-            controller,
-            base_snapshot=controller.snapshot(),
-        )
-        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
-        self.sketch_editor_panel.begin(
-            self.viewport,
-            display_size=display_size,
-        )
-        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
-        self.ribbon.set_current("Geometry")
-        self.viewport.set_view("front")
-        self._schedule_viewport_fit()
-        self.status_panel.set_state("2D sketch editor: draw closed contours", 0)
-        self._update_action_states()
 
     def finish_sketch_geometry(self) -> None:
-        controller = self._sketch_editor_controller
-        base_revision = self._sketch_editor_base_revision
-        if controller is None or base_revision is None:
-            return
-        try:
-            root = controller.to_sketch_geometry()
-        except SketchDraftValidationError as error:
-            self.sketch_editor_panel.show_status(str(error))
-            return
-        if self._sketch_editor_is_face_sketch:
-            face_controller = self._face_sketch_controller
-            if (
-                face_controller is None
-                or not face_controller.launch_is_current(self.document)
-            ):
-                self.sketch_editor_panel.show_status(
-                    "Project changed; face sketch not applied. Cancel and restart"
-                )
-                return
-            self._exit_sketch_editor()
-            self._open_face_sketch_boolean_dialog(root)
-            return
-        if self._sketch_editor_is_planar_boolean_tool:
-            planar = self._planar_boolean_controller
-            if (
-                planar is None
-                or self.document.session_revision != planar.base_session_revision
-                or base_revision != planar.base_session_revision
-            ):
-                self.sketch_editor_panel.show_status(
-                    "Project changed; tool sketch not applied. Cancel the 2D boolean and retry"
-                )
-                return
-            try:
-                snapshot = controller.snapshot()
-                planar.set_tool_recipe(
-                    root,
-                    external_references=snapshot.external_references,
-                    external_coincidences=snapshot.external_coincidences,
-                    unresolved_reference_ids=snapshot.unresolved_reference_ids,
-                )
-            except (TypeError, ValueError) as error:
-                self.sketch_editor_panel.show_status(str(error))
-                return
-            self._exit_sketch_editor()
-            self.status_panel.set_state(
-                f"{len(planar.tool_face_ids)} contours complete; performing 2D boolean",
-                0,
-            )
-            self._refresh_planar_boolean_preview(auto_commit=True)
-            return
-        original = self._sketch_editor_original_recipe
-        try:
-            recipe = (
-                self._replace_root_geometry(original, root)
-                if original is not None
-                else root
-            )
-        except ExtrusionSourceResolutionError as error:
-            self.sketch_editor_panel.show_status(
-                f"{error.code}: The selected extrusion profile is invalid. Restore it "
-                "or cancel editing and recreate the extrusion"
-            )
-            return
-        if not self._confirm_result_invalidation(preserve_editor=True):
-            return
-        rendered_draft = self.viewport.sketch_draft_render_data
-        local_preview = (
-            GeometryPreview(
-                rendered_draft.points,
-                rendered_draft.faces,
-                rendered_draft.curves,
-                tuple(f"face:{value}" for value in rendered_draft.face_ids),
-                tuple(f"edge:{value}" for value in rendered_draft.curve_ids),
-                tuple(
-                    None if value is None else f"point:{value}"
-                    for value in rendered_draft.point_ids
-                ),
-                "body:domain",
-                2,
-            )
-            if (
-                rendered_draft is not None
-                and rendered_draft.geometry_revision
-                == controller.snapshot().revision
-                and rendered_draft.faces
-            )
-            else build_strict_sketch_draft_preview(
-                root,
-                analysis=controller.derive_profiles(),
-            )
-        )
-        geometry_preview = (
-            namespace_part_geometry_preview(
-                self.session.next_native_part_id,
-                local_preview,
-            )
-            if original is None
-            else None
-        )
-        try:
-            if original is None:
-                delta = self.session.add_native_part(
-                    recipe,
-                    name=self._sketch_editor_part_name,
-                    expected_session_revision=base_revision,
-                )
-            else:
-                active_id = self.document.active_part_id
-                if active_id is None:
-                    raise RuntimeError("No current part")
-                delta = self.session.replace_part_geometry(
-                    active_id,
-                    recipe,
-                    expected_part_revision=self.document.part_revision(
-                        active_id
-                    ),
-                    expected_session_revision=base_revision,
-                )
-            self._apply_session_delta(
-                delta,
-                geometry_preview=geometry_preview,
-            )
-        except (RuntimeError, TypeError, ValueError, KeyError) as error:
-            self.sketch_editor_panel.show_status(
-                f"geometry.part.edit-rejected: {error}"
-            )
-            return
-        self._exit_sketch_editor()
-        self.status_panel.set_state("2D sketch created", 6000)
-        self.ribbon.set_current("Geometry")
+        self.geometry_edits.finish_sketch()
 
     def cancel_sketch_geometry(self) -> None:
-        controller = self._sketch_editor_controller
-        if controller is None:
-            return
-        if controller.dirty and not self._confirm_sketch_editor_discard():
-            return
-        if self._sketch_editor_is_face_sketch:
-            self.cancel_face_sketch_boolean()
-            return
-        tool_mode = self._sketch_editor_is_planar_boolean_tool
-        self._exit_sketch_editor()
-        if tool_mode:
-            self.cancel_planar_boolean()
-        else:
-            self._rebuild_full_projection()
-            self.status_panel.set_state("2D sketch editing canceled", 4000)
+        self.geometry_edits.cancel()
 
-    def _exit_sketch_editor(
-        self,
-        *,
-        return_to_planar_boolean: bool = False,
-    ) -> None:
-        self.sketch_editor_panel.end()
-        self.viewport_panel.overlay_host.set_agent_chat_enabled(True)
-        self._sketch_editor_controller = None
-        self._sketch_editor_original_recipe = None
-        self._sketch_editor_base_revision = None
-        self._sketch_editor_part_name = None
-        self._sketch_editor_is_planar_boolean_tool = False
-        self._sketch_editor_is_face_sketch = False
-        if return_to_planar_boolean:
-            self._restore_planar_boolean_source_projection()
-        self.main_splitter.setSizes(
-            [260, 720, 0, 0, 0, 400]
-            if return_to_planar_boolean
-            else [260, 1020, 0, 0, 0, 0]
-        )
-        self._update_action_states()
-        self._schedule_viewport_fit()
-
-    def _restore_planar_boolean_source_projection(self) -> None:
-        controller = self._planar_boolean_controller
-        active_part_id = self.document.active_part_id
-        if controller is None or active_part_id is None:
-            return
-        preview_key = self._native_part_preview_cache_key(self.document)
-        cached = self._geometry_preview_cache
-        preview = (
-            cached[2]
-            if (
-                cached is not None
-                and cached[0] == self.document.session_id
-                and cached[1] == preview_key
-            )
-            else namespace_part_geometry_preview(
-                active_part_id,
-                build_geometry_preview(controller.geometry),
-            )
-        )
-        self.viewport.show_geometry_preview(preview)
-        if controller.target_face_id is None:
-            return
-        target = LogicalEntityRef(
-            namespace_part_logical_id(
-                active_part_id,
-                controller.target_face_id,
-            )
-        )
-        self._selected_geometry_refs = {target}
-        self.viewport.highlight_geometry_entities((target,))
-
-    def _confirm_sketch_editor_discard(self) -> bool:
-        answer = QMessageBox.question(
-            self,
-            "Discard 2D Sketch",
-            "The 2D sketch has unsaved changes. Discard them?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return answer == QMessageBox.StandardButton.Yes
 
     def create_rectangle_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -6487,972 +5503,15 @@ class FEMMainWindow(QMainWindow):
         self._boolean_geometry("cut", "Cut")
 
     def _boolean_geometry(self, operation: str, label: str) -> None:
-        current = self.document.geometry_recipe
-        if not isinstance(current, NATIVE_GEOMETRY_TYPES):
-            return
-        if geometry_dimension(current) == 2:
-            self._begin_planar_boolean(operation)
-            return
-        if geometry_dimension(current) == 3:
-            self._begin_solid_face_boolean(operation)
+        self.geometry_edits.begin_boolean(operation)
 
-    def _begin_solid_face_boolean(self, operation: str) -> None:
-        current = self.document.geometry_recipe
-        if (
-            not isinstance(current, NATIVE_GEOMETRY_TYPES)
-            or geometry_dimension(current) != 3
-        ):
-            return
-        try:
-            requested_operation = FaceSketchBooleanOperation(operation)
-        except ValueError:
-            self.status_panel.set_state("3D boolean operation must be Fuse or Cut", 5000)
-            return
-        if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._planar_boolean_controller is not None
-            or self._body_boolean_controller is not None
-            or self._face_sketch_controller is not None
-            or self._solid_face_boolean_operation is not None
-        ):
-            self.status_panel.set_state("Finish or cancel the current geometry edit first", 5000)
-            return
-        original_selection = set(self._selected_geometry_refs)
-        self._solid_face_boolean_operation = requested_operation
-        self._solid_face_boolean_original_selection = original_selection
-        self._set_geometry_selection_mode("face")
-        face_bar = self.viewport_panel.planar_boolean_face_bar
-        face_bar.begin(operation)
-        if self._face_sketch_selection_is_valid():
-            self.viewport.highlight_geometry_entities(
-                self._canonical_geometry_selection()
-            )
-        self._refresh_solid_face_boolean_prompt()
-        self._update_action_states()
 
-    def _begin_planar_boolean(self, operation: str) -> None:
-        current = self.document.geometry_recipe
-        if (
-            not isinstance(current, NATIVE_GEOMETRY_TYPES)
-            or geometry_dimension(current) != 2
-        ):
-            return
-        if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._body_boolean_controller is not None
-        ):
-            self.status_panel.set_state(
-                "Finish or cancel the current geometry edit first",
-                5000,
-            )
-            return
-        if self._planar_boolean_controller is not None:
-            self.cancel_planar_boolean()
-        selected = self._canonical_geometry_selection()
-        active_part_id = self.document.active_part_id
-        initial_target = None
-        if (
-            active_part_id is not None
-            and len(selected) == 1
-            and selected[0].kind == "face"
-        ):
-            owner = part_id_from_logical_id(selected[0].logical_id)
-            if owner is None:
-                initial_target = selected[0].logical_id
-            elif owner == active_part_id:
-                initial_target = strip_part_logical_id(
-                    active_part_id,
-                    selected[0].logical_id,
-                )
-        try:
-            controller = PlanarBooleanController(
-                current,
-                self.document.session_revision,
-                operation,
-                target_face_id=initial_target,
-            )
-        except (TypeError, ValueError) as error:
-            self.status_panel.set_state(str(error), 5000)
-            return
-        self._planar_boolean_controller = controller
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self._planar_boolean_original_selection = set(
-            self._selected_geometry_refs
-        )
-        self._set_geometry_selection_mode("face")
-        controller.request_target_selection()
-        face_bar = self.viewport_panel.planar_boolean_face_bar
-        face_bar.begin(operation)
-        if initial_target is not None:
-            self.viewport.highlight_geometry_entities(selected)
-            face_bar.set_selection_ready(True)
-        self.status_panel.set_state("Select a target face", 0)
-        self._update_action_states()
-
-    def _request_planar_boolean_target(self) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        controller.request_target_selection()
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self.planar_boolean_panel.set_preview_valid(False)
-        self._set_geometry_selection_mode("face")
-        face_bar = self.viewport_panel.planar_boolean_face_bar
-        face_bar.begin(controller.operation)
-        face_bar.set_selection_ready(controller.target_face_id is not None)
-        self.status_panel.set_state("Select a target face", 0)
-
-    def _clear_planar_boolean_target(self) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        controller.clear_target()
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self.planar_boolean_panel.set_preview_valid(False)
-        self._selected_geometry_refs.clear()
-        self._rebuild_full_projection()
-        self.viewport.clear_selection()
-        self._set_geometry_selection_mode("face")
-        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(False)
-        self.planar_boolean_panel.refresh()
-        self.planar_boolean_panel.show_status("Target face selection canceled")
-
-    def _assign_planar_boolean_reference(
-        self,
-        reference: LogicalEntityRef,
-    ) -> bool:
-        controller = self._planar_boolean_controller
-        if controller is None or not controller.selecting_target:
-            return False
-        try:
-            active_part_id = self.document.active_part_id
-            local_reference = (
-                LogicalEntityRef(
-                    strip_part_logical_id(
-                        active_part_id,
-                        reference.logical_id,
-                    )
-                )
-                if (
-                    active_part_id is not None
-                    and part_id_from_logical_id(reference.logical_id)
-                    is not None
-                )
-                else reference
-            )
-            controller.assign_reference(local_reference)
-        except (KeyError, TypeError, ValueError) as error:
-            self.planar_boolean_panel.show_status(str(error))
-            return True
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self.planar_boolean_panel.set_preview_valid(False)
-        self._selected_geometry_refs = {reference}
-        self.viewport.highlight_geometry_entities((reference,))
-        controller.request_target_selection()
-        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(True)
-        self.status_panel.set_state("Target face selected; click OK to continue", 0)
-        return True
-
-    def _assign_solid_face_boolean_reference(
-        self,
-        reference: LogicalEntityRef,
-    ) -> bool:
-        if self._solid_face_boolean_operation is None:
-            return False
-        face_bar = self.viewport_panel.planar_boolean_face_bar
-        if reference.kind != "face":
-            face_bar.set_selection_ready(False)
-            self.status_panel.set_state("Select a planar solid face", 3000)
-            return True
-        owner = part_id_from_logical_id(reference.logical_id)
-        if (
-            owner is not None
-            and owner != self.document.active_part_id
-            and any(part.id == owner for part in self.document.parts)
-        ):
-            try:
-                self._apply_session_delta(
-                    self.session.set_active_native_part(
-                        owner,
-                        expected_session_revision=(
-                            self.document.session_revision
-                        ),
-                    )
-                )
-            except (RuntimeError, TypeError, ValueError, KeyError) as error:
-                face_bar.set_selection_ready(False)
-                self.status_panel.set_state(str(error), 5000)
-                return True
-        self._selected_geometry_refs = {reference}
-        self.viewport.highlight_geometry_entities((reference,))
-        self._retry_failed_face_sketch_selection()
-        self._refresh_solid_face_boolean_prompt()
-        self._update_action_states()
-        return True
-
-    def _confirm_boolean_face_prompt(self) -> None:
-        if self._planar_boolean_controller is not None:
-            self._confirm_planar_boolean_target()
-            return
-        if self._solid_face_boolean_operation is not None:
-            self._confirm_solid_face_boolean_target()
-
-    def _cancel_boolean_face_prompt(self) -> None:
-        if self._planar_boolean_controller is not None:
-            self.cancel_planar_boolean()
-            return
-        if self._solid_face_boolean_operation is not None:
-            self._cancel_solid_face_boolean()
-
-    def _confirm_planar_boolean_target(self) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        try:
-            controller.confirm_target_selection()
-        except ValueError as error:
-            self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
-                False
-            )
-            self.status_panel.set_state(str(error), 3000)
-            return
-        self.viewport_panel.planar_boolean_face_bar.finish()
-        self.status_panel.set_state("Opening tool sketch", 0)
-        self._edit_planar_boolean_tool()
-
-    def _confirm_solid_face_boolean_target(self) -> None:
-        operation = self._solid_face_boolean_operation
-        if operation is None:
-            return
-        if not self._face_sketch_selection_is_valid():
-            self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
-                False
-            )
-            self._refresh_solid_face_boolean_prompt()
-            return
-        self.viewport_panel.planar_boolean_face_bar.finish()
-        self.status_panel.set_state(
-            "Resolving sketch workplane",
-            0,
-        )
-        self.start_face_sketch_boolean()
-
-    def _cancel_solid_face_boolean(self) -> None:
-        if self._solid_face_boolean_operation is None:
-            return
-        original_selection = set(self._solid_face_boolean_original_selection)
-        self.viewport_panel.planar_boolean_face_bar.finish()
-        self._solid_face_boolean_operation = None
-        self._solid_face_boolean_original_selection = set()
-        self._selected_geometry_refs = original_selection
-        self._set_geometry_selection_mode(
-            next(iter(original_selection)).kind
-            if original_selection
-            else "body"
-        )
-        if original_selection:
-            self.viewport.highlight_geometry_entities(
-                tuple(sorted(original_selection, key=logical_ref_sort_key))
-            )
-        else:
-            self.viewport.clear_selection()
-        self.status_panel.set_state("Boolean operation canceled", 3000)
-        self._update_action_states()
-
-    def _edit_planar_boolean_tool(self) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        if self._sketch_editor_controller is not None:
-            return
-        if controller.target_face_id is None or controller.selecting_target:
-            if controller.target_face_id is None:
-                controller.request_target_selection()
-            face_bar = self.viewport_panel.planar_boolean_face_bar
-            face_bar.begin(controller.operation)
-            face_bar.set_selection_ready(
-                controller.target_face_id is not None
-            )
-            message = (
-                "Target face selected; click OK to continue"
-                if controller.target_face_id is not None
-                else "Select a target face"
-            )
-            self.status_panel.set_state(message, 0)
-            return
-        if self.document.session_revision != controller.base_session_revision:
-            self.status_panel.set_state(
-                "Project changed; reopen the 2D boolean",
-                5000,
-            )
-            return
-        root = controller.tool_geometry
-        if root is not None:
-            restored = SketchDraftController.snapshot_from_geometry(root)
-            draft = SketchDraftController(
-                snapshot=replace(
-                    restored,
-                    external_references=controller.external_references,
-                    external_coincidences=controller.external_coincidences,
-                    unresolved_reference_ids=controller.unresolved_reference_ids,
-                )
-            )
-        else:
-            draft = SketchDraftController(name="Boolean Tool Sketch")
-        self._sketch_editor_controller = draft
-        self._sketch_editor_original_recipe = None
-        self._sketch_editor_base_revision = controller.base_session_revision
-        self._sketch_editor_part_name = None
-        self._sketch_editor_is_planar_boolean_tool = True
-        self.sketch_editor_panel.set_controller(
-            draft,
-            base_snapshot=draft.snapshot(),
-        )
-        cached = self._geometry_preview_cache
-        active_part_id = self.document.active_part_id
-        cache_key = self._native_part_preview_cache_key(self.document)
-        source_preview = (
-            localize_part_geometry_preview(active_part_id, cached[2])
-            if (
-                cached is not None
-                and active_part_id is not None
-                and cached[0] == self.document.session_id
-                and cached[1] == cache_key
-            )
-            else build_geometry_preview(controller.geometry)
-        )
-        target_faces = tuple(
-            face
-            for face, logical_id in zip(
-                source_preview.faces,
-                source_preview.face_logical_ids,
-                strict=True,
-            )
-            if logical_id == controller.target_face_id
-        )
-        if not target_faces:
-            target_faces = source_preview.faces
-        if controller.target_face_id is not None:
-            self.sketch_editor_panel.set_reference_points(
-                planar_reference_points(
-                    source_preview,
-                    controller.target_face_id,
-                    plane=draft.plane,
-                )
-            )
-        self.viewport_panel.overlay_host.set_agent_chat_enabled(False)
-        self.sketch_editor_panel.begin(
-            self.viewport,
-            purpose="planar_boolean_tool",
-        )
-        self.main_splitter.setSizes([260, 720, 0, 400, 0, 0])
-        self.viewport.set_view("front")
-        if target_faces:
-            self.viewport.show_sketch_reference_preview(
-                GeometryPreview(
-                    source_preview.points,
-                    target_faces,
-                    (),
-                    (controller.target_face_id,) * len(target_faces),
-                    (),
-                    (),
-                    topological_dimension=2,
-                )
-            )
-        self._schedule_viewport_fit()
-        self.status_panel.set_state(
-            "Draw closed contours on the target XY plane",
-            0,
-        )
-        self._update_action_states()
-
-    def _delete_planar_boolean_tool(self) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        controller.clear_tool()
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self.planar_boolean_panel.set_preview_valid(False)
-        self._rebuild_full_projection()
-        self._set_geometry_selection_mode("face")
-        active_part_id = self.document.active_part_id
-        if (
-            active_part_id is not None
-            and controller.target_face_id is not None
-        ):
-            target = LogicalEntityRef(
-                namespace_part_logical_id(
-                    active_part_id,
-                    controller.target_face_id,
-                )
-            )
-            self._selected_geometry_refs = {target}
-            self.viewport.highlight_geometry_entities((target,))
-        self.planar_boolean_panel.refresh()
-        self.planar_boolean_panel.show_status("Tool contour deleted")
-
-    def _planar_boolean_operation_changed(self, operation: str) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None:
-            return
-        controller.set_operation(operation)
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_preview_generation += 1
-        self.planar_boolean_panel.set_preview_valid(False)
-        if controller.ready:
-            self._refresh_planar_boolean_preview()
-
-    def _refresh_planar_boolean_preview(
-        self,
-        *,
-        auto_commit: bool = False,
-    ) -> None:
-        controller = self._planar_boolean_controller
-        if controller is None or not controller.ready:
-            return
-        if self.document.session_revision != controller.base_session_revision:
-            self.status_panel.set_state(
-                "Project changed; reopen the 2D boolean",
-                5000,
-            )
-            return
-        if self.busy:
-            self.status_panel.set_state(
-                "Background task running; please wait",
-                5000,
-            )
-            if auto_commit:
-                self._defer_ui(self._edit_planar_boolean_tool)
-            return
-        self._planar_boolean_preview_generation += 1
-        generation = self._planar_boolean_preview_generation
-        base_revision = controller.base_session_revision
-        operation = controller.operation
-        target_face_id = controller.target_face_id
-        tool_geometry = controller.tool_geometry
-        tool_face_ids = controller.tool_face_ids
-        source_geometry = controller.geometry
-        self._planar_boolean_preview_result = None
-        self.planar_boolean_panel.set_preview_valid(False)
-        self.planar_boolean_panel.set_preview_running(True)
-        self.planar_boolean_panel.show_status(
-            "Performing temporary OCC planar boolean and validating topology..."
-        )
-
-        def workload(context: TaskContext) -> StrictPlanarBooleanResult:
-            context.report("Performing planar boolean and validating exact topology...")
-            context.checkpoint()
-            with geometry_runtime.model(
-                f"{getattr(source_geometry, 'name', 'planar')}"
-                f"-{operation}-preview",
-                dimension=2,
-            ) as cad:
-                result = prepare_planar_boolean(
-                    cad,
-                    source_geometry,
-                    target_face_id,
-                    tool_geometry,
-                    tool_face_ids,
-                    operation,
-                )
-            context.checkpoint()
-            return result
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            current = self._planar_boolean_controller
-            if (
-                type(payload) is not StrictPlanarBooleanResult
-                or current is not controller
-                or generation != self._planar_boolean_preview_generation
-                or self.document.session_revision != base_revision
-                or current.operation != operation
-                or current.target_face_id != target_face_id
-                or current.tool_geometry != tool_geometry
-                or current.tool_face_ids != tool_face_ids
-            ):
-                if current is controller:
-                    self.planar_boolean_panel.set_preview_running(False)
-                    self.planar_boolean_panel.set_preview_valid(False)
-                return TaskApplyOutcome.stale(
-                    "2D boolean preview is stale and was not applied"
-                )
-            return TaskApplyOutcome.accepted(payload)
-
-        def on_success(payload: object) -> None:
-            if type(payload) is not StrictPlanarBooleanResult:
-                raise TypeError(
-                    "strict planar Boolean task returned invalid data"
-                )
-            preview = build_strict_planar_boolean_preview(
-                payload.geometry,
-                payload.preview,
-            )
-            active_id = self.document.active_part_id
-            if active_id is not None:
-                preview = namespace_part_geometry_preview(
-                    active_id,
-                    preview,
-                )
-            self._planar_boolean_preview_result = payload
-            self.planar_boolean_panel.set_preview_running(False)
-            self.planar_boolean_panel.set_preview_valid(True)
-            if auto_commit:
-                self.status_panel.set_state(
-                    "Validation passed; committing 2D boolean",
-                    0,
-                )
-                self.finish_planar_boolean(preview=preview)
-            else:
-                self.viewport.show_geometry_preview(preview)
-                self.planar_boolean_panel.show_status(
-                    "Exact preview and topology validation passed; ready to finish"
-                )
-
-        def on_failure(message: str) -> None:
-            if (
-                self._planar_boolean_controller is controller
-                and generation == self._planar_boolean_preview_generation
-            ):
-                self.planar_boolean_panel.set_preview_running(False)
-                self.planar_boolean_panel.set_preview_valid(False)
-                self.planar_boolean_panel.show_status(
-                    "OCC planar boolean or topology validation failed; "
-                    f"committed geometry is unchanged:\n{message}"
-                )
-                self._planar_boolean_preview_result = None
-                if auto_commit:
-                    self._defer_ui(self._edit_planar_boolean_tool)
-
-        def on_cancelled() -> None:
-            if self._planar_boolean_controller is not controller:
-                return
-            self.planar_boolean_panel.set_preview_running(False)
-            if auto_commit:
-                self._defer_ui(self._edit_planar_boolean_tool)
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "2D Boolean Preview",
-            on_failure,
-            task_name="2D Boolean Preview",
-            on_cancelled=on_cancelled,
-            apply_result=apply_result,
-        )
-        if not started:
-            self.planar_boolean_panel.set_preview_running(False)
-            if auto_commit:
-                self._defer_ui(self._edit_planar_boolean_tool)
-
-    def finish_planar_boolean(
-        self,
-        *,
-        preview: GeometryPreview | None = None,
-    ) -> None:
-        controller = self._planar_boolean_controller
-        result = self._planar_boolean_preview_result
-        if controller is None or not controller.ready:
-            return
-        if result is None:
-            self._refresh_planar_boolean_preview()
-            return
-        active_id = self.document.active_part_id
-        if active_id is None:
-            return
-        if preview is None:
-            preview = namespace_part_geometry_preview(
-                active_id,
-                build_strict_planar_boolean_preview(
-                    result.geometry,
-                    result.preview,
-                ),
-            )
-        if not self._set_native_geometry(
-            result.geometry,
-            "2D Boolean Result",
-            base_session_revision=controller.base_session_revision,
-            preserve_editor=True,
-            geometry_preview=preview,
-        ):
-            self.status_panel.set_state(
-                "Commit incomplete; returned to tool sketch",
-                5000,
-            )
-            self._edit_planar_boolean_tool()
-            return
-        face_references = {
-            LogicalEntityRef(
-                namespace_part_logical_id(
-                    active_id,
-                    entity.logical_id,
-                )
-            )
-            for entity in result.proof.result_entities
-            if entity.kind == "face"
-        }
-        self._exit_planar_boolean()
-        self._selected_geometry_refs = face_references
-        if face_references:
-            self.viewport.highlight_geometry_entities(
-                tuple(
-                    sorted(
-                        face_references,
-                        key=logical_ref_sort_key,
-                    )
-                )
-            )
-        self._update_action_states()
+    def finish_planar_boolean(self) -> None:
+        self.geometry_edits.finish_planar_boolean()
 
     def cancel_planar_boolean(self) -> None:
-        if self._planar_boolean_controller is None:
-            return
-        original_selection = set(self._planar_boolean_original_selection)
-        self._planar_boolean_preview_generation += 1
-        self._exit_planar_boolean()
+        self.geometry_edits.cancel(confirm=False)
 
-        def restore_projection_and_selection() -> None:
-            self._rebuild_full_projection()
-            self._selected_geometry_refs = original_selection
-            if original_selection:
-                self.viewport.highlight_geometry_entities(
-                    tuple(
-                        sorted(
-                            original_selection,
-                            key=logical_ref_sort_key,
-                        )
-                    )
-                )
-            self.status_panel.set_state(
-                "2D boolean canceled",
-                4000,
-            )
-
-        if self.task_controller.current_task_name == "2D Boolean Preview":
-            if self.cancel_current_task(
-                after_cleanup=restore_projection_and_selection,
-            ):
-                return
-        restore_projection_and_selection()
-
-    def _exit_planar_boolean(self) -> None:
-        self.viewport_panel.planar_boolean_face_bar.finish()
-        self.planar_boolean_panel.end()
-        self._planar_boolean_controller = None
-        self._planar_boolean_preview_result = None
-        self._planar_boolean_original_selection = set()
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
-
-    def _begin_body_boolean(self, operation: str) -> None:
-        candidates = tuple(
-            part
-            for part in self.document.parts
-            if not part.suppressed and part.dimension == 3
-        )
-        if len(candidates) < 2:
-            self.status_panel.set_state(
-                "Solid boolean requires at least two 3D parts",
-                5000,
-            )
-            return
-        if (
-            self._wire_editor_controller is not None
-            or self._sketch_editor_controller is not None
-            or self._planar_boolean_controller is not None
-        ):
-            self.status_panel.set_state("Finish or cancel the current geometry edit first", 5000)
-            return
-        if self._body_boolean_controller is not None:
-            self.cancel_body_boolean()
-        controller = PartBooleanController(
-            tuple(self.document.parts),
-            self.document.session_revision,
-            operation,
-            target_part_id=(
-                self.document.active_part_id
-                if self.document.active_part_id
-                in {part.id for part in candidates}
-                else None
-            ),
-        )
-        self._body_boolean_controller = controller
-        self._body_boolean_preview_result = None
-        self._body_boolean_preview_generation += 1
-        self.boolean_feature_panel.begin(controller)
-        self._set_geometry_selection_mode("body")
-        self.main_splitter.setSizes([260, 720, 0, 0, 400, 0])
-        self.status_panel.set_state(
-            "Solid boolean: select target and tool parts",
-            0,
-        )
-        self._update_action_states()
-
-    def _request_body_boolean_selection(self, slot: str) -> None:
-        controller = self._body_boolean_controller
-        if controller is None:
-            return
-        try:
-            controller.request_selection(slot)
-        except ValueError as error:
-            self.boolean_feature_panel.show_status(str(error))
-            return
-        if self._body_boolean_preview_result is not None:
-            self._body_boolean_preview_result = None
-            self.boolean_feature_panel.set_preview_valid(False)
-            self._rebuild_full_projection()
-        self._set_geometry_selection_mode("body")
-        role = "Target Part" if slot == "target" else "Tool Part"
-        self.boolean_feature_panel.show_status(
-            f"Select in the viewport or model tree: {role}"
-        )
-        self.status_panel.set_state(f"Selecting boolean {role}", 0)
-
-    def _assign_body_boolean_reference(
-        self,
-        reference: LogicalEntityRef,
-    ) -> bool:
-        controller = self._body_boolean_controller
-        if controller is None or controller.pending_slot is None:
-            return False
-        if (
-            reference.kind == "body"
-            and part_id_from_logical_id(reference.logical_id) is not None
-        ):
-            reference = LogicalEntityRef(
-                f"part:{part_id_from_logical_id(reference.logical_id)}"
-            )
-        try:
-            slot = controller.assign_reference(reference)
-        except (KeyError, TypeError, ValueError) as error:
-            self.boolean_feature_panel.show_status(str(error))
-            return True
-        self.boolean_feature_panel.refresh()
-        self.viewport.highlight_body_boolean_operands(
-            (
-                None
-                if controller.target_part_id is None
-                else LogicalEntityRef(
-                    f"body:{controller.target_part_id}/domain"
-                )
-            ),
-            (
-                None
-                if controller.tool_part_id is None
-                else LogicalEntityRef(
-                    f"body:{controller.tool_part_id}/domain"
-                )
-            ),
-        )
-        role = "Target Part" if slot == "target" else "Tool Part"
-        self.boolean_feature_panel.show_status(f"{role} set")
-        if controller.ready:
-            self._refresh_body_boolean_preview()
-        return True
-
-    def _body_boolean_operation_changed(self, operation: str) -> None:
-        controller = self._body_boolean_controller
-        if controller is None:
-            return
-        controller.set_operation(operation)
-        self._body_boolean_preview_result = None
-        self._body_boolean_preview_generation += 1
-        self.boolean_feature_panel.set_preview_valid(False)
-        if controller.ready:
-            self._refresh_body_boolean_preview()
-
-    def _refresh_body_boolean_preview(self) -> None:
-        controller = self._body_boolean_controller
-        if controller is None or not controller.ready:
-            return
-        if self.document.session_revision != controller.base_session_revision:
-            self.boolean_feature_panel.finish_button.setEnabled(False)
-            self.boolean_feature_panel.show_status(
-                "Project changed; cancel and reopen the solid boolean"
-            )
-            return
-        if self.busy:
-            self.boolean_feature_panel.show_status(
-                "A background task is running; retry later"
-            )
-            return
-        self._body_boolean_preview_generation += 1
-        generation = self._body_boolean_preview_generation
-        target_part_id = controller.target_part_id
-        tool_part_id = controller.tool_part_id
-        operation = controller.operation
-        base_revision = controller.base_session_revision
-        result_name = self.boolean_feature_panel.result_name()
-        result_part_id = self.session.next_native_part_id
-        feature_id = self.session.next_part_boolean_feature_id
-        target_part = controller.part(str(target_part_id))
-        tool_part = controller.part(str(tool_part_id))
-        self._body_boolean_preview_result = None
-        self.boolean_feature_panel.set_preview_valid(False)
-        self.boolean_feature_panel.set_preview_running(True)
-        self.boolean_feature_panel.show_status(
-            "Performing temporary OCC boolean and validating lineage..."
-        )
-
-        def workload(context: TaskContext) -> StrictPartBooleanResult:
-            context.report("Performing temporary OCC boolean and validating lineage...")
-            context.checkpoint()
-            with geometry_runtime.model(
-                f"{result_name}-{operation}-preview",
-                dimension=3,
-            ) as cad:
-                result = prepare_part_boolean(
-                    cad,
-                    target_part,
-                    tool_part,
-                    operation,
-                    result_part_id=result_part_id,
-                    feature_id=feature_id,
-                    result_name=result_name,
-                )
-            context.checkpoint()
-            return result
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            current = self._body_boolean_controller
-            if (
-                type(payload) is not StrictPartBooleanResult
-                or current is not controller
-                or generation != self._body_boolean_preview_generation
-                or self.document.session_revision != base_revision
-                or current.target_part_id != target_part_id
-                or current.tool_part_id != tool_part_id
-                or current.operation != operation
-                or self.boolean_feature_panel.result_name()
-                != result_name
-                or self.session.next_native_part_id != result_part_id
-                or self.session.next_part_boolean_feature_id != feature_id
-            ):
-                if current is controller:
-                    self.boolean_feature_panel.set_preview_running(False)
-                    self.boolean_feature_panel.set_preview_valid(False)
-                return TaskApplyOutcome.stale(
-                    "Solid boolean preview is stale and was not applied"
-                )
-            return TaskApplyOutcome.accepted(payload)
-
-        def on_success(payload: object) -> None:
-            if type(payload) is not StrictPartBooleanResult:
-                raise TypeError("Solid boolean task returned an invalid result")
-            preview = build_strict_part_boolean_preview(payload.preview)
-            self._body_boolean_preview_result = payload
-            self.viewport.clear_body_boolean_highlights(render=False)
-            self.viewport.show_geometry_preview(preview)
-            self.boolean_feature_panel.set_preview_running(False)
-            self.boolean_feature_panel.set_preview_valid(True)
-            self.boolean_feature_panel.show_status(
-                "Exact preview and lineage validation passed; ready to finish"
-            )
-
-        def on_failure(message: str) -> None:
-            if (
-                self._body_boolean_controller is controller
-                and generation == self._body_boolean_preview_generation
-            ):
-                self.boolean_feature_panel.set_preview_running(False)
-                self.boolean_feature_panel.set_preview_valid(False)
-                self.boolean_feature_panel.show_status(
-                    "OCC boolean or lineage validation failed; "
-                    f"committed parts are unchanged:\n{message}"
-                )
-                self._body_boolean_preview_result = None
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "Solid Boolean Preview",
-            on_failure,
-            task_name="Solid Boolean Preview",
-            on_cancelled=lambda: (
-                self.boolean_feature_panel.set_preview_running(False)
-                if self._body_boolean_controller is controller
-                else None
-            ),
-            apply_result=apply_result,
-        )
-        if not started:
-            self.boolean_feature_panel.set_preview_running(False)
-
-    def finish_body_boolean(self) -> None:
-        controller = self._body_boolean_controller
-        if controller is None or not controller.ready:
-            return
-        if self._body_boolean_preview_result is None:
-            self._refresh_body_boolean_preview()
-        result = self._body_boolean_preview_result
-        if type(result) is not StrictPartBooleanResult:
-            return
-        if result.recipe.name != self.boolean_feature_panel.result_name():
-            self._body_boolean_preview_result = None
-            self.boolean_feature_panel.set_preview_valid(False)
-            self._refresh_body_boolean_preview()
-            return
-        preview = build_strict_part_boolean_preview(result.preview)
-        target_id = str(controller.target_part_id)
-        tool_id = str(controller.tool_part_id)
-        if not self._confirm_result_invalidation(preserve_editor=True):
-            return
-        try:
-            delta = self.session.apply_part_boolean(
-                target_id,
-                tool_id,
-                controller.operation,
-                self.boolean_feature_panel.result_name(),
-                result=result,
-                expected_target_revision=self.document.part_revision(
-                    target_id
-                ),
-                expected_tool_revision=self.document.part_revision(tool_id),
-                expected_session_revision=controller.base_session_revision,
-            )
-            self._apply_session_delta(
-                delta,
-                geometry_preview=preview,
-            )
-        except (RuntimeError, TypeError, ValueError, KeyError) as error:
-            self.boolean_feature_panel.show_status(
-                f"Commit failed; committed parts are unchanged: {error}"
-            )
-            return
-        self._exit_body_boolean()
-        result_id = result.context.result_part_id
-        target_reference = LogicalEntityRef(f"body:{result_id}/domain")
-        self._selected_geometry_refs = {target_reference}
-        self.viewport.highlight_geometry_entities((target_reference,))
-        self._update_action_states()
-
-    def cancel_body_boolean(self) -> None:
-        if self._body_boolean_controller is None:
-            return
-        self._body_boolean_preview_generation += 1
-        self._exit_body_boolean()
-        if self.task_controller.current_task_name == "Solid Boolean Preview":
-            if self.cancel_current_task(
-                after_cleanup=self._rebuild_full_projection,
-            ):
-                return
-        self._rebuild_full_projection()
-        self.status_panel.set_state(
-            "Solid boolean canceled",
-            4000,
-        )
-
-    def _exit_body_boolean(self) -> None:
-        self.viewport.clear_body_boolean_highlights(render=False)
-        self.boolean_feature_panel.end()
-        self._body_boolean_controller = None
-        self._body_boolean_preview_result = None
-        self.main_splitter.setSizes([260, 1020, 0, 0, 0, 0])
 
     @classmethod
     def _recipe_contains_strict_boolean(cls, recipe: object) -> bool:
@@ -7877,29 +5936,6 @@ class FEMMainWindow(QMainWindow):
             )
         )
 
-    @classmethod
-    def _replace_root_geometry(
-        cls,
-        recipe: object,
-        new_root: object,
-    ) -> object:
-        if isinstance(
-            recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
-        ):
-            return replace(
-                recipe,
-                base=cls._replace_root_geometry(recipe.base, new_root),
-            )
-        if isinstance(recipe, BooleanGeometry):
-            return replace(
-                recipe,
-                object_geometry=cls._replace_root_geometry(
-                    recipe.object_geometry,
-                    new_root,
-                ),
-            )
-        return new_root
 
     def show_geometry_manager(self) -> None:
         current = self.document.geometry_recipe
@@ -7929,7 +5965,7 @@ class FEMMainWindow(QMainWindow):
                 self._set_native_geometry(updated, "Renamed")
             return
         if isinstance(current, SketchGeometry):
-            self._begin_sketch_editor(current, original_recipe=current)
+            self.geometry_edits.begin_sketch(current, original_recipe=current)
             return
         root = self._root_geometry(current)
         dialog = GeometryManagerDialog(
@@ -7945,9 +5981,9 @@ class FEMMainWindow(QMainWindow):
         if not self._exec_dialog(dialog):
             return
         if dialog.operation == "edit" and isinstance(root, SketchGeometry):
-            self._begin_sketch_editor(root, original_recipe=current)
+            self.geometry_edits.begin_sketch(root, original_recipe=current)
         elif dialog.operation == "edit" and isinstance(root, WireGeometry):
-            self._begin_wire_editor(root, original_recipe=current)
+            self.geometry_edits.begin_wire(root, original_recipe=current)
         elif dialog.operation == "delete" and isinstance(
             current,
             (
@@ -10604,16 +8640,7 @@ class FEMMainWindow(QMainWindow):
         self._update_action_states()
 
     def _active_editor(self) -> bool:
-        return self._solid_face_boolean_operation is not None or any(
-            controller is not None
-            for controller in (
-                self._wire_editor_controller,
-                self._sketch_editor_controller,
-                self._body_boolean_controller,
-                self._planar_boolean_controller,
-                self._face_sketch_controller,
-            )
-        )
+        return self.geometry_edits.active
 
     def _confirm_discard_changes(self) -> bool:
         """Compatibility entry point for the unified document transition gate."""
@@ -10628,56 +8655,13 @@ class FEMMainWindow(QMainWindow):
     def _confirm_document_transition(self, *, preserve_editor: bool = False) -> bool:
         """Confirm editor, project, and result transitions before mutation."""
 
-        wire_editor_active = (
-            not preserve_editor and self._wire_editor_controller is not None
-        )
-        sketch_editor_active = (
-            not preserve_editor and self._sketch_editor_controller is not None
-        )
-        body_boolean_active = (
-            not preserve_editor and self._body_boolean_controller is not None
-        )
-        planar_boolean_active = (
-            not preserve_editor and self._planar_boolean_controller is not None
-        )
-        face_sketch_active = (
-            not preserve_editor and self._face_sketch_controller is not None
-        )
-        solid_face_boolean_active = (
-            not preserve_editor
-            and self._solid_face_boolean_operation is not None
-            and self._face_sketch_controller is None
-        )
-        editor_active = (
-            wire_editor_active
-            or sketch_editor_active
-            or body_boolean_active
-            or planar_boolean_active
-            or face_sketch_active
-            or solid_face_boolean_active
-        )
-        if wire_editor_active and self._wire_editor_controller.dirty:
-            if not self._confirm_wire_editor_discard():
-                return False
-        if sketch_editor_active and self._sketch_editor_controller.dirty:
-            if not self._confirm_sketch_editor_discard():
-                return False
+        editor_active = not preserve_editor and self.geometry_edits.active
+        if editor_active and not self.geometry_edits.confirm_discard():
+            return False
         unsaved_result_count = self.session.unsaved_result_count
         if not self.document.dirty and not unsaved_result_count:
-            if wire_editor_active:
-                self._exit_wire_editor()
-            elif sketch_editor_active:
-                self._exit_sketch_editor()
-            if face_sketch_active:
-                self.cancel_face_sketch_boolean()
-            if body_boolean_active:
-                self._exit_body_boolean()
-            if planar_boolean_active:
-                self._exit_planar_boolean()
-            if solid_face_boolean_active:
-                self._cancel_solid_face_boolean()
             if editor_active:
-                self._rebuild_full_projection()
+                self.geometry_edits.cancel(confirm=False)
             return True
         box = QMessageBox(self)
         box.setWindowTitle("Unsaved Document Contents")
@@ -10715,22 +8699,8 @@ class FEMMainWindow(QMainWindow):
             accepted = self.save_native_project(wait=True)
         else:
             accepted = clicked is discard_button
-        if accepted and wire_editor_active:
-            self._exit_wire_editor()
-            self._rebuild_full_projection()
-        elif accepted and sketch_editor_active:
-            self._exit_sketch_editor()
-            self._rebuild_full_projection()
-        if accepted and face_sketch_active:
-            self.cancel_face_sketch_boolean()
-        if accepted and body_boolean_active:
-            self._exit_body_boolean()
-            self._rebuild_full_projection()
-        if accepted and planar_boolean_active:
-            self._exit_planar_boolean()
-            self._rebuild_full_projection()
-        if accepted and solid_face_boolean_active:
-            self._cancel_solid_face_boolean()
+        if accepted and editor_active:
+            self.geometry_edits.cancel(confirm=False)
         return accepted
 
     def _confirm_workspace_context_close(
@@ -10830,20 +8800,17 @@ class FEMMainWindow(QMainWindow):
         elif not self._confirm_workspace_context_close(target_context, confirm):
             return False
         if target_context.task_controller.busy:
-            requested = self._request_workspace_context_cancel(
-                target_context,
-                after_cleanup=lambda document_id=target_context.document_id: self._close_workspace_context_after_cancel(
-                    document_id
+            if was_active:
+                self.geometry_edits.cancel(confirm=False)
+            self.document_tasks.after_idle(
+                target_context.task_controller,
+                lambda document_id=target_context.document_id: self._defer_ui(
+                    lambda: self._close_workspace_context_after_cancel(document_id)
                 ),
             )
-            # A second close request while cancellation is already underway
-            # still owns the same deferred release callback.
-            return bool(requested or target_context.task_controller.cancel_requested)
-        if (
-            was_active
-            and self._solid_face_boolean_operation is not None
-        ):
-            self._cancel_solid_face_boolean()
+            self._request_workspace_context_cancel(target_context)
+            return True
+        self.geometry_edits.dispose_document(target_context)
         replacement = None
         if was_active:
             same_kind = tuple(
@@ -13123,7 +11090,7 @@ class FEMMainWindow(QMainWindow):
     def _task_busy_changed(self, busy: bool) -> None:
         self.status_panel.set_task_active(bool(busy))
         self._update_action_states()
-        self._refresh_solid_face_boolean_prompt()
+        self.geometry_edits.refresh_face_prompt()
 
     def _task_cancelling_changed(self, cancelling: bool) -> None:
         if cancelling:
@@ -13765,11 +11732,7 @@ class FEMMainWindow(QMainWindow):
             raise TypeError(
                 "geometryEntityPicked requires a LogicalEntityRef"
             )
-        if self._assign_solid_face_boolean_reference(reference):
-            return
-        if self._assign_planar_boolean_reference(reference):
-            return
-        if self._assign_body_boolean_reference(reference):
+        if self.geometry_edits.accept_reference(reference):
             return
         owner = part_id_from_logical_id(reference.logical_id)
         if (
@@ -13798,7 +11761,7 @@ class FEMMainWindow(QMainWindow):
             self._selected_geometry_refs.remove(reference)
         else:
             self._selected_geometry_refs.add(reference)
-        self._retry_failed_face_sketch_selection()
+        self.geometry_edits.retry_face_selection()
         self._refresh_geometry_scope_selection(reference.kind)
 
     def _on_geometry_entities_box_selected(
@@ -13815,24 +11778,7 @@ class FEMMainWindow(QMainWindow):
                 f"geometry_{self._geometry_selection_mode}"
             )
             return
-        planar = self._planar_boolean_controller
-        if planar is not None and planar.selecting_target:
-            if len(selected) != 1 or selected[0].kind != "face":
-                self.status_panel.set_state(
-                    "2D boolean allows only one target face at a time",
-                    4000,
-                )
-                return
-            self._assign_planar_boolean_reference(selected[0])
-            return
-        if self._solid_face_boolean_operation is not None:
-            if len(selected) != 1 or selected[0].kind != "face":
-                self.status_panel.set_state(
-                    "Boolean operation allows only one target face at a time",
-                    4000,
-                )
-                return
-            self._assign_solid_face_boolean_reference(selected[0])
+        if self.geometry_edits.accept_box_selection(selected):
             return
         kind = selected[0].kind
         if any(reference.kind != kind for reference in selected):
@@ -13845,7 +11791,7 @@ class FEMMainWindow(QMainWindow):
             )
         else:
             self._selected_geometry_refs = set(selected)
-        self._retry_failed_face_sketch_selection()
+        self.geometry_edits.retry_face_selection()
         self._refresh_geometry_scope_selection(kind)
 
     def _refresh_geometry_scope_selection(self, kind: str) -> None:
@@ -14157,7 +12103,7 @@ class FEMMainWindow(QMainWindow):
             self.selection.clear()
         self.viewport.clear_selection()
         self.viewport_panel.scope_creation_bar.set_selection_ready(False)
-        if self._solid_face_boolean_operation is not None:
+        if self.geometry_edits.selecting_target:
             self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
                 False
             )
@@ -14185,12 +12131,8 @@ class FEMMainWindow(QMainWindow):
             self._complete_scope_creation_from_bar()
 
     def _cancel_guided_selection(self) -> None:
-        planar = self._planar_boolean_controller
-        if planar is not None and planar.selecting_target:
-            self.cancel_planar_boolean()
-            return
-        if self._solid_face_boolean_operation is not None:
-            self._cancel_solid_face_boolean()
+        if self.geometry_edits.selecting_target:
+            self.geometry_edits.cancel(confirm=False)
             return
         if not self._pending_local_mesh_selection and self._pending_analysis_selection is None:
             return
@@ -14327,12 +12269,10 @@ class FEMMainWindow(QMainWindow):
             return
         _document_id, kind, key = entry
         if kind == "part" and type(key) is str:
-            if self._solid_face_boolean_operation is not None:
+            if self.geometry_edits.selecting_target:
                 self.status_panel.set_state("Select a target face in the viewport", 3000)
                 return
             part_reference = LogicalEntityRef(f"part:{key}")
-            if self._assign_body_boolean_reference(part_reference):
-                return
             try:
                 self._apply_session_delta(
                     self.session.set_active_native_part(
@@ -14367,11 +12307,7 @@ class FEMMainWindow(QMainWindow):
             return
         if kind == "geometry_body" and type(key) is str:
             reference = LogicalEntityRef(key)
-            if self._assign_solid_face_boolean_reference(reference):
-                return
-            if self._assign_planar_boolean_reference(reference):
-                return
-            if self._assign_body_boolean_reference(reference):
+            if self.geometry_edits.accept_reference(reference):
                 return
             self._selected_geometry_refs = {reference}
             self._geometry_selection_mode = "body"
@@ -16202,6 +14138,7 @@ class FEMMainWindow(QMainWindow):
         else:
             self.model_tree.remove_document(context.document_id)
             self.result_tree.remove_model_runs(context.document_id)
+        self.geometry_edits.dispose_document(context)
         self.workspace.remove(context)
         return True
 

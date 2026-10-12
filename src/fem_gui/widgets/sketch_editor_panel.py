@@ -970,6 +970,11 @@ class SketchEditorPanel(QWidget):
         self._end_constraint_command()
         if self._viewport is not None:
             self._viewport.stop_sketch_authoring()
+            self._disconnect_viewport(self._viewport)
+        self._viewport = None
+        self._controller = None
+        self._base_snapshot = None
+        self._reference_points = ()
         self.hide()
         self._clear_pending()
         self._authoring_purpose = "geometry"

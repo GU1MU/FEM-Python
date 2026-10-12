@@ -5,14 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fem import geometry as geometry_runtime
-from fem.application import NativePart
+from fem.application import NativePart, prepare_face_sketch_boolean, prepare_planar_boolean
+from fem.application.face_sketch_boolean import FaceSketchBooleanResult
+from fem.application.planar_boolean import StrictPlanarBooleanResult
 from fem.application.recipe_compiler import compile_recipe
 from fem.application.session import authenticate_native_part_geometry
 from fem.geometry import (
     ExtrudedGeometry,
+    FaceSketchBooleanGeometry,
     ResolvedFaceWorkplane,
     RevolvedGeometry,
     SketchReferencePoint,
+    SketchGeometry,
     provide_face_reference_points,
     resolve_face_workplane,
 )
@@ -30,6 +34,35 @@ from .workers import TaskContext
 class PreparedFaceSketchWorkplane:
     workplane: ResolvedFaceWorkplane
     reference_points: tuple[SketchReferencePoint, ...]
+
+
+def prepare_face_boolean_preview(
+    recipe: FaceSketchBooleanGeometry, generation: int, context: TaskContext,
+) -> FaceSketchBooleanResult:
+    context.report("Performing exact extrude boolean and validating topology...")
+    with PROCESS_GMSH_COORDINATOR.acquire(
+        "Exact Extrude Boolean Preview", cancelled=lambda: context.is_cancelled,
+    ):
+        context.checkpoint()
+        with geometry_runtime.model(f"{recipe.name}-{generation}", dimension=3) as cad:
+            result = prepare_face_sketch_boolean(cad, recipe)
+        context.checkpoint()
+    return result
+
+
+def prepare_planar_boolean_preview(
+    source: object, operation: str, target_face_id: str,
+    tool: SketchGeometry, tool_face_ids: tuple[str, ...], context: TaskContext,
+) -> StrictPlanarBooleanResult:
+    context.report("Performing planar boolean and validating exact topology...")
+    with PROCESS_GMSH_COORDINATOR.acquire(
+        "2D Boolean Preview", cancelled=lambda: context.is_cancelled,
+    ):
+        context.checkpoint()
+        with geometry_runtime.model(f"{getattr(source, 'name', 'planar')}-{operation}-preview", dimension=2) as cad:
+            result = prepare_planar_boolean(cad, source, target_face_id, tool, tool_face_ids, operation)
+        context.checkpoint()
+    return result
 
 
 def prepare_face_sketch_workplane(
