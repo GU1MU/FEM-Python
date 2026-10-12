@@ -21,6 +21,7 @@ from fem.application import ModelSession, SessionSnapshot
 
 from .task_controller import BackgroundTaskController
 from .result_command_state import DocumentResultCommandState
+from .result_display_state import ResultDisplayPreferences, ResultRenderingCache
 from .viewport_camera import ViewportCameraState
 
 
@@ -49,13 +50,9 @@ class DocumentPresentationState:
     module_name: str | None = None
     step_name: str | None = None
     result_selection: object | None = None
-    display_state: object | None = None
+    result_display: ResultDisplayPreferences = field(default_factory=ResultDisplayPreferences)
     camera_state: ViewportCameraState | None = None
     selection_mode: str | None = None
-    result_scale_mode: str = "auto"
-    result_scale_value: float = 1.0
-    contour_options: dict[str, object] = field(default_factory=dict)
-    overlay_undeformed: bool = False
 
 
 @dataclass(slots=True)
@@ -72,6 +69,7 @@ class DocumentPresentationCache:
     model_geometry: object | None = None
     result_model_view: object | None = None
     inspection_service: object | None = None
+    result_rendering: ResultRenderingCache = field(default_factory=ResultRenderingCache)
 
     def matches_artifact(self, artifact_id: object | None) -> bool:
         """Return whether the cached model adapters belong to ``artifact_id``."""
@@ -112,6 +110,7 @@ class DocumentPresentationCache:
         self.result_source = None
         self.result_generation = None
         self.result_model_view = None
+        self.result_rendering.clear()
 
 
 @dataclass(slots=True)

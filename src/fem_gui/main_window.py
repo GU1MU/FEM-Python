@@ -82,28 +82,20 @@ from fem.application.results import (
     FieldAvailability,
     FieldMaterializationKey,
     FieldPosition,
-    FieldRequest,
     FieldState,
-    NodalAveragingPolicy,
     OutputRequestProjection,
     ResultCapabilityCatalog,
     ResultCatalog,
     ResultQuery,
     ResultQueryResult,
     ResultFieldId,
-    ResultFieldTopologyTemplate,
-    ResultMaterializationPatch,
     ResultProvider,
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
     build_solve_result_bundle,
-    build_result_field_topology_template,
     classify_result_model,
-    prepare_result_export_snapshot,
     project_output_requests,
-    project_scalar_field_topology,
-    project_scalar_field_topology_from_template,
 )
 from fem.core.model import (
     AnalysisStep,
@@ -322,12 +314,9 @@ from .viewport_background_dialog import ViewportBackgroundDialog
 from .viewport_image_export_dialog import ViewportImageExportDialog
 from .sketch_editor import SketchDraftController, SketchDraftValidationError
 from .wire_editor import WireDraftController, WireDraftValidationError
-from .visualization.colormaps import ABAQUS_RAINBOW
 from .visualization.contour_rendering import (
     CONTOUR_EDGE_ALL,
-    CONTOUR_EDGE_GEOMETRY,
     CONTOUR_EDGE_NONE,
-    CONTOUR_RENDER_SHADED,
 )
 from .visualization.model_adapter import (
     ModelGeometry,
@@ -338,7 +327,6 @@ from .visualization.model_adapter import (
 )
 from .visualization.result_renderer import (
     ResultRenderPayload,
-    build_result_render_payload,
 )
 from .visualization.selection import SelectionContextState, SelectionState
 from .visualization.scene import DisplayState
@@ -361,6 +349,8 @@ from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, sessio
 from .document_files import DocumentFileCommands
 from .document_results import DocumentResultCommands, DocumentResultPresentation
 from .result_command_state import PendingResultMaterialization
+from .result_display_state import ResultDisplayPreferences
+from .result_rendering import ResultPresentationPort, ResultPresentationService
 from .mesh_tasks import prepare_mesh_display
 
 
@@ -735,6 +725,19 @@ class FEMMainWindow(QMainWindow):
                 field_finished=self._finish_result_field_materialization,
             ),
         )
+        self.result_presentation = ResultPresentationService(
+            self.document_tasks,
+            ResultPresentationPort(
+                current_provider=self._document_result_provider,
+                current_selection=self._document_result_selection,
+                current_payload=lambda context: (
+                    self.viewport.result_render_payload if self.document_tasks.is_active(context) else None
+                ),
+                refresh_display=self._refresh_document_result_display,
+                can_present=self._can_present_result_document,
+                defer=self._defer_ui,
+            ),
+        )
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session, self.workspace)
         )
@@ -886,50 +889,14 @@ class FEMMainWindow(QMainWindow):
         self._command_counter = 0
         self._job_manager: JobManagerDialog | None = None
         self._viewport_fit_pending = False
-        self._display = DisplayState()
         self._show_suppressed_part_ghosts = False
         self._model_edges_visible = True
-        self._scale_mode = "auto"
-        self._scale_value = 1.0
-        self._overlay_undeformed = False
         self._symbol_settings = SymbolSettings()
         self._application_settings = QSettings("fem-project", "fem-gui")
         self._background_settings, self._remember_background = load_background_settings(
             self._application_settings
         )
-        self._default_contour_options: dict[str, Any] = {
-            "manual": False, "minimum": 0.0, "maximum": 1.0,
-            "levels": 12, "colormap": ABAQUS_RAINBOW,
-            "style": "segmented", "legend": True,
-            "render_mode": CONTOUR_RENDER_SHADED,
-            "edge_mode": CONTOUR_EDGE_GEOMETRY,
-            "edge_style": "solid", "edge_width": 1.0,
-            "number_format": "scientific", "decimals": 2,
-            "orientation": "vertical", "show_minimum": False,
-            "show_maximum": False, "show_ids": False,
-            "legend_font": "Arial", "legend_font_size": 14,
-            "show_coordinate_system": True,
-            "edges": True,
-            "averaging_threshold": 75.0,
-        }
-        self._contour_options: dict[str, Any] = dict(
-            self._default_contour_options
-        )
-        self._result_visualization_provider_cache: (
-            tuple[
-                ResultSourceKey,
-                int,
-                FieldMaterializationKey,
-                ResultProvider,
-            ]
-            | None
-        ) = None
-        self._result_topology_template_cache: (
-            tuple[object, ResultFieldTopologyTemplate] | None
-        ) = None
-        self._result_deformation_scale_cache: (
-            tuple[object, str, str, float, float] | None
-        ) = None
+        self._blank_result_preferences = ResultDisplayPreferences()
         self._step_combos: list[QComboBox] = []
         self._agent_proposal_preview_id: str | None = None
         self._closing = False
@@ -1094,27 +1061,27 @@ class FEMMainWindow(QMainWindow):
         if previous_context is not None:
             self._capture_document_presentation(previous_context)
         previous_presentation = (
-            replace(previous_context.presentation_state)
+            replace(
+                previous_context.presentation_state,
+                result_display=previous_context.presentation_state.result_display.copy(),
+            )
             if previous_context is not None
             else None
         )
+        target_preferences = context.presentation_state.result_display.copy()
+        target_rendering_cache = replace(context.presentation_cache.result_rendering)
         previous_aliases = {
             "document": self.document,
             "geometry": self.geometry,
             "inspection_service": self.inspection_service,
             "result_provider": self.result_provider,
             "result_selection": self.result_selection,
-            "display": self._display,
             "step_name": self._current_step_name,
             "legacy_project_extension": self._legacy_project_extension,
             "result_archive_geometry": self._result_archive_geometry,
             "result_archive_model_view": self._result_archive_model_view,
-            "result_visualization_provider_cache": (
-                self._result_visualization_provider_cache
-            ),
             "model_edges_visible": self._model_edges_visible,
             "symbol_settings": self._symbol_settings,
-            "overlay_undeformed": self._overlay_undeformed,
             "selection_context": replace(self._selection_context),
             "geometry_selection_mode": self._geometry_selection_mode,
             "selection_mode": self.selection.mode,
@@ -1162,13 +1129,13 @@ class FEMMainWindow(QMainWindow):
                 )
                 if not applied:
                     raise RuntimeError("target context projection could not be installed")
-                self._restore_document_presentation(context, render=False)
                 self._project_viewport_for_module(
                     context.presentation_state.module_name
                     or self._current_module_name(),
                     render=False,
                     reset_camera=False,
                 )
+                self._restore_document_presentation(context, render=False)
                 self._set_ribbon_module_silent(
                     context.presentation_state.module_name
                     or self._current_module_name()
@@ -1198,6 +1165,8 @@ class FEMMainWindow(QMainWindow):
         finally:
             self._workspace_activation = False
 
+        context.presentation_state.result_display = target_preferences
+        context.presentation_cache.result_rendering = target_rendering_cache
         # Activation can fail after the workspace registry has already moved.
         # Restore the previous pair so aliases and registries stay in lockstep.
         previous_still_registered = False
@@ -1255,7 +1224,6 @@ class FEMMainWindow(QMainWindow):
         self.inspection_service = previous_aliases["inspection_service"]
         self.result_provider = previous_aliases["result_provider"]
         self.result_selection = previous_aliases["result_selection"]
-        self._display = previous_aliases["display"]
         self._current_step_name = previous_aliases["step_name"]
         self._legacy_project_extension = previous_aliases[
             "legacy_project_extension"
@@ -1266,12 +1234,8 @@ class FEMMainWindow(QMainWindow):
         self._result_archive_model_view = previous_aliases[
             "result_archive_model_view"
         ]
-        self._result_visualization_provider_cache = previous_aliases[
-            "result_visualization_provider_cache"
-        ]
         self._model_edges_visible = previous_aliases["model_edges_visible"]
         self._symbol_settings = previous_aliases["symbol_settings"]
-        self._overlay_undeformed = previous_aliases["overlay_undeformed"]
         self._selection_context = previous_aliases["selection_context"]
         self._geometry_selection_mode = previous_aliases[
             "geometry_selection_mode"
@@ -1314,10 +1278,13 @@ class FEMMainWindow(QMainWindow):
                         logging.exception(
                             "failed to restore previous result display after activation"
                         )
-                self._sync_step_combos()
-                self._refresh_result_controls()
-                self.status_panel.set_step(self._current_step_name)
-                self._update_action_states()
+                if previous_context is not None:
+                    self._restore_document_presentation(previous_context, render=False)
+                else:
+                    self._sync_step_combos()
+                    self._refresh_result_controls()
+                    self.status_panel.set_step(self._current_step_name)
+                    self._update_action_states()
         except Exception:
             logging.exception(
                 "failed to restore previous viewport after activation failure"
@@ -1351,12 +1318,7 @@ class FEMMainWindow(QMainWindow):
         state.module_name = self._current_module_name() or None
         state.step_name = self._current_step_name
         state.result_selection = self.result_selection
-        state.display_state = self._display
         state.selection_mode = self.viewport.selection_mode
-        state.result_scale_mode = str(self._scale_mode)
-        state.result_scale_value = float(self._scale_value)
-        state.contour_options = dict(self._contour_options)
-        state.overlay_undeformed = bool(self._overlay_undeformed)
         state.camera_state = self.viewport.capture_camera_state()
 
         cache = context.presentation_cache
@@ -1388,35 +1350,11 @@ class FEMMainWindow(QMainWindow):
         self._current_step_name = (
             state.step_name if state.step_name in names else context.session.default_step_name()
         )
-        self._display = (
-            state.display_state
-            if isinstance(state.display_state, DisplayState)
-            else DisplayState()
-        )
         self.result_selection = (
             state.result_selection
             if isinstance(state.result_selection, ScalarFieldSelection)
             else None
         )
-        scale_mode = state.result_scale_mode
-        self._scale_mode = (
-            scale_mode
-            if scale_mode in {"auto", "real", "custom"}
-            else "auto"
-        )
-        try:
-            self._scale_value = float(state.result_scale_value)
-        except (TypeError, ValueError):
-            self._scale_value = 1.0
-        saved_contour_options = (
-            state.contour_options
-            if isinstance(state.contour_options, dict)
-            and state.contour_options
-            else self._default_contour_options
-        )
-        self._contour_options = dict(self._default_contour_options)
-        self._contour_options.update(saved_contour_options)
-        self._overlay_undeformed = bool(state.overlay_undeformed)
         selection_mode = state.selection_mode
         if isinstance(selection_mode, str):
             if selection_mode.startswith("geometry_"):
@@ -1449,50 +1387,49 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         """Install state controls after the target scene has been projected."""
 
+        preferences = self._result_preferences()
         state = context.presentation_state
         self._current_step_name = (
             state.step_name
             if state.step_name in self.session.runnable_step_names()
             else self.session.default_step_name()
         )
-        if isinstance(state.display_state, DisplayState):
-            self._display = state.display_state
-            for name, checked in (
-                ("undeformed", self._display.shape_mode == "undeformed"),
-                ("deformed", self._display.shape_mode == "deformed"),
-                ("contour", self._display.contour_enabled),
-            ):
-                action = self.actions.get(name)
-                if action is not None:
-                    with QSignalBlocker(action):
-                        action.setChecked(checked)
+        for name, checked in (
+            ("undeformed", state.result_display.display.shape_mode == "undeformed"),
+            ("deformed", state.result_display.display.shape_mode == "deformed"),
+            ("contour", state.result_display.display.contour_enabled),
+        ):
+            action = self.actions.get(name)
+            if action is not None:
+                with QSignalBlocker(action):
+                    action.setChecked(checked)
         self.result_scale_combo.blockSignals(True)
-        scale_index = self.result_scale_combo.findData(self._scale_mode)
+        scale_index = self.result_scale_combo.findData(preferences.scale_mode)
         if scale_index >= 0:
             self.result_scale_combo.setCurrentIndex(scale_index)
         self.result_scale_combo.blockSignals(False)
         self.result_scale_value.blockSignals(True)
-        self.result_scale_value.setValue(float(self._scale_value))
+        self.result_scale_value.setValue(float(preferences.scale_value))
         self.result_scale_value.blockSignals(False)
         overlay_action = self.actions.get("overlay")
         if overlay_action is not None:
             with QSignalBlocker(overlay_action):
-                overlay_action.setChecked(self._overlay_undeformed)
+                overlay_action.setChecked(preferences.overlay_undeformed)
         try:
             self.viewport.set_undeformed_overlay_visible(
-                self._overlay_undeformed
+                preferences.overlay_undeformed
             )
             self.viewport.set_contour_options(
                 {
                     key: value
-                    for key, value in self._contour_options.items()
+                    for key, value in preferences.contour_options.items()
                     if key != "averaging_threshold"
                 }
             )
             self.viewport.set_contour_metadata(
                 {
                     "averaging_threshold": float(
-                        self._contour_options.get("averaging_threshold", 20.0)
+                        preferences.contour_options.get("averaging_threshold", 20.0)
                     )
                 }
             )
@@ -2811,6 +2748,27 @@ class FEMMainWindow(QMainWindow):
             command_id, context, self._current_result_provider(), path, spec,
         )
 
+    def _result_preferences(self) -> ResultDisplayPreferences:
+        context = self.workspace.active_document()
+        return (
+            self._blank_result_preferences if context is None
+            else context.presentation_state.result_display
+        )
+
+    def _document_result_selection(self, context: WorkspaceDocument) -> ScalarFieldSelection | None:
+        selection = (
+            self.result_selection if self.document_tasks.is_active(context)
+            else context.presentation_state.result_selection
+        )
+        return selection if type(selection) is ScalarFieldSelection else None
+
+    def _can_present_result_document(self, context: WorkspaceDocument) -> bool:
+        return self.document_tasks.is_active(context) and not self._closing and not self._exit_pending
+
+    def _refresh_document_result_display(self, context: WorkspaceDocument) -> None:
+        if self._can_present_result_document(context):
+            self._apply_display()
+
     def _document_result_provider(self, context: WorkspaceDocument) -> ResultProvider | None:
         if not self.document_tasks.is_active(context):
             return None
@@ -3410,9 +3368,9 @@ class FEMMainWindow(QMainWindow):
         self._result_archive_model_view = None
         self.result_provider = None
         self.result_selection = None
-        self._result_visualization_provider_cache = None
         self.selection.clear()
-        self._display = DisplayState()
+        if not self._workspace_activation:
+            self._result_preferences().display = DisplayState()
         if clear_tree:
             active_context = self.workspace.active_document()
             if active_context is None:
@@ -3439,8 +3397,8 @@ class FEMMainWindow(QMainWindow):
         )
         self.result_provider = None
         self.result_selection = None
-        self._result_visualization_provider_cache = None
-        self._display = DisplayState()
+        if not self._workspace_activation:
+            self._result_preferences().display = DisplayState()
         active_context = self.workspace.active_document()
         if active_context is not None:
             self._refresh_result_tree_for_context(active_context)
@@ -3502,16 +3460,6 @@ class FEMMainWindow(QMainWindow):
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
             self.viewport.clear_selection()
-        cached = self._result_visualization_provider_cache
-        if (
-            cached is not None
-            and (
-                cached[0] != provider.source
-                or cached[1] != provider.snapshot.generation
-            )
-        ):
-            self._result_visualization_provider_cache = None
-
         catalog = provider.catalog()
         if not catalog.fields:
             inspection = self.inspection_service
@@ -3531,19 +3479,28 @@ class FEMMainWindow(QMainWindow):
         selection = (
             self.result_selection
             if (
-                type(self.result_provider) is ResultProvider
-                and self.result_provider.source == provider.source
+                (
+                    self._workspace_activation
+                    or (
+                        type(self.result_provider) is ResultProvider
+                        and self.result_provider.source == provider.source
+                    )
+                )
                 and self._selection_belongs_to_catalog(
                     provider,
                     self.result_selection,
+                )
+                and (
+                    not self._workspace_activation
+                    or provider.field_status(self.result_selection.field_key).state is FieldState.READY
                 )
             )
             else catalog.default_selection
         )
         render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+            self.result_presentation.visualization_provider(self._active_workspace_context(), provider, selection)
         )
-        payload = self._build_result_render_payload(
+        payload = self.result_presentation.build_render_payload(self._active_workspace_context(),
             render_provider,
             render_selection,
         )
@@ -3575,8 +3532,8 @@ class FEMMainWindow(QMainWindow):
                 inspection.update_result_provider(provider)
             self._install_viewport_result_payload(
                 payload,
-                shape_mode=self._display.shape_mode,
-                contour_enabled=self._display.contour_enabled,
+                shape_mode=self._result_preferences().display.shape_mode,
+                contour_enabled=self._result_preferences().display.contour_enabled,
             )
         except Exception:
             try:
@@ -3617,7 +3574,7 @@ class FEMMainWindow(QMainWindow):
         self.result_provider = provider
         self.result_selection = selection
         self.status_panel.set_result(self._result_status_text())
-        visual_selection = self._result_averaging_visual_selection(
+        visual_selection = self.result_presentation.averaging_visual_selection(self._active_workspace_context(),
             provider,
             selection,
         )
@@ -3863,7 +3820,7 @@ class FEMMainWindow(QMainWindow):
         self.result_averaging_threshold.setSingleStep(1.0)
         self.result_averaging_threshold.setKeyboardTracking(False)
         self.result_averaging_threshold.setValue(
-            float(self._contour_options["averaging_threshold"])
+            float(self._result_preferences().contour_options["averaging_threshold"])
         )
         self.result_averaging_threshold.setFixedHeight(24)
         self.result_averaging_threshold.setFixedWidth(58)
@@ -3958,7 +3915,7 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value.setObjectName("resultScaleValue")
         self.result_scale_value.setRange(0.0, 1.0e12)
         self.result_scale_value.setDecimals(2)
-        self.result_scale_value.setValue(self._scale_value)
+        self.result_scale_value.setValue(self._result_preferences().scale_value)
         self.result_scale_value.setFixedWidth(100)
         self.result_scale_value.setEnabled(False)
         scale_layout.addWidget(self.result_scale_combo, 0, 0)
@@ -4365,14 +4322,14 @@ class FEMMainWindow(QMainWindow):
         selection: ScalarFieldSelection,
     ) -> bool:
         render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+            self.result_presentation.visualization_provider(self._active_workspace_context(), provider, selection)
         )
         return self.viewport.result_scene_is_current(
             render_provider.source,
             render_selection,
             materialization_generation=render_provider.snapshot.generation,
-            deformation_scale=self._result_deformation_scale(render_provider),
-            display=self._display,
+            deformation_scale=self.result_presentation.deformation_scale(self._active_workspace_context(), render_provider),
+            display=self._result_preferences().display,
         )
 
     def _current_native_geometry_preview(self) -> GeometryPreview | None:
@@ -4753,39 +4710,40 @@ class FEMMainWindow(QMainWindow):
         threshold = float(value)
         if (
             threshold
-            == float(self._contour_options["averaging_threshold"])
+            == float(self._result_preferences().contour_options["averaging_threshold"])
         ):
             return
-        self._contour_options["averaging_threshold"] = threshold
+        self._result_preferences().contour_options["averaging_threshold"] = threshold
         self.viewport.set_contour_metadata(
             {"averaging_threshold": threshold}
         )
         self._apply_result_averaging_threshold()
 
     def _result_scale_mode_changed(self, _index: int) -> None:
-        self._scale_mode = str(self.result_scale_combo.currentData())
+        self._result_preferences().scale_mode = str(self.result_scale_combo.currentData())
         self._sync_result_scale_control()
         self._apply_scale()
 
     def _result_scale_value_changed(self, value: float) -> None:
-        self._scale_value = float(value)
-        if self._scale_mode == "custom":
+        self._result_preferences().scale_value = float(value)
+        if self._result_preferences().scale_mode == "custom":
             self._apply_scale()
 
     def _sync_result_scale_control(self) -> None:
+        preferences = self._result_preferences()
         provider = self._current_result_provider()
-        displayed_value = self._scale_value
-        if provider is not None and self._scale_mode != "custom":
-            displayed_value = self._result_deformation_scale(
+        displayed_value = preferences.scale_value
+        if provider is not None and preferences.scale_mode != "custom":
+            displayed_value = self.result_presentation.deformation_scale(self._active_workspace_context(),
                 provider,
                 shape_mode="deformed",
-                scale_mode=self._scale_mode,
+                scale_mode=preferences.scale_mode,
             )
         self.result_scale_value.blockSignals(True)
         self.result_scale_value.setValue(displayed_value)
         self.result_scale_value.blockSignals(False)
         self.result_scale_value.setEnabled(
-            provider is not None and self._scale_mode == "custom"
+            provider is not None and preferences.scale_mode == "custom"
         )
 
     def _face_sketch_selection_key(self) -> tuple[int, str, str, int, str] | None:
@@ -10532,9 +10490,9 @@ class FEMMainWindow(QMainWindow):
         self._selected_geometry_refs.clear()
         self._selected_mesh_scope_refs.clear()
         if not preserve_display:
-            self._display = DisplayState()
+            self._result_preferences().display = DisplayState()
         if not preserve_display:
-            self._overlay_undeformed = False
+            self._result_preferences().overlay_undeformed = False
             self.actions["undeformed"].setChecked(True)
             self.actions["contour"].setChecked(False)
             self.actions["overlay"].setChecked(False)
@@ -10944,8 +10902,8 @@ class FEMMainWindow(QMainWindow):
             self._clear_model_projection(clear_tree=True)
             self._selected_geometry_refs.clear()
             self._selected_mesh_scope_refs.clear()
-            self._display = DisplayState()
-            self._overlay_undeformed = False
+            self._result_preferences().display = DisplayState()
+            self._result_preferences().overlay_undeformed = False
             self.actions["undeformed"].setChecked(True)
             self.actions["contour"].setChecked(False)
             self.actions["overlay"].setChecked(False)
@@ -12981,7 +12939,7 @@ class FEMMainWindow(QMainWindow):
                 return
             selection_delta = self.session.select_result(job.run_id)
         self._set_current_step(job.step_name, refresh_viewport=False)
-        self._display = DisplayState("deformed", True)
+        self._result_preferences().display = DisplayState("deformed", True)
         self.actions["deformed"].setChecked(True)
         self.actions["contour"].setChecked(True)
         self.actions["symbols"].setChecked(False)
@@ -13388,17 +13346,18 @@ class FEMMainWindow(QMainWindow):
         self._schedule_viewport_fit()
 
     def _toggle_edges(self, checked: bool) -> None:
+        preferences = self._result_preferences()
         if (
             self._current_module_name() == "Results"
-            and self._display.contour_enabled
+            and preferences.display.contour_enabled
         ):
-            self._contour_options["edges"] = bool(checked)
+            preferences.contour_options["edges"] = bool(checked)
             if (
                 checked
-                and self._contour_options["edge_mode"]
+                and preferences.contour_options["edge_mode"]
                 == CONTOUR_EDGE_NONE
             ):
-                self._contour_options["edge_mode"] = CONTOUR_EDGE_ALL
+                preferences.contour_options["edge_mode"] = CONTOUR_EDGE_ALL
         else:
             self._model_edges_visible = bool(checked)
         self.viewport.set_edges_visible(checked)
@@ -14555,7 +14514,7 @@ class FEMMainWindow(QMainWindow):
 
         def _projected_options(allowed: set[str]) -> dict[str, object]:
             projected: dict[str, object] = {}
-            for key, value in self._contour_options.items():
+            for key, value in self._result_preferences().contour_options.items():
                 if key not in allowed:
                     continue
                 normalized = getattr(value, "value", value)
@@ -14573,7 +14532,7 @@ class FEMMainWindow(QMainWindow):
             selected_field_ref = self._agent_field_ref(availability)
             selected_component = selection.component
         try:
-            deformation_scale = self._result_deformation_scale(provider)
+            deformation_scale = self.result_presentation.deformation_scale(self._active_workspace_context(), provider)
         except (KeyError, TypeError, ValueError):
             deformation_scale = 0.0
         return ResultDisplayContext(
@@ -14618,363 +14577,13 @@ class FEMMainWindow(QMainWindow):
             return False
         return True
 
-    def _result_deformation_scale(
-        self,
-        provider: ResultProvider,
-        *,
-        shape_mode: str | None = None,
-        scale_mode: str | None = None,
-        scale_value: float | None = None,
-    ) -> float:
-        shape = self._display.shape_mode if shape_mode is None else shape_mode
-        if shape != "deformed":
-            return 0.0
-        mode = self._scale_mode if scale_mode is None else scale_mode
-        requested_value = (
-            float(self._scale_value if scale_value is None else scale_value)
-            if mode == "custom"
-            else 0.0
-        )
-        cache = self._result_deformation_scale_cache
-        if (
-            cache is not None
-            and cache[0] is provider.snapshot
-            and cache[1] == shape
-            and cache[2] == mode
-            and cache[3] == requested_value
-        ):
-            return cache[4]
-        if mode == "real":
-            scale = 1.0
-        elif mode == "custom":
-            scale = requested_value
-            if not np.isfinite(scale) or scale < 0.0:
-                raise ValueError(
-                    "custom deformation scale must be finite and non-negative"
-                )
-        elif mode != "auto":
-            raise ValueError("unknown deformation scale mode")
-        else:
-            topology = provider.snapshot.topology
-            coordinates = getattr(topology, "_node_coordinates", None)
-            if coordinates is None:
-                coordinates = topology.node_coordinates
-            displacements = getattr(topology, "_nodal_displacements", None)
-            if displacements is None:
-                displacements = topology.nodal_displacements
-            if len(coordinates) == 0:
-                scale = 1.0
-            else:
-                span = float(np.linalg.norm(np.ptp(coordinates, axis=0)))
-                maximum = float(
-                    np.max(np.linalg.norm(displacements, axis=1))
-                )
-                scale = (
-                    1.0
-                    if maximum <= 0.0 or span <= 0.0
-                    else 0.1 * span / maximum
-                )
-        self._result_deformation_scale_cache = (
-            provider.snapshot,
-            shape,
-            mode,
-            requested_value,
-            scale,
-        )
-        return scale
-
-    def _build_result_render_payload(
-        self,
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-        *,
-        shape_mode: str | None = None,
-        scale_mode: str | None = None,
-        scale_value: float | None = None,
-    ) -> ResultRenderPayload:
-        availability = self._catalog_availability_for_selection(
-            provider,
-            selection,
-        )
-        if availability.state is not FieldState.READY:
-            raise KeyError("only a READY catalog field can be rendered")
-        export = prepare_result_export_snapshot(
-            provider.snapshot,
-            selection,
-        )
-        deformation_scale = self._result_deformation_scale(
-            provider,
-            shape_mode=shape_mode,
-            scale_mode=scale_mode,
-            scale_value=scale_value,
-        )
-        current_payload = self.viewport.result_render_payload
-        if current_payload is not None:
-            current_topology = current_payload.topology
-            if (
-                current_topology.source == export.source
-                and current_topology.materialization_generation
-                == export.materialization_generation
-                and current_topology.selection == export.selection
-                and current_topology.deformation_scale == deformation_scale
-            ):
-                return current_payload
-        cache = self._result_topology_template_cache
-        if (
-            cache is not None
-            and cache[0] is provider.snapshot
-            and cache[1].matches(export, deformation_scale)
-        ):
-            topology = project_scalar_field_topology_from_template(
-                export,
-                cache[1],
-                deformation_scale,
-            )
-        else:
-            topology = project_scalar_field_topology(
-                export,
-                deformation_scale=deformation_scale,
-            )
-            self._result_topology_template_cache = (
-                provider.snapshot,
-                build_result_field_topology_template(
-                    topology,
-                    export.field,
-                ),
-            )
-        return build_result_render_payload(
-            topology,
-            reusable=self.viewport.result_render_payload,
-        )
-
-    def _result_averaging_visual_selection(
-        self,
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-    ) -> ScalarFieldSelection:
-        request = selection.field_key.request
-        field_id = request.field_id
-        if (
-            field_id.variable is not ResultVariable.S
-            or field_id.position not in {
-                FieldPosition.ELEMENT_NODAL,
-                FieldPosition.RESOLVED_NODAL,
-            }
-        ):
-            return selection
-        visual_request = FieldRequest(
-            field_id=ResultFieldId(
-                ResultVariable.S,
-                FieldPosition.RESOLVED_NODAL,
-            ),
-            averaging_policy=NodalAveragingPolicy(
-                threshold_percent=float(
-                    self._contour_options["averaging_threshold"]
-                )
-            ),
-            gauss_order=request.gauss_order,
-        )
-        return ScalarFieldSelection(
-            provider.resolve_request(visual_request),
-            selection.component,
-        )
-
-    def _result_visualization_provider(
-        self,
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-    ) -> tuple[ResultProvider, ScalarFieldSelection]:
-        visual_selection = self._result_averaging_visual_selection(
-            provider,
-            selection,
-        )
-        if visual_selection == selection:
-            return provider, selection
-        if (
-            provider.field_status(visual_selection.field_key).state
-            is FieldState.READY
-        ):
-            return provider, visual_selection
-        cached = self._result_visualization_provider_cache
-        if (
-            cached is None
-            or cached[0] != provider.source
-            or cached[1] != provider.snapshot.generation
-            or cached[2] != visual_selection.field_key
-        ):
-            return provider, selection
-        if (
-            cached[3].source != provider.source
-            or cached[3].snapshot.generation
-            != provider.snapshot.generation
-        ):
-            return provider, selection
-        return (
-            cached[3],
-            visual_selection,
-        )
-
     def _apply_result_averaging_threshold(self) -> None:
         self._sync_result_averaging_threshold_control()
+        context = self._active_workspace_context()
         provider = self._current_result_provider()
         selection = self.result_selection
-        if (
-            provider is None
-            or type(selection) is not ScalarFieldSelection
-        ):
-            return
-        visual_selection = self._result_averaging_visual_selection(
-            provider,
-            selection,
-        )
-        render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
-        )
-        if (
-            visual_selection == selection
-            or render_selection == visual_selection
-        ):
-            self._apply_display()
-            return
-        if self.busy:
-            self.status_panel.set_state(
-            "Result task running; nodal averaging will be applied when complete",
-                4000,
-            )
-            return
-        self._begin_result_averaging_visualization(
-            provider,
-            selection,
-            visual_selection,
-        )
-
-    def _begin_result_averaging_visualization(
-        self,
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-        visual_selection: ScalarFieldSelection,
-    ) -> None:
-        target_context = self._active_workspace_context()
-        if target_context is None:
-            raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-        task = None
-        try:
-            task = target_session.prepare_result_projection(
-                provider.source.run_id
-            )
-            if (
-                target_session.current_result_identity()
-                != (provider.source, provider.snapshot.generation)
-                or task.token.result_id != provider.source.result_id
-                or dict(task.token.dependency_revisions).get(
-                    "materialization_generation"
-                )
-                != provider.snapshot.generation
-            ):
-                raise RuntimeError(
-                    "result changed before averaging visualization started"
-                )
-
-            def workload(
-                context: TaskContext,
-            ) -> ResultMaterializationPatch:
-                context.report("Computing averaged nodal stress contours...")
-                return provider.materialize(
-                    (visual_selection.field_key,),
-                    cancellation=context,
-                )
-
-            def apply_result(value: object) -> TaskApplyOutcome:
-                if type(value) is not ResultMaterializationPatch:
-                    raise TypeError(
-                        "averaging visualization must return "
-                        "ResultMaterializationPatch"
-                    )
-                return session_task_outcome(
-                    target_session.accept_result_projection(task.token),
-                    value,
-                )
-
-            def succeeded(value: object) -> None:
-                delta, patch = value
-                if not self._apply_revision_neutral_task_receipt(delta):
-                    raise RuntimeError(
-                        "averaging visualization receipt was not accepted"
-                    )
-                visual_provider = provider.apply(patch)
-                if not any(
-                    field_data.key == visual_selection.field_key
-                    for field_data in visual_provider.snapshot.fields
-                ):
-                    raise RuntimeError(
-                        "averaging visualization field was not materialized"
-                    )
-                current = self._current_result_provider()
-                current_selection = self.result_selection
-                if (
-                    current is None
-                    or current.source != provider.source
-                    or current.snapshot.generation
-                    != provider.snapshot.generation
-                    or current_selection != selection
-                    or self._result_averaging_visual_selection(
-                        current,
-                        current_selection,
-                    )
-                    != visual_selection
-                ):
-                    return
-                self._result_visualization_provider_cache = (
-                    provider.source,
-                    provider.snapshot.generation,
-                    visual_selection.field_key,
-                    visual_provider,
-                )
-                self._apply_display()
-                self.status_panel.set_state(
-                    "Averaged nodal stress contours updated",
-                    4000,
-                )
-
-            started = self._start_task(
-                workload,
-                succeeded,
-                "Failed to compute averaged nodal stress contours",
-                lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Failed to compute averaged nodal stress contours",
-                    message,
-                ),
-                task_name="Averaged Nodal Stress Contours",
-                on_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Failed to compute averaged nodal stress contours",
-                    message,
-                ),
-                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                apply_result=apply_result,
-                context=target_context,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            if task is not None:
-                failure = target_session.accept_task_failed(
-                    task.token,
-                    error,
-                )
-                self._apply_revision_neutral_task_receipt(failure)
-            self._show_error("Failed to compute averaged nodal stress contours", str(error))
-            return
-        if not started:
-            cancelled = target_session.accept_task_cancelled(task.token)
-            self._apply_revision_neutral_task_receipt(cancelled)
+        if context is not None and provider is not None and type(selection) is ScalarFieldSelection:
+            self.result_presentation.apply_averaging(context, provider, selection)
 
     def _install_ready_result_selection(
         self,
@@ -14984,9 +14593,9 @@ class FEMMainWindow(QMainWindow):
         if provider is not self._current_result_provider():
             raise RuntimeError("provider is no longer current")
         render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+            self.result_presentation.visualization_provider(self._active_workspace_context(), provider, selection)
         )
-        payload = self._build_result_render_payload(
+        payload = self.result_presentation.build_render_payload(self._active_workspace_context(),
             render_provider,
             render_selection,
         )
@@ -15003,8 +14612,8 @@ class FEMMainWindow(QMainWindow):
             )
         self._install_viewport_result_payload(
             payload,
-            shape_mode=self._display.shape_mode,
-            contour_enabled=self._display.contour_enabled,
+            shape_mode=self._result_preferences().display.shape_mode,
+            contour_enabled=self._result_preferences().display.contour_enabled,
         )
         self.result_selection = selection
         if not self.result_tree.select_selection(
@@ -15020,7 +14629,7 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
-        visual_selection = self._result_averaging_visual_selection(
+        visual_selection = self.result_presentation.averaging_visual_selection(self._active_workspace_context(),
             provider,
             selection,
         )
@@ -15116,6 +14725,7 @@ class FEMMainWindow(QMainWindow):
         self,
         selection: ScalarFieldSelection,
     ) -> None:
+        preferences = self._result_preferences()
         provider = self._current_result_provider()
         receipt = self.select_result_field(selection)
         if receipt.diagnostic is not None:
@@ -15158,14 +14768,14 @@ class FEMMainWindow(QMainWindow):
                 4000,
             )
             return
-        if not self._display.contour_enabled:
-            self._display = replace(
-                self._display,
+        if not preferences.display.contour_enabled:
+            preferences.display = replace(
+                preferences.display,
                 contour_enabled=True,
             )
             self.actions["contour"].setChecked(True)
             self.viewport.set_display(
-                self._display.shape_mode,
+                preferences.display.shape_mode,
                 True,
             )
         self.status_panel.set_result(self._result_status_text())
@@ -15248,6 +14858,7 @@ class FEMMainWindow(QMainWindow):
         completion: GuiCommandCompletion,
         terminal: TaskCompletion,
     ) -> None:
+        preferences = self._result_preferences()
         provider = self._current_result_provider()
         outcome = completion.outcome
         if (
@@ -15262,14 +14873,14 @@ class FEMMainWindow(QMainWindow):
             or self.result_selection != selection
         ):
             return
-        if not self._display.contour_enabled:
-            self._display = replace(
-                self._display,
+        if not preferences.display.contour_enabled:
+            preferences.display = replace(
+                preferences.display,
                 contour_enabled=True,
             )
             self.actions["contour"].setChecked(True)
             self.viewport.set_display(
-                self._display.shape_mode,
+                preferences.display.shape_mode,
                 True,
             )
         self.status_panel.set_result(self._result_status_text())
@@ -15278,21 +14889,22 @@ class FEMMainWindow(QMainWindow):
         if self._current_result_provider() is None:
             return
         shape = "deformed" if shape_mode == "deformed" else "undeformed"
-        self._display = replace(self._display, shape_mode=shape)
+        self._result_preferences().display = replace(self._result_preferences().display, shape_mode=shape)
         self.actions[shape].setChecked(True)
         self._apply_display()
 
     def _toggle_contour(self, checked: bool) -> None:
         if self._current_result_provider() is None:
             return
-        self._display = replace(self._display, contour_enabled=bool(checked))
+        self._result_preferences().display = replace(self._result_preferences().display, contour_enabled=bool(checked))
         self._apply_display()
 
     def _toggle_undeformed_overlay(self, checked: bool) -> None:
-        self._overlay_undeformed = bool(checked)
+        self._result_preferences().overlay_undeformed = bool(checked)
         self.viewport.set_undeformed_overlay_visible(checked)
 
     def _apply_display(self, *, render: bool = True) -> None:
+        preferences = self._result_preferences()
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -15301,15 +14913,15 @@ class FEMMainWindow(QMainWindow):
         ):
             return
         render_provider, render_selection = (
-            self._result_visualization_provider(provider, selection)
+            self.result_presentation.visualization_provider(self._active_workspace_context(), provider, selection)
         )
-        payload = self._build_result_render_payload(
+        payload = self.result_presentation.build_render_payload(self._active_workspace_context(),
             render_provider,
             render_selection,
         )
         show_edges = (
-            bool(self._contour_options["edges"])
-            if self._display.contour_enabled
+            bool(preferences.contour_options["edges"])
+            if preferences.display.contour_enabled
             else self._model_edges_visible
         )
         self.actions["edges"].setChecked(show_edges)
@@ -15317,8 +14929,8 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_edges_visible(show_edges, render=False)
         self._install_viewport_result_payload(
             payload,
-            shape_mode=self._display.shape_mode,
-            contour_enabled=self._display.contour_enabled,
+            shape_mode=preferences.display.shape_mode,
+            contour_enabled=preferences.display.contour_enabled,
             render=render,
         )
         self.status_panel.set_result(self._result_status_text())
@@ -15331,8 +14943,8 @@ class FEMMainWindow(QMainWindow):
             or type(selection) is not ScalarFieldSelection
         ):
             return "—"
-        shape = "Deformed" if self._display.shape_mode == "deformed" else "Undeformed"
-        if not self._display.contour_enabled:
+        shape = "Deformed" if self._result_preferences().display.shape_mode == "deformed" else "Undeformed"
+        if not self._result_preferences().display.contour_enabled:
             return f"{shape} / No Contour"
         try:
             availability = self._catalog_availability_for_selection(
@@ -15353,6 +14965,7 @@ class FEMMainWindow(QMainWindow):
         return f"{shape} / {result_name}"
 
     def show_result_display_dialog(self) -> None:
+        preferences = self._result_preferences()
         provider = self._current_result_provider()
         selection = self.result_selection
         if (
@@ -15364,11 +14977,11 @@ class FEMMainWindow(QMainWindow):
             provider.catalog(),
             current_selection=selection,
             section_point_labels=result_provider_section_point_labels(provider),
-            shape_mode=self._display.shape_mode,
-            contour_enabled=self._display.contour_enabled,
-            scale_mode=self._scale_mode,
-            scale_value=self._scale_value,
-            overlay_undeformed=self._overlay_undeformed,
+            shape_mode=preferences.display.shape_mode,
+            contour_enabled=preferences.display.contour_enabled,
+            scale_mode=preferences.scale_mode,
+            scale_value=preferences.scale_value,
+            overlay_undeformed=preferences.overlay_undeformed,
             show_edges=self.actions["edges"].isChecked(),
             parent=self,
         )
@@ -15389,6 +15002,7 @@ class FEMMainWindow(QMainWindow):
         expected_source: ResultSourceKey | None = None,
         _materialization_completion: bool = False,
     ) -> None:
+        preferences = self._result_preferences()
         if type(settings) is not TypedResultDisplaySettings:
             raise TypeError(
                 "settings must be TypedResultDisplaySettings"
@@ -15449,12 +15063,12 @@ class FEMMainWindow(QMainWindow):
             return
         try:
             render_provider, render_selection = (
-                self._result_visualization_provider(
+                self.result_presentation.visualization_provider(self._active_workspace_context(),
                     provider,
                     settings.selection,
                 )
             )
-            payload = self._build_result_render_payload(
+            payload = self.result_presentation.build_render_payload(self._active_workspace_context(),
                 render_provider,
                 render_selection,
                 shape_mode=settings.shape_mode,
@@ -15489,13 +15103,13 @@ class FEMMainWindow(QMainWindow):
             return
 
         self.result_selection = settings.selection
-        self._display = DisplayState(
+        preferences.display = DisplayState(
             settings.shape_mode,
             settings.contour_enabled,
         )
-        self._scale_mode = settings.scale_mode
-        self._scale_value = settings.scale_value
-        self._overlay_undeformed = settings.overlay_undeformed
+        preferences.scale_mode = settings.scale_mode
+        preferences.scale_value = settings.scale_value
+        preferences.overlay_undeformed = settings.overlay_undeformed
         if not self.result_tree.select_selection(
             settings.selection,
             document_id=(
@@ -15521,13 +15135,13 @@ class FEMMainWindow(QMainWindow):
             settings.overlay_undeformed
         )
         if settings.contour_enabled:
-            self._contour_options["edges"] = settings.show_edges
+            preferences.contour_options["edges"] = settings.show_edges
             if (
                 settings.show_edges
-                and self._contour_options["edge_mode"]
+                and preferences.contour_options["edge_mode"]
                 == CONTOUR_EDGE_NONE
             ):
-                self._contour_options["edge_mode"] = CONTOUR_EDGE_ALL
+                preferences.contour_options["edge_mode"] = CONTOUR_EDGE_ALL
         else:
             self._model_edges_visible = settings.show_edges
         self.actions["edges"].setChecked(settings.show_edges)
@@ -15541,7 +15155,7 @@ class FEMMainWindow(QMainWindow):
         self._refresh_result_controls()
         self.status_panel.set_result(self._result_status_text())
         self._update_action_states()
-        visual_selection = self._result_averaging_visual_selection(
+        visual_selection = self.result_presentation.averaging_visual_selection(self._active_workspace_context(),
             provider,
             settings.selection,
         )
@@ -15575,7 +15189,7 @@ class FEMMainWindow(QMainWindow):
     def show_contour_dialog(self) -> None:
         if self._current_result_provider() is None:
             return
-        options = dict(self._contour_options)
+        options = dict(self._result_preferences().contour_options)
         automatic_range = self.viewport.current_contour_range()
         if automatic_range is not None:
             options["automatic_minimum"] = automatic_range[0]
@@ -15587,13 +15201,14 @@ class FEMMainWindow(QMainWindow):
     def show_display_settings_dialog(self) -> None:
         if self._current_result_provider() is None:
             return
-        dialog = DisplaySettingsDialog(dict(self._contour_options), self)
+        dialog = DisplaySettingsDialog(dict(self._result_preferences().contour_options), self)
         dialog.applyRequested.connect(self._set_contour_options)
         self._exec_view_dialog(dialog)
 
     def _set_contour_options(self, options: dict[str, Any]) -> None:
+        preferences = self._result_preferences()
         previous_threshold = float(
-            self._contour_options["averaging_threshold"]
+            preferences.contour_options["averaging_threshold"]
         )
         updated_options = dict(options)
         if "edge_mode" in updated_options:
@@ -15602,19 +15217,19 @@ class FEMMainWindow(QMainWindow):
             )
         elif (
             updated_options.get("edges")
-            and self._contour_options["edge_mode"]
+            and preferences.contour_options["edge_mode"]
             == CONTOUR_EDGE_NONE
         ):
             updated_options["edge_mode"] = CONTOUR_EDGE_ALL
-        self._contour_options.update(updated_options)
+        preferences.contour_options.update(updated_options)
         threshold = float(
-            self._contour_options["averaging_threshold"]
+            preferences.contour_options["averaging_threshold"]
         )
         self.result_averaging_threshold.blockSignals(True)
         self.result_averaging_threshold.setValue(threshold)
         self.result_averaging_threshold.blockSignals(False)
-        if self._display.contour_enabled:
-            show_edges = bool(self._contour_options["edges"])
+        if preferences.display.contour_enabled:
+            show_edges = bool(preferences.contour_options["edges"])
             self.actions["edges"].setChecked(show_edges)
             self.viewport.set_edges_visible(show_edges, render=False)
         self.viewport.set_contour_metadata(
@@ -15623,7 +15238,7 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_contour_options(
             {
                 key: value
-                for key, value in self._contour_options.items()
+                for key, value in preferences.contour_options.items()
                 if key != "averaging_threshold"
             }
         )
@@ -15899,7 +15514,7 @@ class FEMMainWindow(QMainWindow):
         provider = self._current_result_provider()
         if provider is None:
             return 0.0
-        return self._result_deformation_scale(provider)
+        return self.result_presentation.deformation_scale(self._active_workspace_context(), provider)
 
     def export_viewport_image(self) -> None:
         dialog = ViewportImageExportDialog(
