@@ -13936,7 +13936,7 @@ class FEMMainWindow(QMainWindow):
     ) -> str | None:
         """Choose deterministic accepted-result provenance for one branch."""
 
-        snapshot = source.session.snapshot()
+        snapshot = source.session.projection_snapshot()
         candidates: list[str] = []
         if snapshot.displayed_result_run_id is not None:
             candidates.append(str(snapshot.displayed_result_run_id))
