@@ -138,6 +138,14 @@ class StepLifecycleProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionAuthoringFacts:
+    """Model and target capabilities independent of Session lifecycle state."""
+
+    report: ModelCapabilityReport
+    targets: tuple[AuthoringTarget, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SessionAuthoringProjection:
     """Complete headless authoring projection for one Session snapshot."""
 
@@ -1028,13 +1036,8 @@ def describe_native_authoring_capabilities(
     )
 
 
-def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
-    """Project one detached Session snapshot into typed authoring facts.
-
-    This function owns target namespace construction and Step lifecycle
-    decisions for front ends.  It is intentionally Qt-free and never mutates
-    the supplied snapshot or any model it references.
-    """
+def describe_session_authoring_facts(snapshot: Any) -> SessionAuthoringFacts:
+    """Describe stable model and target facts without lifecycle decisions."""
 
     if snapshot is None or not hasattr(snapshot, "source_kind"):
         raise TypeError("snapshot must be a SessionSnapshot-compatible value")
@@ -1049,12 +1052,7 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
         # rendering consumers.  Authoring/mesh/preflight/submit capabilities
         # stay unavailable without pretending the archive is an editable model.
         report = _empty_model_capability_report()
-        return SessionAuthoringProjection(
-            report,
-            (),
-            (),
-            _session_output_authoring_capabilities(snapshot, report),
-        )
+        return SessionAuthoringFacts(report, ())
     if native_contexts:
         active_part_id = getattr(snapshot, "active_part_id", None)
         active_part, active_regions = next(
@@ -1140,6 +1138,36 @@ def describe_session_authoring(snapshot: Any) -> SessionAuthoringProjection:
             ),
         )
     )
+
+    return SessionAuthoringFacts(report, targets)
+
+
+def describe_session_authoring(
+    snapshot: Any,
+    *,
+    facts: SessionAuthoringFacts | None = None,
+) -> SessionAuthoringProjection:
+    """Project current lifecycle state with optionally reused capability facts.
+
+    Callers supplying facts must keep their model, definition, geometry and
+    target dependencies current.  The default remains a complete, Qt-free
+    projection that never mutates the supplied snapshot or its model.
+    """
+
+    if snapshot is None or not hasattr(snapshot, "source_kind"):
+        raise TypeError("snapshot must be a SessionSnapshot-compatible value")
+    if facts is None:
+        facts = describe_session_authoring_facts(snapshot)
+    elif type(facts) is not SessionAuthoringFacts:
+        raise TypeError("facts must be SessionAuthoringFacts")
+    report, targets = facts.report, facts.targets
+    if getattr(snapshot, "source_kind", None) == "result":
+        return SessionAuthoringProjection(
+            report,
+            targets,
+            (),
+            _session_output_authoring_capabilities(snapshot, report),
+        )
 
     model_current = bool(getattr(snapshot, "model_current", False))
     lifecycles: list[StepLifecycleProjection] = []
@@ -2329,12 +2357,14 @@ __all__ = [
     "ModelCapabilityReport",
     "RegionCapability",
     "RegionRef",
+    "SessionAuthoringFacts",
     "SessionAuthoringProjection",
     "StepLifecycleProjection",
     "describe_model_capabilities",
     "describe_native_authoring_capabilities",
     "describe_region_capabilities",
     "describe_session_authoring",
+    "describe_session_authoring_facts",
     "evaluate_authoring_candidate",
     "require_region_kind",
 ]

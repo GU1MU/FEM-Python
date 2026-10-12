@@ -48,8 +48,10 @@ from fem.application import (
     RenameIntent,
     RevisionConflictError,
     RunStatus,
+    SessionAuthoringFacts,
     SessionAuthoringProjection,
     SessionDelta,
+    SessionSnapshot,
     StrictBodyBooleanPreview,
     StrictPartBooleanResult,
     StrictPlanarBooleanPreview,
@@ -59,6 +61,7 @@ from fem.application import (
     TransitionEffect,
     describe_model_capabilities,
     describe_session_authoring,
+    describe_session_authoring_facts,
     evaluate_authoring_candidate,
     evaluate_native_assignment_candidate,
     evaluate_native_line_load_candidate,
@@ -288,7 +291,7 @@ from .result_presentation import (
     visible_result_fields,
 )
 from .result_csv_export_dialog import ResultCsvExportDialog
-from .session_projection import plan_session_projection
+from .session_projection import authoring_facts_key, plan_session_projection
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -819,6 +822,9 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._session_authoring_cache: (
             tuple[object, object, SessionAuthoringProjection] | None
+        ) = None
+        self._session_authoring_facts_cache: (
+            tuple[tuple[object, ...], object, SessionAuthoringFacts] | None
         ) = None
         self._result_model_capability_cache: (
             tuple[object, object, ModelCapabilityReport] | None
@@ -3619,6 +3625,7 @@ class FEMMainWindow(QMainWindow):
         geometry_preview: GeometryPreview | None = None,
         timings: dict[str, float] | None = None,
         source_label: str | None = None,
+        preserve_mesh_topology: bool = False,
     ) -> bool:
         """Project one accepted Session transition into every GUI cache."""
         if not bool(getattr(delta, "accepted", True)):
@@ -3683,10 +3690,18 @@ class FEMMainWindow(QMainWindow):
             requested_revision=requested_revision,
             applied_revision=self._applied_session_revision,
             delta=delta if isinstance(delta, SessionDelta) else None,
+            preserve_mesh_topology=preserve_mesh_topology,
         )
         if plan is None:
             return False
         revision = plan.session_revision
+        if plan.scope == "definitions" and (
+            self.geometry is None
+            or previous_snapshot.artifact is None
+            or self.geometry.artifact_id != previous_snapshot.artifact.artifact_id
+            or self.viewport.artifact_id != previous_snapshot.artifact.artifact_id
+        ):
+            plan = replace(plan, scope="scene")
 
         if geometry_preview is not None:
             if type(geometry_preview) is not GeometryPreview:
@@ -3754,7 +3769,7 @@ class FEMMainWindow(QMainWindow):
             self._update_action_states()
             self._applied_session_revision = revision
             return True
-        if (
+        if plan.scope != "definitions" and (
             snapshot.artifact is None
             or previous_artifact_id
             != snapshot.artifact.artifact_id
@@ -3904,6 +3919,16 @@ class FEMMainWindow(QMainWindow):
                 self.viewport_panel.set_geometry_context(False)
                 self.status_panel.set_object()
         elif (
+            plan.scope == "definitions"
+            and self.geometry is not None
+            and self.viewport.artifact_id == previous_artifact_id
+        ):
+            self._rebind_definition_model(snapshot)
+            target_cache.artifact_id = artifact.artifact_id
+            target_cache.model_geometry = self.geometry
+            target_cache.inspection_service = self.inspection_service
+            self._refresh_model_tree_for_context(target_context)
+        elif (
             previous_artifact_id != artifact.artifact_id
             or self.geometry is None
             or self.geometry.artifact_id != artifact.artifact_id
@@ -3961,8 +3986,14 @@ class FEMMainWindow(QMainWindow):
 
         result_identity = self.session.current_result_identity()
         if result_identity is None:
+            had_result_projection = not (
+                self.result_provider is None
+                and self.viewport.result_render_payload is None
+            )
             self._clear_result_projection()
             target_cache.invalidate_result()
+            if plan.scope == "definitions" and not had_result_projection:
+                self.viewport.show_boundary_and_loads()
         else:
             source, generation = result_identity
             provider = self.result_provider
@@ -4019,11 +4050,16 @@ class FEMMainWindow(QMainWindow):
 
         self._sync_step_combos()
         self._refresh_result_controls()
+        if plan.changed & {
+            ChangeKind.DEFINITIONS, ChangeKind.NAMED_REGIONS, ChangeKind.RUNS
+        }:
+            self._refresh_job_manager()
         self._update_action_states()
         self._refresh_result_tree_for_context(target_context)
-        if not self._workspace_activation:
+        if not self._workspace_activation and plan.scope != "definitions":
             self._project_viewport_for_module(self._current_module_name())
-        self.model_tree.set_active_document(target_context.document_id)
+        if plan.scope != "definitions":
+            self.model_tree.set_active_document(target_context.document_id)
         self._applied_session_revision = revision
         return True
 
@@ -9388,7 +9424,7 @@ class FEMMainWindow(QMainWindow):
         ]
 
     def _session_authoring_projection(self) -> SessionAuthoringProjection:
-        """Reuse the immutable authoring projection for one Session snapshot."""
+        """Reuse capability facts while refreshing current lifecycle gates."""
 
         builder = describe_session_authoring
         cached = self._session_authoring_cache
@@ -9398,7 +9434,22 @@ class FEMMainWindow(QMainWindow):
             and cached[1] is builder
         ):
             return cached[2]
-        projection = builder(self.document)
+        facts_builder = describe_session_authoring_facts
+        facts_key = (
+            self.workspace.active_document_id,
+            *authoring_facts_key(self.document),
+        )
+        cached_facts = self._session_authoring_facts_cache
+        if (
+            cached_facts is not None
+            and cached_facts[0] == facts_key
+            and cached_facts[1] is facts_builder
+        ):
+            facts = cached_facts[2]
+        else:
+            facts = facts_builder(self.document)
+            self._session_authoring_facts_cache = (facts_key, facts_builder, facts)
+        projection = builder(self.document, facts=facts)
         self._session_authoring_cache = (
             self.document,
             builder,
@@ -13966,59 +14017,23 @@ class FEMMainWindow(QMainWindow):
         self._apply_definition_only_delta(delta)
 
     def _apply_definition_only_delta(self, delta: SessionDelta) -> None:
-        """Project changed scopes/definitions while retaining mesh topology caches."""
+        """Use the common projection with qualified definition mesh reuse."""
 
-        if not delta.accepted:
-            return
-        revision = int(delta.session_revision)
-        if revision <= self._applied_session_revision:
-            return
-        snapshot = self.session.projection_snapshot(
-            self.document,
-            delta.changed,
-        )
-        if snapshot.session_revision != revision:
-            raise RuntimeError("Agent definition delta is not the current revision")
-        artifact = snapshot.artifact
-        if artifact is None:
-            raise RuntimeError("Agent definitions require a current model artifact")
+        self._apply_session_delta(delta, preserve_mesh_topology=True)
 
-        previous_artifact = self.document.artifact
-        geometry = self.geometry
-        if (
-            previous_artifact is None
-            or geometry is None
-            or self.viewport.artifact_id != previous_artifact.artifact_id
-        ):
-            raise RuntimeError(
-                "definition-only projection requires the current mesh viewport"
-            )
+    def _rebind_definition_model(self, snapshot: SessionSnapshot) -> None:
+        """Refresh definition consumers while retaining installed mesh actors."""
 
-        self.document = snapshot
-        bound_context = self._active_workspace_context()
-        stale_agent_proposals = self.agent_authoring_bridge.bind_snapshot(
-            snapshot,
-            document_id=(
-                None if bound_context is None else bound_context.document_id
-            ),
-            workspace_selected=self._agent_workspace_selected(),
-        )
-        current_authoring_context = self.agent_authoring_bridge.context
-        if current_authoring_context is not None:
-            self.agent_authoring_controller.observe_binding(
-                current_authoring_context,
-                proposal_staled=bool(stale_agent_proposals),
-            )
-        if hasattr(self, "viewport_panel"):
-            self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
         self._close_inspection_windows()
-
-        model = artifact.model
+        model = snapshot.artifact.model
 
         def frame_query(target: RegionRef | int) -> BeamFrameReport:
             return resolve_effective_beam_frames(model, target)
 
-        self.geometry = replace(geometry, artifact_id=artifact.artifact_id)
+        self.geometry = replace(
+            self.geometry,
+            artifact_id=snapshot.artifact.artifact_id,
+        )
         self.viewport.rebind_model_artifact(
             model,
             self.geometry,
@@ -14030,26 +14045,6 @@ class FEMMainWindow(QMainWindow):
             definitions=snapshot,
             effective_frame_query=frame_query,
         )
-        active_context = self.workspace.active_document()
-        if active_context is not None:
-            cache = active_context.presentation_cache
-            cache.invalidate_model()
-            cache.artifact_id = snapshot.artifact.artifact_id
-            cache.model_geometry = self.geometry
-            cache.inspection_service = self.inspection_service
-        self._show_model_in_tree(model)
-        had_result_projection = not (
-            self.result_provider is None
-            and self.viewport.result_render_payload is None
-        )
-        self._clear_result_projection()
-        if not had_result_projection:
-            self.viewport.show_boundary_and_loads()
-        self._sync_step_combos()
-        self._refresh_result_controls()
-        self._refresh_job_manager()
-        self._update_action_states()
-        self._applied_session_revision = revision
 
     def cancel_current_task(
         self,

@@ -14,6 +14,41 @@ _METADATA_CHANGES = frozenset(
 _PROJECT_SAVE_TERMINAL_REASONS = frozenset(
     {"project_save task failed", "project_save task cancelled"}
 )
+_DEFINITION_CHANGES = frozenset(
+    {
+        ChangeKind.PROJECT_INPUTS,
+        ChangeKind.NAMED_REGIONS,
+        ChangeKind.DEFINITIONS,
+        ChangeKind.MODEL,
+        ChangeKind.VALIDATIONS,
+        ChangeKind.RUNS,
+        ChangeKind.RESULTS,
+        ChangeKind.DISPLAYED_RESULT,
+    }
+)
+
+
+def authoring_facts_key(snapshot: SessionSnapshot) -> tuple[object, ...]:
+    """Identify Session-owned capability inputs without scanning model data.
+
+    Project/model/mesh revisions cover region, definition and Part edits.
+    Payload identities also distinguish independently detached snapshots;
+    selecting an active Part has its own dependency outside those revisions.
+    Saved paths, validations and runs affect only the current lifecycle.
+    """
+
+    return (
+        snapshot.session_id,
+        snapshot.is_open,
+        snapshot.source_kind,
+        snapshot.project_revision,
+        snapshot.mesh_input_revision,
+        snapshot.model_revision,
+        snapshot.active_part_id,
+        id(snapshot.model),
+        id(snapshot.geometry_recipe),
+        id(snapshot.mesh_settings),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +56,7 @@ class SessionProjectionPlan:
     """The newest revision and the UI scope that can safely project it."""
 
     session_revision: int
-    scope: Literal["metadata", "scene"]
+    scope: Literal["metadata", "definitions", "scene"]
     changed: frozenset[ChangeKind]
 
     @property
@@ -44,6 +79,7 @@ def plan_session_projection(
     requested_revision: int,
     applied_revision: int,
     delta: SessionDelta | None,
+    preserve_mesh_topology: bool = False,
 ) -> SessionProjectionPlan | None:
     """Keep metadata incremental only when no intervening transition is lost.
 
@@ -90,8 +126,30 @@ def plan_session_projection(
         and not delta.invalidated
         and scene_is_unchanged
     )
+    definition_only = (
+        preserve_mesh_topology
+        and ordered
+        and bool(changed & {ChangeKind.DEFINITIONS, ChangeKind.NAMED_REGIONS})
+        and changed <= _DEFINITION_CHANGES
+        and previous.artifact is not None
+        and current.artifact is not None
+        and current.model_current
+        and previous.source_kind == current.source_kind != "result"
+        and previous.active_part_id == current.active_part_id
+        and previous.part_revisions == current.part_revisions
+        and previous.geometry_recipe is current.geometry_recipe
+        and previous.mesh_settings is current.mesh_settings
+        and (
+            previous.mesh_input_revision == current.mesh_input_revision
+            or previous.model.mesh is current.model.mesh
+        )
+    )
     return SessionProjectionPlan(
         session_revision=current.session_revision,
-        scope="metadata" if metadata_only else "scene",
+        scope=(
+            "metadata" if metadata_only
+            else "definitions" if definition_only
+            else "scene"
+        ),
         changed=changed,
     )
