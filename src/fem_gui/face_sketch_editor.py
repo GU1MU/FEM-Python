@@ -78,7 +78,7 @@ class FaceSupportedSketchController:
         external_coincidences: tuple[SketchExternalCoincidence, ...] = (),
         unresolved_reference_ids: tuple[str, ...] = (),
     ) -> None:
-        if type(session) is not SessionSnapshot:
+        if not isinstance(session, SessionSnapshot):
             raise TypeError("session must be a SessionSnapshot")
         if type(workplane) is not ResolvedFaceWorkplane:
             raise TypeError("workplane must be a ResolvedFaceWorkplane")
@@ -146,7 +146,7 @@ class FaceSupportedSketchController:
     def launch_is_current(self, session: SessionSnapshot) -> bool:
         """Check the launch Session and Part revisions for later atomic commit."""
 
-        if type(session) is not SessionSnapshot:
+        if not isinstance(session, SessionSnapshot):
             raise TypeError("session must be a SessionSnapshot")
         launch = self._launch
         if (

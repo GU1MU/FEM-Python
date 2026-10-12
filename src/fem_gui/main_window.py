@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
+from threading import Event
 from time import perf_counter, sleep
 from typing import Any, Callable
 
@@ -74,7 +75,6 @@ from fem.application import (
     prepare_strict_planar_recipe_preview,
 )
 from fem.application.definitions import mesh_entity_ref_sort_key
-from fem.application.recipe_compiler import compile_recipe
 from fem.application.changes import ChangeKind
 from fem.application.results import (
     FieldAvailability,
@@ -129,7 +129,6 @@ from fem.geometry import (
     FaceSketchBooleanDirection,
     FaceSketchBooleanGeometry,
     FaceSketchBooleanOperation,
-    FaceWorkplaneResolutionError,
     MovedGeometry,
     MultiBodyGeometry,
     NATIVE_GEOMETRY_TYPES,
@@ -153,8 +152,6 @@ from fem.geometry import (
     namespace_part_logical_id,
     strip_part_logical_id,
     rename_solid_body,
-    provide_face_reference_points,
-    resolve_face_workplane,
     undo_solid_body_feature,
 )
 from fem.geometry.part_namespace import part_id_sort_key
@@ -250,6 +247,11 @@ from .geometry_preview import (
     build_strict_part_boolean_preview,
     build_strict_planar_boolean_preview,
     build_strict_sketch_draft_preview,
+)
+from .geometry_tasks import (
+    PreparedFaceSketchWorkplane,
+    prepare_face_sketch_workplane,
+    prepare_profile_solid_geometry,
 )
 from .agent_workspace_catalog import create_workspace_catalog_bridge
 from .agent_workspace import UserWorkspace, WorkspaceCommandHandler
@@ -852,8 +854,11 @@ class FEMMainWindow(QMainWindow):
             LogicalEntityRef
         ] = set()
         self._face_sketch_selection_cache: dict[
-            tuple[str, str, int, str], bool
+            tuple[int, str, str, int, str], PreparedFaceSketchWorkplane | str
         ] = {}
+        self._pending_face_sketch_selections: set[
+            tuple[int, str, str, int, str]
+        ] = set()
         self.faceSketchBooleanFeatureRequested.connect(
             self._commit_face_sketch_boolean_feature
         )
@@ -5493,17 +5498,18 @@ class FEMMainWindow(QMainWindow):
             provider is not None and self._scale_mode == "custom"
         )
 
-    def _face_sketch_selection_is_valid(self) -> bool:
+    def _face_sketch_selection_key(self) -> tuple[int, str, str, int, str] | None:
+        target = self._active_workspace_context()
         if (
-            self.busy
+            target is None
             or self._face_sketch_controller is not None
             or self.document.source_kind != "native"
             or len(self._selected_geometry_refs) != 1
         ):
-            return False
+            return None
         reference = next(iter(self._selected_geometry_refs))
         if reference.kind != "face":
-            return False
+            return None
         part_id = part_id_from_logical_id(reference.logical_id)
         if part_id is None:
             part_id = self.document.active_part_id
@@ -5512,39 +5518,132 @@ class FEMMainWindow(QMainWindow):
             try:
                 local_id = strip_part_logical_id(part_id, reference.logical_id)
             except ValueError:
-                return False
+                return None
         if part_id is None or part_id != self.document.active_part_id:
-            return False
+            return None
         try:
             part = self.document.part(part_id)
             part_revision = self.document.part_revision(part_id)
         except KeyError:
-            return False
+            return None
         recipe = part.geometry_recipe
         if recipe is None or part.suppressed or geometry_dimension(recipe) != 3:
-            return False
-        key = (
+            return None
+        return (
+            target.document_id,
             self.document.session_id,
             part_id,
             part_revision,
             local_id,
         )
-        cached = self._face_sketch_selection_cache.get(key)
-        if cached is not None:
-            return cached
-        valid = False
-        try:
-            with geometry_runtime.model(
-                f"{getattr(recipe, 'name', 'solid')}-face-selection",
-                dimension=3,
-            ) as cad:
-                compiled = compile_recipe(cad, recipe)
-                resolve_face_workplane(cad, compiled.logical_entities, local_id)
-            valid = True
-        except (FaceWorkplaneResolutionError, RuntimeError, TypeError, ValueError):
-            valid = False
-        self._face_sketch_selection_cache[key] = valid
-        return valid
+
+    def _face_sketch_selection_is_valid(self) -> bool:
+        key = self._face_sketch_selection_key()
+        # Keep only the current selection; detached CAD references must not
+        # accumulate across document changes or closed documents.
+        self._face_sketch_selection_cache = {
+            cached_key: value
+            for cached_key, value in self._face_sketch_selection_cache.items()
+            if cached_key == key
+        }
+        if key is None or self.busy or self._closing or self._exit_pending:
+            return False
+        if key not in self._face_sketch_selection_cache:
+            if key not in self._pending_face_sketch_selections:
+                self._pending_face_sketch_selections.add(key)
+                # Launch after action projection has finished capturing its
+                # busy state; starting inline would re-enter that projection.
+                self._defer_ui(lambda: self._prepare_face_sketch_selection(key))
+            return False
+        return isinstance(self._face_sketch_selection_cache[key], PreparedFaceSketchWorkplane)
+
+    def _prepare_face_sketch_selection(
+        self, key: tuple[int, str, str, int, str],
+    ) -> None:
+        target = self._active_workspace_context()
+        if (
+            target is None
+            or self._face_sketch_selection_key() != key
+            or self.busy
+            or self._closing
+            or self._exit_pending
+        ):
+            self._pending_face_sketch_selections.discard(key)
+            return
+        target_session = target.session
+        _document_id, session_id, part_id, part_revision, face_id = key
+        session_revision = target_session.session_revision
+        recipe = self.document.part(part_id).geometry_recipe
+        self._pending_face_sketch_selections.add(key)
+
+        def apply_result(payload: object) -> TaskApplyOutcome:
+            current = target_session.projection_snapshot()
+            if (
+                self._closing
+                or self._exit_pending
+                or not self.document_tasks.is_active(target)
+                or current.session_id != session_id
+                or current.session_revision != session_revision
+                or self._face_sketch_selection_key() != key
+                or current.part_revision(part_id) != part_revision
+                or current.part(part_id).geometry_recipe != recipe
+            ):
+                return TaskApplyOutcome.stale("Workplane result is stale; sketch not opened")
+            if type(payload) is not PreparedFaceSketchWorkplane:
+                raise TypeError("workplane preparation returned invalid data")
+            self._face_sketch_selection_cache[key] = payload
+            return TaskApplyOutcome.accepted(payload)
+
+        def failed(message: str) -> None:
+            if self._face_sketch_selection_key() == key:
+                self._face_sketch_selection_cache[key] = message
+
+        def terminal(record: TaskCompletion) -> None:
+            self._pending_face_sketch_selections.discard(key)
+            if record.state is BackgroundTaskState.CANCELLED:
+                failed("Workplane check canceled; select the face again")
+
+        if not self._start_task(
+            lambda context: prepare_face_sketch_workplane(recipe, face_id, context),
+            lambda _payload: None,
+            "Create Sketch on Face",
+            failed,
+            task_name="Resolve Face Sketch Workplane",
+            apply_result=apply_result,
+            on_terminal=terminal,
+            context=target,
+        ):
+            self._pending_face_sketch_selections.discard(key)
+            failed("Another background task is running")
+
+    def _refresh_solid_face_boolean_prompt(self) -> None:
+        if (
+            self._solid_face_boolean_operation is None
+            or self._face_sketch_controller is not None
+            or self._closing
+            or self._exit_pending
+        ):
+            return
+        valid = self._face_sketch_selection_is_valid()
+        key = self._face_sketch_selection_key()
+        pending = key in self._pending_face_sketch_selections
+        self.viewport_panel.planar_boolean_face_bar.set_selection_ready(valid)
+        failure = self._face_sketch_selection_cache.get(key)
+        self.status_panel.set_state(
+            "Target face selected; confirm to continue"
+            if valid
+            else "Resolving sketch workplane..."
+            if pending
+            else f"Invalid planar face; select again: {failure}"
+            if isinstance(failure, str)
+            else "Select a target face",
+            4000 if isinstance(failure, str) else 0,
+        )
+
+    def _retry_failed_face_sketch_selection(self) -> None:
+        key = self._face_sketch_selection_key()
+        if isinstance(self._face_sketch_selection_cache.get(key), str):
+            self._face_sketch_selection_cache.pop(key)
 
     def _update_action_states(self) -> None:
         authoring = self._session_authoring_projection()
@@ -5949,108 +6048,38 @@ class FEMMainWindow(QMainWindow):
             or not self._face_sketch_selection_is_valid()
         ):
             return
-        selected = next(iter(self._selected_geometry_refs))
-        part_id = part_id_from_logical_id(selected.logical_id)
-        if part_id is None:
-            part_id = self.document.active_part_id
-            support_face_id = selected.logical_id
-        else:
-            support_face_id = strip_part_logical_id(
-                part_id,
-                selected.logical_id,
-            )
-        if part_id is None:
+        target = self._active_workspace_context()
+        key = self._face_sketch_selection_key()
+        if target is None or key is None:
             return
-        part = self.document.part(part_id)
-        source_geometry = part.geometry_recipe
-        if source_geometry is None:
+        prepared = self._face_sketch_selection_cache.get(key)
+        if type(prepared) is not PreparedFaceSketchWorkplane:
             return
-        session_id = self.document.session_id
-        session_revision = self.document.session_revision
-        part_revision = self.document.part_revision(part_id)
+        _document_id, session_id, part_id, part_revision, _face_id = key
+        current = target.session.projection_snapshot()
+        if (
+            current.session_id != session_id
+            or current.part_revision(part_id) != part_revision
+        ):
+            self.status_panel.set_state("Workplane result is stale; sketch not opened", 5000)
+            return
         original_selection = set(self._selected_geometry_refs)
-        self.status_panel.set_state("Resolving sketch workplane...", 0)
-
-        def workload(context: TaskContext) -> object:
-            context.report("Resolving the solid planar workplane and associated reference points...")
-            with geometry_runtime.model(
-                f"{getattr(source_geometry, 'name', 'solid')}-face-sketch",
-                dimension=3,
-            ) as cad:
-                compiled = compile_recipe(cad, source_geometry)
-                workplane = resolve_face_workplane(
-                    cad,
-                    compiled.logical_entities,
-                    support_face_id,
-                )
-                reference_points = provide_face_reference_points(
-                    cad,
-                    compiled.logical_entities,
-                    workplane,
-                )
-            context.checkpoint()
-            return workplane, reference_points
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            current = self.document
-            if (
-                current.session_id != session_id
-                or current.session_revision != session_revision
-                or current.part_revision(part_id) != part_revision
-                or current.part(part_id).geometry_recipe != source_geometry
-            ):
-                return TaskApplyOutcome.stale("Workplane result is stale; sketch not opened")
-            return TaskApplyOutcome.accepted(payload)
-
-        def on_success(payload: object) -> None:
-            workplane, reference_points = payload
-            try:
-                controller = FaceSupportedSketchController(
-                    self.document,
-                    part_id,
-                    workplane,
-                    reference_points=tuple(reference_points),
-                )
-            except (KeyError, RuntimeError, TypeError, ValueError) as error:
-                self._show_error("Create Sketch on Face", str(error))
-                return
-            self._face_sketch_controller = controller
-            self._face_sketch_reference_points = tuple(reference_points)
-            self._face_sketch_original_selection = original_selection
-            self._face_sketch_parameters = None
-            self._face_sketch_preview_result = None
-            self._begin_face_sketch_editor()
-
-        def restore_face_prompt(message: str) -> None:
-            operation = self._solid_face_boolean_operation
-            if operation is None:
-                self._show_error("Create Sketch on Face", message)
-                return
-            face_bar = self.viewport_panel.planar_boolean_face_bar
-            face_bar.begin(operation.value)
-            face_bar.set_selection_ready(
-                self._face_sketch_selection_is_valid()
+        try:
+            controller = FaceSupportedSketchController(
+                current,
+                part_id,
+                prepared.workplane,
+                reference_points=prepared.reference_points,
             )
-            self.status_panel.set_state(
-                f"Failed to resolve target face; select it again: {message}",
-                5000,
-            )
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "Create Sketch on Face",
-            restore_face_prompt,
-            task_name="Resolve Face Sketch Workplane",
-            on_cancelled=(
-                self._cancel_solid_face_boolean
-                if self._solid_face_boolean_operation is not None
-                else None
-            ),
-            apply_result=apply_result,
-        )
-        if not started and self._solid_face_boolean_operation is not None:
-            restore_face_prompt("Another background task is running")
+        except (KeyError, RuntimeError, TypeError, ValueError) as error:
+            self._show_error("Create Sketch on Face", str(error))
+            return
+        self._face_sketch_controller = controller
+        self._face_sketch_reference_points = prepared.reference_points
+        self._face_sketch_original_selection = original_selection
+        self._face_sketch_parameters = None
+        self._face_sketch_preview_result = None
+        self._begin_face_sketch_editor()
 
     def _begin_face_sketch_editor(self) -> None:
         controller = self._face_sketch_controller
@@ -7008,65 +7037,16 @@ class FEMMainWindow(QMainWindow):
             self,
             source_face_ids=sources.face_ids,
         )
-        while self._exec_dialog(dialog):
-            recipes = tuple(
-                ExtrudedGeometry(
-                    current,
-                    dialog.height_spin.value(),
-                    (face_id,),
-                )
+        self._edit_profile_solid_geometry(
+            dialog,
+            lambda: tuple(
+                ExtrudedGeometry(current, dialog.height_spin.value(), (face_id,))
                 for face_id in sources.face_ids
-            )
-            try:
-                for recipe in recipes:
-                    self._preflight_extruded_geometry(recipe)
-            except Exception as error:
-                logging.exception("extrusion OCC preflight failed")
-                self._show_error(
-                    "Extrude Geometry",
-                    "Temporary OCC compilation failed; current geometry and selection are unchanged: "
-                    f"\n{error}",
-                )
-                continue
-            if len(recipes) == 1:
-                self._set_native_geometry(
-                    recipes[0],
-                    "Extrude Body",
-                    base_session_revision=base_session_revision,
-                )
-            else:
-                if active_id is None:
-                    self._show_error("Extrude Geometry", "No current part")
-                    return
-                if not self._confirm_result_invalidation():
-                    return
-                try:
-                    delta = self.session.replace_part_with_extruded_siblings(
-                        active_id,
-                        recipes,
-                        expected_part_revision=(
-                            self.document.part_revision(active_id)
-                        ),
-                        expected_session_revision=base_session_revision,
-                    )
-                    self._apply_session_delta(delta)
-                except (
-                    RuntimeError,
-                    TypeError,
-                    ValueError,
-                    KeyError,
-                ) as error:
-                    self._show_error("Extrude Geometry", str(error))
-                    return
-            return
-
-    @staticmethod
-    def _preflight_extruded_geometry(recipe: ExtrudedGeometry) -> None:
-        with geometry_runtime.model(
-            f"{recipe.name}-extrusion-preflight",
-            dimension=3,
-        ) as cad:
-            compile_recipe(cad, recipe)
+            ),
+            "Extrude Geometry",
+            "Extrude Body",
+            base_session_revision,
+        )
 
     def sweep_geometry(self) -> None:
         current = self.document.geometry_recipe
@@ -7119,8 +7099,9 @@ class FEMMainWindow(QMainWindow):
             self,
             source_face_ids=sources.face_ids,
         )
-        while self._exec_dialog(dialog):
-            recipes = tuple(
+        self._edit_profile_solid_geometry(
+            dialog,
+            lambda: tuple(
                 RevolvedGeometry(
                     current,
                     str(dialog.axis_combo.currentData()),
@@ -7128,57 +7109,128 @@ class FEMMainWindow(QMainWindow):
                     (face_id,),
                 )
                 for face_id in sources.face_ids
-            )
-            try:
-                for recipe in recipes:
-                    self._preflight_revolved_geometry(recipe)
-            except Exception as error:
-                logging.exception("sweep OCC preflight failed")
-                self._show_error(
-                    "Sweep Geometry",
-                    "Temporary OCC compilation failed; current geometry and selection are unchanged: "
-                    f"\n{error}",
-                )
-                continue
-            if len(recipes) == 1:
-                self._set_native_geometry(
-                    recipes[0],
-                    "Sweep Body",
-                    base_session_revision=base_session_revision,
-                )
-            else:
-                if active_id is None:
-                    self._show_error("Sweep Geometry", "No current part")
-                    return
-                if not self._confirm_result_invalidation():
-                    return
-                try:
-                    delta = self.session.replace_part_with_revolved_siblings(
-                        active_id,
-                        recipes,
-                        expected_part_revision=(
-                            self.document.part_revision(active_id)
-                        ),
-                        expected_session_revision=base_session_revision,
-                    )
-                    self._apply_session_delta(delta)
-                except (
-                    RuntimeError,
-                    TypeError,
-                    ValueError,
-                    KeyError,
-                ) as error:
-                    self._show_error("Sweep Geometry", str(error))
-                    return
-            return
+            ),
+            "Sweep Geometry",
+            "Sweep Body",
+            base_session_revision,
+        )
 
-    @staticmethod
-    def _preflight_revolved_geometry(recipe: RevolvedGeometry) -> None:
-        with geometry_runtime.model(
-            f"{recipe.name}-sweep-preflight",
-            dimension=3,
-        ) as cad:
-            compile_recipe(cad, recipe)
+    def _edit_profile_solid_geometry(
+        self,
+        dialog: QDialog,
+        create_recipes: Callable[[], tuple[ExtrudedGeometry | RevolvedGeometry, ...]],
+        error_title: str,
+        label: str,
+        base_session_revision: int,
+    ) -> None:
+        target = self._active_workspace_context()
+        if target is None or self.busy:
+            return
+        target_session = target.session
+        source_snapshot = target_session.projection_snapshot()
+        part_id = source_snapshot.active_part_id
+        if part_id is None:
+            self._show_error(error_title, "No current part")
+            return
+        part_revision = source_snapshot.part_revision(part_id)
+        source_recipe = source_snapshot.part(part_id).geometry_recipe
+        prior_region_count = len(source_snapshot.named_regions)
+
+        def is_current() -> bool:
+            if (
+                self._closing
+                or self._exit_pending
+                or not self.document_tasks.is_active(target)
+                or target.session is not target_session
+            ):
+                return False
+            current = target_session.projection_snapshot()
+            return (
+                current.session_id == source_snapshot.session_id
+                and current.session_revision == base_session_revision
+                and current.active_part_id == part_id
+                and current.part_revision(part_id) == part_revision
+                and current.part(part_id).geometry_recipe == source_recipe
+            )
+
+        def edit() -> None:
+            if not is_current() or target.task_controller.busy:
+                return
+            if not self._exec_dialog(dialog):
+                return
+            if not is_current():
+                self._show_error("Edit Geometry", "The model has changed; geometry was not modified")
+                return
+            recipes = create_recipes()
+            if not self._confirm_result_invalidation():
+                return
+            preparation_failed = Event()
+
+            def workload(context: TaskContext) -> object:
+                try:
+                    return prepare_profile_solid_geometry(part_id, recipes, context)
+                except Exception:
+                    preparation_failed.set()
+                    raise
+
+            def apply_result(preview: object) -> TaskApplyOutcome:
+                if not is_current():
+                    return TaskApplyOutcome.stale("Solid geometry result is stale and was not applied")
+                if type(preview) is not GeometryPreview:
+                    raise TypeError("solid geometry preparation returned invalid data")
+                if len(recipes) == 1:
+                    delta = target_session.replace_part_geometry(
+                        part_id,
+                        recipes[0],
+                        expected_part_revision=part_revision,
+                        expected_session_revision=base_session_revision,
+                        authenticate_geometry=False,
+                    )
+                else:
+                    delta = target_session.replace_part_with_extruded_siblings(
+                        part_id,
+                        recipes,
+                        expected_part_revision=part_revision,
+                        expected_session_revision=base_session_revision,
+                        authenticate_geometry=False,
+                    )
+                return TaskApplyOutcome.accepted((delta, preview))
+
+            def succeeded(value: object) -> None:
+                delta, preview = value
+                if self._apply_session_delta(delta, geometry_preview=preview, context=target):
+                    self._finish_native_geometry_update(delta, label, prior_region_count)
+
+            def failed(message: str) -> None:
+                self._show_error(
+                    error_title,
+                    "Temporary OCC compilation failed; current geometry and selection are unchanged: "
+                    f"\n{message}"
+                    if preparation_failed.is_set()
+                    else message,
+                )
+                # Reuse the accepted dialog's inputs only once native CAD and
+                # its document task have actually released their resources.
+                if preparation_failed.is_set():
+                    self.document_tasks.after_idle(
+                        target.task_controller, lambda: self._defer_ui(retry),
+                    )
+
+            def retry() -> None:
+                if is_current():
+                    edit()
+
+            self._start_task(
+                workload,
+                succeeded,
+                error_title,
+                failed,
+                task_name=label,
+                apply_result=apply_result,
+                context=target,
+            )
+
+        edit()
 
     def fuse_geometry(self) -> None:
         self._boolean_geometry("fuse", "Fused")
@@ -7224,18 +7276,11 @@ class FEMMainWindow(QMainWindow):
         self._set_geometry_selection_mode("face")
         face_bar = self.viewport_panel.planar_boolean_face_bar
         face_bar.begin(operation)
-        selected_face_is_valid = self._face_sketch_selection_is_valid()
-        face_bar.set_selection_ready(selected_face_is_valid)
-        if selected_face_is_valid:
+        if self._face_sketch_selection_is_valid():
             self.viewport.highlight_geometry_entities(
                 self._canonical_geometry_selection()
             )
-            self.status_panel.set_state(
-            "Target face selected; confirm to continue",
-                0,
-            )
-        else:
-            self.status_panel.set_state("Select a target face", 0)
+        self._refresh_solid_face_boolean_prompt()
         self._update_action_states()
 
     def _begin_planar_boolean(self, operation: str) -> None:
@@ -7398,14 +7443,8 @@ class FEMMainWindow(QMainWindow):
                 return True
         self._selected_geometry_refs = {reference}
         self.viewport.highlight_geometry_entities((reference,))
-        valid = self._face_sketch_selection_is_valid()
-        face_bar.set_selection_ready(valid)
-        self.status_panel.set_state(
-            "Target face selected; confirm to continue"
-            if valid
-            else "Invalid planar face; select again",
-            0 if valid else 4000,
-        )
+        self._retry_failed_face_sketch_selection()
+        self._refresh_solid_face_boolean_prompt()
         self._update_action_states()
         return True
 
@@ -7447,7 +7486,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport_panel.planar_boolean_face_bar.set_selection_ready(
                 False
             )
-            self.status_panel.set_state("Select a valid planar solid face first", 3000)
+            self._refresh_solid_face_boolean_prompt()
             return
         self.viewport_panel.planar_boolean_face_bar.finish()
         self.status_panel.set_state(
@@ -8934,6 +8973,12 @@ class FEMMainWindow(QMainWindow):
         except (RuntimeError, TypeError, ValueError, KeyError) as error:
             self._show_error("Edit Geometry", str(error))
             return False
+        self._finish_native_geometry_update(delta, label, prior_region_count)
+        return True
+
+    def _finish_native_geometry_update(
+        self, delta: SessionDelta, label: str, prior_region_count: int,
+    ) -> None:
         self._pending_local_mesh_selection = False
         self._pending_analysis_selection = None
         self._pending_analysis_requested_scope_kind = None
@@ -8964,7 +9009,6 @@ class FEMMainWindow(QMainWindow):
         if TransitionEffect.REFERENCES_PRESERVED in delta.effects:
             message += "; topology references retained"
         self.status_panel.set_state(message, 6000)
-        return True
 
     def create_named_geometry_region(self) -> None:
         if self.document.model is None:
@@ -13816,6 +13860,7 @@ class FEMMainWindow(QMainWindow):
     def _task_busy_changed(self, busy: bool) -> None:
         self.status_panel.set_task_active(bool(busy))
         self._update_action_states()
+        self._refresh_solid_face_boolean_prompt()
 
     def _task_cancelling_changed(self, cancelling: bool) -> None:
         if cancelling:
@@ -14545,6 +14590,7 @@ class FEMMainWindow(QMainWindow):
             self._selected_geometry_refs.remove(reference)
         else:
             self._selected_geometry_refs.add(reference)
+        self._retry_failed_face_sketch_selection()
         self._refresh_geometry_scope_selection(reference.kind)
 
     def _on_geometry_entities_box_selected(
@@ -14591,6 +14637,7 @@ class FEMMainWindow(QMainWindow):
             )
         else:
             self._selected_geometry_refs = set(selected)
+        self._retry_failed_face_sketch_selection()
         self._refresh_geometry_scope_selection(kind)
 
     def _refresh_geometry_scope_selection(self, kind: str) -> None:

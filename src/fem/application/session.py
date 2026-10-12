@@ -2492,6 +2492,7 @@ class ModelSession:
         *,
         expected_part_revision: int | None = None,
         expected_session_revision: int | None = None,
+        authenticate_geometry: bool = True,
     ) -> SessionDelta:
         """Atomically turn canonical Profiles into independent solid Parts."""
 
@@ -2500,6 +2501,8 @@ class ModelSession:
         normalized = normalize_part_id(part_id)
         self._check_part_revision(normalized, expected_part_revision)
         current = self._require_editable_part(normalized)
+        if type(authenticate_geometry) is not bool:
+            raise TypeError("authenticate_geometry must be a bool")
         requested_candidates = deepcopy(tuple(recipes))
         recipe_type = (
             None
@@ -2574,7 +2577,7 @@ class ModelSession:
                 primary_settings,
             ),
         )
-        _validate_native_part_inputs(primary, authenticate_geometry=True)
+        _validate_native_part_inputs(primary, authenticate_geometry=authenticate_geometry)
 
         allocated_ids: list[str] = []
         active_ids = [part.id for part in self._parts]
@@ -2625,7 +2628,7 @@ class ModelSession:
                     ),
                 ),
             )
-            _validate_native_part_inputs(sibling, authenticate_geometry=True)
+            _validate_native_part_inputs(sibling, authenticate_geometry=authenticate_geometry)
             siblings.append(sibling)
 
         after_regions = _merge_extrusion_region_transitions(
@@ -2718,6 +2721,7 @@ class ModelSession:
         *,
         expected_part_revision: int | None = None,
         expected_session_revision: int | None = None,
+        authenticate_geometry: bool = True,
     ) -> SessionDelta:
         """Atomically revolve canonical Profiles into independent Parts."""
 
@@ -2726,6 +2730,7 @@ class ModelSession:
             recipes,
             expected_part_revision=expected_part_revision,
             expected_session_revision=expected_session_revision,
+            authenticate_geometry=authenticate_geometry,
         )
 
     def undo_part_extrusion(
@@ -7599,10 +7604,22 @@ def _validate_native_part_inputs(
         (),
     )
     if authenticate_geometry:
-        if part.dimension == 2:
-            _authenticate_native_part_planar_profiles(part)
-        elif part.dimension == 3:
-            _authenticate_native_part_solids(part)
+        authenticate_native_part_geometry(part)
+
+
+def authenticate_native_part_geometry(part: NativePart) -> None:
+    """Prove exact Part geometry without reading or changing a Session.
+
+    Background preparation uses the same certification as default Session
+    edits, then commits its revision-bound recipe without repeating CAD work.
+    """
+
+    if type(part) is not NativePart or part.geometry_recipe is None:
+        raise ValueError("canonical Part must own geometry")
+    if part.dimension == 2:
+        _authenticate_native_part_planar_profiles(part)
+    elif part.dimension == 3:
+        _authenticate_native_part_solids(part)
 
 
 def _authenticate_native_part_planar_profiles(part: NativePart) -> None:
