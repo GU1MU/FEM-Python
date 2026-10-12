@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from PySide6.QtCore import QEvent, QTimer, Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QLabel,
@@ -96,6 +96,9 @@ from ..visualization.scene import DisplayState
 from ..visualization.symbols import SymbolSettings, face_display_node_ids
 from ..visualization.symbol_preparation import SymbolPreparation
 from ..visualization.symbol_scene import SymbolBackend, SymbolCameraMetrics, SymbolScene
+from ..viewport_interaction import (
+    InteractionBackend, PointerInput, SelectionInputPort, ToolInputPort, ViewportInteraction,
+)
 
 
 if TYPE_CHECKING:
@@ -195,81 +198,6 @@ def _rectangle_cell_mask(
         & (cell_bounds[:, 5] >= 0.0)
         & (cell_bounds[:, 4] <= 1.0)
     )
-
-
-class _SelectionRubberBand:
-    """Draw a border-only rectangle in VTK display coordinates."""
-
-    def __init__(self, renderer: Any) -> None:
-        import vtk
-
-        self._visible = False
-        self._points = vtk.vtkPoints()
-        self._points.SetNumberOfPoints(4)
-        lines = vtk.vtkCellArray()
-        for start, end in ((0, 1), (1, 2), (2, 3), (3, 0)):
-            lines.InsertNextCell(2)
-            lines.InsertCellPoint(start)
-            lines.InsertCellPoint(end)
-        self._polydata = vtk.vtkPolyData()
-        self._polydata.SetPoints(self._points)
-        self._polydata.SetLines(lines)
-        coordinate = vtk.vtkCoordinate()
-        coordinate.SetCoordinateSystemToDisplay()
-        mapper = vtk.vtkPolyDataMapper2D()
-        mapper.SetInputData(self._polydata)
-        mapper.SetTransformCoordinate(coordinate)
-        self._actors = []
-        for color, width in (
-            ((1.0, 1.0, 1.0), 4.0),
-            ((0.09, 0.55, 0.76), 2.0),
-        ):
-            actor = vtk.vtkActor2D()
-            actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(*color)
-            actor.GetProperty().SetLineWidth(width)
-            actor.GetProperty().SetLineStipplePattern(0xF0F0)
-            actor.GetProperty().SetLineStippleRepeatFactor(1)
-            actor.PickableOff()
-            actor.SetVisibility(False)
-            renderer.AddViewProp(actor)
-            self._actors.append(actor)
-
-    def set_rectangle(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-    ) -> None:
-        minimum_x, maximum_x = sorted((int(start[0]), int(end[0])))
-        minimum_y, maximum_y = sorted((int(start[1]), int(end[1])))
-        for index, point in enumerate(
-            (
-                (minimum_x, minimum_y, 0.0),
-                (maximum_x, minimum_y, 0.0),
-                (maximum_x, maximum_y, 0.0),
-                (minimum_x, maximum_y, 0.0),
-            )
-        ):
-            self._points.SetPoint(index, point)
-        self._points.Modified()
-        self._polydata.Modified()
-
-    def show(self) -> bool:
-        if self._visible:
-            return False
-        self._visible = True
-        for actor in self._actors:
-            actor.SetVisibility(True)
-        return True
-
-    def hide(self) -> bool:
-        if not self._visible:
-            return False
-        self._visible = False
-        for actor in self._actors:
-            actor.SetVisibility(False)
-        return True
-
 
 def _binding_error(interactor: type[object]) -> RuntimeError | None:
     """Reject Qt bindings that differ from the main application."""
@@ -672,6 +600,7 @@ class FEMViewport(QWidget):
     sketchTrimRequested = Signal(str, object)
     sketchAuthoringMissed = Signal(str)
     sketchPendingInteractionCancelled = Signal()
+    sketchPointDragCancelled = Signal(bool)
     sketchAuthoringFinishRequested = Signal()
     sketchAuthoringCancelled = Signal()
     sketchInferencePreviewChanged = Signal(object)
@@ -794,14 +723,7 @@ class FEMViewport(QWidget):
             tuple[object, int | None, tuple[float, float, float, float, float, float] | None]
             | None
         ) = None
-        self._selection_press_position: tuple[float, float] | None = None
-        self._selection_dragged = False
-        self._selection_rubber_band: _SelectionRubberBand | None = None
-        self._picker_event_targets: set[QWidget] = set()
-        self._abaqus_view_button: Qt.MouseButton | None = None
-        self._trackball_vector: np.ndarray | None = None
         self._hover_hit: PickHit | None = None
-        self._pending_hover_position: tuple[float, float] | None = None
         self._wire_authoring_active = False
         self._wire_authoring_mode = "point"
         self._wire_work_plane = "XY"
@@ -843,7 +765,6 @@ class FEMViewport(QWidget):
         self._sketch_authoring_snap_point_id: str | None = None
         self._sketch_authoring_intersection_curve_ids: tuple[str, ...] = ()
         self._sketch_drag_point_id: str | None = None
-        self._sketch_drag_moved = False
         self._sketch_pending_points: tuple[tuple[float, float, float], ...] = ()
         self._sketch_authoring_preview_point: (
             tuple[float, float, float] | None
@@ -851,19 +772,26 @@ class FEMViewport(QWidget):
         self._sketch_hover_entity: tuple[str, str] | None = None
         self._sketch_constraint_selection_active = False
         self._sketch_constraint_selection: tuple[tuple[str, str], ...] = ()
-        self._hover_timer = QTimer(self)
-        self._hover_timer.setSingleShot(True)
-        self._hover_timer.setInterval(40)
-        self._hover_timer.timeout.connect(self._update_preselection)
-        self._selection_rubber_band_render_timer = QTimer(self)
-        self._selection_rubber_band_render_timer.setSingleShot(True)
-        self._selection_rubber_band_render_timer.setInterval(16)
-        self._selection_rubber_band_render_timer.timeout.connect(self._render)
         self._mesh_scope_render_timer = QTimer(self)
         self._mesh_scope_render_timer.setSingleShot(True)
         self._mesh_scope_render_timer.setInterval(0)
         self._mesh_scope_render_timer.timeout.connect(
             self._render_mesh_scope_highlight
+        )
+        self._interaction = ViewportInteraction(
+            SelectionInputPort(
+                self._update_preselection, self._interaction_clear_hover,
+                self._pick_qt_position, self._box_select_qt_positions,
+                self.selectionConfirmed.emit, self.selectionCancelled.emit,
+                self._interaction_camera_finished, self._render,
+            ),
+            ToolInputPort(
+                self._interaction_tool_active, self._tool_key_press,
+                self._tool_pointer_press, self._tool_pointer_move,
+                self._tool_pointer_release, self._tool_pointer_leave,
+                self._reset_tool_pointer_state,
+            ),
+            parent=self,
         )
         self._contour = {
             "manual": False, "minimum": 0.0, "maximum": 1.0, "levels": 12,
@@ -1025,356 +953,154 @@ class FEMViewport(QWidget):
             and self._geometry_preview is None
         )
 
-    @staticmethod
-    def _uses_abaqus_view_modifier(modifiers: Qt.KeyboardModifier) -> bool:
-        """Return whether Ctrl+Alt activates temporary view manipulation."""
-        return bool(modifiers & Qt.KeyboardModifier.ControlModifier) and bool(
-            modifiers & Qt.KeyboardModifier.AltModifier
-        )
+    def _interaction_clear_hover(self, render: bool) -> bool:
+        return self._clear_preselection(render=render)
 
-    def eventFilter(self, watched: object, event: object) -> bool:
-        """Separate Abaqus-style camera drags from ordinary selection clicks."""
-        if self._plotter is None:
-            return False
-        if self._picker_event_targets:
-            is_picker_target = watched in self._picker_event_targets
+    def _interaction_camera_finished(self) -> None:
+        if self._sketch_authoring_active:
+            self._refresh_sketch_curve_sampling(render=False)
+            self._render()
         else:
-            is_picker_target = watched is self._plotter
-        if not is_picker_target:
-            return super().eventFilter(watched, event)
+            self._refresh_symbols_for_camera(render=True)
 
-        event_type = event.type()
-        if event_type == QEvent.Type.KeyPress:
-            if self._sketch_authoring_active:
-                if self._sketch_constraint_selection_active:
-                    if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                        self.sketchConstraintSelectionConfirmed.emit()
-                        return True
-                    if event.key() == Qt.Key.Key_Escape:
-                        self.sketchConstraintSelectionCancelled.emit()
-                        return True
-                if (
-                    event.key() == Qt.Key.Key_Delete
-                    and self._sketch_authoring_mode == "select"
-                ):
-                    self.sketchDeleteRequested.emit()
+    def _interaction_tool_active(self) -> bool:
+        return self._sketch_authoring_active or self._wire_authoring_active
+
+    def _reset_tool_pointer_state(self) -> bool:
+        if self._sketch_drag_point_id is not None:
+            self._sketch_drag_point_id = None
+            self.sketchPointDragCancelled.emit(False)
+            return True
+        return False
+
+    def _tool_key_press(self, key: int) -> bool:
+        if self._sketch_authoring_active:
+            if self._sketch_constraint_selection_active:
+                if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                    self.sketchConstraintSelectionConfirmed.emit()
                     return True
-                if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                    if self.cancel_pending_sketch_interaction():
-                        return True
+                if key == Qt.Key.Key_Escape:
+                    self.sketchConstraintSelectionCancelled.emit()
+                    return True
+            if key == Qt.Key.Key_Delete and self._sketch_authoring_mode == "select":
+                self.sketchDeleteRequested.emit()
+                return True
+            if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                if not self.cancel_pending_sketch_interaction():
                     self.sketchAuthoringFinishRequested.emit()
-                    return True
-                if event.key() == Qt.Key.Key_Escape:
-                    if not self.cancel_pending_sketch_interaction():
-                        self.sketchAuthoringCancelled.emit()
-                    return True
-            if self._wire_authoring_active:
-                if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                    self.wireAuthoringFinishRequested.emit()
-                    return True
-                if event.key() == Qt.Key.Key_Escape:
-                    if not self.cancel_pending_wire_interaction():
-                        self.wireAuthoringCancelled.emit()
-                    return True
-            if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                self.selectionConfirmed.emit()
                 return True
-            if event.key() == Qt.Key.Key_Escape:
-                self._clear_preselection(render=True)
-                self.selectionCancelled.emit()
+            if key == Qt.Key.Key_Escape:
+                if not self.cancel_pending_sketch_interaction():
+                    self.sketchAuthoringCancelled.emit()
                 return True
-        press_events = {
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseButtonDblClick,
-        }
-        if event_type in press_events:
-            button = event.button()
-            if self._uses_abaqus_view_modifier(event.modifiers()) and button in {
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.MiddleButton,
-                Qt.MouseButton.RightButton,
-            }:
-                self._clear_preselection(render=True)
-                self._abaqus_view_button = button
-                self._selection_press_position = None
-                if button == Qt.MouseButton.LeftButton:
-                    position = self._plotter_event_position(watched, event)
-                    self._trackball_vector = self._trackball_point(
-                        position.x(), position.y()
-                    )
-                    return True
-                return False
-            if self._sketch_authoring_active:
-                if (
-                    button == Qt.MouseButton.RightButton
-                    and self._sketch_authoring_mode == "select"
-                    and not self._sketch_constraint_selection_active
-                ):
-                    position = self._plotter_event_position(watched, event)
-                    vtk_x, vtk_y = self._qt_to_vtk_position(
-                        position.x(), position.y()
-                    )
-                    point_id = self._sketch_point_at(vtk_x, vtk_y)
-                    curve_id = (
-                        None
-                        if point_id is not None
-                        else self._sketch_curve_at(vtk_x, vtk_y)
-                    )
-                    entity_id = point_id or curve_id
-                    if entity_id is not None:
-                        self.sketchContextMenuRequested.emit(
-                            "point" if point_id is not None else "curve",
-                            entity_id,
-                            event.globalPosition().toPoint(),
-                        )
-                        return True
-                if button in {
-                    Qt.MouseButton.MiddleButton,
-                    Qt.MouseButton.RightButton,
-                }:
-                    self.cancel_pending_sketch_interaction()
-                    return True
-                if button == Qt.MouseButton.LeftButton:
-                    position = self._plotter_event_position(watched, event)
-                    vtk_x, vtk_y = self._qt_to_vtk_position(position.x(), position.y())
-                    self._sketch_drag_point_id = (
-                        self._sketch_point_at(vtk_x, vtk_y)
-                        if self._sketch_authoring_mode == "select"
-                        and not self._sketch_constraint_selection_active
-                        else None
-                    )
-                    self._sketch_drag_moved = False
-                    self._selection_press_position = (position.x(), position.y())
-                    return True
-            if self._wire_authoring_active:
-                if button in {
-                    Qt.MouseButton.MiddleButton,
-                    Qt.MouseButton.RightButton,
-                }:
-                    self.cancel_pending_wire_interaction()
-                    return True
-                if button == Qt.MouseButton.LeftButton:
-                    self._selection_press_position = None
-                    return True
-            if button == Qt.MouseButton.LeftButton:
-                self._pending_hover_position = None
-                self._hover_timer.stop()
-                position = self._plotter_event_position(watched, event)
-                self._selection_press_position = (position.x(), position.y())
-                self._selection_dragged = False
-                self._hide_selection_rubber_band()
+        if self._wire_authoring_active:
+            if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+                self.wireAuthoringFinishRequested.emit()
                 return True
-            if button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
+            if key == Qt.Key.Key_Escape:
+                if not self.cancel_pending_wire_interaction():
+                    self.wireAuthoringCancelled.emit()
                 return True
+        return False
 
-        if event_type == QEvent.Type.MouseMove:
-            if self._abaqus_view_button == Qt.MouseButton.LeftButton:
-                position = self._plotter_event_position(watched, event)
-                self._rotate_trackball(position.x(), position.y())
-                return True
-            if self._abaqus_view_button is not None:
-                return False
-            if self._sketch_authoring_active:
-                position = self._plotter_event_position(watched, event)
-                vtk_x, vtk_y = self._qt_to_vtk_position(
-                    position.x(),
-                    position.y(),
-                )
-                hover_point, _hover_reason = self._sketch_work_plane_point_at(
-                    vtk_x,
-                    vtk_y,
-                    snap=False,
-                )
-                self._update_sketch_uv_label(hover_point)
-                if self._sketch_authoring_mode in {"select", "trim"}:
-                    point_id = (
-                        self._sketch_point_at(vtk_x, vtk_y)
-                        if self._sketch_authoring_mode == "select"
-                        else None
-                    )
-                    curve_id = (
-                        None
-                        if point_id is not None
-                        else self._sketch_curve_at(vtk_x, vtk_y)
-                    )
-                    self._set_sketch_entity_hover(
-                        "point" if point_id is not None else "curve",
-                        point_id or curve_id,
-                    )
-                    self._set_sketch_authoring_preview_point(None)
-                    return True
-                point, _reason = self._sketch_work_plane_point_at(
-                    vtk_x,
-                    vtk_y,
-                    snap=self._sketch_authoring_mode != "trim",
-                )
-                if self._sketch_drag_point_id is not None:
-                    start = self._selection_press_position
-                    if start is not None and (
-                        abs(position.x() - start[0]) + abs(position.y() - start[1]) > 2.0
-                    ):
-                        self._sketch_drag_moved = True
-                    if point is not None and self._sketch_drag_moved:
-                        self.sketchPointDragPreviewRequested.emit(
-                            self._sketch_drag_point_id, point
-                        )
-                    return True
-                self._set_sketch_authoring_preview_point(point)
-                self.sketchInferencePreviewChanged.emit(
-                    {
-                        "point": point,
-                        "snap_kind": self._sketch_authoring_snap_kind,
-                        "point_id": self._sketch_authoring_snap_point_id,
-                        "curve_ids": self._sketch_authoring_intersection_curve_ids,
-                    }
-                )
-                return True
-            if self._wire_authoring_active:
-                position = self._plotter_event_position(watched, event)
-                vtk_x, vtk_y = self._qt_to_vtk_position(
-                    position.x(),
-                    position.y(),
-                )
-                self._update_wire_authoring_hover(vtk_x, vtk_y)
-                return True
-            if self._selection_press_position is not None:
-                position = self._plotter_event_position(watched, event)
-                start_x, start_y = self._selection_press_position
-                if abs(position.x() - start_x) + abs(position.y() - start_y) > 4.0:
-                    self._selection_dragged = True
-                    self._clear_preselection(render=True)
-                if self._selection_dragged:
-                    self._show_selection_rubber_band(
-                        (start_x, start_y),
-                        (position.x(), position.y()),
-                    )
-                return True
-            if event.buttons() & (
-                Qt.MouseButton.LeftButton
-                | Qt.MouseButton.MiddleButton
-                | Qt.MouseButton.RightButton
+    def _tool_pointer_press(self, pointer: PointerInput) -> bool:
+        button = pointer.button
+        vtk_x, vtk_y = pointer.vtk_position
+        if self._sketch_authoring_active:
+            if (
+                button == Qt.MouseButton.RightButton
+                and self._sketch_authoring_mode == "select"
+                and not self._sketch_constraint_selection_active
             ):
-                return True
-            position = self._plotter_event_position(watched, event)
-            self._pending_hover_position = (position.x(), position.y())
-            self._hover_timer.start()
-            return False
-
-        if event_type == QEvent.Type.MouseButtonRelease:
-            button = event.button()
-            if self._abaqus_view_button == button:
-                self._abaqus_view_button = None
-                if button == Qt.MouseButton.LeftButton:
-                    self._trackball_vector = None
-                    self._refresh_symbols_for_camera(render=True)
-                    return True
-                return False
-            if self._sketch_authoring_active:
-                if button == Qt.MouseButton.LeftButton:
-                    position = self._plotter_event_position(watched, event)
-                    vtk_x, vtk_y = self._qt_to_vtk_position(
-                        position.x(), position.y()
-                    )
-                    if self._sketch_drag_point_id is not None and self._sketch_drag_moved:
-                        point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y)
-                        if point is not None:
-                            self.sketchPointDragCommitRequested.emit(
-                                self._sketch_drag_point_id, point
-                            )
-                        self._sketch_drag_point_id = None
-                        self._sketch_drag_moved = False
-                        self._selection_press_position = None
-                        return True
-                    self._sketch_drag_point_id = None
-                    self._selection_press_position = None
-                    self._sketch_authoring_click(
-                        vtk_x,
-                        vtk_y,
-                        modifiers=event.modifiers(),
+                point_id = self._sketch_point_at(vtk_x, vtk_y)
+                curve_id = None if point_id is not None else self._sketch_curve_at(vtk_x, vtk_y)
+                entity_id = point_id or curve_id
+                if entity_id is not None:
+                    self.sketchContextMenuRequested.emit(
+                        "point" if point_id is not None else "curve",
+                        entity_id, pointer.global_position,
                     )
                     return True
-                if button in {
-                    Qt.MouseButton.MiddleButton,
-                    Qt.MouseButton.RightButton,
-                }:
-                    self.cancel_pending_sketch_interaction()
-                    return True
-            if self._wire_authoring_active:
-                if button == Qt.MouseButton.LeftButton:
-                    position = self._plotter_event_position(watched, event)
-                    vtk_x, vtk_y = self._qt_to_vtk_position(
-                        position.x(), position.y()
-                    )
-                    self._wire_authoring_click(vtk_x, vtk_y)
-                    return True
-                if button in {
-                    Qt.MouseButton.MiddleButton,
-                    Qt.MouseButton.RightButton,
-                }:
-                    self.cancel_pending_wire_interaction()
-                    return True
-            if button == Qt.MouseButton.LeftButton and self._selection_press_position is not None:
-                position = self._plotter_event_position(watched, event)
-                start = self._selection_press_position
-                should_pick = not self._selection_dragged
-                self._selection_press_position = None
-                self._selection_dragged = False
-                self._hide_selection_rubber_band()
-                if should_pick:
-                    self._pick_qt_position(position.x(), position.y())
-                else:
-                    self._box_select_qt_positions(
-                        start,
-                        (position.x(), position.y()),
-                    )
-                return True
             if button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
+                self.cancel_pending_sketch_interaction()
                 return True
+            if button == Qt.MouseButton.LeftButton:
+                self._sketch_drag_point_id = (
+                    self._sketch_point_at(vtk_x, vtk_y)
+                    if self._sketch_authoring_mode == "select"
+                    and not self._sketch_constraint_selection_active
+                    else None
+                )
+                return True
+        if self._wire_authoring_active:
+            if button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
+                self.cancel_pending_wire_interaction()
+                return True
+            if button == Qt.MouseButton.LeftButton:
+                return True
+        return False
 
-        if event_type == QEvent.Type.Leave:
-            self._pending_hover_position = None
-            self._hover_timer.stop()
-            if self._sketch_authoring_active:
-                self._update_sketch_uv_label(None)
-                self._set_sketch_authoring_preview_point(None)
-                self._set_sketch_entity_hover(None, None)
-            if self._wire_authoring_active:
-                self._set_wire_authoring_hover(None)
-            self._clear_preselection(render=True)
-
-        return super().eventFilter(watched, event)
-
-    def _show_selection_rubber_band(
-        self,
-        start: tuple[float, float],
-        end: tuple[float, float],
-    ) -> None:
-        if self._plotter is None:
-            return
-        if self._selection_rubber_band is None:
-            renderer = getattr(self._plotter, "renderer", None)
-            if renderer is None:
+    def _tool_pointer_move(self, pointer: PointerInput) -> None:
+        vtk_x, vtk_y = pointer.vtk_position
+        if self._sketch_authoring_active:
+            hover_point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y, snap=False)
+            self._update_sketch_uv_label(hover_point)
+            if self._sketch_drag_point_id is not None:
+                point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y)
+                if point is not None and pointer.dragged:
+                    self.sketchPointDragPreviewRequested.emit(self._sketch_drag_point_id, point)
                 return
-            self._selection_rubber_band = _SelectionRubberBand(
-                renderer
-            )
-        self._selection_rubber_band.set_rectangle(
-            self._qt_to_vtk_position(*start),
-            self._qt_to_vtk_position(*end),
-        )
-        if self._selection_rubber_band.show():
-            self._selection_rubber_band_render_timer.stop()
-            self._render()
-        elif not self._selection_rubber_band_render_timer.isActive():
-            self._selection_rubber_band_render_timer.start()
+            if self._sketch_authoring_mode in {"select", "trim"}:
+                point_id = (
+                    self._sketch_point_at(vtk_x, vtk_y)
+                    if self._sketch_authoring_mode == "select" else None
+                )
+                curve_id = None if point_id is not None else self._sketch_curve_at(vtk_x, vtk_y)
+                self._set_sketch_entity_hover(
+                    "point" if point_id is not None else "curve", point_id or curve_id,
+                )
+                self._set_sketch_authoring_preview_point(None)
+                return
+            point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y)
+            self._set_sketch_authoring_preview_point(point)
+            self.sketchInferencePreviewChanged.emit({
+                "point": point, "snap_kind": self._sketch_authoring_snap_kind,
+                "point_id": self._sketch_authoring_snap_point_id,
+                "curve_ids": self._sketch_authoring_intersection_curve_ids,
+            })
+        elif self._wire_authoring_active:
+            self._update_wire_authoring_hover(vtk_x, vtk_y)
 
-    def _hide_selection_rubber_band(self) -> None:
-        if (
-            self._selection_rubber_band is not None
-            and self._selection_rubber_band.hide()
-        ):
-            self._selection_rubber_band_render_timer.stop()
-            self._render()
+    def _tool_pointer_release(self, pointer: PointerInput) -> None:
+        button = pointer.button
+        vtk_x, vtk_y = pointer.vtk_position
+        if self._sketch_authoring_active:
+            if button == Qt.MouseButton.LeftButton:
+                point_id = self._sketch_drag_point_id
+                self._sketch_drag_point_id = None
+                if point_id is not None and pointer.dragged:
+                    point, _reason = self._sketch_work_plane_point_at(vtk_x, vtk_y)
+                    if point is not None:
+                        self.sketchPointDragCommitRequested.emit(point_id, point)
+                    else:
+                        self.sketchPendingInteractionCancelled.emit()
+                else:
+                    self._sketch_authoring_click(vtk_x, vtk_y, modifiers=pointer.modifiers)
+            elif button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
+                self.cancel_pending_sketch_interaction()
+        elif self._wire_authoring_active:
+            if button == Qt.MouseButton.LeftButton:
+                self._wire_authoring_click(vtk_x, vtk_y)
+            elif button in {Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton}:
+                self.cancel_pending_wire_interaction()
+
+    def _tool_pointer_leave(self) -> None:
+        if self._sketch_authoring_active:
+            self._update_sketch_uv_label(None)
+            self._set_sketch_authoring_preview_point(None)
+            self._set_sketch_entity_hover(None, None)
+        if self._wire_authoring_active:
+            self._set_wire_authoring_hover(None)
 
     def _box_select_qt_positions(
         self,
@@ -1409,104 +1135,6 @@ class FEMViewport(QWidget):
             self.geometryEntitiesBoxSelected.emit(
                 self._geometry_entities_in_qt_rectangle(start, end)
             )
-
-    def _plotter_event_position(self, watched: object, event: object):
-        """Return a mouse position in the outer QtInteractor coordinate system."""
-        position = event.position()
-        if watched is self._plotter or not isinstance(watched, QWidget):
-            return position
-        mapped = watched.mapTo(self._plotter, position.toPoint())
-        return mapped
-
-    def _trackball_point(self, x: float, y: float) -> np.ndarray:
-        """Project a viewport position onto Abaqus' virtual rotation sphere."""
-        if self._plotter is None:
-            return np.array((0.0, 0.0, 1.0), dtype=float)
-        width = max(float(self._plotter.width()), 1.0)
-        height = max(float(self._plotter.height()), 1.0)
-        radius = max(0.42 * min(width, height), 1.0)
-        point_x = (float(x) - width * 0.5) / radius
-        point_y = (height * 0.5 - float(y)) / radius
-        distance_squared = point_x * point_x + point_y * point_y
-        if distance_squared <= 1.0:
-            point_z = float(np.sqrt(max(0.0, 1.0 - distance_squared)))
-            return np.array((point_x, point_y, point_z), dtype=float)
-        inverse_length = 1.0 / float(np.sqrt(distance_squared))
-        return np.array(
-            (point_x * inverse_length, point_y * inverse_length, 0.0),
-            dtype=float,
-        )
-
-    @staticmethod
-    def _rotate_vector(
-        vector: np.ndarray,
-        axis: np.ndarray,
-        angle: float,
-    ) -> np.ndarray:
-        """Rotate a vector using Rodrigues' formula."""
-        cosine = float(np.cos(angle))
-        sine = float(np.sin(angle))
-        return (
-            vector * cosine
-            + np.cross(axis, vector) * sine
-            + axis * float(np.dot(axis, vector)) * (1.0 - cosine)
-        )
-
-    def _rotate_trackball(self, x: float, y: float) -> None:
-        """Rotate the camera freely around its focal point using an arcball."""
-        if self._plotter is None or self._trackball_vector is None:
-            return
-        current = self._trackball_point(x, y)
-        previous = self._trackball_vector
-        axis_camera = np.cross(current, previous)
-        axis_length = float(np.linalg.norm(axis_camera))
-        dot = float(np.clip(np.dot(previous, current), -1.0, 1.0))
-        if axis_length <= 1.0e-12:
-            self._trackball_vector = current
-            return
-        axis_camera /= axis_length
-        angle = float(np.arctan2(axis_length, dot))
-
-        camera = self._plotter.camera
-        position = np.asarray(camera.GetPosition(), dtype=float)
-        focal = np.asarray(camera.GetFocalPoint(), dtype=float)
-        view_up = np.asarray(camera.GetViewUp(), dtype=float)
-        direction = focal - position
-        direction_length = float(np.linalg.norm(direction))
-        up_length = float(np.linalg.norm(view_up))
-        if direction_length <= 1.0e-12 or up_length <= 1.0e-12:
-            self._trackball_vector = current
-            return
-        direction /= direction_length
-        view_up /= up_length
-        view_right = np.cross(direction, view_up)
-        right_length = float(np.linalg.norm(view_right))
-        if right_length <= 1.0e-12:
-            self._trackball_vector = current
-            return
-        view_right /= right_length
-        view_up = np.cross(view_right, direction)
-
-        axis_world = (
-            axis_camera[0] * view_right
-            + axis_camera[1] * view_up
-            - axis_camera[2] * direction
-        )
-        axis_world_length = float(np.linalg.norm(axis_world))
-        if axis_world_length <= 1.0e-12:
-            self._trackball_vector = current
-            return
-        axis_world /= axis_world_length
-
-        offset = position - focal
-        rotated_offset = self._rotate_vector(offset, axis_world, angle)
-        rotated_up = self._rotate_vector(view_up, axis_world, angle)
-        camera.SetPosition(*(focal + rotated_offset))
-        camera.SetViewUp(*rotated_up)
-        camera.OrthogonalizeViewUp()
-        self._plotter.reset_camera_clipping_range()
-        self._render()
-        self._trackball_vector = current
 
     def set_model(
         self,
@@ -1570,13 +1198,8 @@ class FEMViewport(QWidget):
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
-        self._selection_press_position = None
-        self._selection_dragged = False
-        self._abaqus_view_button = None
-        self._trackball_vector = None
+        self._interaction.reset()
         self._hover_hit = None
-        self._pending_hover_position = None
-        self._hover_timer.stop()
         self._display = DisplayState()
         self._rendered_display = None
         self._overlay_undeformed = False
@@ -1621,6 +1244,7 @@ class FEMViewport(QWidget):
         self._run_id = None
         self._symbol_preparation.bind(model, geometry, effective_frame_query)
         self._symbol_scene.invalidate_camera()
+        self._interaction.reset()
         self._clear_geometry_scan_caches()
 
     def clear_model(self) -> None:
@@ -1665,13 +1289,8 @@ class FEMViewport(QWidget):
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
-        self._selection_press_position = None
-        self._selection_dragged = False
-        self._abaqus_view_button = None
-        self._trackball_vector = None
+        self._interaction.reset()
         self._hover_hit = None
-        self._pending_hover_position = None
-        self._hover_timer.stop()
         self._symbol_preparation.clear()
         self._beam_frame_preview_target = None
         self._clear_geometry_scan_caches()
@@ -1750,13 +1369,26 @@ class FEMViewport(QWidget):
     def update_sketch_draft(
         self,
         render_data: SketchDraftRenderData,
+        *,
+        render: bool = True,
     ) -> None:
         if type(render_data) is not SketchDraftRenderData:
             raise TypeError("render_data must be a SketchDraftRenderData")
         if not self._sketch_authoring_active:
             return
+        previous = self._sketch_draft_render_data
+        if previous is None or (
+            previous.analytic_points != render_data.analytic_points
+            or previous.analytic_curves != render_data.analytic_curves
+            or previous.points != render_data.points
+            or previous.curves != render_data.curves
+            or previous.plane != render_data.plane
+        ):
+            self._sketch_intersection_revision = None
+            self._sketch_intersection_cache = ()
         self._sketch_draft_render_data = render_data
-        self._show_sketch_draft(render=True)
+        if render or self._plotter is not None:
+            self._show_sketch_draft(render=render)
 
     def update_sketch_selection(
         self,
@@ -2072,6 +1704,7 @@ class FEMViewport(QWidget):
         self._set_sketch_authoring_preview_point(None)
         self._set_sketch_entity_hover(None, None)
         self.cancel_pending_sketch_interaction()
+        self._interaction.reset()
 
     def set_sketch_grid(
         self,
@@ -2138,6 +1771,7 @@ class FEMViewport(QWidget):
             self._show_sketch_authoring_hover(render=True)
 
     def begin_sketch_constraint_selection(self) -> None:
+        self._interaction.reset()
         self._sketch_constraint_selection_active = True
         self._sketch_constraint_selection = ()
         self._show_sketch_constraint_selection(render=True)
@@ -2157,6 +1791,7 @@ class FEMViewport(QWidget):
             self._show_sketch_constraint_selection(render=True)
 
     def end_sketch_constraint_selection(self) -> None:
+        self._interaction.reset()
         self._sketch_constraint_selection_active = False
         self._sketch_constraint_selection = ()
         self._show_sketch_constraint_selection(render=True)
@@ -2178,8 +1813,7 @@ class FEMViewport(QWidget):
             return True
         if self._sketch_drag_point_id is not None:
             self._sketch_drag_point_id = None
-            self._sketch_drag_moved = False
-            self._selection_press_position = None
+            self._interaction.reset()
             self.sketchPendingInteractionCancelled.emit()
             return True
         if not self._sketch_pending_points:
@@ -2189,6 +1823,7 @@ class FEMViewport(QWidget):
         return True
 
     def stop_sketch_authoring(self, *, render: bool = True) -> None:
+        self._interaction.reset()
         if (
             not self._sketch_authoring_active
             and self._sketch_draft_render_data is None
@@ -2235,7 +1870,6 @@ class FEMViewport(QWidget):
         self._sketch_authoring_snap_point_id = None
         self._sketch_authoring_intersection_curve_ids = ()
         self._sketch_drag_point_id = None
-        self._sketch_drag_moved = False
         self._sketch_pending_points = ()
         self._sketch_authoring_preview_point = None
         self._sketch_hover_entity = None
@@ -2936,6 +2570,7 @@ class FEMViewport(QWidget):
         self._show_wire_draft(render=True, reset_camera=False)
 
     def set_wire_authoring_mode(self, mode: str) -> None:
+        self._interaction.reset()
         normalized = str(mode).strip().casefold()
         aliases = {"point": "point", "member": "member", "select": "select"}
         if normalized not in aliases:
@@ -2996,6 +2631,7 @@ class FEMViewport(QWidget):
         return True
 
     def stop_wire_authoring(self, *, render: bool = True) -> None:
+        self._interaction.reset()
         """Leave the wire tool and remove only its transient display actors."""
 
         if (
@@ -4043,6 +3679,7 @@ class FEMViewport(QWidget):
 
         if preview is not None and type(preview) is not GeometryPreview:
             raise TypeError("ghost preview must be a GeometryPreview or None")
+        self._interaction.reset()
         self._geometry_ghost_preview = preview
 
     def show_geometry_preview(
@@ -4054,6 +3691,7 @@ class FEMViewport(QWidget):
         reset_camera: bool = True,
     ) -> None:
         """Display CAD geometry, optionally as a picking overlay on the mesh."""
+        self._interaction.reset()
         self._geometry_preview = preview
         self._install_geometry_pick_bindings(preview)
         if is_offscreen_environment():
@@ -4818,6 +4456,7 @@ class FEMViewport(QWidget):
         """Install one already-projected scalar topology for direct rendering."""
 
         checked = _require_result_render_payload(payload)
+        self._interaction.reset()
         source = checked.topology.source
         if (
             self._artifact_id is not None
@@ -5198,6 +4837,7 @@ class FEMViewport(QWidget):
 
     def set_selection_mode(self, mode: str, *, render: bool = True) -> None:
         previous = self._selection_mode
+        interaction_changed = False
         had_preselection = (
             self._hover_hit is not None or "preselection" in self._actors
         )
@@ -5213,6 +4853,7 @@ class FEMViewport(QWidget):
         elif self._selection_mode == "mesh_body":
             self._ensure_mesh_body_pick_bindings()
         if previous != self._selection_mode:
+            interaction_changed = self._interaction.reset()
             self._clear_preselection(render=False)
             highlighted_kind = self._mesh_scope_highlight_kind
             active_mesh_kind = (
@@ -5244,7 +4885,7 @@ class FEMViewport(QWidget):
                 points_visibility_changed = True
             points_actor.SetVisibility(desired_visibility)
         self._update_pickable_actors()
-        if (had_preselection or points_visibility_changed) and render:
+        if (had_preselection or points_visibility_changed or interaction_changed) and render:
             self._render()
 
     def clear_selection(self, *, render: bool = True) -> None:
@@ -5266,7 +4907,7 @@ class FEMViewport(QWidget):
             name in visual_names or name.startswith("beam_frame_")
             for name in self._actors
         )
-        self._hide_selection_rubber_band()
+        interaction_changed = self._interaction.reset()
         self._selected_kind = None
         self._selected_id = None
         self._selection_highlight_visible = True
@@ -5279,7 +4920,7 @@ class FEMViewport(QWidget):
         self._clear_beam_frame_preview(render=False)
         self._clear_preselection(render=False)
         self._update_pickable_actors()
-        if had_visible_selection and render:
+        if (had_visible_selection or interaction_changed) and render:
             self._render()
         elif had_mesh_scope_selection and render:
             self._schedule_mesh_scope_render()
@@ -6569,8 +6210,13 @@ class FEMViewport(QWidget):
     def shutdown_backend(self) -> None:
         """Release the native render backend exactly once."""
 
-        self._symbol_scene.detach()
+        self._release_native_backend()
         self._symbol_preparation.clear()
+
+    def _release_native_backend(self) -> None:
+        """Release native bindings while retaining the model for a retry."""
+        self._interaction.detach()
+        self._symbol_scene.detach()
         plotter = self._plotter
         if plotter is None:
             return
@@ -6613,7 +6259,7 @@ class FEMViewport(QWidget):
             self._install_picker()
             self.nativeSurfaceUpdated.emit()
         except Exception as error:
-            self._plotter = None
+            self._release_native_backend()
             self._message.setText(f"3D viewport initialization failed: {error}")
             self._stack.setCurrentWidget(self._message)
             return False
@@ -7534,26 +7180,12 @@ class FEMViewport(QWidget):
         return self._geometry.points if self._grid is None else np.asarray(self._grid.points)
 
     def _install_picker(self) -> None:
-        try:
-            interactor = self._plotter.iren.interactor
-
-            def camera_interaction_finished(_obj=None, _event=None):
-                if self._sketch_authoring_active:
-                    self._refresh_sketch_curve_sampling(render=False)
-                    self._render()
-                else:
-                    self._refresh_symbols_for_camera(render=True)
-
-            interactor.AddObserver("EndInteractionEvent", camera_interaction_finished, 1.0)
-            self._picker_event_targets = {self._plotter}
-            self._picker_event_targets.update(self._plotter.findChildren(QWidget))
-            for target in self._picker_event_targets:
-                target.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-                target.setMouseTracking(True)
-                target.installEventFilter(self)
-            self._update_pickable_actors()
-        except Exception:
-            return
+        self._interaction.attach(InteractionBackend(
+            self._plotter, self._plotter.iren.interactor, self._plotter.renderer,
+            self._plotter.camera, self._qt_to_vtk_position,
+            self._plotter.reset_camera_clipping_range,
+        ))
+        self._update_pickable_actors()
 
     def _pick_qt_position(self, x: float, y: float) -> None:
         """Submit the same resolved candidate used by hover highlighting."""
@@ -7860,10 +7492,10 @@ class FEMViewport(QWidget):
             float(max(first[1], second[1])),
         )
 
-    def _update_preselection(self) -> None:
-        if self._pending_hover_position is None or self._plotter is None:
+    def _update_preselection(self, position: tuple[float, float]) -> None:
+        if self._plotter is None:
             return
-        x, y = self._pending_hover_position
+        x, y = position
         vtk_x, vtk_y = self._qt_to_vtk_position(x, y)
         hit = self._resolve_pick(vtk_x, vtk_y)
         if self._preselection_target(hit) == self._preselection_target(
@@ -8694,7 +8326,7 @@ class FEMViewport(QWidget):
         self._update_pickable_actors()
         self._render()
 
-    def _clear_preselection(self, *, render: bool) -> None:
+    def _clear_preselection(self, *, render: bool) -> bool:
         had_preselection = self._hover_hit is not None or any(
             name in self._actors
             for name in ("preselection", "preselection_edges")
@@ -8704,6 +8336,7 @@ class FEMViewport(QWidget):
         self._remove_actor("preselection_edges")
         if render and had_preselection:
             self._render()
+        return had_preselection
 
     def _remove_actor(self, name: str) -> None:
         actor = self._actors.pop(name, None)
@@ -8881,6 +8514,7 @@ class FEMViewport(QWidget):
             pass
 
     def _remove_all_layers(self, *, render: bool = True) -> None:
+        self._interaction.reset()
         self._symbol_scene.clear()
         for name in tuple(self._actors):
             self._remove_actor(name)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 from pathlib import Path
 import re
@@ -60,6 +61,8 @@ from fem.geometry import (
     SketchVerticalConstraint,
     sketch_constraint_entity_ids,
 )
+from fem.geometry.recipe_analysis import analyze_sketch_profiles
+from fem.geometry.sketch_solver import SketchSolveResult
 from ..dialogs import AdaptivePrecisionDoubleSpinBox
 from ..geometry_preview import build_strict_sketch_draft_preview
 from ..sketch_preferences import (
@@ -431,7 +434,7 @@ class SketchEditorPanel(QWidget):
         self._incoming_reference: SketchReferencePoint | None = None
         self._incoming_snap: dict[str, object] = {}
         self._inference_preview: tuple[str, ...] = ()
-        self._drag_preview = None
+        self._drag_preview: SketchSolveResult | None = None
         self._reference_points: tuple[SketchReferencePoint, ...] = ()
         self._polyline_start_id: str | None = None
         self._polyline_first_id: str | None = None
@@ -441,6 +444,7 @@ class SketchEditorPanel(QWidget):
         self._constraint_command_kind: str | None = None
         self._constraint_command_targets: list[tuple[str, str]] = []
         self._build_ui()
+        self.cancelRequested.connect(self.cancel_constrained_drag)
         if controller is not None:
             self.set_controller(controller)
 
@@ -877,6 +881,7 @@ class SketchEditorPanel(QWidget):
         viewport.sketchInferencePreviewChanged.connect(self._inference_hovered)
         viewport.sketchPointDragPreviewRequested.connect(self._drag_preview_requested)
         viewport.sketchPointDragCommitRequested.connect(self._drag_commit_requested)
+        viewport.sketchPointDragCancelled.connect(self.cancel_constrained_drag)
         viewport.sketchConstraintSelectionConfirmed.connect(
             self._confirm_constraint_command
         )
@@ -907,6 +912,7 @@ class SketchEditorPanel(QWidget):
             (viewport.sketchInferencePreviewChanged, self._inference_hovered),
             (viewport.sketchPointDragPreviewRequested, self._drag_preview_requested),
             (viewport.sketchPointDragCommitRequested, self._drag_commit_requested),
+            (viewport.sketchPointDragCancelled, self.cancel_constrained_drag),
             (
                 viewport.sketchConstraintSelectionConfirmed,
                 self._confirm_constraint_command,
@@ -967,6 +973,7 @@ class SketchEditorPanel(QWidget):
         self.set_mode("polyline")
 
     def end(self) -> None:
+        self._drag_preview = None
         self._end_constraint_command()
         if self._viewport is not None:
             self._viewport.stop_sketch_authoring()
@@ -1006,7 +1013,24 @@ class SketchEditorPanel(QWidget):
     def render_data(self) -> SketchDraftRenderData:
         controller = self._require_controller()
         snapshot = controller.snapshot()
-        solve_result = controller.current_solve_result()
+        solve_result = self._drag_preview or controller.current_solve_result()
+        if self._drag_preview is not None and solve_result.succeeded:
+            snapshot = replace(
+                snapshot, points=solve_result.points, curves=solve_result.curves
+            )
+            try:
+                profile_analysis = analyze_sketch_profiles(
+                    SketchGeometry(
+                        snapshot.name or "Sketch preview",
+                        snapshot.plane,
+                        snapshot.points,
+                        snapshot.curves,
+                    )
+                )
+            except (TypeError, ValueError):
+                profile_analysis = None
+        else:
+            profile_analysis = controller.derive_profiles()
         overlays = build_constraint_overlays(
             snapshot.points,
             snapshot.curves,
@@ -1020,8 +1044,7 @@ class SketchEditorPanel(QWidget):
         snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         selected_kind = snapshot.selected_kind
         selected_id = snapshot.selected_ids[0] if snapshot.selected_ids else None
-        profile_analysis = controller.derive_profiles()
-        if profile_analysis.profiles:
+        if profile_analysis is not None and profile_analysis.profiles:
             preview = build_strict_sketch_draft_preview(
                 SketchGeometry(
                     snapshot.name or "Sketch preview",
@@ -1089,7 +1112,9 @@ class SketchEditorPanel(QWidget):
                 constraint_overlays=overlays,
                 inference_preview=self._inference_preview,
             )
-        return self._incomplete_render_data(snapshot, selected_kind, selected_id)
+        return self._incomplete_render_data(
+            snapshot, selected_kind, selected_id, solve_result=solve_result
+        )
 
     @staticmethod
     def _derived_snap_points(
@@ -1130,6 +1155,8 @@ class SketchEditorPanel(QWidget):
         snapshot: SketchDraftSnapshot,
         selected_kind: str | None,
         selected_id: str | None,
+        *,
+        solve_result: SketchSolveResult,
     ) -> SketchDraftRenderData:
         snap_midpoints, snap_centers = self._derived_snap_points(snapshot)
         points = [
@@ -1207,13 +1234,18 @@ class SketchEditorPanel(QWidget):
             snap_midpoints=snap_midpoints,
             snap_centers=snap_centers,
             geometry_revision=snapshot.revision,
-            constraint_status=(
-                self._require_controller().current_solve_result().status
-            ),
+            constraint_status=solve_result.status,
             analytic_points=snapshot.points,
             analytic_curves=snapshot.curves,
             constraint_overlays=build_constraint_overlays(
-                snapshot.points, snapshot.curves, snapshot.constraints, snapshot.plane
+                snapshot.points,
+                snapshot.curves,
+                snapshot.constraints,
+                snapshot.plane,
+                warning_ids=(
+                    *solve_result.redundant_constraint_ids,
+                    *solve_result.conflicting_constraint_ids,
+                ),
             ),
             inference_preview=self._inference_preview,
         )
@@ -2098,7 +2130,7 @@ class SketchEditorPanel(QWidget):
 
     def preview_constrained_drag(
         self, point_id: str, u: float, v: float
-    ):
+    ) -> SketchSolveResult:
         """Continuously solve drag candidates without touching draft history."""
 
         result = self._require_controller().solve_constraints_temporary(
@@ -2106,20 +2138,35 @@ class SketchEditorPanel(QWidget):
         )
         self._drag_preview = result
         self._set_status(solve_status_text(result))
+        if self._viewport is not None:
+            self._viewport.update_sketch_draft(self.render_data())
         return result
 
-    def commit_constrained_drag(self, point_id: str, u: float, v: float):
+    def cancel_constrained_drag(self, render: bool = True) -> None:
+        """Restore draft display without changing geometry or undo history."""
+
+        had_preview = self._drag_preview is not None
+        self._drag_preview = None
+        if (
+            had_preview
+            and self._controller is not None
+            and self._viewport is not None
+        ):
+            self._viewport.update_sketch_draft(self.render_data(), render=render)
+
+    def commit_constrained_drag(
+        self, point_id: str, u: float, v: float
+    ) -> SketchSolveResult:
         """Commit a successful point drag as exactly one undo record."""
 
-        preview = self.preview_constrained_drag(point_id, u, v)
-        if not preview.succeeded:
-            self._drag_preview = None
-            return preview
         result = self._require_controller().move_points_constrained(
             {point_id: (u, v)}
         )
-        self._drag_preview = None
         self._set_status(solve_status_text(result))
+        if not result.succeeded:
+            self.cancel_constrained_drag()
+            return result
+        self._drag_preview = None
         self._refresh(selected_id=point_id)
         return result
 
@@ -3032,6 +3079,7 @@ class SketchEditorPanel(QWidget):
         self._constraint_row_changed()
 
     def _refresh(self, *, selected_id: str | None = None) -> None:
+        self._drag_preview = None
         controller = self._controller
         if controller is None:
             return
@@ -3157,6 +3205,7 @@ class SketchEditorPanel(QWidget):
         self.draftChanged.emit(self._controller.snapshot())
 
     def _clear_pending(self) -> None:
+        self.cancel_constrained_drag()
         self._pending_points.clear()
         self._pending_references.clear()
         self._incoming_reference = None
