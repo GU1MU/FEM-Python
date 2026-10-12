@@ -57,7 +57,6 @@ from fem.application import (
     StrictPlanarBooleanPreview,
     StrictPlanarBooleanResult,
     FaceSketchBooleanResult,
-    TokenStatus,
     TransitionEffect,
     describe_model_capabilities,
     describe_session_authoring,
@@ -91,8 +90,6 @@ from fem.application.results import (
     ResultCatalog,
     ResultQuery,
     ResultQueryResult,
-    ResultQueryValidationError,
-    ResultExportSnapshot,
     ResultFieldId,
     ResultFieldTopologyTemplate,
     ResultMaterializationPatch,
@@ -164,18 +161,12 @@ from fem.io.project import (
     LoadedProject,
     load_project,
 )
-from fem.io.result_csv import write_result_table_csv
 from fem_agent.export_authoring import (
     DISPLAY_SETTING_KEYS,
     CONTOUR_SETTING_KEYS,
     ResultDisplayContext,
     ResultDisplayField,
 )
-from fem_agent.export_storage import (
-    MAX_EXPORT_CSV_BYTES,
-    verify_export_file_size,
-)
-from fem.io.result_vtk import write_result_vtk
 from fem.io.result_archive import (
     LoadedResultArchive,
     RESULT_FILE_SUFFIX,
@@ -284,7 +275,6 @@ from .postprocessing_dialogs import (
     TypedResultQueryDialog,
 )
 from .result_presentation import (
-    result_field_is_beam_section,
     result_field_position_label,
     result_provider_section_point_labels,
     result_variable_label,
@@ -369,6 +359,8 @@ from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
 from .document_files import DocumentFileCommands
+from .document_results import DocumentResultCommands, DocumentResultPresentation
+from .result_command_state import PendingResultMaterialization
 from .mesh_tasks import prepare_mesh_display
 
 
@@ -730,6 +722,19 @@ class FEMMainWindow(QMainWindow):
             ),
         )
         self.document_files = DocumentFileCommands(self.document_tasks)
+        self.document_results = DocumentResultCommands(
+            self.document_tasks,
+            DocumentResultPresentation(
+                current_provider=self._document_result_provider,
+                current_selection=lambda context: (
+                    self.result_selection if self.document_tasks.is_active(context) else None
+                ),
+                install_selection=self._install_document_result_selection,
+                query_completed=self._deliver_document_result_query,
+                state_changed=self._document_result_state_changed,
+                field_finished=self._finish_result_field_materialization,
+            ),
+        )
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session, self.workspace)
         )
@@ -783,12 +788,6 @@ class FEMMainWindow(QMainWindow):
         self._result_archive_model_view: ArchiveModelView | None = None
         self.result_provider: ResultProvider | None = None
         self.result_selection: ScalarFieldSelection | None = None
-        self._pending_result_selection: ScalarFieldSelection | None = None
-        self._pending_result_source: ResultSourceKey | None = None
-        self._pending_result_generation: int | None = None
-        self._pending_result_query: ResultQuery | None = None
-        self._pending_result_query_source: ResultSourceKey | None = None
-        self._pending_result_query_generation: int | None = None
         self.inspection_service: InspectionService | None = None
         self._inspection_windows: list[QWidget] = []
         self._mesh_browser: MeshBrowserDialog | None = None
@@ -2715,345 +2714,19 @@ class FEMMainWindow(QMainWindow):
         command_id = self._next_command_id()
         if type(selection) is not ScalarFieldSelection:
             return self._rejected_command(
-                command_id,
-                "command.type.invalid",
-                "selection must be a ScalarFieldSelection",
+                command_id, "command.type.invalid", "selection must be a ScalarFieldSelection",
             )
-        if self.busy:
+        context = self._active_workspace_context()
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
-        provider = self._current_result_provider()
-        if provider is None:
-            return self._rejected_command(
-                command_id,
-                "result.current.unavailable",
+                command_id, "result.current.unavailable",
                 "there is no current accepted result provider",
             )
-        try:
-            availability = self._catalog_availability_for_selection(
-                provider,
-                selection,
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.field.selection.invalid",
-                error,
-            )
-        if availability.state is FieldState.LAZY:
-            return self._begin_result_field_materialization(
-                command_id,
-                provider,
-                selection,
-            )
-        if availability.state is FieldState.UNAVAILABLE:
-            diagnostic = next(
-                (
-                    item
-                    for item in availability.diagnostics
-                    if item.message.strip()
-                ),
-                None,
-            )
-            return self._rejected_command(
-                command_id,
-                "result.field.unavailable",
-                (
-                    diagnostic.message
-                    if diagnostic is not None
-                    else "the selected field is unavailable"
-                ),
-                (
-                    diagnostic.remediation
-                    if diagnostic is not None
-                    else ""
-                ),
-            )
-
-        outcome = self._result_selection_outcome(provider, selection)
-        if self.result_selection == selection:
-            return GuiCommandReceipt.accepted(
-                command_id,
-                outcome=outcome,
-            )
-        try:
-            self._install_ready_result_selection(provider, selection)
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.field.projection.failed",
-                error,
-            )
-        return GuiCommandReceipt.accepted(
-            command_id,
-            outcome=outcome,
+        return self.document_results.select_field(
+            command_id, context, self._current_result_provider(), selection,
         )
 
-    def _begin_result_field_materialization(
-        self,
-        command_id: int,
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-    ) -> GuiCommandReceipt:
-        """Start one exact-key, generation-bound lazy field request."""
-        target_context = self._active_workspace_context()
-        if target_context is None:
-            raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-
-        task = None
-        try:
-            field_keys = self._result_materialization_keys(
-                provider,
-                selection,
-            )
-            task = target_session.prepare_result_materialization(
-                provider.source.run_id,
-                field_keys,
-            )
-            completion = GuiCommandCompletion(command_id)
-            accepted_delta: SessionDelta | None = None
-            self._pending_result_selection = selection
-            self._pending_result_source = task.materialization.source
-            self._pending_result_generation = (
-                task.materialization.generation
-            )
-            self._update_action_states()
-
-            def workload(
-                context: TaskContext,
-            ) -> ResultMaterializationPatch:
-                context.report("Loading result fields on demand...")
-                return provider.materialize(
-                    task.field_keys,
-                    cancellation=context,
-                )
-
-            def apply_result(value: object) -> TaskApplyOutcome:
-                nonlocal accepted_delta
-                if type(value) is not ResultMaterializationPatch:
-                    raise TypeError(
-                        "result materialization worker must return "
-                        "ResultMaterializationPatch"
-                    )
-                delta = target_session.accept_result_materialization(
-                    task.token,
-                    value,
-                )
-                if not delta.accepted:
-                    status = delta.token_status
-                    message = delta.reason or (
-                        status.value
-                        if status is not None
-                        else "result materialization was rejected"
-                    )
-                    if status in {
-                        TokenStatus.WRONG_KIND,
-                        TokenStatus.INVALID_STATE,
-                    }:
-                        return TaskApplyOutcome.rejected(message)
-                    return TaskApplyOutcome.stale(message)
-
-                accepted_delta = delta
-                materialized = next(
-                    (
-                        field_data
-                        for field_data in value.fields
-                        if field_data.key == selection.field_key
-                    ),
-                    None,
-                )
-                outcome = GuiCommandOutcome(
-                    source=task.materialization.source,
-                    materialization_generation=(
-                        task.materialization.generation
-                        + (1 if value.fields else 0)
-                    ),
-                    selection=selection,
-                    record_count=(
-                        None
-                        if materialized is None
-                        else len(materialized.locations)
-                    ),
-                )
-                return TaskApplyOutcome.accepted(outcome)
-
-            def succeeded(value: object) -> None:
-                if (
-                    type(value) is not GuiCommandOutcome
-                    or accepted_delta is None
-                ):
-                    raise RuntimeError(
-                        "accepted result materialization has no outcome"
-                    )
-                if not self._apply_session_delta(accepted_delta, context=target_context):
-                    raise RuntimeError(
-                        "accepted result materialization could not be projected"
-                    )
-                current = self._current_result_provider()
-                if (
-                    current is not None
-                    and current.source == value.source
-                    and current.snapshot.generation
-                    == value.materialization_generation
-                ):
-                    self._install_ready_result_selection(
-                        current,
-                        selection,
-                    )
-                self._refresh_job_manager()
-                self.status_panel.set_state(
-                    "Result fields loaded on demand",
-                    4000,
-                )
-
-            started = self._start_task(
-                workload,
-                succeeded,
-                "Failed to load result fields on demand",
-                lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Failed to load result fields on demand",
-                    message,
-                ),
-                task_name="Load Result Fields on Demand",
-                on_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Failed to load result fields on demand",
-                    message,
-                ),
-                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                apply_result=apply_result,
-                on_inactive_success=lambda _value: self._apply_session_delta(
-                    accepted_delta, context=target_context,
-                ),
-                completion=completion,
-                context=target_context,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            if task is not None:
-                failure = target_session.accept_task_failed(
-                    task.token,
-                    error,
-                )
-                self._apply_revision_neutral_task_receipt(failure)
-            self._clear_pending_result_materialization()
-            self._update_action_states()
-            return self._rejected_command(
-                command_id,
-                "result.field.materialization.rejected",
-                error,
-            )
-
-        if not started:
-            cancelled = target_session.accept_task_cancelled(task.token)
-            self._apply_revision_neutral_task_receipt(cancelled)
-            self._clear_pending_result_materialization()
-            self._update_action_states()
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result materialization task could not be started",
-            )
-
-        def finished(terminal: TaskCompletion) -> None:
-            self._finish_result_field_materialization(
-                selection,
-                task.materialization.source,
-                task.materialization.generation,
-                terminal,
-            )
-
-        completion.observe(finished)
-        return GuiCommandReceipt.pending(command_id, completion)
-
-    @staticmethod
-    def _result_materialization_keys(
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-    ) -> tuple[FieldMaterializationKey, ...]:
-        """Batch the five Beam section fields behind one recovery pass."""
-
-        field_id = selection.field_key.request.field_id
-        if not result_field_is_beam_section(field_id):
-            return (selection.field_key,)
-        keys = tuple(
-            availability.key
-            for availability in visible_result_fields(provider.catalog().fields)
-            if (
-                availability.state is FieldState.LAZY
-                and result_field_is_beam_section(availability.descriptor.field_id)
-            )
-        )
-        return keys or (selection.field_key,)
-
-    def _finish_result_field_materialization(
-        self,
-        selection: ScalarFieldSelection,
-        source: ResultSourceKey,
-        generation: int,
-        terminal: TaskCompletion,
-    ) -> None:
-        if (
-            self._pending_result_selection != selection
-            or self._pending_result_source != source
-            or self._pending_result_generation != generation
-        ):
-            return
-        self._clear_pending_result_materialization()
-        projected = self.result_provider
-        restore_generation = (
-            generation + 1
-            if (
-                terminal.state is BackgroundTaskState.SUCCEEDED
-                and terminal.projection_error is not None
-            )
-            else generation
-        )
-        if (
-            (
-                terminal.state is not BackgroundTaskState.SUCCEEDED
-                or terminal.projection_error is not None
-            )
-            and type(projected) is ResultProvider
-            and projected.source == source
-            and projected.snapshot.generation
-            in {generation, restore_generation}
-        ):
-            current_selection = self.result_selection
-            if type(current_selection) is ScalarFieldSelection:
-                active_context = self.workspace.active_document()
-                self.result_tree.select_selection(
-                    current_selection,
-                    document_id=(
-                        None
-                        if active_context is None
-                        else active_context.document_id
-                    ),
-                    source=projected.source,
-                )
-        self._refresh_result_controls()
-        self._update_action_states()
-
-    def _clear_pending_result_materialization(self) -> None:
-        self._pending_result_selection = None
-        self._pending_result_source = None
-        self._pending_result_generation = None
-
-    def query_result(
-        self,
-        query: ResultQuery,
-    ) -> GuiCommandReceipt:
+    def query_result(self, query: ResultQuery) -> GuiCommandReceipt:
         """Query one exact typed field without reading GUI selection state."""
 
         return self._submit_result_query(query)
@@ -3067,553 +2740,134 @@ class FEMMainWindow(QMainWindow):
         command_id = self._next_command_id()
         if type(query) is not ResultQuery:
             return self._rejected_command(
-                command_id,
-                "command.type.invalid",
-                "query must be a ResultQuery",
+                command_id, "command.type.invalid", "query must be a ResultQuery",
             )
-        if (
-            expected_source is not None
-            and type(expected_source) is not ResultSourceKey
-        ):
+        if expected_source is not None and type(expected_source) is not ResultSourceKey:
             return self._rejected_command(
-                command_id,
-                "command.type.invalid",
-                "expected_source must be a ResultSourceKey or None",
+                command_id, "command.type.invalid", "expected_source must be a ResultSourceKey or None",
             )
-        provider = self._current_result_provider()
-        if provider is None:
+        context = self._active_workspace_context()
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "result.current.unavailable",
+                command_id, "result.current.unavailable",
                 "there is no current accepted result provider",
             )
-        if (
-            expected_source is not None
-            and provider.source != expected_source
-        ):
-            return self._rejected_command(
-                command_id,
-                "result.query.source.stale",
-                "the query dialog source is no longer current",
-            )
-        if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
-
-        try:
-            availability = provider.validate_query(query)
-        except ResultQueryValidationError as error:
-            return self._rejected_command(
-                command_id,
-                error.code,
-                error,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.query.validation.rejected",
-                error,
-            )
-
-        if availability.state is FieldState.LAZY:
-            return self._begin_result_query_materialization(
-                command_id,
-                provider,
-                query,
-            )
-        if availability.state is not FieldState.READY:
-            return self._rejected_command(
-                command_id,
-                "result.query.field.unavailable",
-                "the selected query field is unavailable",
-            )
-
-        try:
-            result = provider.query(query)
-            self._validate_result_query_result(
-                provider,
-                query,
-                result,
-            )
-        except ResultQueryValidationError as error:
-            return self._rejected_command(
-                command_id,
-                error.code,
-                error,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.query.rejected",
-                error,
-            )
-
-        outcome = self._result_query_outcome(result)
-        self.resultQueryCompleted.emit(result)
-        return GuiCommandReceipt.accepted(
-            command_id,
-            outcome=outcome,
-        )
-
-    def _begin_result_query_materialization(
-        self,
-        command_id: int,
-        provider: ResultProvider,
-        query: ResultQuery,
-    ) -> GuiCommandReceipt:
-        """Materialize one lazy query field through the Session CAS gate."""
-        target_context = self._active_workspace_context()
-        if target_context is None:
-            raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-
-        task = None
-        try:
-            task = target_session.prepare_result_materialization(
-                provider.source.run_id,
-                (query.field_key,),
-            )
-            completion = GuiCommandCompletion(command_id)
-            accepted_delta: SessionDelta | None = None
-            accepted_result: ResultQueryResult | None = None
-            self._pending_result_query = query
-            self._pending_result_query_source = (
-                task.materialization.source
-            )
-            self._pending_result_query_generation = (
-                task.materialization.generation
-            )
-            self._update_action_states()
-
-            def workload(
-                context: TaskContext,
-            ) -> ResultMaterializationPatch:
-                context.report("Loading query fields on demand...")
-                return provider.materialize(
-                    task.field_keys,
-                    cancellation=context,
-                )
-
-            def apply_result(value: object) -> TaskApplyOutcome:
-                nonlocal accepted_delta, accepted_result
-                if type(value) is not ResultMaterializationPatch:
-                    raise TypeError(
-                        "result query worker must return "
-                        "ResultMaterializationPatch"
-                    )
-                delta = target_session.accept_result_materialization(
-                    task.token,
-                    value,
-                )
-                if not delta.accepted:
-                    status = delta.token_status
-                    message = delta.reason or (
-                        status.value
-                        if status is not None
-                        else "result query materialization was rejected"
-                    )
-                    if status in {
-                        TokenStatus.WRONG_KIND,
-                        TokenStatus.INVALID_STATE,
-                    }:
-                        return TaskApplyOutcome.rejected(message)
-                    return TaskApplyOutcome.stale(message)
-
-                accepted_delta = delta
-                try:
-                    accepted_provider = provider.advance(value)
-                    result = accepted_provider.query(query)
-                    self._validate_result_query_result(
-                        accepted_provider,
-                        query,
-                        result,
-                    )
-                except Exception:
-                    self._project_accepted_result_query_delta(delta, context=target_context)
-                    raise
-
-                accepted_result = result
-                return TaskApplyOutcome.accepted(
-                    self._result_query_outcome(result)
-                )
-
-            def succeeded(value: object) -> None:
-                if (
-                    type(value) is not GuiCommandOutcome
-                    or accepted_delta is None
-                    or accepted_result is None
-                ):
-                    raise RuntimeError(
-                        "accepted result query has no typed outcome"
-                    )
-                if not self._project_accepted_result_query_delta(
-                    accepted_delta,
-                    context=target_context,
-                ):
-                    raise RuntimeError(
-                        "accepted result query could not be projected"
-                    )
-                current = self._current_result_provider()
-                if (
-                    current is not None
-                    and current.source == accepted_result.source
-                    and current.snapshot.generation
-                    == accepted_result.materialization_generation
-                ):
-                    self.resultQueryCompleted.emit(accepted_result)
-                self._refresh_job_manager()
-                self.status_panel.set_state(
-                    "Result query complete",
-                    4000,
-                )
-
-            started = self._start_task(
-                workload,
-                succeeded,
-                "Result query failed",
-                lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Result query failed",
-                    message,
-                ),
-                task_name="Result Query",
-                on_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                    task.token,
-                    "Result query failed",
-                    message,
-                ),
-                on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                    target_context, task.token,
-                ),
-                apply_result=apply_result,
-                on_inactive_success=lambda _value: self._apply_session_delta(
-                    accepted_delta, context=target_context,
-                ),
-                completion=completion,
-                context=target_context,
-            )
-        except (KeyError, RuntimeError, TypeError, ValueError) as error:
-            if task is not None:
-                failure = target_session.accept_task_failed(
-                    task.token,
-                    error,
-                )
-                self._apply_revision_neutral_task_receipt(failure)
-            self._clear_pending_result_query_materialization()
-            self._update_action_states()
-            return self._rejected_command(
-                command_id,
-                "result.query.materialization.rejected",
-                error,
-            )
-
-        if not started:
-            cancelled = target_session.accept_task_cancelled(task.token)
-            self._apply_revision_neutral_task_receipt(cancelled)
-            self._clear_pending_result_query_materialization()
-            self._update_action_states()
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result query task could not be started",
-            )
-
-        def finished(terminal: TaskCompletion) -> None:
-            self._finish_result_query_materialization(
-                query,
-                task.materialization.source,
-                task.materialization.generation,
-                terminal,
-            )
-
-        completion.observe(finished)
-        return GuiCommandReceipt.pending(command_id, completion)
-
-    def _finish_result_query_materialization(
-        self,
-        query: ResultQuery,
-        source: ResultSourceKey,
-        generation: int,
-        _terminal: TaskCompletion,
-    ) -> None:
-        if (
-            self._pending_result_query != query
-            or self._pending_result_query_source != source
-            or self._pending_result_query_generation != generation
-        ):
-            return
-        self._clear_pending_result_query_materialization()
-        self._update_action_states()
-
-    def _clear_pending_result_query_materialization(self) -> None:
-        self._pending_result_query = None
-        self._pending_result_query_source = None
-        self._pending_result_query_generation = None
-
-    def _project_accepted_result_query_delta(
-        self,
-        delta: SessionDelta,
-        *,
-        context: WorkspaceDocument | None = None,
-    ) -> bool:
-        if delta.changed or delta.invalidated:
-            return self._apply_session_delta(delta, context=context)
-        return self._apply_revision_neutral_task_receipt(delta)
-
-    @staticmethod
-    def _validate_result_query_result(
-        provider: ResultProvider,
-        query: ResultQuery,
-        result: ResultQueryResult,
-    ) -> None:
-        if type(result) is not ResultQueryResult:
-            raise TypeError("provider query must return ResultQueryResult")
-        if (
-            result.source != provider.source
-            or result.materialization_generation
-            != provider.snapshot.generation
-            or result.query != query
-        ):
-            raise ValueError(
-                "query result must match the provider source, "
-                "generation, and exact query"
-            )
-
-    @staticmethod
-    def _result_query_outcome(
-        result: ResultQueryResult,
-    ) -> GuiCommandOutcome:
-        return GuiCommandOutcome(
-            source=result.source,
-            materialization_generation=(
-                result.materialization_generation
-            ),
-            selection=ScalarFieldSelection(
-                result.query.field_key,
-                result.query.component,
-            ),
-            record_count=len(result.records),
+        return self.document_results.query(
+            command_id, context, self._current_result_provider(), query,
+            expected_source=expected_source,
         )
 
     def export_result_csv(
-        self,
-        path: str | Path,
-        spec: ResultCsvExportSpec,
+        self, path: str | Path, spec: ResultCsvExportSpec,
     ) -> GuiCommandReceipt:
         """Export one or more components from one exact ready field."""
 
         command_id = self._next_command_id()
         if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
+            return self._rejected_command(command_id, "task.busy", "a background task is already running")
         if type(spec) is not ResultCsvExportSpec:
+            return self._rejected_command(command_id, "command.type.invalid", "spec must be ResultCsvExportSpec")
+        context = self._active_workspace_context()
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "command.type.invalid",
-                "spec must be ResultCsvExportSpec",
+                command_id, "result.csv_export.rejected", "there is no current accepted result",
             )
-        try:
-            target = Path(path)
-            if target.suffix.casefold() != ".csv":
-                raise ValueError(
-                    "result CSV target must use the .csv extension"
-                )
-            exports = self._prepare_result_csv_exports(spec)
-            export = exports[0]
-            completion = GuiCommandCompletion(command_id)
-
-            def workload(context: TaskContext) -> GuiCommandOutcome:
-                installed = write_result_table_csv(
-                    target,
-                    exports,
-                    checkpoint=context.checkpoint,
-                )
-                return GuiCommandOutcome(
-                    output_path=installed,
-                    source=export.source,
-                    materialization_generation=(
-                        export.materialization_generation
-                    ),
-                    selection=export.selection,
-                    record_count=len(export.field.locations),
-                )
-
-            started = self._start_task(
-                workload,
-                lambda _outcome: self.status_panel.set_state(
-                    "CSV export complete",
-                    5000,
-                ),
-                "Failed to export CSV",
-                task_name="CSV Export",
-                completion=completion,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.csv_export.rejected",
-                error,
-            )
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the CSV export task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+        return self.document_results.export_csv(
+            command_id, context, self._current_result_provider(), path, spec,
+        )
 
     def export_result_csv_to(
-        self,
-        path: str | Path,
-        spec: ResultCsvExportSpec,
+        self, path: str | Path, spec: ResultCsvExportSpec,
     ) -> tuple[int, str]:
-        """Synchronously export one ready field table and verify its size.
-
-        Returns ``(size_bytes, sha256)`` of the landed file. The command is
-        fail-closed: a busy session, a stale identity, or an oversized file
-        raises instead of leaving a partial export behind.
-        """
+        """Synchronously export one ready table and return its size and hash."""
 
         if self.busy:
             raise RuntimeError("a background task is already running")
         if type(spec) is not ResultCsvExportSpec:
             raise TypeError("spec must be ResultCsvExportSpec")
-        target = Path(path)
-        if target.suffix.casefold() != ".csv":
-            raise ValueError("result CSV target must use the .csv extension")
-        exports = self._prepare_result_csv_exports(spec)
-        installed = write_result_table_csv(target, exports)
-        size, digest = verify_export_file_size(
-            installed,
-            maximum_bytes=MAX_EXPORT_CSV_BYTES,
+        context = self._active_workspace_context()
+        if context is None:
+            raise RuntimeError("there is no current accepted result")
+        return self.document_results.export_csv_to(
+            context, self._current_result_provider(), path, spec,
         )
-        return size, digest
 
     def export_result_vtk(
-        self,
-        path: str | Path,
-        spec: ResultVtkExportSpec,
+        self, path: str | Path, spec: ResultVtkExportSpec,
     ) -> GuiCommandReceipt:
         """Export one exact ready scalar selection through canonical VTK I/O."""
 
         command_id = self._next_command_id()
         if self.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a background task is already running",
-            )
+            return self._rejected_command(command_id, "task.busy", "a background task is already running")
         if type(spec) is not ResultVtkExportSpec:
+            return self._rejected_command(command_id, "command.type.invalid", "spec must be ResultVtkExportSpec")
+        context = self._active_workspace_context()
+        if context is None:
             return self._rejected_command(
-                command_id,
-                "command.type.invalid",
-                "spec must be ResultVtkExportSpec",
+                command_id, "result.vtk_export.rejected", "there is no current accepted result",
             )
-        try:
-            target = Path(path)
-            if target.suffix.casefold() != ".vtk":
-                raise ValueError(
-                    "canonical result VTK target must use the .vtk extension"
-                )
-            export = self._prepare_result_export(spec)
-            completion = GuiCommandCompletion(command_id)
+        return self.document_results.export_vtk(
+            command_id, context, self._current_result_provider(), path, spec,
+        )
 
-            def workload(context: TaskContext) -> GuiCommandOutcome:
-                installed = write_result_vtk(
-                    target,
-                    export,
-                    spec.deformation_scale,
-                    checkpoint=context.checkpoint,
-                )
-                return GuiCommandOutcome(
-                    output_path=installed,
-                    source=export.source,
-                    materialization_generation=(
-                        export.materialization_generation
-                    ),
-                    selection=export.selection,
-                    record_count=len(export.field.locations),
-                )
+    def _document_result_provider(self, context: WorkspaceDocument) -> ResultProvider | None:
+        if not self.document_tasks.is_active(context):
+            return None
+        return self._current_result_provider()
 
-            started = self._start_task(
-                workload,
-                lambda _outcome: self.status_panel.set_state(
-                    "VTK export complete",
-                    5000,
-                ),
-                "Failed to export VTK",
-                task_name="VTK Export",
-                completion=completion,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "result.vtk_export.rejected",
-                error,
-            )
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the VTK export task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+    def _install_document_result_selection(
+        self, context: WorkspaceDocument, provider: ResultProvider,
+        selection: ScalarFieldSelection,
+    ) -> None:
+        if self.document_tasks.is_active(context):
+            self._install_ready_result_selection(provider, selection)
 
-    def _prepare_result_export(
+    def _deliver_document_result_query(
+        self, context: WorkspaceDocument, result: ResultQueryResult,
+    ) -> None:
+        if self.document_tasks.is_active(context):
+            self.resultQueryCompleted.emit(result)
+
+    def _document_result_state_changed(self, context: WorkspaceDocument) -> None:
+        if self.document_tasks.is_active(context):
+            self._refresh_result_controls()
+            self._refresh_job_manager()
+            self._update_action_states()
+
+    def _finish_result_field_materialization(
         self,
-        spec: ResultCsvExportSpec | ResultVtkExportSpec,
-    ) -> ResultExportSnapshot:
-        provider = self._current_result_provider()
-        if provider is None:
-            raise RuntimeError("there is no current accepted result")
-        materialization = provider.snapshot
-        if materialization.source != spec.source:
-            raise RuntimeError(
-                "export source does not match the current accepted result"
+        context: WorkspaceDocument,
+        pending: PendingResultMaterialization,
+        terminal: TaskCompletion,
+    ) -> None:
+        """Restore the visible tree choice after a failed field installation."""
+
+        projected = self.result_provider
+        restore_generation = (
+            pending.generation + 1
+            if (
+                terminal.state is BackgroundTaskState.SUCCEEDED
+                and terminal.projection_error is not None
             )
+            else pending.generation
+        )
         if (
-            materialization.generation
-            != spec.materialization_generation
+            (
+                terminal.state is not BackgroundTaskState.SUCCEEDED
+                or terminal.projection_error is not None
+            )
+            and type(projected) is ResultProvider
+            and projected.source == pending.source
+            and projected.snapshot.generation in {pending.generation, restore_generation}
         ):
-            raise RuntimeError(
-                "export generation does not match the current materialization"
-            )
-        return prepare_result_export_snapshot(
-            materialization,
-            spec.selection,
-        )
-
-    def _prepare_result_csv_exports(
-        self,
-        spec: ResultCsvExportSpec,
-    ) -> tuple[ResultExportSnapshot, ...]:
-        provider = self._current_result_provider()
-        if provider is None:
-            raise RuntimeError("there is no current accepted result")
-        materialization = provider.snapshot
-        if materialization.source != spec.source:
-            raise RuntimeError(
-                "export source does not match the current accepted result"
-            )
-        if materialization.generation != spec.materialization_generation:
-            raise RuntimeError(
-                "export generation does not match the current materialization"
-            )
-        return tuple(
-            prepare_result_export_snapshot(materialization, selection)
-            for selection in spec.selections
-        )
+            current_selection = self.result_selection
+            if type(current_selection) is ScalarFieldSelection:
+                self.result_tree.select_selection(
+                    current_selection,
+                    document_id=context.document_id,
+                    source=projected.source,
+                )
 
     def _apply_session_delta(
         self,
@@ -5692,12 +4946,18 @@ class FEMMainWindow(QMainWindow):
         )
         provider = self._current_result_provider()
         selected_availability: FieldAvailability | None = None
+        active_context = self._active_workspace_context()
+        pending_result = (
+            None if active_context is None
+            else active_context.result_command_state.materialization
+        )
         action_selection = (
-            self._pending_result_selection
+            pending_result.request
             if (
-                self._pending_result_selection is not None
+                pending_result is not None
+                and type(pending_result.request) is ScalarFieldSelection
                 and provider is not None
-                and provider.source == self._pending_result_source
+                and provider.source == pending_result.source
             )
             else self.result_selection
         )
@@ -5744,14 +5004,8 @@ class FEMMainWindow(QMainWindow):
                 if selected_availability is None
                 else selected_availability.state
             ),
-            materialization_pending=(
-                self._pending_result_selection is not None
-                or self._pending_result_query is not None
-            ),
-            result_task_busy=(
-                self._pending_result_selection is not None
-                or self._pending_result_query is not None
-            ),
+            materialization_pending=pending_result is not None,
+            result_task_busy=pending_result is not None,
             viewport_scene_available=self.viewport.can_capture,
             wire_editor_active=self._wire_editor_controller is not None,
             sketch_editor_active=self._sketch_editor_controller is not None,
@@ -15363,19 +14617,6 @@ class FEMMainWindow(QMainWindow):
         except (KeyError, TypeError, ValueError):
             return False
         return True
-
-    @staticmethod
-    def _result_selection_outcome(
-        provider: ResultProvider,
-        selection: ScalarFieldSelection,
-    ) -> GuiCommandOutcome:
-        field_data = provider.field(selection.field_key)
-        return GuiCommandOutcome(
-            source=provider.source,
-            materialization_generation=provider.snapshot.generation,
-            selection=selection,
-            record_count=len(field_data.locations),
-        )
 
     def _result_deformation_scale(
         self,

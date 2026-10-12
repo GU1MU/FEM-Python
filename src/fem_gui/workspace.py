@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject
 from fem.application import ModelSession, SessionSnapshot
 
 from .task_controller import BackgroundTaskController
+from .result_command_state import DocumentResultCommandState
 from .viewport_camera import ViewportCameraState
 
 
@@ -133,6 +134,9 @@ class WorkspaceDocument:
     # Additive metadata remains after the original positional constructor
     # surface so existing callers keep their previous argument meanings.
     lineage: DocumentLineage | None = None
+    result_command_state: DocumentResultCommandState = field(
+        default_factory=DocumentResultCommandState
+    )
 
     @property
     def revision(self) -> int:
@@ -469,6 +473,7 @@ class FEMWorkspace:
         context.presentation_cache.invalidate_model()
         context.presentation_cache.invalidate_result()
         context.presentation_state = DocumentPresentationState()
+        context.result_command_state = DocumentResultCommandState()
         controller = context.task_controller
         # Qt's parent and signal closures otherwise retain this context after
         # its registry entry has gone. No worker may remain at this boundary.
