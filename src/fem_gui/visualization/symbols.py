@@ -676,3 +676,13 @@ def constraint_rotation_axes(
         axis[(component - translation_count + (2 if not is_3d else 0)) % 3] = 1.0
         axes.append(axis)
     return np.asarray(axes)
+
+
+def face_display_node_ids(node_ids: tuple[int, ...]) -> tuple[int, ...]:
+    """Return corner nodes in perimeter order for supported quadratic faces."""
+
+    if len(node_ids) == 8:
+        return node_ids[:4]
+    if len(node_ids) == 6:
+        return node_ids[:3]
+    return node_ids

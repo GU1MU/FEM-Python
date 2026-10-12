@@ -28,15 +28,6 @@ from fem.application.results import (
     ResultCellKind,
     ResultValueLayout,
 )
-from fem.boundary.step import (
-    boundary_for_step,
-    effective_step_boundaries,
-    get_step,
-)
-from fem.core._constraint_targets import (
-    displacement_target_kind,
-    resolve_displacement_node_ids,
-)
 from fem.geometry import (
     LogicalEntityRef,
     SketchArc,
@@ -102,22 +93,10 @@ from ..visualization.contour_rendering import (
 )
 from ..visualization.model_adapter import ModelGeometry, pyvista_cell_array
 from ..visualization.scene import DisplayState
-from ..visualization.symbols import (
-    SymbolSettings,
-    arc_points,
-    camera_facing_offset,
-    constraint_outward_direction,
-    constraint_rotation_axes,
-    constraint_sample_indices,
-    constraint_spatial_regions,
-    constraint_symbol_dimensions,
-    load_arrow_origins,
-    load_symbol_length,
-    rotation_lock_points,
-    sample_distributed_faces,
-    sample_distributed_polyline,
-    symbol_length,
-)
+from ..visualization.symbols import SymbolSettings, face_display_node_ids
+from ..visualization.symbol_preparation import SymbolPreparation
+from ..visualization.symbol_scene import SymbolBackend, SymbolCameraMetrics, SymbolScene
+
 
 if TYPE_CHECKING:
     from ..visualization.result_renderer import ResultRenderPayload
@@ -128,11 +107,9 @@ _backend_error: Exception | None = None
 _backend_attempted = False
 
 BEAM_FRAME_GLYPH_LIMIT = 64
-BEAM_FRAME_CACHE_LIMIT = 256
 _TYPED_RESULT_GRID_NAME = "typed_result_grid"
 _LINE_ELEMENT_WIDTH = 5
 _LINE_NODE_POINT_SIZE = 11
-_GRAVITY_SYMBOL_COLOR = "#FFD400"
 
 
 def _positive_id_indices(values: np.ndarray) -> dict[int, tuple[int, ...]]:
@@ -294,21 +271,6 @@ class _SelectionRubberBand:
         return True
 
 
-def _effective_line_load_vector(
-    vector: object,
-    coordinate_system: str,
-    frame: Any | None,
-) -> np.ndarray | None:
-    """Project local components with the application-resolved Beam rotation."""
-
-    values = np.asarray(vector, dtype=float)
-    if coordinate_system != "local":
-        return values
-    if frame is None:
-        return None
-    return np.asarray(frame.rotation, dtype=float).T @ values
-
-
 def _binding_error(interactor: type[object]) -> RuntimeError | None:
     """Reject Qt bindings that differ from the main application."""
     for base in interactor.mro():
@@ -463,16 +425,6 @@ def _mesh_edge_polydata(
     return dataset
 
 
-def _line_only_polydata(pyvista, points: np.ndarray, lines: Iterable[int]):
-    """Build line cells without PyVista's implicit vertex cells."""
-
-    dataset = pyvista.PolyData()
-    dataset.points = points
-    dataset.lines = np.asarray(tuple(lines), dtype=np.int64)
-    dataset.set_active_scalars(None)
-    return dataset
-
-
 def _mesh_face_polydata(
     pyvista,
     geometry: ModelGeometry,
@@ -483,7 +435,7 @@ def _mesh_face_polydata(
     """Build boundary-face polygons while retaining element-local identity."""
 
     display_node_ids = tuple(
-        _face_display_node_ids(node_ids)
+        face_display_node_ids(node_ids)
         for _element_id, _local_index, node_ids in rows
     )
     cells = tuple(
@@ -507,16 +459,6 @@ def _mesh_face_polydata(
     )
     dataset.set_active_scalars(None)
     return dataset
-
-
-def _face_display_node_ids(node_ids: tuple[int, ...]) -> tuple[int, ...]:
-    """Return corner nodes in perimeter order for supported quadratic faces."""
-
-    if len(node_ids) == 8:
-        return node_ids[:4]
-    if len(node_ids) == 6:
-        return node_ids[:3]
-    return node_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -845,30 +787,13 @@ class FEMViewport(QWidget):
         # actor/layer updates.  The caller then emits one explicit render.
         self._render_suppressed = False
         self._overlay_undeformed = False
-        self._symbol_settings = SymbolSettings()
-        self._symbol_sampling_density_override: str | None = None
-        self._symbols_visible = True
-        self._boundary_cache: dict[str | None, Any] = {}
-        self._effective_frame_query: (
-            Callable[[RegionRef | int], Any] | None
-        ) = None
-        self._beam_frame_cache: dict[RegionRef | int, Any] = {}
+        self._symbol_preparation = SymbolPreparation()
+        self._symbol_scene = SymbolScene()
         self._beam_frame_preview_target: RegionRef | int | None = None
-        self._last_symbol_scale: float | None = None
-        self._last_symbol_camera_position: np.ndarray | None = None
         self._fit_bounds_cache: (
             tuple[object, int | None, tuple[float, float, float, float, float, float] | None]
             | None
         ) = None
-        self._symbol_reference_length: float | None = None
-        self._symbol_model_center: np.ndarray | None = None
-        self._constraint_reference_axis_cache: np.ndarray | None = None
-        self._constraint_sample_node_ids: dict[
-            tuple[tuple[str, str | int], str],
-            tuple[int, ...],
-        ] = {}
-        self._element_lookup_cache: dict[int, Any] | None = None
-        self._updating_symbol_scale = False
         self._selection_press_position: tuple[float, float] | None = None
         self._selection_dragged = False
         self._selection_rubber_band: _SelectionRubberBand | None = None
@@ -1655,15 +1580,12 @@ class FEMViewport(QWidget):
         self._display = DisplayState()
         self._rendered_display = None
         self._overlay_undeformed = False
-        self._boundary_cache.clear()
-        self._effective_frame_query = effective_frame_query
+        self._symbol_preparation.bind(model, geometry, effective_frame_query)
+        self._symbol_scene.clear()
         self._mesh_selection_topology_provider = (
             mesh_selection_topology_provider
         )
-        self._beam_frame_cache.clear()
         self._beam_frame_preview_target = None
-        self._last_symbol_scale = None
-        self._last_symbol_camera_position = None
         self._clear_geometry_scan_caches()
         if is_offscreen_environment():
             self._message.setText("Model loaded (3D rendering is disabled)")
@@ -1697,9 +1619,8 @@ class FEMViewport(QWidget):
         self._geometry = geometry
         self._artifact_id = geometry.artifact_id
         self._run_id = None
-        self._effective_frame_query = effective_frame_query
-        self._boundary_cache.clear()
-        self._beam_frame_cache.clear()
+        self._symbol_preparation.bind(model, geometry, effective_frame_query)
+        self._symbol_scene.invalidate_camera()
         self._clear_geometry_scan_caches()
 
     def clear_model(self) -> None:
@@ -1751,12 +1672,8 @@ class FEMViewport(QWidget):
         self._hover_hit = None
         self._pending_hover_position = None
         self._hover_timer.stop()
-        self._boundary_cache.clear()
-        self._effective_frame_query = None
-        self._beam_frame_cache.clear()
+        self._symbol_preparation.clear()
         self._beam_frame_preview_target = None
-        self._last_symbol_scale = None
-        self._last_symbol_camera_position = None
         self._clear_geometry_scan_caches()
         self._grid = None
         self._result_grid = None
@@ -5238,7 +5155,7 @@ class FEMViewport(QWidget):
         face_node_ids = {
             int(node_id)
             for _element_id, _local_index, node_ids in self._mesh_scope_face_rows
-            for node_id in _face_display_node_ids(node_ids)
+            for node_id in face_display_node_ids(node_ids)
         }
         if (
             self._mesh_scope_edge_rows
@@ -5819,21 +5736,6 @@ class FEMViewport(QWidget):
         )
         self._render()
 
-    def _effective_beam_frame_report(
-        self,
-        target: RegionRef | int,
-    ) -> Any | None:
-        cached = self._beam_frame_cache.get(target)
-        if cached is not None:
-            return cached
-        if not callable(self._effective_frame_query):
-            return None
-        report = self._effective_frame_query(target)
-        if len(self._beam_frame_cache) >= BEAM_FRAME_CACHE_LIMIT:
-            oldest = next(iter(self._beam_frame_cache))
-            self._beam_frame_cache.pop(oldest, None)
-        self._beam_frame_cache[target] = report
-        return report
 
     def _clear_beam_frame_preview(
         self,
@@ -5865,14 +5767,14 @@ class FEMViewport(QWidget):
             if render:
                 self._render()
             return
-        report = self._effective_beam_frame_report(target)
+        report = self._symbol_preparation.frame_report(target)
         entries = tuple(getattr(report, "entries", ()))
         if not entries:
             if render:
                 self._render()
             return
         entries = entries[:BEAM_FRAME_GLYPH_LIMIT]
-        element_lookup = self._element_lookup()
+        element_lookup = self._symbol_preparation.element_lookup()
         points = self._current_points()
         frame_rows: list[tuple[np.ndarray, Any]] = []
         for entry in entries:
@@ -5896,8 +5798,9 @@ class FEMViewport(QWidget):
             if render:
                 self._render()
             return
-        glyph_scale = 0.75 * self._camera_symbol_length(
-            self._symbol_settings.scale
+        glyph_scale = 0.75 * self._symbol_scene.symbol_length(
+            self._symbol_preparation.reference_length(), self._symbol_camera_metrics(),
+            self._symbol_scene.settings.scale,
         )
         axes = (
             ("x", "#dc4b4b", "local_x"),
@@ -6032,38 +5935,25 @@ class FEMViewport(QWidget):
     def set_symbol_settings(
         self, settings: SymbolSettings, *, refresh: bool = True, render: bool = True
     ) -> None:
-        self._symbol_settings = settings
+        self._symbol_scene.settings = settings
         if refresh:
             self.show_boundary_and_loads(settings.step_name, render=render)
 
-    def set_symbol_sampling_density_override(
-        self,
-        density: str | None,
-    ) -> None:
-        if density not in {None, "low", "medium", "high"}:
-            raise ValueError("Symbol sampling density must be low, medium, high, or None")
-        self._symbol_sampling_density_override = density
 
-    def _effective_symbol_sampling_density(self) -> str:
-        return (
-            self._symbol_sampling_density_override
-            or self._symbol_settings.sampling_density
-        )
+    def set_symbol_sampling_density_override(self, density: str | None) -> None:
+        self._symbol_scene.set_sampling_density_override(density)
 
     def set_symbols_visible(
         self, visible: bool, *, refresh: bool = True, render: bool = True
     ) -> None:
         """Show or hide constraint and load symbols for the current Step."""
-        self._symbols_visible = bool(visible)
-        symbol_names = self._symbol_actor_names()
-        existing = [self._actors[name] for name in symbol_names if name in self._actors]
-        if existing:
-            for actor in existing:
-                actor.SetVisibility(self._symbols_visible)
+        had_actors = self._symbol_scene.set_visible(visible)
+        if had_actors:
             if render:
                 self._render()
-        elif refresh and self._symbols_visible:
-            self.show_boundary_and_loads(self._symbol_settings.step_name, render=render)
+        elif refresh and visible:
+            self.show_boundary_and_loads(self._symbol_scene.settings.step_name, render=render)
+
 
     def screenshot_size(self) -> tuple[int, int]:
         """Return the current VTK viewport pixel size for screenshots."""
@@ -6303,8 +6193,8 @@ class FEMViewport(QWidget):
                 self._element_layer_color(palette),
             )
         self._refresh_labels(render=False)
-        if self._symbols_visible and self._model is not None:
-            self.show_boundary_and_loads(self._symbol_settings.step_name, render=False)
+        if self._symbol_scene.visible and self._model is not None:
+            self.show_boundary_and_loads(self._symbol_scene.settings.step_name, render=False)
         self._refresh_extrema_for_background()
         self._update_scalar_bar_text_color()
         self._render()
@@ -6391,12 +6281,8 @@ class FEMViewport(QWidget):
 
     def _clear_geometry_scan_caches(self) -> None:
         self._fit_bounds_cache = None
-        self._symbol_reference_length = None
-        self._symbol_model_center = None
-        self._constraint_reference_axis_cache = None
-        self._constraint_sample_node_ids.clear()
-        self._element_lookup_cache = None
         self._last_sketch_curve_sampling = None
+
 
     def _fit_bounds(self) -> tuple[float, float, float, float, float, float] | None:
         """Return bounds for the displayed model, excluding auxiliary actors."""
@@ -6505,54 +6391,9 @@ class FEMViewport(QWidget):
         self.update()
 
     def invalidate_boundary_cache(self) -> None:
-        """Drop GUI-only expanded boundary data after analysis definitions change."""
-        self._boundary_cache.clear()
-        self._constraint_sample_node_ids.clear()
-
-    def _camera_symbol_length(self, multiplier: float) -> float:
-        if self._geometry is None:
-            return 1.0e-9
-        if self._symbol_reference_length is None:
-            self._symbol_reference_length = symbol_length(self._geometry.points)
-        base = self._symbol_reference_length
-        world_per_pixel = self._world_per_pixel()
-        if world_per_pixel is not None and world_per_pixel > 0.0:
-            base = float(np.clip(
-                base,
-                24.0 * world_per_pixel,
-                56.0 * world_per_pixel,
-            ))
-        return max(base * float(multiplier), 1.0e-9)
-
-    def _cached_symbol_model_center(self) -> np.ndarray:
-        if self._symbol_model_center is None:
-            self._symbol_model_center = 0.5 * (
-                np.min(self._geometry.points, axis=0)
-                + np.max(self._geometry.points, axis=0)
-            )
-        return self._symbol_model_center
-
-    def _constraint_reference_axis(self) -> np.ndarray:
-        if self._constraint_reference_axis_cache is None:
-            points = np.asarray(self._geometry.points, dtype=float)
-            centered = points - np.mean(points, axis=0)
-            _left, _singular_values, right = np.linalg.svd(
-                centered,
-                full_matrices=False,
-            )
-            self._constraint_reference_axis_cache = np.asarray(
-                right[0],
-                dtype=float,
-            )
-        return self._constraint_reference_axis_cache
-
-    def _element_lookup(self) -> dict[int, Any]:
-        if self._element_lookup_cache is None:
-            self._element_lookup_cache = {
-                int(element.id): element
-                for element in self._model.mesh.elements
-            }
-        return self._element_lookup_cache
+        """Drop prepared symbols and resolved frames after definitions change."""
+        self._symbol_preparation.invalidate_definitions()
+        self._symbol_scene.invalidate_camera()
 
     def _world_per_pixel(self) -> float | None:
         if self._plotter is None:
@@ -6575,51 +6416,46 @@ class FEMViewport(QWidget):
             return None
         return 2.0 * distance * float(np.tan(np.deg2rad(0.5 * view_angle))) / height
 
-    def _camera_position(self) -> np.ndarray | None:
+    def _symbol_camera_metrics(self) -> SymbolCameraMetrics:
         camera = getattr(self._plotter, "camera", None) if self._plotter is not None else None
-        if camera is None:
-            return None
-        try:
-            return np.asarray(camera.GetPosition(), dtype=float)
-        except Exception:
-            return None
+        position = None
+        if camera is not None:
+            try:
+                position = tuple(float(value) for value in camera.GetPosition())
+            except Exception:
+                pass
+        return SymbolCameraMetrics(self._world_per_pixel(), position)
+
+    def _bind_symbol_backend(self) -> None:
+        self._symbol_scene.bind_backend(SymbolBackend(
+            _pyvista, self._plotter.add_mesh, self._plotter.add_arrows,
+            self._plotter.add_point_labels, self._plotter.remove_actor,
+        ))
+
 
     def _refresh_symbols_for_camera(self, *, render: bool) -> None:
         if (
-            self._updating_symbol_scale
-            or not self._symbols_visible
-            or self._model is None
-            or self._geometry is None
-            or self._plotter is None
-            or _pyvista is None
+            not self._symbol_scene.visible or self._model is None or self._geometry is None
+            or self._plotter is None or _pyvista is None
         ):
             return
-        new_scale = self._camera_symbol_length(self._symbol_settings.scale)
-        previous = self._last_symbol_scale
-        camera_position = self._camera_position()
-        same_scale = previous is not None and abs(new_scale - previous) <= 0.02 * max(previous, 1.0e-12)
-        same_camera = (
-            camera_position is not None
-            and self._last_symbol_camera_position is not None
-            and np.allclose(camera_position, self._last_symbol_camera_position)
+        self._bind_symbol_backend()
+        data = self._symbol_preparation.prepare(
+            self._symbol_scene.settings.step_name, self._symbol_scene.settings,
+            self._symbol_scene.sampling_density,
         )
-        if same_scale and same_camera:
+        if data is None:
             return
-        self._updating_symbol_scale = True
-        try:
-            self.show_boundary_and_loads(
-                self._symbol_settings.step_name,
-                render=False,
-            )
-            if self._beam_frame_preview_target is not None:
-                self.show_beam_frame_preview(
-                    self._beam_frame_preview_target,
-                    render=False,
-                )
-            if render:
-                self._render()
-        finally:
-            self._updating_symbol_scale = False
+        if not self._symbol_scene.refresh_for_camera(
+            data, self._symbol_camera_metrics(), self._current_points(),
+            self._visual_palette()["label_background"],
+        ):
+            return
+        if self._beam_frame_preview_target is not None:
+            self.show_beam_frame_preview(self._beam_frame_preview_target, render=False)
+        if render:
+            self._render()
+
 
     def locate_nodes(self, node_ids: tuple[int, ...]) -> None:
         """Fit the camera to the specified nodes without changing selection."""
@@ -6700,614 +6536,31 @@ class FEMViewport(QWidget):
             self._refresh_symbols_for_camera(render=False)
             self._render()
 
-    @staticmethod
-    def _symbol_actor_names() -> tuple[str, ...]:
-        return (
-            "constraints", "constraint_rotations",
-            "constraint_labels", "loads", "load_moments", "load_moment_heads",
-            "load_labels", "load_moment_labels", "load_regions", "load_region_edges",
-            "gravity",
-        )
 
     def show_boundary_and_loads(
         self, step_name: str | None = None, *, render: bool = True
     ) -> None:
-        for name in self._symbol_actor_names():
-            self._remove_actor(name)
-        if not self._symbols_visible:
+        self._symbol_scene.clear()
+        if not self._symbol_scene.visible:
             if render:
                 self._render()
             return
         if self._model is None or self._geometry is None or self._plotter is None or _pyvista is None:
             return
-        settings = self._symbol_settings
-        sampling_density = self._effective_symbol_sampling_density()
+        self._bind_symbol_backend()
+        settings = self._symbol_scene.settings
         selected_step = step_name if step_name is not None else settings.step_name
-        try:
-            if selected_step not in self._boundary_cache:
-                self._boundary_cache[selected_step] = boundary_for_step(
-                    self._model, selected_step
-                )
-            boundary = self._boundary_cache[selected_step]
-        except Exception:
-            return
-        selected_definition = get_step(self._model, selected_step)
-        glyph_scale = self._camera_symbol_length(settings.scale)
-        self._last_symbol_scale = glyph_scale
-        self._last_symbol_camera_position = self._camera_position()
-        constraint_scale, constraint_radius = constraint_symbol_dimensions(glyph_scale)
-        load_scale = load_symbol_length(glyph_scale)
-        model_center = self._cached_symbol_model_center()
-        if selected_definition is not None and selected_definition.gravity_loads:
-            gravity_vector = np.zeros(3, dtype=float)
-            for gravity_load in selected_definition.gravity_loads:
-                acceleration = np.asarray(
-                    gravity_load.acceleration,
-                    dtype=float,
-                ).reshape(-1)
-                gravity_vector[:min(3, len(acceleration))] += acceleration[:3]
-            self._add_gravity_arrow(
-                model_center,
-                gravity_vector,
-                load_scale,
-            )
-        is_3d = bool(self._model.mesh.nodes and hasattr(self._model.mesh.nodes[0], "z"))
-        translation_count = 3 if is_3d else 2
-        constraint_points: list[np.ndarray] = []
-        constraint_vectors: list[np.ndarray] = []
-        rotation_points: list[np.ndarray] = []
-        rotation_axes: list[np.ndarray] = []
-        constraint_label_points: dict[int, np.ndarray] = {}
-        constraint_labels_by_node: dict[int, list[str]] = {}
-        if settings.show_constraints:
-            boundary_definitions = effective_step_boundaries(
-                self._model,
-                selected_definition,
-            )
-            constraints_by_target: dict[
-                tuple[str, str | int],
-                dict[int, float],
-            ] = {}
-            representative_by_target: dict[
-                tuple[str, str | int],
-                object,
-            ] = {}
-            for definition in boundary_definitions:
-                target_key = (
-                    displacement_target_kind(definition),
-                    definition.target,
-                )
-                representative_by_target[target_key] = definition
-                components = constraints_by_target.setdefault(target_key, {})
-                for component in range(definition.first_component - 1, definition.last_component):
-                    components[component] = float(definition.value)
-            for target_key, components in constraints_by_target.items():
-                sample_key = (target_key, sampling_density)
-                sampled_node_ids = self._constraint_sample_node_ids.get(sample_key)
-                if sampled_node_ids is None:
-                    try:
-                        node_ids = resolve_displacement_node_ids(
-                            self._model,
-                            representative_by_target[target_key],
-                        )
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    target_points = np.asarray([
-                        self._geometry.points[
-                            self._geometry.node_id_to_point_index[node_id]
-                        ]
-                        for node_id in node_ids
-                    ])
-                    regions = constraint_spatial_regions(
-                        target_points,
-                        self._geometry.points,
-                        reference_axis=self._constraint_reference_axis(),
-                    )
-                    sampled: list[int] = []
-                    for region_indices in regions:
-                        region_node_ids = tuple(
-                            node_ids[int(index)] for index in region_indices
-                        )
-                        selected = constraint_sample_indices(
-                            target_points[region_indices],
-                            sampling_density,
-                        )
-                        sampled.extend(
-                            region_node_ids[int(index)] for index in selected
-                        )
-                    sampled_node_ids = tuple(sampled)
-                    self._constraint_sample_node_ids[sample_key] = sampled_node_ids
-                camera_position = self._camera_position()
-                for node_id in sampled_node_ids:
-                    base = self._geometry.points[
-                        self._geometry.node_id_to_point_index[node_id]
-                    ]
-                    display_base = base + camera_facing_offset(
-                        base, camera_position, 0.04 * constraint_scale
-                    )
-                    for component, value in sorted(components.items()):
-                        name = (
-                            f"R{component - translation_count + 1}"
-                            if translation_count == 3
-                            and component >= translation_count
-                            else "R3"
-                            if component >= translation_count
-                            else f"U{component + 1}"
-                        )
-                        constraint_label_points[node_id] = display_base
-                        constraint_labels_by_node.setdefault(node_id, []).append(
-                            f"{name}={value:.6g}" if value else name
-                        )
-                        if component >= translation_count:
-                            continue
-                        outward = constraint_outward_direction(
-                            base, model_center, component
-                        )
-                        tip = display_base + 0.08 * constraint_scale * outward
-                        constraint_points.append(
-                            tip + constraint_scale * outward
-                        )
-                        constraint_vectors.append(-outward)
-                    displayed_axes = constraint_rotation_axes(
-                        tuple(sorted(components)),
-                        is_3d=is_3d,
-                        point=base,
-                        camera_position=camera_position,
-                    )
-                    rotation_points.extend(display_base for _axis in displayed_axes)
-                    rotation_axes.extend(displayed_axes)
-        if constraint_points:
-            cloud = _pyvista.PolyData(np.asarray(constraint_points))
-            cloud["directions"] = np.asarray(constraint_vectors)
-            cloud["constraint_scale"] = np.full(
-                len(constraint_points), constraint_scale
-            )
-            marker = _pyvista.Arrow(
-                start=(0.0, 0.0, 0.0),
-                direction=(1.0, 0.0, 0.0),
-                tip_length=0.34,
-                tip_radius=constraint_radius / constraint_scale,
-                tip_resolution=16,
-                shaft_radius=0.028,
-                shaft_resolution=12,
-            )
-            glyphs = cloud.glyph(
-                orient="directions",
-                scale="constraint_scale",
-                factor=1.0,
-                geom=marker,
-            )
-            self._actors["constraints"] = self._plotter.add_mesh(
-                glyphs,
-                color=settings.constraint_color,
-                lighting=False,
-                name="constraints",
-                reset_camera=False,
-            )
-        if rotation_points:
-            self._add_rotation_constraint_symbols(
-                rotation_points, rotation_axes, 0.36 * constraint_scale,
-                settings.constraint_color, "constraint_rotations",
-            )
-        if settings.show_values and constraint_labels_by_node:
-            node_ids = sorted(constraint_labels_by_node)
-            label_points = [constraint_label_points[node_id] for node_id in node_ids]
-            labels = [", ".join(constraint_labels_by_node[node_id]) for node_id in node_ids]
-            self._actors["constraint_labels"] = self._plotter.add_point_labels(
-                np.asarray(label_points), labels, point_size=0, font_size=9,
-                shape_color=self._visual_palette()["label_background"],
-                text_color=settings.constraint_color,
-                name="constraint_labels", reset_camera=False,
-            )
-        origins: list[np.ndarray] = []
-        vectors: list[np.ndarray] = []
-        load_starts_at_anchor: list[bool] = []
-        load_labels: list[str] = []
-        moment_points: list[np.ndarray] = []
-        moment_labels: list[str] = []
-        if settings.show_nodal_loads:
-            nodal_vectors: dict[int, np.ndarray] = {}
-            nodal_moments: dict[int, np.ndarray] = {}
-            for dof, value in boundary.nodal_forces.items():
-                node_index, component = divmod(int(dof), self._model.mesh.dofs_per_node)
-                node_id = self._model.mesh.dof_map.node_ids[node_index]
-                if component < translation_count:
-                    nodal_vectors.setdefault(node_id, np.zeros(3))[component] += float(value)
-                else:
-                    axis = component - translation_count if is_3d else 2
-                    nodal_moments.setdefault(node_id, np.zeros(3))[axis] += float(value)
-            for node_id, vector in nodal_vectors.items():
-                if float(np.linalg.norm(vector)) <= 0.0:
-                    continue
-                base = self._geometry.points[self._geometry.node_id_to_point_index[node_id]]
-                origins.append(base)
-                vectors.append(vector)
-                load_starts_at_anchor.append(False)
-                load_labels.append(f"F={tuple(float(value) for value in vector[:translation_count])}")
-            for node_id, moment in nodal_moments.items():
-                if float(np.linalg.norm(moment)) <= 0.0:
-                    continue
-                moment_points.append(self._geometry.points[self._geometry.node_id_to_point_index[node_id]])
-                moment_labels.append(
-                    "M=" + str(tuple(float(value) for value in moment))
-                )
-        face_cells: list[int] = []
-        edge_lines: list[int] = []
-
-        def node_point(node_id: int) -> np.ndarray:
-            return self._geometry.points[
-                self._geometry.node_id_to_point_index[int(node_id)]
-            ]
-
-        def add_distributed_group(definition, members, tractions, kind: str) -> None:
-            member_points: list[np.ndarray] = []
-            member_vectors: list[np.ndarray] = []
-            for member, traction in zip(members, tractions):
-                ids = member.node_ids
-                points = np.asarray([node_point(node_id) for node_id in ids])
-                vector = np.pad(
-                    np.asarray(traction.vector, dtype=float),
-                    (0, max(0, 3 - len(traction.vector))),
-                )[:3]
-                if kind == "face":
-                    display_ids = _face_display_node_ids(tuple(ids))
-                    points = np.asarray([
-                        node_point(node_id) for node_id in display_ids
-                    ])
-                member_points.append(points)
-                member_vectors.append(vector)
-                indices = [self._geometry.node_id_to_point_index[int(node_id)] for node_id in ids]
-                target = face_cells if kind == "face" else edge_lines
-                target.extend((len(indices), *indices))
-            if not member_points:
-                return
-            if kind == "face":
-                sampled_points, sampled_vectors = sample_distributed_faces(
-                    member_points,
-                    member_vectors,
-                    sampling_density,
-                )
-            else:
-                sampled_points, sampled_vectors = sample_distributed_polyline(
-                    member_points,
-                    member_vectors,
-                    sampling_density,
-                )
-            if len(sampled_points) == 0:
-                return
-            label_index = int(np.argmin(np.linalg.norm(
-                sampled_points - np.mean(sampled_points, axis=0), axis=1
-            )))
-            for index, (sample, vector) in enumerate(
-                zip(sampled_points, sampled_vectors)
-            ):
-                magnitude = float(np.linalg.norm(vector))
-                if magnitude <= 0.0:
-                    continue
-                origins.append(sample)
-                vectors.append(vector)
-                load_starts_at_anchor.append(kind == "edge")
-                prefix = "P" if definition.load_type == "pressure" else "T"
-                load_labels.append(
-                    f"{prefix}={magnitude:.6g}" if index == label_index else ""
-                )
-
-        if selected_definition is not None:
-            surface_offset = 0
-            if settings.show_surface_loads:
-                for definition in selected_definition.surface_loads:
-                    members = self._model.surfaces[definition.surface].faces
-                    count = len(members)
-                    add_distributed_group(
-                        definition, members,
-                        boundary.surface_tractions[surface_offset:surface_offset + count],
-                        "face",
-                    )
-                    surface_offset += count
-            edge_offset = 0
-            if settings.show_edge_loads:
-                for definition in selected_definition.edge_loads:
-                    members = self._model.edges[definition.edge].edges
-                    count = len(members)
-                    add_distributed_group(
-                        definition, members,
-                        boundary.edge_tractions[edge_offset:edge_offset + count],
-                        "edge",
-                    )
-                    edge_offset += count
-            if settings.show_line_loads:
-                element_lookup = self._element_lookup()
-                frame_by_element: dict[int, Any] = {}
-                for definition in selected_definition.line_loads:
-                    if definition.coordinate_system != "local":
-                        continue
-                    frame_target = (
-                        int(definition.target)
-                        if isinstance(definition.target, int)
-                        else RegionRef(
-                            "element_set",
-                            str(definition.target),
-                        )
-                    )
-                    report = self._effective_beam_frame_report(
-                        frame_target
-                    )
-                    for entry in tuple(
-                        getattr(report, "entries", ())
-                    ):
-                        frame_by_element[int(entry.element_id)] = (
-                            entry.frame
-                        )
-                element_sets = dict(
-                    getattr(self._model, "metadata", {}).get(
-                        "_abaqus_internal_element_sets",
-                        {},
-                    )
-                )
-                element_sets.update(getattr(self._model, "element_sets", {}))
-                line_offset = 0
-                for definition in selected_definition.line_loads:
-                    target_ids = (
-                        tuple(element_sets[str(definition.target)].element_ids)
-                        if isinstance(definition.target, str)
-                        else (int(definition.target),)
-                    )
-                    count = len(target_ids)
-                    group_loads = boundary.line_loads[
-                        line_offset:line_offset + count
-                    ]
-                    line_offset += count
-                    member_points: list[np.ndarray] = []
-                    member_vectors: list[np.ndarray] = []
-                    label_vector: tuple[float, ...] | None = None
-                    for load in group_loads:
-                        element = element_lookup.get(int(load.elem_id))
-                        if element is None:
-                            continue
-                        points = np.asarray([
-                            node_point(node_id)
-                            for node_id in element.node_ids
-                        ])
-                        vector = _effective_line_load_vector(
-                            load.vector,
-                            load.coordinate_system,
-                            frame_by_element.get(int(load.elem_id)),
-                        )
-                        if vector is None or float(np.linalg.norm(vector)) <= 0.0:
-                            continue
-                        member_points.append(points)
-                        member_vectors.append(vector)
-                        label_vector = tuple(float(value) for value in load.vector)
-                        indices = [
-                            self._geometry.node_id_to_point_index[int(node_id)]
-                            for node_id in element.node_ids
-                        ]
-                        edge_lines.extend((len(indices), *indices))
-                    samples, sample_vectors = sample_distributed_polyline(
-                        member_points,
-                        member_vectors,
-                        sampling_density,
-                    )
-                    if len(samples) == 0:
-                        continue
-                    label_index = int(np.argmin(np.linalg.norm(
-                        samples - np.mean(samples, axis=0), axis=1
-                    )))
-                    for sample_index, (sample, vector) in enumerate(
-                        zip(samples, sample_vectors)
-                    ):
-                        origins.append(sample)
-                        vectors.append(vector)
-                        load_starts_at_anchor.append(False)
-                        load_labels.append(
-                            f"q={label_vector}"
-                            if sample_index == label_index
-                            else ""
-                        )
-        if face_cells:
-            region = _pyvista.PolyData(
-                self._current_points(), faces=np.asarray(face_cells, dtype=np.int64)
-            )
-            self._actors["load_regions"] = self._plotter.add_mesh(
-                region, color=settings.load_color, opacity=0.11, show_edges=False,
-                lighting=False, name="load_regions", reset_camera=False,
-            )
-        if edge_lines:
-            region_edges = _line_only_polydata(
-                _pyvista,
-                self._current_points(),
-                edge_lines,
-            )
-            self._actors["load_region_edges"] = self._plotter.add_mesh(
-                region_edges, color=settings.load_color, line_width=3,
-                lighting=False, name="load_region_edges", reset_camera=False,
-            )
-        self._add_load_arrows(
-            origins,
-            vectors,
-            load_starts_at_anchor,
-            load_labels,
-            load_scale,
+        data = self._symbol_preparation.prepare(
+            selected_step, settings, self._symbol_scene.sampling_density,
         )
-        if moment_points:
-            moment_axes = [
-                moment / np.linalg.norm(moment)
-                for moment in nodal_moments.values()
-                if float(np.linalg.norm(moment)) > 0.0
-            ]
-            self._add_arc_symbols(
-                moment_points, moment_axes, 0.65 * glyph_scale,
-                settings.load_color, "load_moments",
-            )
-            if settings.show_values:
-                self._actors["load_moment_labels"] = self._plotter.add_point_labels(
-                    np.asarray(moment_points), moment_labels, point_size=0, font_size=9,
-                    shape_color=self._visual_palette()["label_background"],
-                    text_color=settings.load_color,
-                    name="load_moment_labels", reset_camera=False,
-                )
+        if data is None:
+            return
+        self._symbol_scene.install(
+            data, self._symbol_camera_metrics(), self._current_points(),
+            self._visual_palette()["label_background"],
+        )
         if render:
             self._render()
-
-    def _add_arc_symbols(
-        self,
-        centers: list[np.ndarray],
-        axes: list[np.ndarray],
-        radius: float,
-        color: str,
-        name: str,
-    ) -> None:
-        points: list[np.ndarray] = []
-        lines: list[int] = []
-        heads: list[np.ndarray] = []
-        tangents: list[np.ndarray] = []
-        for center, axis in zip(centers, axes):
-            arc = arc_points(center, axis, radius)
-            if len(arc) < 2:
-                continue
-            offset = len(points)
-            points.extend(arc)
-            lines.extend((len(arc), *(offset + index for index in range(len(arc)))))
-            axis_start = len(points)
-            points.extend((center - 0.45 * radius * axis, center + 0.45 * radius * axis))
-            lines.extend((2, axis_start, axis_start + 1))
-            heads.append(arc[-1])
-            tangents.append(arc[-1] - arc[-2])
-        if not points:
-            return
-        poly = _pyvista.PolyData(np.asarray(points))
-        poly.lines = np.asarray(lines, dtype=np.int64)
-        self._actors[name] = self._plotter.add_mesh(
-            poly, color=color, line_width=2, lighting=False,
-            name=name, reset_camera=False,
-        )
-        head_name = f"{name[:-1]}_heads" if name.endswith("s") else f"{name}_heads"
-        self._actors[head_name] = self._plotter.add_arrows(
-            np.asarray(heads), np.asarray(tangents), mag=0.22 * radius,
-            color=color, lighting=False, name=head_name, reset_camera=False,
-        )
-
-    def _add_rotation_constraint_symbols(
-        self,
-        centers: list[np.ndarray],
-        axes: list[np.ndarray],
-        radius: float,
-        color: str,
-        name: str,
-    ) -> None:
-        points: list[np.ndarray] = []
-        lines: list[int] = []
-        for center, axis in zip(centers, axes):
-            ring, bars = rotation_lock_points(center, axis, radius)
-            if len(ring) == 0:
-                continue
-            ring_start = len(points)
-            points.extend(ring)
-            lines.extend((len(ring), *(ring_start + index for index in range(len(ring)))))
-            bars_start = len(points)
-            points.extend(bars)
-            lines.extend((2, bars_start, bars_start + 1))
-            lines.extend((2, bars_start + 2, bars_start + 3))
-        if not points:
-            return
-        poly = _pyvista.PolyData(np.asarray(points))
-        poly.lines = np.asarray(lines, dtype=np.int64)
-        self._actors[name] = self._plotter.add_mesh(
-            poly, color=color, line_width=2, lighting=False,
-            name=name, reset_camera=False,
-        )
-
-    def _add_load_arrows(
-        self,
-        anchors: list[np.ndarray],
-        vectors: list[np.ndarray],
-        starts_at_anchor: list[bool],
-        labels: list[str],
-        glyph_scale: float,
-    ) -> None:
-        if not vectors:
-            return
-        settings = self._symbol_settings
-        display_vectors = np.asarray(vectors, dtype=float)
-        norms = np.linalg.norm(display_vectors, axis=1)
-        nonzero = norms > 0.0
-        directions = np.zeros_like(display_vectors)
-        directions[nonzero] = display_vectors[nonzero] / norms[nonzero, None]
-        if settings.normalize_arrows:
-            display_vectors = directions
-        else:
-            maximum = float(np.max(norms))
-            if maximum > 0.0:
-                factors = 0.55 + 0.45 * np.sqrt(norms / maximum)
-                display_vectors = directions * factors[:, None]
-        arrow_lengths = np.linalg.norm(display_vectors, axis=1)
-        camera_position = self._camera_position()
-        anchor_points = np.asarray([
-            np.asarray(anchor, dtype=float) + camera_facing_offset(
-                anchor,
-                camera_position,
-                0.08 * glyph_scale,
-            )
-            for anchor in anchors
-        ])
-        displayed_lengths = arrow_lengths * glyph_scale
-        display_origins = load_arrow_origins(
-            anchor_points,
-            directions,
-            displayed_lengths,
-            np.asarray(starts_at_anchor),
-        )
-        arrow_points = _pyvista.PolyData(display_origins)
-        arrow_points["directions"] = directions
-        arrow_points["arrow_scale"] = displayed_lengths
-        arrow = _pyvista.Arrow(
-            start=(0.0, 0.0, 0.0), direction=(1.0, 0.0, 0.0),
-            tip_length=0.20, tip_radius=0.07, tip_resolution=8,
-            shaft_radius=0.015, shaft_resolution=8,
-        )
-        arrow_glyphs = arrow_points.glyph(
-            orient="directions", scale="arrow_scale", factor=1.0, geom=arrow,
-        )
-        self._actors["loads"] = self._plotter.add_mesh(
-            arrow_glyphs, color=settings.load_color, lighting=False,
-            name="loads", reset_camera=False,
-        )
-        if settings.show_values and anchors:
-            existing = self._actors.get("load_labels")
-            if existing is not None:
-                self._remove_actor("load_labels")
-            labelled = [index for index, label in enumerate(labels) if label]
-            if labelled:
-                self._actors["load_labels"] = self._plotter.add_point_labels(
-                    display_origins[labelled], [labels[index] for index in labelled],
-                    point_size=0, font_size=9,
-                    shape_color=self._visual_palette()["label_background"],
-                    text_color=settings.load_color, name="load_labels",
-                    reset_camera=False,
-                )
-
-    def _add_gravity_arrow(
-        self,
-        center: np.ndarray,
-        acceleration: np.ndarray,
-        glyph_scale: float,
-    ) -> None:
-        magnitude = float(np.linalg.norm(acceleration))
-        if magnitude <= 0.0 or self._plotter is None:
-            return
-        direction = np.asarray(acceleration, dtype=float) / magnitude
-        origin = np.asarray(center, dtype=float) - 0.5 * glyph_scale * direction
-        actor = self._plotter.add_arrows(
-            origin.reshape((1, 3)),
-            direction.reshape((1, 3)),
-            mag=glyph_scale,
-            color=_GRAVITY_SYMBOL_COLOR,
-            lighting=False,
-            name="gravity",
-            reset_camera=False,
-        )
-        actor.SetPickable(False)
-        self._actors["gravity"] = actor
 
     def closeEvent(self, event) -> None:
         self.shutdown_backend()
@@ -7316,6 +6569,8 @@ class FEMViewport(QWidget):
     def shutdown_backend(self) -> None:
         """Release the native render backend exactly once."""
 
+        self._symbol_scene.detach()
+        self._symbol_preparation.clear()
         plotter = self._plotter
         if plotter is None:
             return
@@ -9626,6 +8881,7 @@ class FEMViewport(QWidget):
             pass
 
     def _remove_all_layers(self, *, render: bool = True) -> None:
+        self._symbol_scene.clear()
         for name in tuple(self._actors):
             self._remove_actor(name)
         self._remove_scalar_bars()
