@@ -9795,11 +9795,18 @@ class FEMMainWindow(QMainWindow):
         finally:
             self._highlight_analysis_scope(None)
 
-    def _highlight_analysis_scope(self, region: object) -> None:
+    def _highlight_analysis_scope(
+        self, region: MeshEntityRef | RegionRef | None,
+    ) -> None:
         """Project the scope selected by an analysis editor to the viewport."""
 
-        if isinstance(region, int):
-            self.highlight_entity("element", int(region))
+        if isinstance(region, MeshEntityRef):
+            if region.kind == "node":
+                self.highlight_entity("node", int(region.node_id))
+            elif region.kind == "element":
+                self.highlight_entity("element", int(region.element_id))
+            else:
+                raise ValueError("analysis scope requires a node or element reference")
             return
         if not isinstance(region, RegionRef):
             self.viewport.clear_selection()
@@ -12202,7 +12209,7 @@ class FEMMainWindow(QMainWindow):
     def _displacement_boundary_scope(
         self,
         key: object,
-    ) -> RegionRef | int | None:
+    ) -> RegionRef | MeshEntityRef | None:
         resolved = _resolve_analysis_object_key(
             tuple(self.document.steps),
             "boundaries",
@@ -12216,7 +12223,7 @@ class FEMMainWindow(QMainWindow):
         ]
         target = boundary.target
         if isinstance(target, int):
-            return int(target)
+            return MeshEntityRef.node(target)
         return RegionRef(
             displacement_target_kind(boundary),
             str(target),
@@ -12326,11 +12333,10 @@ class FEMMainWindow(QMainWindow):
             if scope is None:
                 return
             self._highlight_analysis_scope(scope)
-            target_kind = (
-                "node_set" if isinstance(scope, int) else scope.kind
-            )
-            target = scope if isinstance(scope, int) else scope.name
+            target_kind = scope.kind
+            target = scope.node_id if isinstance(scope, MeshEntityRef) else scope.name
             names = {
+                "node": "Node",
                 "node_set": "Node Set",
                 "edge": "Edge Set",
                 "surface": "Surface",
@@ -13801,8 +13807,6 @@ class FEMMainWindow(QMainWindow):
                     steps=steps,
                 )
                 return
-            if self.document.artifact is not None:
-                self._refresh_model_tree(self.document.model)
         except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
             self._show_error(title, str(error))
 

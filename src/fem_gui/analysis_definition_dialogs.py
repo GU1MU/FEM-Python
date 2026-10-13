@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from fem.application import (
+    MeshEntityRef,
     AuthoringCapability,
     AuthoringStatus,
     RegionRef,
@@ -768,11 +769,11 @@ class LoadDialog(QDialog):
             self.name_edit.text(),
         )
 
-    def selected_scope(self) -> RegionRef | int | None:
+    def selected_scope(self) -> RegionRef | MeshEntityRef | None:
         kind = str(self.kind_combo.currentData() or "")
         if kind == "gravity":
             if isinstance(self._gravity_target, int):
-                return int(self._gravity_target)
+                return MeshEntityRef.element(self._gravity_target)
             if self._gravity_target is not None:
                 return RegionRef(
                     "element_set",
