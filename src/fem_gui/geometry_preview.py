@@ -40,6 +40,8 @@ from fem.geometry import (
     transformed_circle,
 )
 from fem.geometry.part_namespace import normalize_part_id
+
+from .geometry_recipe_queries import contains_proven_strict_boolean
 from fem.geometry.recipe_topology import (
     EntityKind,
     RecipeTopology,
@@ -1426,7 +1428,7 @@ def _extruded_preview(
     if (
         not base_face_indices
         and base.faces
-        and _contains_proven_strict_boolean(recipe.base)
+        and contains_proven_strict_boolean(recipe.base)
     ):
         return _unselectable_extruded_fallback(recipe, base)
     required_point_indices = {
@@ -1632,7 +1634,7 @@ def _revolved_preview(
     if (
         not base_face_indices
         and base.faces
-        and _contains_proven_strict_boolean(recipe.base)
+        and contains_proven_strict_boolean(recipe.base)
     ):
         base_face_indices = tuple(range(len(base.faces)))
         base_edge_indices = tuple(range(len(base.edges)))
@@ -2147,7 +2149,7 @@ def _validate_preview_topology(
         }
         incomplete_allowed = (
             allow_occ_fallback
-            and _contains_proven_strict_boolean(recipe)
+            and contains_proven_strict_boolean(recipe)
         )
         if actual != expected and not (
             incomplete_allowed and actual.issubset(expected)
@@ -2175,7 +2177,7 @@ def _validate_preview_topology(
     }
     if actual_body != expected_body and not (
         allow_occ_fallback
-        and _contains_proven_strict_boolean(recipe)
+        and contains_proven_strict_boolean(recipe)
         and actual_body.issubset(expected_body)
     ):
         raise RuntimeError(
@@ -2183,39 +2185,6 @@ def _validate_preview_topology(
             f"differ from recipe topology: {sorted(actual_body)} != "
             f"{sorted(expected_body)}"
         )
-
-
-def _contains_proven_strict_boolean(recipe: object) -> bool:
-    if isinstance(recipe, BooleanGeometry):
-        return (
-            recipe.body_context is not None
-            and recipe.body_context.proven
-        ) or (
-            recipe.planar_context is not None
-            and recipe.planar_context.proven
-        ) or (
-            recipe.part_context is not None
-            and recipe.part_context.proven
-        ) or _contains_proven_strict_boolean(
-            recipe.object_geometry
-        ) or _contains_proven_strict_boolean(recipe.tool_geometry)
-    if isinstance(
-        recipe,
-        (
-            MovedGeometry,
-            RotatedGeometry,
-            ExtrudedGeometry,
-            RevolvedGeometry,
-            PathSweptGeometry,
-        ),
-    ):
-        return _contains_proven_strict_boolean(recipe.base)
-    if isinstance(recipe, MultiBodyGeometry):
-        return any(
-            _contains_proven_strict_boolean(body.recipe)
-            for body in recipe.bodies
-        )
-    return False
 
 
 def _rectangle_hole_rays(

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from fem import geometry as geometry_runtime
 from fem.io.inp import read_with_report as read_inp_with_report
 from fem.application import (
     AnalysisRun,
@@ -50,8 +49,6 @@ from fem.application import (
     SessionAuthoringProjection,
     SessionDelta,
     SessionSnapshot,
-    StrictBodyBooleanPreview,
-    StrictPlanarBooleanPreview,
     StrictPlanarBooleanResult,
     TransitionEffect,
     describe_model_capabilities,
@@ -63,9 +60,6 @@ from fem.application import (
     derive_geometry_feature_rows,
     resolve_effective_beam_frames,
     compile_named_region_edit,
-    prepare_strict_part_recipe_preview,
-    prepare_strict_body_recipe_preview,
-    prepare_strict_planar_recipe_preview,
 )
 from fem.application.definitions import mesh_entity_ref_sort_key
 from fem.application.changes import ChangeKind
@@ -212,10 +206,8 @@ from .geometry_preview import (
     build_face_sketch_boolean_display,
     build_face_sketch_boolean_result_preview,
     namespace_part_geometry_preview,
-    build_strict_body_boolean_previews,
-    build_strict_part_boolean_preview,
-    build_strict_planar_boolean_preview,
 )
+from .native_geometry_presentation import NativeGeometryPresentation, NativeGeometryPresentationPort
 from .geometry_editing import (
     GeometryEditCoordinator,
     GeometryEditPresentation,
@@ -230,10 +222,6 @@ from .agent_workspace_catalog import create_workspace_catalog_bridge
 from .agent_workspace import UserWorkspace, WorkspaceCommandHandler
 from .face_sketch_boolean_dialog import (
     FaceSketchBooleanDialog,
-)
-from .part_geometry_preview import (
-    build_multi_part_geometry_preview,
-    localize_part_geometry_preview,
 )
 from .scope_selection import (
     MeshSelectionTopology,
@@ -715,6 +703,16 @@ class FEMMainWindow(QMainWindow):
                 defer=self._defer_ui,
             ),
         )
+        self.native_geometry = NativeGeometryPresentation(
+            self.document_tasks,
+            NativeGeometryPresentationPort(
+                can_present=self._can_present_native_geometry,
+                install=self._install_native_geometry_preview,
+                set_status=lambda message, duration: self.status_panel.set_state(message, duration),
+                defer=self._defer_ui,
+                shutting_down=lambda: self._closing or self._exit_pending,
+            ),
+        )
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session, self.workspace)
         )
@@ -807,12 +805,6 @@ class FEMMainWindow(QMainWindow):
         ) = None
         self._result_model_capability_cache: (
             tuple[object, object, ModelCapabilityReport] | None
-        ) = None
-        self._geometry_preview_cache: (
-            tuple[str, object, GeometryPreview] | None
-        ) = None
-        self._pending_exact_boolean_preview_key: (
-            tuple[str, str, int, int] | None
         ) = None
         self.selection = SelectionState()
         self.actions: dict[str, QAction] = {}
@@ -1072,6 +1064,7 @@ class FEMMainWindow(QMainWindow):
                     or self._current_module_name(),
                     render=False,
                     reset_camera=False,
+                    retry_native=True,
                 )
                 self._restore_document_presentation(context, render=False)
                 self._set_ribbon_module_silent(
@@ -2801,6 +2794,9 @@ class FEMMainWindow(QMainWindow):
             if plan is None:
                 return False
             self.workspace.update_projection(target_context, snapshot)
+            self.native_geometry.synchronize(target_context, snapshot)
+            if geometry_preview is not None and snapshot.session_revision == requested_revision:
+                self.native_geometry.seed_exact(target_context, snapshot, geometry_preview)
             if plan.scope == "metadata":
                 self._refresh_session_tree_metadata(target_context, plan.changed)
                 return True
@@ -2855,11 +2851,7 @@ class FEMMainWindow(QMainWindow):
                 and snapshot.artifact is None
                 and snapshot.active_part_id is not None
             ):
-                self._geometry_preview_cache = (
-                    snapshot.session_id,
-                    self._native_part_preview_cache_key(snapshot),
-                    geometry_preview,
-                )
+                self.native_geometry.seed_exact(target_context, snapshot, geometry_preview)
 
         previous_artifact_id = (
             self.document.artifact.artifact_id
@@ -2875,6 +2867,7 @@ class FEMMainWindow(QMainWindow):
         if previous_artifact_id != next_artifact_id:
             target_cache.invalidate_model()
         self.document = snapshot
+        self.native_geometry.synchronize(target_context, snapshot)
         self._legacy_project_extension = bool(
             snapshot.source_kind == "native"
             and snapshot.project_path is not None
@@ -2943,32 +2936,10 @@ class FEMMainWindow(QMainWindow):
                 else ()
             )
             if canonical_parts:
-                visible_parts = tuple(
-                    part
-                    for part in canonical_parts
-                    if (
-                        part.id == snapshot.active_part_id
-                        and not part.suppressed
-                    )
+                display = self.native_geometry.preview(
+                    target_context, show_ghosts=self._show_suppressed_part_ghosts,
                 )
-                preview_key = self._native_part_preview_cache_key(snapshot)
-                cached = self._geometry_preview_cache
-                cached_is_current = (
-                    cached is not None
-                    and cached[0] == snapshot.session_id
-                    and cached[1] == preview_key
-                )
-                preview = (
-                    cached[2]
-                    if cached_is_current
-                    else build_multi_part_geometry_preview(visible_parts)
-                )
-                if not cached_is_current:
-                    self._geometry_preview_cache = (
-                        snapshot.session_id,
-                        preview_key,
-                        preview,
-                    )
+                preview = display.preview if display is not None else GeometryPreview((), (), ())
                 selectable_ids = {
                     logical_id
                     for values in (
@@ -2987,22 +2958,7 @@ class FEMMainWindow(QMainWindow):
                     for reference in self._selected_geometry_refs
                     if reference.logical_id in selectable_ids
                 }
-                suppressed_preview = (
-                    build_multi_part_geometry_preview(
-                        tuple(
-                            part
-                            for part in canonical_parts
-                            if part.suppressed
-                        ),
-                        include_suppressed=True,
-                    )
-                    if self._show_suppressed_part_ghosts
-                    and any(part.suppressed for part in canonical_parts)
-                    else None
-                )
-                self.viewport.set_geometry_ghost_preview(
-                    suppressed_preview
-                )
+                self.viewport.set_geometry_ghost_preview(None if display is None else display.ghosts)
                 if (
                     recipe is not None
                     and geometry_dimension(recipe) == 1
@@ -3032,15 +2988,6 @@ class FEMMainWindow(QMainWindow):
                             preview,
                             render=not self._workspace_activation,
                             reset_camera=not self._workspace_activation,
-                        )
-                    if (
-                        not cached_is_current
-                        and recipe is not None
-                        and self._recipe_contains_strict_boolean(recipe)
-                    ):
-                        self._schedule_exact_boolean_preview(
-                            snapshot,
-                            recipe,
                         )
                 finally:
                     # The Session transition is already committed.  Keep action
@@ -4119,15 +4066,7 @@ class FEMMainWindow(QMainWindow):
             self.viewport.clear_selection()
 
     def _geometry_editor_source_preview(self, launch: GeometryEditLaunch) -> GeometryPreview:
-        cached = self._geometry_preview_cache
-        snapshot = launch.session.projection_snapshot()
-        if (
-            self.document_tasks.is_active(launch.document)
-            and cached is not None and cached[0] == launch.session_id
-            and cached[1] == self._native_part_preview_cache_key(snapshot)
-        ):
-            return localize_part_geometry_preview(launch.part_id, cached[2])
-        return build_geometry_preview(launch.source_recipe)
+        return self.native_geometry.source_preview(launch.document, launch.part_id, launch.source_recipe)
 
     def _show_editor_face_preview(self, value: FaceBooleanDisplay) -> None:
         inputs, workplane = value.inputs, value.workplane
@@ -4223,7 +4162,7 @@ class FEMMainWindow(QMainWindow):
             self.navigation.show_result()
         elif module_name in {"Project", "Geometry", "Mesh", "Model", "Analysis"}:
             self.navigation.show_model()
-        self._project_viewport_for_module(module_name)
+        self._project_viewport_for_module(module_name, retry_native=True)
         self._apply_module_symbol_policy(module_name)
         self._update_action_states()
 
@@ -4255,6 +4194,7 @@ class FEMMainWindow(QMainWindow):
         *,
         render: bool = True,
         reset_camera: bool = True,
+        retry_native: bool = False,
     ) -> None:
         """Project the stable geometry, mesh, or result scene for a module."""
 
@@ -4283,7 +4223,7 @@ class FEMMainWindow(QMainWindow):
                 )
             return
         if module_name == "Geometry":
-            preview = self._current_native_geometry_preview()
+            preview = self._current_native_geometry_preview(retry_failed=retry_native)
             if preview is not None:
                 self.viewport.show_geometry_preview(
                     preview,
@@ -4341,54 +4281,32 @@ class FEMMainWindow(QMainWindow):
             display=self._result_preferences().display,
         )
 
-    def _current_native_geometry_preview(self) -> GeometryPreview | None:
-        if self.document.source_kind != "native":
+    def _can_present_native_geometry(self, context: WorkspaceDocument) -> bool:
+        return (
+            self.document_tasks.is_active(context)
+            and not self._closing and not self._exit_pending
+            and not self.geometry_edits.active
+            and self._agent_proposal_preview_id is None
+            and self._temporary_selection_context is None
+            and not self._scope_selection_overlay_active
+            and (context.projection.artifact is None or self._current_module_name() == "Geometry")
+        )
+
+    def _install_native_geometry_preview(self, context: WorkspaceDocument, preview: GeometryPreview) -> None:
+        if self._can_present_native_geometry(context):
+            self.viewport.show_geometry_preview(preview, reset_camera=False)
+
+    def _current_native_geometry_preview(self, *, retry_failed: bool = False) -> GeometryPreview | None:
+        context = self._active_workspace_context()
+        if context is None:
             return None
-        active = self.document.active_part
-        if (
-            active is None
-            or active.suppressed
-            or active.geometry_recipe is None
-        ):
+        display = self.native_geometry.preview(
+            context, show_ghosts=self._show_suppressed_part_ghosts, retry_failed=retry_failed,
+        )
+        if display is None:
             return None
-        preview_key = self._native_part_preview_cache_key(self.document)
-        cached = self._geometry_preview_cache
-        cached_is_current = (
-            cached is not None
-            and cached[0] == self.document.session_id
-            and cached[1] == preview_key
-        )
-        preview = (
-            cached[2]
-            if cached_is_current
-            else build_multi_part_geometry_preview((active,))
-        )
-        if not cached_is_current:
-            self._geometry_preview_cache = (
-                self.document.session_id,
-                preview_key,
-                preview,
-            )
-            if self._recipe_contains_strict_boolean(active.geometry_recipe):
-                self._schedule_exact_boolean_preview(
-                    self.document,
-                    active.geometry_recipe,
-                )
-        suppressed_parts = tuple(
-            part
-            for part in self.document.parts
-            if part.suppressed and part.geometry_recipe is not None
-        )
-        ghost_preview = (
-            build_multi_part_geometry_preview(
-                suppressed_parts,
-                include_suppressed=True,
-            )
-            if self._show_suppressed_part_ghosts and suppressed_parts
-            else None
-        )
-        self.viewport.set_geometry_ghost_preview(ghost_preview)
-        return preview
+        self.viewport.set_geometry_ghost_preview(display.ghosts)
+        return display.preview
 
     def _agent_proposal_preview_changed(
         self,
@@ -5502,383 +5420,6 @@ class FEMMainWindow(QMainWindow):
         self.geometry_edits.cancel(confirm=False)
 
 
-    @classmethod
-    def _recipe_contains_strict_boolean(cls, recipe: object) -> bool:
-        if isinstance(recipe, MultiBodyGeometry):
-            return any(
-                cls._recipe_contains_strict_boolean(body.recipe)
-                for body in recipe.bodies
-            )
-        if isinstance(recipe, BooleanGeometry):
-            return (
-                recipe.body_context is not None
-                and recipe.body_context.proven
-            ) or (
-                recipe.planar_context is not None
-                and recipe.planar_context.proven
-            ) or (
-                recipe.part_context is not None
-                and recipe.part_context.proven
-            ) or cls._recipe_contains_strict_boolean(
-                recipe.object_geometry
-            ) or cls._recipe_contains_strict_boolean(recipe.tool_geometry)
-        if isinstance(
-            recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
-        ):
-            return cls._recipe_contains_strict_boolean(recipe.base)
-        return False
-
-    @classmethod
-    def _recipe_contains_strict_part_boolean(cls, recipe: object) -> bool:
-        if isinstance(recipe, MultiBodyGeometry):
-            return any(
-                cls._recipe_contains_strict_part_boolean(body.recipe)
-                for body in recipe.bodies
-            )
-        if isinstance(recipe, BooleanGeometry):
-            return (
-                recipe.part_context is not None
-                and recipe.part_context.proven
-            ) or cls._recipe_contains_strict_part_boolean(
-                recipe.object_geometry
-            ) or cls._recipe_contains_strict_part_boolean(
-                recipe.tool_geometry
-            )
-        if isinstance(
-            recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
-        ):
-            return cls._recipe_contains_strict_part_boolean(recipe.base)
-        return False
-
-    @classmethod
-    def _recipe_contains_strict_planar_boolean(cls, recipe: object) -> bool:
-        if isinstance(recipe, MultiBodyGeometry):
-            return any(
-                cls._recipe_contains_strict_planar_boolean(body.recipe)
-                for body in recipe.bodies
-            )
-        if isinstance(recipe, BooleanGeometry):
-            return (
-                recipe.planar_context is not None
-                and recipe.planar_context.proven
-            ) or cls._recipe_contains_strict_planar_boolean(
-                recipe.object_geometry
-            ) or cls._recipe_contains_strict_planar_boolean(
-                recipe.tool_geometry
-            )
-        if isinstance(
-            recipe,
-            (MovedGeometry, RotatedGeometry, ExtrudedGeometry, RevolvedGeometry, PathSweptGeometry),
-        ):
-            return cls._recipe_contains_strict_planar_boolean(recipe.base)
-        return False
-
-    def _schedule_exact_boolean_preview(
-        self,
-        snapshot: object,
-        recipe: object,
-    ) -> None:
-        part_id = getattr(snapshot, "active_part_id", None)
-        if type(part_id) is not str:
-            return
-        key = (
-            str(getattr(snapshot, "session_id")),
-            part_id,
-            int(getattr(snapshot, "part_revision")(part_id)),
-            int(getattr(snapshot, "project_revision")),
-        )
-        if self._pending_exact_boolean_preview_key == key:
-            return
-        self._pending_exact_boolean_preview_key = key
-
-        def launch() -> None:
-            if (
-                self.document.session_id != key[0]
-                or self.document.active_part_id != key[1]
-                or self.document.part_revision(key[1]) != key[2]
-                or self.document.project_revision != key[3]
-                or self.document.geometry_recipe != recipe
-            ):
-                if self._pending_exact_boolean_preview_key == key:
-                    self._pending_exact_boolean_preview_key = None
-                return
-
-            if not isinstance(recipe, MultiBodyGeometry):
-                if self._recipe_contains_strict_part_boolean(recipe):
-                    self._launch_exact_part_boolean_preview(key, recipe)
-                else:
-                    self._launch_exact_planar_boolean_preview(key, recipe)
-                return
-
-            strict_bodies = tuple(
-                body
-                for body in recipe.bodies
-                if self._recipe_contains_strict_boolean(body.recipe)
-            )
-
-            def workload(
-                context: TaskContext,
-            ) -> tuple[StrictBodyBooleanPreview, ...]:
-                previews: list[StrictBodyBooleanPreview] = []
-                for body in strict_bodies:
-                    context.report(
-                        f"Rebuilding {body.name} [{body.id}] OCC preview..."
-                    )
-                    with geometry_runtime.model(
-                        f"{recipe.name}-{body.id}-persisted-preview",
-                        dimension=3,
-                    ) as cad:
-                        previews.append(
-                            prepare_strict_body_recipe_preview(
-                                cad,
-                                body.id,
-                                body.recipe,
-                            )
-                        )
-                    context.checkpoint()
-                return tuple(previews)
-
-            def apply_result(payload: object) -> TaskApplyOutcome:
-                if (
-                    self.document.session_id != key[0]
-                    or self.document.active_part_id != key[1]
-                    or self.document.part_revision(key[1]) != key[2]
-                    or self.document.project_revision != key[3]
-                    or self.document.geometry_recipe != recipe
-                    or not isinstance(payload, tuple)
-                    or any(
-                        type(item) is not StrictBodyBooleanPreview
-                        for item in payload
-                    )
-                ):
-                    if self._pending_exact_boolean_preview_key == key:
-                        self._pending_exact_boolean_preview_key = None
-                    return TaskApplyOutcome.stale(
-                        "Boolean OCC preview rebuild result is stale"
-                    )
-                preview = build_strict_body_boolean_previews(
-                    recipe,
-                    payload,
-                )
-                return TaskApplyOutcome.accepted(preview)
-
-            def on_success(payload: object) -> None:
-                if type(payload) is not GeometryPreview:
-                    raise TypeError(
-                        "persisted Boolean preview task returned invalid data"
-                    )
-                self._pending_exact_boolean_preview_key = None
-                self._geometry_preview_cache = (
-                    key[0],
-                    self._native_part_preview_cache_key(self.document),
-                    payload,
-                )
-                if (
-                    self.document.session_id == key[0]
-                    and self.document.geometry_recipe == recipe
-                    and (
-                        self.document.artifact is None
-                        or self._current_module_name() == "Geometry"
-                    )
-                ):
-                    self.viewport.show_geometry_preview(payload)
-                    self.status_panel.set_state(
-                        "Boolean preview rebuilt",
-                        4000,
-                    )
-
-            def cleanup_failure(message: str | None = None) -> None:
-                if self._pending_exact_boolean_preview_key == key:
-                    self._pending_exact_boolean_preview_key = None
-                if message:
-                    self.status_panel.set_state(
-                        f"Failed to rebuild boolean OCC preview: {message}",
-                        6000,
-                    )
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "Boolean OCC Preview",
-                cleanup_failure,
-                task_name="Rebuild Boolean OCC Preview",
-                on_cancelled=cleanup_failure,
-                apply_result=apply_result,
-            )
-            if not started:
-                cleanup_failure()
-
-        self._defer_ui(launch)
-
-    def _launch_exact_part_boolean_preview(
-        self,
-        key: tuple[str, str, int, int],
-        recipe: object,
-    ) -> None:
-        def workload(context: TaskContext) -> StrictBodyBooleanPreview:
-            context.report("Rebuilding part boolean OCC preview...")
-            with geometry_runtime.model(
-                f"{getattr(recipe, 'name', 'part-boolean')}-persisted-preview",
-                dimension=3,
-            ) as cad:
-                preview = prepare_strict_part_recipe_preview(
-                    cad,
-                    key[1],
-                    recipe,
-                )
-            context.checkpoint()
-            return preview
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            if (
-                self.document.session_id != key[0]
-                or self.document.active_part_id != key[1]
-                or self.document.part_revision(key[1]) != key[2]
-                or self.document.project_revision != key[3]
-                or self.document.geometry_recipe != recipe
-                or type(payload) is not StrictBodyBooleanPreview
-            ):
-                if self._pending_exact_boolean_preview_key == key:
-                    self._pending_exact_boolean_preview_key = None
-                return TaskApplyOutcome.stale(
-                    "Part boolean OCC preview rebuild result is stale"
-                )
-            preview = build_strict_part_boolean_preview(payload)
-            return TaskApplyOutcome.accepted(preview)
-
-        def on_success(payload: object) -> None:
-            if type(payload) is not GeometryPreview:
-                raise TypeError(
-                    "persisted Part Boolean preview returned invalid data"
-                )
-            self._pending_exact_boolean_preview_key = None
-            self._geometry_preview_cache = (
-                key[0],
-                self._native_part_preview_cache_key(self.document),
-                payload,
-            )
-            if (
-                self.document.session_id == key[0]
-                and self.document.active_part_id == key[1]
-                and self.document.part_revision(key[1]) == key[2]
-                and self.document.project_revision == key[3]
-                and self.document.geometry_recipe == recipe
-                and (
-                    self.document.artifact is None
-                    or self._current_module_name() == "Geometry"
-                )
-            ):
-                self.viewport.show_geometry_preview(payload)
-                self.status_panel.set_state(
-                        "Part boolean preview rebuilt",
-                    4000,
-                )
-
-        def cleanup_failure(message: str | None = None) -> None:
-            if self._pending_exact_boolean_preview_key == key:
-                self._pending_exact_boolean_preview_key = None
-            if message:
-                self.status_panel.set_state(
-                    f"Failed to rebuild part boolean OCC preview: {message}",
-                    6000,
-                )
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "Part Boolean OCC Preview",
-            cleanup_failure,
-            task_name="Rebuild Part Boolean OCC Preview",
-            on_cancelled=cleanup_failure,
-            apply_result=apply_result,
-        )
-        if not started:
-            cleanup_failure()
-
-    def _launch_exact_planar_boolean_preview(
-        self,
-        key: tuple[str, str, int, int],
-        recipe: object,
-    ) -> None:
-        def workload(context: TaskContext) -> StrictPlanarBooleanPreview:
-            context.report("Rebuilding 2D boolean OCC preview...")
-            with geometry_runtime.model(
-                f"{getattr(recipe, 'name', 'planar')}-persisted-preview",
-                dimension=geometry_dimension(recipe),
-            ) as cad:
-                preview = prepare_strict_planar_recipe_preview(cad, recipe)
-            context.checkpoint()
-            return preview
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            if (
-                self.document.session_id != key[0]
-                or self.document.active_part_id != key[1]
-                or self.document.part_revision(key[1]) != key[2]
-                or self.document.project_revision != key[3]
-                or self.document.geometry_recipe != recipe
-                or type(payload) is not StrictPlanarBooleanPreview
-            ):
-                if self._pending_exact_boolean_preview_key == key:
-                    self._pending_exact_boolean_preview_key = None
-                return TaskApplyOutcome.stale(
-                    "2D boolean OCC preview rebuild result is stale"
-                )
-            preview = build_strict_planar_boolean_preview(recipe, payload)
-            preview = namespace_part_geometry_preview(key[1], preview)
-            return TaskApplyOutcome.accepted(preview)
-
-        def on_success(payload: object) -> None:
-            if type(payload) is not GeometryPreview:
-                raise TypeError(
-                    "persisted planar Boolean preview returned invalid data"
-                )
-            self._pending_exact_boolean_preview_key = None
-            self._geometry_preview_cache = (
-                key[0],
-                self._native_part_preview_cache_key(self.document),
-                payload,
-            )
-            if (
-                self.document.session_id == key[0]
-                and self.document.active_part_id == key[1]
-                and self.document.part_revision(key[1]) == key[2]
-                and self.document.project_revision == key[3]
-                and self.document.geometry_recipe == recipe
-                and (
-                    self.document.artifact is None
-                    or self._current_module_name() == "Geometry"
-                )
-            ):
-                self.viewport.show_geometry_preview(payload)
-                self.status_panel.set_state(
-                        "2D boolean preview rebuilt",
-                    4000,
-                )
-
-        def cleanup_failure(message: str | None = None) -> None:
-            if self._pending_exact_boolean_preview_key == key:
-                self._pending_exact_boolean_preview_key = None
-            if message:
-                self.status_panel.set_state(
-                    f"Failed to rebuild 2D boolean OCC preview: {message}",
-                    6000,
-                )
-
-        started = self._start_task(
-            workload,
-            on_success,
-            "2D Boolean OCC Preview",
-            cleanup_failure,
-            task_name="Rebuild 2D Boolean OCC Preview",
-            on_cancelled=cleanup_failure,
-            apply_result=apply_result,
-        )
-        if not started:
-            cleanup_failure()
-
     @staticmethod
     def _root_geometry(recipe: object) -> object:
         current = recipe
@@ -5907,24 +5448,6 @@ class FEMMainWindow(QMainWindow):
             ):
                 current = current.base
         return current
-
-    @staticmethod
-    def _native_part_preview_cache_key(snapshot: object) -> tuple[object, ...]:
-        """Key previews by stable Part identity, recipe, suppression, and revision."""
-
-        return (
-            snapshot.active_part_id,
-            tuple(
-                (
-                    part.id,
-                    snapshot.part_revision(part.id),
-                    part.geometry_recipe,
-                    part.suppressed,
-                )
-                for part in snapshot.parts
-            )
-        )
-
 
     def show_geometry_manager(self) -> None:
         current = self.document.geometry_recipe
@@ -6206,7 +5729,6 @@ class FEMMainWindow(QMainWindow):
                 "New projects cannot create multi-body geometry; use separate parts and solid booleans.",
             )
             return False
-        self._geometry_preview_cache = None
         if self.document.source_kind != "native":
             new_receipt = self.new_native_project(NewNativeProjectCommand())
             if new_receipt.diagnostic is not None:
@@ -8729,6 +8251,7 @@ class FEMMainWindow(QMainWindow):
     ) -> bool:
         """Request cooperative cancellation for one document-owned task."""
 
+        self.native_geometry.cancel_pending(context)
         queued = self._queued_named_region_edit
         if queued is not None and queued[0] is context:
             self._queued_named_region_edit = None
@@ -8788,7 +8311,9 @@ class FEMMainWindow(QMainWindow):
                 return False
         elif not self._confirm_workspace_context_close(target_context, confirm):
             return False
+        self.native_geometry.cancel_pending(target_context)
         if target_context.task_controller.busy:
+            self.native_geometry.cancel_pending(target_context, closing=True)
             if was_active:
                 self.geometry_edits.cancel(confirm=False)
             self.document_tasks.after_idle(
@@ -8800,6 +8325,7 @@ class FEMMainWindow(QMainWindow):
             self._request_workspace_context_cancel(target_context)
             return True
         self.geometry_edits.dispose_document(target_context)
+        self.native_geometry.dispose_document(target_context)
         replacement = None
         if was_active:
             same_kind = tuple(
@@ -10809,6 +10335,9 @@ class FEMMainWindow(QMainWindow):
         *,
         after_cleanup: Callable[[], None] | None = None,
     ) -> bool:
+        context = self._active_workspace_context()
+        if context is not None:
+            self.native_geometry.cancel_pending(context)
         running = next(
             (
                 run
@@ -10910,20 +10439,11 @@ class FEMMainWindow(QMainWindow):
 
     def _toggle_suppressed_part_ghosts(self, checked: bool) -> None:
         self._show_suppressed_part_ghosts = bool(checked)
-        parts = tuple(
-            part
-            for part in self.document.parts
-            if part.suppressed and part.geometry_recipe is not None
+        context = self._active_workspace_context()
+        display = None if context is None else self.native_geometry.preview(
+            context, show_ghosts=self._show_suppressed_part_ghosts,
         )
-        preview = (
-            build_multi_part_geometry_preview(
-                parts,
-                include_suppressed=True,
-            )
-            if self._show_suppressed_part_ghosts and parts
-            else None
-        )
-        self.viewport.set_geometry_ghost_preview(preview)
+        self.viewport.set_geometry_ghost_preview(None if display is None else display.ghosts)
         current = self.viewport.geometry_preview
         if current is not None:
             self.viewport.show_geometry_preview(current)
@@ -13715,6 +13235,7 @@ class FEMMainWindow(QMainWindow):
             self.model_tree.remove_document(context.document_id)
             self.result_tree.remove_model_runs(context.document_id)
         self.geometry_edits.dispose_document(context)
+        self.native_geometry.dispose_document(context)
         self.workspace.remove(context)
         return True
 

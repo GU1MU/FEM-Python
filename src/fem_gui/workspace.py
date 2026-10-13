@@ -22,6 +22,7 @@ from fem.application import ModelSession, SessionSnapshot
 from .task_controller import BackgroundTaskController
 from .result_command_state import DocumentResultCommandState
 from .result_display_state import ResultDisplayPreferences, ResultRenderingCache
+from .native_geometry_state import NativeGeometryCache
 from .viewport_camera import ViewportCameraState
 
 
@@ -70,6 +71,7 @@ class DocumentPresentationCache:
     result_model_view: object | None = None
     inspection_service: object | None = None
     result_rendering: ResultRenderingCache = field(default_factory=ResultRenderingCache)
+    native_geometry: NativeGeometryCache = field(default_factory=NativeGeometryCache)
 
     def matches_artifact(self, artifact_id: object | None) -> bool:
         """Return whether the cached model adapters belong to ``artifact_id``."""
@@ -470,6 +472,7 @@ class FEMWorkspace:
             if reservation.document_id == context.document_id:
                 self.release_path(reservation)
         context.presentation_cache.invalidate_model()
+        context.presentation_cache.native_geometry.clear()
         context.presentation_cache.invalidate_result()
         context.presentation_state = DocumentPresentationState()
         context.result_command_state = DocumentResultCommandState()
