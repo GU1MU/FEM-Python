@@ -3825,7 +3825,7 @@ class FEMViewport(QWidget):
                 reset_camera=False,
             )
 
-    def hide_geometry_selection_overlay(self) -> None:
+    def hide_geometry_selection_overlay(self, *, render: bool = True) -> None:
         """Remove a scope-picking overlay while preserving the current mesh."""
         overlay_names = (
             "geometry_surface",
@@ -3853,7 +3853,7 @@ class FEMViewport(QWidget):
         self._geometry_point_body_pick_ids = ()
         self._clear_preselection(render=False)
         self._update_pickable_actors()
-        if had_visible_overlay:
+        if had_visible_overlay and render:
             self._render()
 
     def _install_geometry_pick_bindings(
