@@ -588,6 +588,12 @@ class AgentPreflightTaskRequest:
     model_revision: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingPreflightTask:
+    session: ModelSession
+    request: AgentPreflightTaskRequest
+
+
 def _ignore_projection_refresh() -> None:
     pass
 
@@ -643,6 +649,7 @@ class SessionGeometryAuthoringPort:
         self._patch_records: dict[str, AppliedPatchRecord] = {}
         self._feature_proposal_records: dict[str, FeatureProposalUndoRecord] = {}
         self._preflight_records: dict[str, AgentPreflightRecord] = {}
+        self._preflight_tasks: dict[str, _PendingPreflightTask] = {}
         self._preflight_counter = 0
         self._record_listener: Callable[[ProposalPortRecord], None] | None = None
 
@@ -1456,7 +1463,8 @@ class SessionGeometryAuthoringPort:
             for item in self._preflight_records.values()
         ):
             raise AuthoringContractError("an Agent preflight is already running")
-        snapshot = self._session.snapshot()
+        target_session = self._session
+        snapshot = target_session.snapshot()
         clean_step = str(step_name)
         artifact = snapshot.artifact
         if (
@@ -1487,16 +1495,26 @@ class SessionGeometryAuthoringPort:
             artifact_id=artifact.artifact_id,
             model_revision=snapshot.model_revision,
         )
+        self._preflight_tasks[request_id] = _PendingPreflightTask(
+            target_session, request,
+        )
         try:
             started = self._start_preflight_task(request)
         except Exception:
-            self._preflight_records[request_id] = replace(
-                record,
-                state=AgentPreflightState.FAILED,
-                message="GUI preflight task failed to start",
-            )
+            self._preflight_tasks.pop(request_id, None)
+            current = self._preflight_records[request_id]
+            if current.state is AgentPreflightState.RUNNING:
+                self._preflight_records[request_id] = replace(
+                    current,
+                    state=AgentPreflightState.FAILED,
+                    message="GUI preflight task failed to start",
+                )
             raise
-        if not started:
+        if (
+            not started
+            and self._preflight_records[request_id].state is AgentPreflightState.RUNNING
+        ):
+            self._preflight_tasks.pop(request_id, None)
             failed = replace(
                 record,
                 state=AgentPreflightState.FAILED,
@@ -1519,12 +1537,32 @@ class SessionGeometryAuthoringPort:
             raise AuthoringAuthorizationError(
                 f"preflight is already {record.state.value}"
             )
+        pending = self._preflight_tasks.pop(str(request_id), None)
         stamp = None
         if state is AgentPreflightState.PASSED:
-            stamp = validation_stamp_for_snapshot(
-                self._session.snapshot(),
-                record.step_name,
-            )
+            try:
+                if pending is None:
+                    raise AuthoringContractError("preflight has no originating Session")
+                snapshot = pending.session.snapshot()
+                request = pending.request
+                artifact = snapshot.artifact
+                if (
+                    not snapshot.is_open
+                    or snapshot.session_id != request.session_id
+                    or artifact is None
+                    or artifact.artifact_id != request.artifact_id
+                    or snapshot.model_revision != request.model_revision
+                ):
+                    state = AgentPreflightState.STALE
+                    message = "The originating model changed before preflight completion"
+                else:
+                    stamp = validation_stamp_for_snapshot(snapshot, request.step_name)
+            except Exception as error:
+                state = AgentPreflightState.FAILED
+                message = (
+                    "Cannot bind the preflight result to its originating model: "
+                    + (str(error).strip() or type(error).__name__)
+                )
         completed = replace(
             record,
             state=state,

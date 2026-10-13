@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import logging
@@ -41,7 +40,6 @@ from fem.application import (
     NamedRegionEditTaskSnapshot,
     PreparedNamedRegionEdit,
     PreflightDiagnostic,
-    PreparedPreflight,
     PreflightReport,
     RegionRef,
     RegionAssignment,
@@ -64,8 +62,6 @@ from fem.application import (
     evaluate_native_line_load_candidate,
     derive_geometry_feature_rows,
     resolve_effective_beam_frames,
-    safe_static_preflight,
-    safe_prepare_static_preflight,
     compile_named_region_edit,
     prepare_strict_part_recipe_preview,
     prepare_strict_body_recipe_preview,
@@ -88,7 +84,6 @@ from fem.application.results import (
     ResultSourceKey,
     ResultVariable,
     ScalarFieldSelection,
-    build_solve_result_bundle,
     classify_result_model,
     project_output_requests,
 )
@@ -158,7 +153,6 @@ from fem.io.result_archive import (
 )
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
-from fem.solvers import static_linear
 
 from .actions import build_actions
 from .action_state import GuiActionContext, derive_action_availability
@@ -332,6 +326,10 @@ from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
 from .document_files import DocumentFileCommands
+from .document_analysis import (
+    DocumentAnalysisCommands,
+    DocumentAnalysisPresentation,
+)
 from .document_results import DocumentResultCommands, DocumentResultPresentation
 from .result_command_state import PendingResultMaterialization
 from .result_display_state import ResultDisplayPreferences
@@ -348,8 +346,6 @@ _RESULT_FIELD_STATE_LABELS = {
     FieldState.LAZY: "Load on demand",
     FieldState.UNAVAILABLE: "Unavailable",
 }
-_NUMERICAL_MODEL_CHECK_DOF_LIMIT = 50_000
-_NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT = 100_000
 _DEFAULT_SCOPE_BACKGROUND_REFERENCE_THRESHOLD = 10_000
 _SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS = 5.0
 # The Agent preflight dispatch holds the GUI owner until the background
@@ -520,23 +516,6 @@ def initial_display_policy(
     }
 
 
-def should_run_numerical_model_check(model: object) -> bool:
-    """Return whether a full stiffness factorization is suitable for preflight."""
-
-    mesh = getattr(model, "mesh", None)
-    if mesh is None:
-        return True
-    try:
-        element_count = len(mesh.elements)
-        dof_count = int(mesh.num_dofs)
-    except (AttributeError, TypeError, ValueError):
-        return True
-    return (
-        element_count <= _NUMERICAL_MODEL_CHECK_ELEMENT_LIMIT
-        and dof_count <= _NUMERICAL_MODEL_CHECK_DOF_LIMIT
-    )
-
-
 class _ExactDataComboBox(QComboBox):
     """Keep typed Python user data from being coerced by QVariant."""
 
@@ -697,6 +676,19 @@ class FEMMainWindow(QMainWindow):
             ),
         )
         self.document_files = DocumentFileCommands(self.document_tasks)
+        self.document_analysis = DocumentAnalysisCommands(
+            self.document_tasks,
+            DocumentAnalysisPresentation(
+                project_delta=lambda document, delta: self._apply_session_delta(
+                    delta, context=document,
+                ),
+                checked=self._present_model_check,
+                run_started=self._present_run_started,
+                run_completed=self._present_run_completed,
+                run_failed=self._present_run_failed,
+                run_cancelled=self._present_run_cancelled,
+            ),
+        )
         self.document_results = DocumentResultCommands(
             self.document_tasks,
             DocumentResultPresentation(
@@ -2443,10 +2435,12 @@ class FEMMainWindow(QMainWindow):
             )
         try:
             completion = GuiCommandCompletion(command_id)
-            started = self._begin_model_check(
-                clean_step,
+            context = self._active_workspace_context()
+            if context is None:
+                raise RuntimeError("No document is available for this task")
+            started = self.document_analysis.start_check(
+                context, clean_step,
                 completion=completion,
-                show_success=False,
                 expected_session_revision=expected_session_revision,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
@@ -2473,8 +2467,11 @@ class FEMMainWindow(QMainWindow):
             )
         try:
             completion = GuiCommandCompletion(command_id)
-            job = self._begin_submit_run(
-                name,
+            context = self._active_workspace_context()
+            if context is None:
+                raise RuntimeError("No document is available for this task")
+            job = self.document_analysis.submit_run(
+                context, name,
                 step_name,
                 completion=completion,
             )
@@ -2503,22 +2500,11 @@ class FEMMainWindow(QMainWindow):
                 "a background task is already running",
             )
         try:
-            if self.document.model is None or self.geometry is None:
-                raise RuntimeError("a current model is required")
-            if type(name) is not str or type(step_name) is not str:
-                raise TypeError("name and step_name must be strings")
+            context = self._active_workspace_context()
+            if context is None:
+                raise RuntimeError("No document is available for this task")
+            delta = self.document_analysis.create_run(context, name, step_name)
             clean_name = name.strip()
-            clean_step = step_name.strip()
-            if not clean_name:
-                raise ValueError("Job name cannot be empty.")
-            if len(clean_name) > 64:
-                raise ValueError("Job name cannot exceed 64 characters.")
-            if self.workspace.job_name_exists(clean_name):
-                raise ValueError(f"Job name already exists: {clean_name}")
-            if clean_step not in self.session.runnable_step_names():
-                raise ValueError(f"Step does not exist: {clean_step}")
-            delta = self.session.create_run(clean_step, clean_name)
-            self.workspace.remember_job_name(clean_name)
             receipt = self._accepted_command(command_id, delta)
             self._refresh_job_manager()
             self.status_panel.set_state(
@@ -2548,8 +2534,11 @@ class FEMMainWindow(QMainWindow):
             if job is None:
                 raise KeyError(f"Job does not exist: {name}")
             completion = GuiCommandCompletion(command_id)
-            started = self._begin_submit_run(
-                job.name,
+            context = self._active_workspace_context()
+            if context is None:
+                raise RuntimeError("No document is available for this task")
+            started = self.document_analysis.submit_run(
+                context, job.name,
                 job.step_name,
                 completion=completion,
                 existing_run=True,
@@ -10051,45 +10040,14 @@ class FEMMainWindow(QMainWindow):
                 return self.show_entity_information("step", index)
         return None
 
-    def check_current_model(self, show_success: bool = True) -> bool:
-        """Run the same structured static preflight used by background checks."""
-        task = self._prepare_model_check()
-        if task is None:
-            return False
-        executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="fem-preflight",
-        )
-        future = executor.submit(
-            self._evaluate_model_check,
-            task.model,
-            task.step_name,
-            task.token,
-        )
-        timed_out = False
-        try:
-            evaluation = future.result(_SYNCHRONOUS_GUI_COMMAND_TIMEOUT_SECONDS)
-        except TimeoutError:
-            timed_out = True
-            future.cancel()
-            self.status_panel.set_state("Model check timed out", 5000)
-            return False
-        finally:
-            executor.shutdown(
-                wait=not timed_out,
-                cancel_futures=timed_out,
-            )
-        return self._complete_model_check(
-            task.token,
-            evaluation,
-            show_success=show_success,
-        )
 
     def start_model_check(self, _checked: bool = False) -> bool:
         """Run the user-facing model check without blocking the Qt event loop."""
+        context = self._active_workspace_context()
         step_name = self._current_step_name
-        if step_name is None:
+        if context is None or step_name is None:
             return False
+        target_session = context.session
         receipt = self.check_step(step_name)
         if receipt.diagnostic is not None:
             self._show_command_rejection("Model check failed", receipt)
@@ -10097,126 +10055,20 @@ class FEMMainWindow(QMainWindow):
         completion = receipt.completion
         if completion is not None:
             def show_report(record: TaskCompletion) -> None:
-                if record.state is not BackgroundTaskState.SUCCEEDED:
+                if (
+                    record.state is not BackgroundTaskState.SUCCEEDED
+                    or not self.document_tasks.is_active(context)
+                    or context.session is not target_session
+                    or self._closing or self._exit_pending
+                ):
                     return
-                validation = self.session.validation_for(step_name)
+                validation = target_session.validation_for(step_name)
                 if validation is not None and validation.report.passed:
                     self._show_model_check_report(validation.report)
 
             completion.observe(show_report)
         return receipt.completion is not None
 
-    def _begin_model_check(
-        self,
-        step_name: str,
-        *,
-        completion: GuiCommandCompletion | None = None,
-        show_success: bool,
-        expected_session_revision: int | None = None,
-        on_progress: Callable[[str], None] | None = None,
-    ) -> bool:
-        target_context = self._active_workspace_context()
-        if target_context is None:
-            raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-        task = self._prepare_model_check(
-            step_name,
-            expected_session_revision=expected_session_revision,
-        )
-        if task is None:
-            raise RuntimeError(f"step cannot be checked: {step_name}")
-        full_numerical_check = should_run_numerical_model_check(task.model)
-
-        def workload(context: TaskContext):
-            context.report(
-                "Checking model..."
-                if full_numerical_check
-                else "Running a quick check for the large model..."
-            )
-            result = self._evaluate_model_check(
-                task.model,
-                task.step_name,
-                task.token,
-            )
-            context.checkpoint()
-            return result
-
-        def succeeded(value: object) -> None:
-            delta, evaluation = value
-            self._project_model_check(
-                delta,
-                evaluation.report,
-                show_success=show_success,
-            )
-
-        def apply_result(value: object) -> TaskApplyOutcome:
-            if type(value) is not PreparedPreflight:
-                raise TypeError("model check must return PreparedPreflight")
-            return session_task_outcome(
-                target_session.accept_validation_with_prepared_system(
-                    task.token,
-                    value.report,
-                    value.prepared_system,
-                ),
-                value,
-            )
-
-        def failed(message: str) -> None:
-            self._apply_session_delta(
-                target_session.accept_task_failed(
-                    task.token,
-                    message,
-                ),
-                context=target_context,
-            )
-            self._show_error("Model check failed", message)
-
-        def cancelled() -> None:
-            self._apply_session_delta(
-                target_session.accept_task_cancelled(task.token),
-                context=target_context,
-            )
-
-        def inactive_failed(message: str) -> None:
-            self._apply_session_delta(
-                target_session.accept_task_failed(task.token, message),
-                context=target_context,
-            )
-
-        def inactive_cancelled() -> None:
-            self._apply_session_delta(
-                target_session.accept_task_cancelled(task.token),
-                context=target_context,
-            )
-
-        return self._start_task(
-            workload,
-            succeeded,
-            "Model check failed",
-            failed,
-            task_name="Model Check",
-            on_cancelled=cancelled,
-            on_inactive_failure=inactive_failed,
-            on_inactive_cancelled=inactive_cancelled,
-            apply_result=apply_result,
-            completion=completion,
-            on_progress=on_progress,
-            context=target_context,
-        )
-
-    def _prepare_model_check(
-        self,
-        step_name: str | None = None,
-        *,
-        expected_session_revision: int | None = None,
-    ) -> object | None:
-        step_name = self._current_step_name if step_name is None else step_name
-        if step_name is None or not self.session.can_check(step_name):
-            return None
-        options: dict[str, object] = {"detach_model": False}
-        if expected_session_revision is not None:
-            options["expected_session_revision"] = expected_session_revision
-        return self.session.prepare_validation(step_name, **options)
 
     def _begin_agent_preflight(
         self,
@@ -10284,10 +10136,11 @@ class FEMMainWindow(QMainWindow):
                 )
 
         completion.observe(terminal)
-        started = self._begin_model_check(
-            request.step_name,
+        if target_session.session_id != request.session_id:
+            return False
+        started = self.document_analysis.start_check(
+            target_context, request.step_name,
             completion=completion,
-            show_success=False,
             expected_session_revision=request.base_session_revision,
         )
         if started:
@@ -10326,84 +10179,43 @@ class FEMMainWindow(QMainWindow):
         QApplication.processEvents()
         return record
 
-    @staticmethod
-    def _evaluate_model_check(
-        model: object,
-        step_name: str,
-        token: object | None = None,
-    ) -> PreparedPreflight:
-        full_numerical_check = should_run_numerical_model_check(model)
-        options = {
-            "token": token,
-            "check_numerical_stability": full_numerical_check,
-            "copy_model": full_numerical_check,
-            "quick_check": not full_numerical_check,
-        }
-        if full_numerical_check:
-            return safe_prepare_static_preflight(
-                model,
-                step_name,
-                **options,
-            )
-        return PreparedPreflight(
-            safe_static_preflight(
-                model,
-                step_name,
-                **options,
-            )
-        )
 
-    def _complete_model_check(
-        self,
-        token: object,
-        evaluation: object,
-        *,
-        show_success: bool,
-    ) -> bool:
-        if type(evaluation) is not PreparedPreflight:
-            raise TypeError("model check must return PreparedPreflight")
-        report = evaluation.report
-        delta = self.session.accept_validation_with_prepared_system(
-            token,
-            report,
-            evaluation.prepared_system,
-        )
-        return self._project_model_check(
-            delta,
-            report,
-            show_success=show_success,
-        )
-
-    def _project_model_check(
-        self,
-        delta: SessionDelta,
-        report: PreflightReport,
-        *,
-        show_success: bool,
-    ) -> bool:
-        if not self._apply_session_delta(delta):
-            self.status_panel.set_state(
-                "Model changed; previous check ignored",
-                5000,
-            )
-            return False
+    def _present_model_check(self, report: PreflightReport) -> None:
         if not report.passed:
             message = self._render_diagnostics(report.errors)
             self._show_error(
-                "Model check failed",
-                message or "Model check did not pass",
+                "Model check failed", message or "Model check did not pass",
             )
             self.status_panel.set_state("Model check did not pass", 5000)
-            return False
-        if show_success:
-            self._show_model_check_report(report)
+            return
         self.status_panel.set_state(
             "Model check passed (with warnings)"
-            if report.warnings
-            else "Model check passed",
+            if report.warnings else "Model check passed",
             4000,
         )
-        return True
+
+    def _present_run_started(self, run: AnalysisRun) -> None:
+        self.status_panel.set_state(f"Analyzing: {run.name}")
+        self._refresh_job_manager()
+
+    def _present_run_completed(
+        self, run: AnalysisRun, timings: dict[str, float],
+    ) -> None:
+        started = perf_counter()
+        self._activate_job_result(run, completion=True)
+        timings["Initial result display"] = perf_counter() - started
+        self._refresh_job_manager()
+        self.status_panel.set_state(f"Analysis complete: {run.name}", 5000)
+        self.ribbon.set_current("Results")
+
+    def _present_run_failed(self, run: AnalysisRun, message: str) -> None:
+        self._refresh_job_manager()
+        self.status_panel.set_state(f"Analysis failed: {run.name}", 5000)
+        self._show_error("Analysis run failed", message)
+
+    def _present_run_cancelled(self, run: AnalysisRun) -> None:
+        self._refresh_job_manager()
+        self.status_panel.set_state(f"Analysis canceled: {run.name}", 5000)
 
     def _show_model_check_report(self, report: PreflightReport) -> None:
         facts = report.facts
@@ -10554,176 +10366,6 @@ class FEMMainWindow(QMainWindow):
             if receipt.diagnostic is not None:
                 self._show_command_rejection("Failed to copy job", receipt)
 
-    def _submit_job(
-        self,
-        name: str,
-        step_name: str,
-        *,
-        source_job_name: str | None = None,
-    ) -> AnalysisRun | None:
-        """Validate and submit a job in the background; all state remains in memory."""
-        del source_job_name
-        receipt = self.submit_run(name, step_name)
-        if receipt.diagnostic is not None:
-            self._show_command_rejection("Failed to submit job", receipt)
-            return None
-        return self.session.find_run(str(name).strip())
-
-    def _begin_submit_run(
-        self,
-        name: str,
-        step_name: str,
-        *,
-        completion: GuiCommandCompletion | None = None,
-        expected_session_revision: int | None = None,
-        on_progress: Callable[[str], None] | None = None,
-        existing_run: bool = False,
-    ) -> AnalysisRun | None:
-        target_context = self._active_workspace_context()
-        if target_context is None:
-            raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-        if self.document.model is None or self.geometry is None or self.busy:
-            raise RuntimeError("a current model is required and the task controller must be idle")
-        if type(name) is not str or type(step_name) is not str:
-            raise TypeError("name and step_name must be strings")
-        clean_name = name.strip()
-        clean_step = step_name.strip()
-        if not clean_name:
-            raise ValueError("Job name cannot be empty.")
-        if len(clean_name) > 64:
-            raise ValueError("Job name cannot exceed 64 characters.")
-        if not existing_run and self.workspace.job_name_exists(clean_name):
-            raise ValueError(f"Job name already exists: {clean_name}")
-        if clean_step not in target_session.runnable_step_names():
-            raise ValueError(f"Step does not exist: {clean_step}")
-        task = (
-            target_session.prepare_run_solve(
-                clean_name,
-                expected_session_revision=expected_session_revision,
-            )
-            if existing_run
-            else target_session.prepare_solve(
-                clean_step,
-                clean_name,
-                expected_session_revision=expected_session_revision,
-            )
-        )
-        if not existing_run:
-            self.workspace.remember_job_name(clean_name)
-        if task.delta is not None:
-            self._apply_session_delta(task.delta, context=target_context)
-        self._apply_session_delta(target_session.begin_run(task.token), context=target_context)
-        job = target_session.find_run(task.run_id)
-        if job is None:
-            return None
-        self.status_panel.set_state(f"Analyzing: {job.name}")
-        self._refresh_job_manager()
-        stage = {"name": "Model validation"}
-
-        def workload(
-            context: TaskContext,
-        ) -> tuple[object, dict[str, float], object, object | None]:
-            timings: dict[str, float] = {}
-            solve_model = task.model
-            stage["name"] = "Solve"
-            context.report("Assembling and solving...")
-            run_prepared = task.prepared_system
-            if run_prepared is None:
-                run_prepared = static_linear.prepare(
-                    solve_model,
-                    copy_model=False,
-                    timings=timings,
-                )
-            result = static_linear.solve(
-                solve_model,
-                task.step_name,
-                name=task.run_name,
-                _prepared_system=run_prepared,
-                timings=timings,
-            )
-            context.report("Executing output requests...")
-            started = perf_counter()
-            bundle = build_solve_result_bundle(
-                task,
-                result,
-                cancellation=context,
-            )
-            timings["Output requests and initial results"] = perf_counter() - started
-            cache_candidate = (
-                run_prepared.clone()
-                if task.prepared_system is None
-                else None
-            )
-            context.checkpoint()
-            return bundle, timings, run_prepared, cache_candidate
-
-        def apply_result(value: object) -> TaskApplyOutcome:
-            bundle, timings, run_prepared, cache_candidate = value
-            delta = target_session.accept_run_succeeded_with_prepared_system(
-                task.token,
-                bundle,
-                run_prepared,
-                cache_candidate=cache_candidate,
-                timings=timings,
-            )
-            return session_task_outcome(
-                delta,
-                timings,
-            )
-
-        def project_result(value: object) -> None:
-            delta, timings = value
-            if not self._apply_session_delta(delta, context=target_context):
-                raise RuntimeError("Cannot project the accepted solver result")
-            completed = target_session.find_run(task.token.run_id)
-            if completed is None:
-                raise RuntimeError("The accepted analysis job does not exist")
-            activation_started = perf_counter()
-            self._activate_job_result(completed, completion=True)
-            timings["Initial result display"] = perf_counter() - activation_started
-            self._refresh_job_manager()
-            self.status_panel.set_state(f"Analysis complete: {completed.name}", 5000)
-            self.ribbon.set_current("Results")
-
-        started = self._start_task(
-            workload,
-            project_result,
-            "Analysis run failed",
-            lambda message, token=task.token, current_stage=stage: self._job_failed(
-                token,
-                message,
-                validation_failure=current_stage["name"] == "Model validation",
-                context=target_context,
-            ),
-            task_name=f"Job {job.name}",
-            on_cancelled=lambda token=task.token: self._job_cancelled(token, context=target_context),
-            on_inactive_failure=(
-                lambda message, token=task.token, current_stage=stage: self._job_failed(
-                    token,
-                    message,
-                    validation_failure=current_stage["name"] == "Model validation",
-                    context=target_context,
-                )
-            ),
-            on_inactive_cancelled=(
-                lambda token=task.token: self._job_cancelled(token, context=target_context)
-            ),
-            apply_result=apply_result,
-            completion=completion,
-            on_progress=on_progress,
-            context=target_context,
-        )
-        if started:
-            return job
-        self._apply_session_delta(
-            target_session.accept_run_failed(
-                task.token,
-                "analysis task could not be started",
-            ),
-            context=target_context,
-        )
-        return None
 
     def _begin_agent_solve(
         self,
@@ -10810,8 +10452,8 @@ class FEMMainWindow(QMainWindow):
                 )
 
         completion.observe(terminal)
-        job = self._begin_submit_run(
-            request.job_name,
+        job = self.document_analysis.submit_run(
+            target_context, request.job_name,
             request.step_name,
             completion=completion,
             expected_session_revision=request.base_session_revision,
@@ -10822,76 +10464,6 @@ class FEMMainWindow(QMainWindow):
         )
         return job is not None
 
-    def _job_succeeded(self, token: object, value: object) -> None:
-        bundle, timings = value
-        delta = self.session.accept_run_succeeded(
-            token,
-            bundle,
-            timings=timings,
-        )
-        if not self._apply_session_delta(delta):
-            self.status_panel.set_state(
-                "Solver result is stale and was not applied",
-                5000,
-            )
-            return
-        job = self.session.find_run(token.run_id)
-        if job is None:
-            return
-        activation_started = perf_counter()
-        self._activate_job_result(job, completion=True)
-        timings["Initial result display"] = perf_counter() - activation_started
-        self._refresh_job_manager()
-        self.status_panel.set_state(f"Analysis complete: {job.name}", 5000)
-        self.ribbon.set_current("Results")
-
-    def _job_failed(
-        self,
-        token: object,
-        message: str,
-        *,
-        validation_failure: bool = False,
-        context: WorkspaceDocument | None = None,
-    ) -> None:
-        target_context = context or self._active_workspace_context()
-        if target_context is None:
-            return
-        target_session = target_context.session
-        self._apply_session_delta(
-            target_session.accept_run_failed(token, message), context=target_context
-        )
-        job = target_session.find_run(token.run_id)
-        if job is None:
-            return
-        if target_context is not None and not self._task_context_is_active(
-            target_context
-        ):
-            return
-        self._refresh_job_manager()
-        state = "Model check failed" if validation_failure else "Analysis failed"
-        self.status_panel.set_state(f"{state}: {job.name}", 5000)
-        self._show_error(
-            "Model check failed" if validation_failure else "Analysis run failed",
-            message,
-        )
-
-    def _job_cancelled(self, token: object, *, context: WorkspaceDocument | None = None) -> None:
-        target_context = context or self._active_workspace_context()
-        if target_context is None:
-            return
-        target_session = target_context.session
-        self._apply_session_delta(
-            target_session.accept_run_cancelled(token), context=target_context
-        )
-        job = target_session.find_run(token.run_id)
-        if job is None:
-            return
-        if target_context is not None and not self._task_context_is_active(
-            target_context
-        ):
-            return
-        self._refresh_job_manager()
-        self.status_panel.set_state(f"Analysis canceled: {job.name}", 5000)
 
     def _activate_job_result(
         self,
