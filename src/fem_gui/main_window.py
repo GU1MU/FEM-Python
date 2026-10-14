@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from fem.io.inp import read_with_report as read_inp_with_report
 from fem.application import (
     AnalysisRun,
     AuthoringCapability,
@@ -320,9 +319,15 @@ from .widgets.status_bar import CAEStatusBar
 from .widgets.viewport import FEMViewport
 from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
-from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
+from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter
 from .document_files import DocumentFileCommands
 from .document_open import DocumentOpenCommands, DocumentOpenPresentation
+from .document_model import (
+    AgentMeshLifecycle,
+    DocumentModelCommands,
+    DocumentModelPresentation,
+    PreparedImportedModel,
+)
 from .document_analysis import (
     DocumentAnalysisCommands,
     DocumentAnalysisPresentation,
@@ -331,7 +336,7 @@ from .document_results import DocumentResultCommands, DocumentResultPresentation
 from .result_command_state import PendingResultMaterialization
 from .result_display_state import ResultDisplayPreferences
 from .result_rendering import ResultPresentationPort, ResultPresentationService
-from .mesh_tasks import prepare_mesh_display
+from .mesh_tasks import PreparedMeshDisplay
 
 
 _IMPORTED_OUTPUT_REQUEST_WARNING = (
@@ -603,6 +608,15 @@ class FEMMainWindow(QMainWindow):
             ),
         )
         self.document_files = DocumentFileCommands(self.document_tasks)
+        self.document_models = DocumentModelCommands(
+            self.document_tasks,
+            DocumentModelPresentation(
+                project_model=self._project_document_model,
+                mesh_completed=self._present_completed_mesh,
+                import_completed=self._install_import_notices,
+                agent_terminal=self._present_agent_mesh_terminal,
+            ),
+        )
         self.document_open = DocumentOpenCommands(
             self.document_tasks,
             DocumentOpenPresentation(
@@ -6142,100 +6156,23 @@ class FEMMainWindow(QMainWindow):
         self,
         request: AgentMeshTaskRequest,
     ) -> bool:
-        """Start the document-owned task after the bridge consumed GUI authority."""
+        """Execute a request whose GUI authority was consumed by the bridge."""
 
         target_context = self._active_workspace_context()
         if target_context is None:
             raise RuntimeError("No document is available for this task")
-        task = request.task
         port = self.agent_authoring_bridge.port
-        complete_mesh = getattr(port, "complete_mesh", None)
         accept_mesh_result = getattr(port, "accept_mesh_result", None)
         terminate_mesh = getattr(port, "terminate_mesh", None)
-        if not all(
-            callable(item)
-            for item in (complete_mesh, accept_mesh_result, terminate_mesh)
-        ):
+        if not callable(accept_mesh_result) or not callable(terminate_mesh):
             raise RuntimeError("Agent mesh lifecycle port is unavailable")
-
-        def workload(context: TaskContext) -> object:
-            return prepare_mesh_display(task, context)
-
-        def apply_result(value: object) -> TaskApplyOutcome:
-            model, _geometry, _timings, _notices = self._unpack_model_load(
-                value
-            )
-            outcome = session_task_outcome(
-                accept_mesh_result(request.proposal_id, model),
-                value,
-            )
-            return outcome
-
-        def project_result(value: object) -> None:
-            delta, payload = value
-            model, geometry, timings, _notices = self._unpack_model_load(
-                payload
-            )
-            if not self._apply_session_delta(
-                delta,
-                context=target_context,
-                model_geometry=geometry,
-                timings=timings,
-                source_label=str(
-                    getattr(model, "name", None) or "Untitled Model"
-                ),
-            ):
-                raise RuntimeError("Cannot project the accepted Agent mesh result")
-            self._import_notices = ()
-
-        def terminal(record: TaskCompletion) -> None:
-            if record.state is BackgroundTaskState.SUCCEEDED:
-                if self.document_tasks.is_active(target_context):
-                    self._record_agent_workflow_proposal_state(
-                        "mesh",
-                        ProposalState.SUCCEEDED,
-                        "Agent mesh installed atomically",
-                    )
-                return
-            state = {
-                BackgroundTaskState.CANCELLED: ProposalState.CANCELLED,
-                BackgroundTaskState.DISCARDED: ProposalState.STALE,
-            }.get(record.state, ProposalState.FAILED)
-            terminate_mesh(
-                request.proposal_id,
-                state,
-                record.message or record.state.value,
-            )
-            if self.document_tasks.is_active(target_context):
-                self._record_agent_workflow_proposal_state(
-                    "mesh",
-                    state,
-                    record.message or record.state.value,
-                )
-            if not self.document_tasks.is_active(target_context):
-                return
-            if record.state is BackgroundTaskState.FAILED:
-                self.status_panel.set_state(
-                    record.message or "Agent mesh generation failed",
-                    5000,
-                )
-            elif record.state is BackgroundTaskState.CANCELLED:
-                self.status_panel.set_state("Agent mesh generation canceled", 4000)
-            else:
-                self.status_panel.set_state(
-                    record.message or "Agent mesh result is stale and was not applied",
-                    5000,
-                )
-
-        return self._start_task(
-            workload,
-            project_result,
-            "Agent mesh generation failed",
-            lambda _message: None,
-            task_name="Agent Mesh Generation",
-            apply_result=apply_result,
-            on_terminal=terminal,
-            context=target_context,
+        return self.document_models.start_agent_mesh(
+            target_context,
+            request.task,
+            AgentMeshLifecycle(
+                accept_model=lambda model: accept_mesh_result(request.proposal_id, model),
+                terminate=lambda state, message: terminate_mesh(request.proposal_id, state, message),
+            ),
         )
 
     def _begin_mesh_generation(
@@ -6246,72 +6183,41 @@ class FEMMainWindow(QMainWindow):
         target_context = self._active_workspace_context()
         if target_context is None:
             raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-        recipe = self.document.geometry_recipe
-        settings = self.document.mesh_settings
-        if not isinstance(recipe, NATIVE_GEOMETRY_TYPES) or not isinstance(
-            settings,
-            MeshSettings,
-        ):
-            raise RuntimeError("native geometry and mesh settings are required")
-        task = target_session.prepare_mesh_generation()
-        self.status_panel.set_state("Generating mesh...")
+        return self.document_models.start_mesh(target_context, completion=completion)
 
-        def workload(context: TaskContext) -> object:
-            return prepare_mesh_display(task, context)
+    def _project_document_model(
+        self,
+        context: WorkspaceDocument,
+        delta: SessionDelta,
+        prepared: PreparedMeshDisplay | PreparedImportedModel,
+        source_label: str,
+    ) -> bool:
+        return self._apply_session_delta(
+            delta,
+            context=context,
+            model_geometry=prepared.geometry,
+            timings=prepared.timings,
+            source_label=source_label,
+        )
 
-        def succeeded(value: object) -> None:
-            delta, payload = value
-            model, geometry, timings, _notices = self._unpack_model_load(
-                payload
-            )
-            if not self._apply_session_delta(
-                delta,
-                model_geometry=geometry,
-                timings=timings,
-                source_label=str(
-                    getattr(model, "name", None) or "Untitled Model"
-                ),
-                context=target_context,
-            ):
-                raise RuntimeError("Cannot project the accepted mesh result")
-            self._import_notices = ()
+    def _present_completed_mesh(self, manual: bool) -> None:
+        self._import_notices = ()
+        if manual:
             self.ribbon.set_current("Model")
 
-        def apply_result(value: object) -> TaskApplyOutcome:
-            model, _geometry, _timings, _notices = self._unpack_model_load(
-                value
-            )
-            return session_task_outcome(
-                target_session.accept_generated_model(task.token, model),
-                value,
-            )
-
-        return self._start_task(
-            workload,
-            succeeded,
-            "Mesh generation failed",
-            lambda message: self._target_session_task_failed(
-                    target_context,
-                task.token,
-                "Mesh generation failed",
-                message,
-            ),
-            task_name="Mesh Generation",
-            on_cancelled=lambda: self._target_session_task_cancelled(target_context, task.token),
-            on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                task.token,
-                "Mesh generation failed",
-                message,
-            ),
-            on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                target_context, task.token,
-            ),
-            apply_result=apply_result,
-            completion=completion,
-            context=target_context,
-        )
+    def _present_agent_mesh_terminal(
+        self,
+        context: WorkspaceDocument,
+        state: ProposalState,
+        message: str,
+    ) -> None:
+        self._record_agent_workflow_proposal_state("mesh", state, message)
+        if state is ProposalState.SUCCEEDED:
+            return
+        if state is ProposalState.CANCELLED:
+            self.status_panel.set_state("Agent mesh generation canceled", 4000)
+        else:
+            self.status_panel.set_state(message, 5000)
 
     def open_inp(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
@@ -6821,83 +6727,8 @@ class FEMMainWindow(QMainWindow):
         target_context = self._active_workspace_context()
         if target_context is None:
             raise RuntimeError("No document is available for this task")
-        target_session = target_context.session
-        task = target_session.prepare_import(path)
-        self.status_panel.set_state("Importing model...")
-
-        self.status_panel.set_state("Parsing INP...")
-
-        def workload(context: TaskContext):
-            timings: dict[str, float] = {}
-            context.report("Parsing and building INP...")
-            started = perf_counter()
-            import_result = read_inp_with_report(path)
-            timings["INP parsing and building"] = perf_counter() - started
-            model = import_result.model
-            context.report("Generating display mesh...")
-            started = perf_counter()
-            geometry = build_model_geometry(model)
-            timings["VTK display geometry construction"] = perf_counter() - started
-            context.report("Preparing session model...")
-            started = perf_counter()
-            prepared = target_session.prepare_owned_imported_model_transfer(
-                model
-            )
-            timings["Session model ownership preparation"] = perf_counter() - started
-            context.checkpoint()
-            return prepared, geometry, timings, import_result.notices
-
-        def apply_result(value: object) -> TaskApplyOutcome:
-            prepared, _geometry, _timings, _notices = self._unpack_model_load(
-                value
-            )
-            return session_task_outcome(
-                target_session.accept_imported_model_transfer(
-                    task.token,
-                    prepared,
-                ),
-                value,
-            )
-
-        def project_result(value: object) -> None:
-            delta, payload = value
-            _model, geometry, timings, notices = self._unpack_model_load(
-                payload
-            )
-            if not self._apply_session_delta(
-                delta,
-                model_geometry=geometry,
-                timings=timings,
-                source_label=path.name,
-                context=target_context,
-            ):
-                raise RuntimeError("Cannot project the accepted import result")
-            self._install_import_notices(notices)
-
-        return self._start_task(
-            workload,
-            project_result,
-            "Failed to load model",
-            lambda message: self._target_session_task_failed(
-                    target_context,
-                task.token,
-                "Failed to load model",
-                message,
-            ),
-            task_name="INP Import",
-            on_cancelled=lambda: self._target_session_task_cancelled(target_context, task.token),
-            on_inactive_failure=lambda message: self._target_session_task_failed(
-                    target_context,
-                task.token,
-                "Failed to load model",
-                message,
-            ),
-            on_inactive_cancelled=lambda: self._target_session_task_cancelled(
-                target_context, task.token,
-            ),
-            apply_result=apply_result,
-            completion=completion,
-            context=target_context,
+        return self.document_models.start_reload(
+            target_context, path, completion=completion,
         )
 
     def _model_loaded(
@@ -6907,6 +6738,7 @@ class FEMMainWindow(QMainWindow):
         *,
         token: object | None = None,
     ) -> None:
+        """Synchronous fixture hook; production imports use document commands."""
         model, geometry, timings, notices = self._unpack_model_load(value)
         task = self.session.prepare_import(path) if token is None else None
         active_token = token or task.token
@@ -6931,7 +6763,7 @@ class FEMMainWindow(QMainWindow):
         *,
         token: object | None = None,
     ) -> None:
-        """Install a generated model through the same GUI path as an INP model."""
+        """Synchronous fixture hook; production mesh tasks use document commands."""
         model, geometry, timings, _notices = self._unpack_model_load(value)
         task = self.session.prepare_mesh_generation() if token is None else None
         active_token = token or task.token
@@ -6959,6 +6791,7 @@ class FEMMainWindow(QMainWindow):
         dict[str, float],
         tuple[object, ...],
     ]:
+        """Decode legacy fixture payloads, outside the typed worker contract."""
         if len(value) == 2:
             model, geometry = value
             timings = {}
@@ -9289,34 +9122,6 @@ class FEMMainWindow(QMainWindow):
             return
         self._refresh_job_manager()
         self.ribbon.set_current("Results")
-
-
-    def _target_session_task_failed(
-        self,
-        context: WorkspaceDocument,
-        token: object,
-        title: str,
-        message: str,
-    ) -> None:
-        delta = context.session.accept_task_failed(token, message)
-        applied = (
-            self._apply_revision_neutral_task_receipt(delta)
-            if not delta.changed and not delta.invalidated
-            else self._apply_session_delta(delta, context=context)
-        )
-        if applied and self.workspace.active_document_id == context.document_id:
-            self._show_error(title, message)
-
-    def _target_session_task_cancelled(
-        self,
-        context: WorkspaceDocument,
-        token: object,
-    ) -> None:
-        delta = context.session.accept_task_cancelled(token)
-        if not delta.changed and not delta.invalidated:
-            self._apply_revision_neutral_task_receipt(delta)
-            return
-        self._apply_session_delta(delta, context=context)
 
 
     def _start_task(
