@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from time import perf_counter
 from typing import Callable
 
 from fem.application import (
     AnalysisRun,
+    ModelSession,
     PreparedPreflight,
+    PreparedSolveTask,
     PreflightReport,
     SessionDelta,
-    SolveTaskSnapshot,
+    SolvePreparationRequest,
     ValidationTaskSnapshot,
     safe_prepare_static_preflight,
     safe_static_preflight,
@@ -22,7 +25,7 @@ from fem.solvers.static_linear import PreparedSystem
 
 from .commands import GuiCommandCompletion
 from .document_tasks import DocumentTaskRouter, session_task_outcome
-from .task_controller import TaskApplyOutcome
+from .task_controller import BackgroundTaskState, TaskApplyOutcome, TaskCompletion
 from .workers import TaskContext
 from .workspace import WorkspaceDocument
 
@@ -51,6 +54,7 @@ class PreparedSolveResult:
     timings: dict[str, float]
     prepared_system: PreparedSystem
     cache_candidate: PreparedSystem | None
+    prepared_task: PreparedSolveTask
 
 
 def should_run_numerical_model_check(model: object) -> bool:
@@ -97,9 +101,15 @@ def prepare_model_check(
 
 
 def prepare_solve_result(
-    task: SolveTaskSnapshot, context: TaskContext,
+    request: SolvePreparationRequest, context: TaskContext,
 ) -> PreparedSolveResult:
     timings: dict[str, float] = {}
+    context.report("Preparing analysis...")
+    started = perf_counter()
+    prepared_task = ModelSession.prepare_solve_task(request)
+    timings["Solve model snapshot"] = perf_counter() - started
+    context.checkpoint()
+    task = prepared_task.snapshot
     context.report("Assembling and solving...")
     prepared = task.prepared_system
     if prepared is None:
@@ -119,7 +129,7 @@ def prepare_solve_result(
     timings["Output requests and initial results"] = perf_counter() - started
     cache_candidate = prepared.clone() if task.prepared_system is None else None
     context.checkpoint()
-    return PreparedSolveResult(bundle, timings, prepared, cache_candidate)
+    return PreparedSolveResult(bundle, timings, prepared, cache_candidate, prepared_task)
 
 
 class DocumentAnalysisCommands:
@@ -227,11 +237,11 @@ class DocumentAnalysisCommands:
             document, name, step_name, existing=existing_run,
         )
         task = (
-            session.prepare_run_solve(
+            session.prepare_run_solve_request(
                 name, expected_session_revision=expected_session_revision,
             )
             if existing_run
-            else session.prepare_solve(
+            else session.prepare_solve_request(
                 step_name, name, expected_session_revision=expected_session_revision,
             )
         )
@@ -240,6 +250,8 @@ class DocumentAnalysisCommands:
             delta = session.accept_run_failed(task.token, message)
             if not delta.accepted:
                 return
+            if not self.tasks.is_live(document) or document.session is not session:
+                return
             self.presentation.project_delta(document, delta)
             current = session.find_run(task.run_id)
             if present and current is not None and self.tasks.is_active(document):
@@ -247,7 +259,7 @@ class DocumentAnalysisCommands:
 
         def cancelled() -> None:
             delta = session.accept_run_cancelled(task.token)
-            if not delta.accepted:
+            if not delta.accepted or not self.tasks.is_live(document) or document.session is not session:
                 return
             self.presentation.project_delta(document, delta)
             current = session.find_run(task.run_id)
@@ -257,8 +269,9 @@ class DocumentAnalysisCommands:
         def apply(value: object) -> TaskApplyOutcome:
             if type(value) is not PreparedSolveResult:
                 raise TypeError("analysis run must return PreparedSolveResult")
-            delta = session.accept_run_succeeded_with_prepared_system(
+            delta = session.accept_prepared_run_succeeded_with_prepared_system(
                 task.token,
+                value.prepared_task,
                 value.bundle,
                 value.prepared_system,
                 cache_candidate=value.cache_candidate,
@@ -274,6 +287,22 @@ class DocumentAnalysisCommands:
             if completed is None:
                 raise RuntimeError("The accepted analysis job does not exist")
             self.presentation.run_completed(completed, timings)
+
+        def terminal(record: TaskCompletion) -> None:
+            # Routing can discard a closed/rebound document before its apply
+            # callback. Always finish the original reservation in that case.
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                return
+            delta = (
+                session.accept_run_cancelled(task.token)
+                if record.state in {BackgroundTaskState.CANCELLED, BackgroundTaskState.DISCARDED}
+                else session.accept_run_failed(task.token, record.message or record.state.value)
+            )
+            if delta.accepted and self.tasks.is_live(document) and document.session is session:
+                try:
+                    self.presentation.project_delta(document, delta)
+                except Exception:
+                    logging.exception("Cannot project analysis task cleanup")
 
         try:
             if not existing_run:
@@ -300,6 +329,7 @@ class DocumentAnalysisCommands:
                 apply_result=apply,
                 completion=completion,
                 on_progress=on_progress,
+                on_terminal=terminal,
             )
         except Exception as error:
             failed(str(error).strip() or type(error).__name__, present=False)

@@ -180,6 +180,7 @@ from .session import (
     BooleanReferenceUndoRecord,
     ModelSession,
     PreparedNamedRegionEdit,
+    PreparedSolveTask,
     PartBooleanUndoRecord,
     PartRevisionConflictError,
     ProjectSaveSnapshot,
@@ -187,6 +188,7 @@ from .session import (
     RevisionConflictError,
     SessionSnapshot,
     SessionStateError,
+    SolvePreparationRequest,
     compile_named_region_edit,
 )
 from .units import UnitContext
@@ -194,6 +196,8 @@ from .validation import ValidationRecord, ValidationStamp
 
 __all__ = [
     "AnalysisRun",
+    "PreparedSolveTask",
+    "SolvePreparationRequest",
     "ANALYSIS_OBJECT_COLLECTIONS",
     "ArtifactKind",
     "AuthoringCapability",

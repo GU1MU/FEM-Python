@@ -231,6 +231,37 @@ class _IssuedSolvePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SolvePreparationRequest:
+    """One Session reservation whose read-only source is copied by a worker.
+
+    Session model edits publish a new artifact/revision. A worker only reads
+    this source and solves its own copy; edits invalidate the reservation.
+    The private preparation state is handed to that worker, never used to
+    change the Session task registry from a background thread.
+    """
+
+    token: TaskToken
+    run_name: str
+    run_id: str
+    result_id: str
+    step_name: str
+    _source_model: Any
+    _source_prepared: PreparedSystem | None
+    delta: SessionDelta | None = None
+    _identity: object = field(default_factory=object, init=False, repr=False)
+    _prepared_task: PreparedSolveTask | None = field(default=None, init=False, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSolveTask:
+    """The exact detached task produced once by a solve reservation."""
+
+    snapshot: SolveTaskSnapshot
+    _request_identity: object
+    _issued_payload: _IssuedSolvePayload
+
+
+@dataclass(frozen=True, slots=True)
 class _IssuedMaterializationPayload:
     """Expected patch identity for one generation-bound recovery task."""
 
@@ -5323,6 +5354,25 @@ class ModelSession:
     ) -> SolveTaskSnapshot:
         """Prepare an existing pending run for background solution."""
 
+        request = self.prepare_run_solve_request(
+            run_id_or_name, expected_session_revision=expected_session_revision,
+        )
+        try:
+            prepared = self.prepare_solve_task(request)
+        except Exception:
+            self._complete_token(request.token)
+            raise
+        self._task_data[request.token.task_id] = prepared._issued_payload
+        return prepared.snapshot
+
+    def prepare_run_solve_request(
+        self,
+        run_id_or_name: str,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SolvePreparationRequest:
+        """Reserve a validated run, deferring its ownership copy to a worker."""
+
         self._check_expected(expected_session_revision)
         if self.result_only:
             raise SessionStateError(
@@ -5352,22 +5402,17 @@ class ModelSession:
                 f"step {resolved_step!r} does not have a current passing validation"
             )
         cached_prepared = self._current_prepared_system()
-        solve_prepared = (
-            None
+        source_model = (
+            artifact.model
             if cached_prepared is None
-            else cached_prepared.clone()
+            else cached_prepared._trusted_model_for_task()
         )
-        solve_model = (
-            deepcopy(artifact.model)
-            if solve_prepared is None
-            else solve_prepared._trusted_model_for_task()
-        )
-        solve_steps = tuple(
+        source_steps = tuple(
             step
-            for step in getattr(solve_model, "steps", ())
+            for step in getattr(source_model, "steps", ())
             if str(getattr(step, "name", "")) == resolved_step
         )
-        if len(solve_steps) != 1:
+        if len(source_steps) != 1:
             raise SessionStateError(
                 "current model artifact must contain exactly one matching "
                 f"analysis step: {resolved_step}"
@@ -5381,20 +5426,67 @@ class ModelSession:
             run_id=run.run_id,
             result_id=result_id,
         )
-        self._task_data[token.task_id] = _IssuedSolvePayload(
-            model=solve_model,
-            step=solve_steps[0],
-            prepared_system=solve_prepared,
-        )
-        return SolveTaskSnapshot(
+        request = SolvePreparationRequest(
             token=token,
-            model=solve_model,
             step_name=resolved_step,
             run_name=run.name,
             run_id=run.run_id,
             result_id=result_id,
-            prepared_system=solve_prepared,
+            _source_model=source_model,
+            _source_prepared=cached_prepared,
         )
+        self._task_data[token.task_id] = request
+        return request
+
+    @staticmethod
+    def prepare_solve_task(request: SolvePreparationRequest) -> PreparedSolveTask:
+        """Copy one reservation without reading or writing a live Session."""
+
+        if type(request) is not SolvePreparationRequest:
+            raise TypeError("request must be exactly SolvePreparationRequest")
+        if request._prepared_task is not None:
+            raise SessionStateError("solve reservation was already prepared")
+        solve_prepared = (
+            None if request._source_prepared is None
+            else request._source_prepared.clone()
+        )
+        solve_model = (
+            deepcopy(request._source_model) if solve_prepared is None
+            else solve_prepared._trusted_model_for_task()
+        )
+        solve_steps = tuple(
+            step for step in getattr(solve_model, "steps", ())
+            if str(getattr(step, "name", "")) == request.step_name
+        )
+        if len(solve_steps) != 1:
+            raise SessionStateError("prepared solve must contain exactly one matching step")
+        snapshot = SolveTaskSnapshot(
+            token=request.token, model=solve_model, step_name=request.step_name,
+            run_name=request.run_name, run_id=request.run_id, result_id=request.result_id,
+            delta=request.delta, prepared_system=solve_prepared,
+        )
+        prepared = PreparedSolveTask(
+            snapshot, request._identity, _IssuedSolvePayload(solve_model, solve_steps[0], solve_prepared),
+        )
+        object.__setattr__(request, "_prepared_task", prepared)
+        return prepared
+
+    def prepare_solve_request(
+        self,
+        step_name: str | None = None,
+        run_name: str | None = None,
+        *,
+        expected_session_revision: int | None = None,
+    ) -> SolvePreparationRequest:
+        """Create and reserve a run for background model preparation."""
+
+        resolved_name = self.next_run_name() if run_name is None else str(run_name).strip()
+        delta = self.create_run(
+            step_name, resolved_name, expected_session_revision=expected_session_revision,
+        )
+        request = self.prepare_run_solve_request(resolved_name)
+        object.__setattr__(request, "delta", delta)
+        return request
 
     def prepare_solve(
         self,
@@ -5478,6 +5570,41 @@ class ModelSession:
             prepared_system=prepared_system,
             cache_candidate=cache_candidate,
         )
+
+    def accept_prepared_run_succeeded_with_prepared_system(
+        self,
+        token: TaskToken,
+        prepared_task: PreparedSolveTask,
+        bundle: SolveResultBundle,
+        prepared_system: PreparedSystem,
+        *,
+        cache_candidate: PreparedSystem | None = None,
+        timings: Mapping[str, float] | None = None,
+    ) -> SessionDelta:
+        """Register the reservation's actual worker copy, then accept strictly."""
+
+        status = self._token_status_for(token, "solve")
+        if status is not TokenStatus.CURRENT:
+            return self._rejected(status, "stale run result")
+        if self._runs[str(token.run_id)].status is not RunStatus.RUNNING:
+            return self._rejected(TokenStatus.INVALID_STATE, "run is not running")
+        request = self._task_data.get(token.task_id)
+        if (
+            type(request) is not SolvePreparationRequest
+            or type(prepared_task) is not PreparedSolveTask
+            or request._prepared_task is not prepared_task
+            or prepared_task._request_identity is not request._identity
+        ):
+            raise ValueError("prepared solve task must be the exact reserved worker preparation")
+        self._task_data[token.task_id] = prepared_task._issued_payload
+        try:
+            return self.accept_run_succeeded_with_prepared_system(
+                token, bundle, prepared_system, cache_candidate=cache_candidate,
+                timings=timings,
+            )
+        except Exception:
+            self._task_data[token.task_id] = request
+            raise
 
     def _accept_run_succeeded(
         self,
