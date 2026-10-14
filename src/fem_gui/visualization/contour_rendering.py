@@ -120,6 +120,7 @@ def build_shaded_contour_surface(
         dtype=np.int64,
     )
     normals = np.asarray(normal_surface.point_data.active_normals)
+    normal_points = np.asarray(normal_surface.points)
     render_points: list[np.ndarray] = []
     render_normals: list[np.ndarray] = []
     render_source_points: list[int] = []
@@ -144,7 +145,7 @@ def build_shaded_contour_surface(
             canonical_point_id = int(normal_source_points[normal_index])
             local_node = canonical_cell.index(canonical_point_id)
             result_point_id = result_cell[local_node]
-            render_points.append(np.asarray(normal_surface.points[normal_index]))
+            render_points.append(normal_points[normal_index])
             render_normals.append(normals[normal_index])
             render_source_points.append(result_point_id)
         render_source_cells.append(source_cell_id)
