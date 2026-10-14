@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 from time import perf_counter
@@ -48,7 +48,7 @@ class DocumentModelPresentation:
         bool,
     ]
     mesh_completed: Callable[[bool], None]
-    import_completed: Callable[[tuple[InpImportNotice, ...]], None]
+    import_completed: Callable[[WorkspaceDocument], None]
     agent_terminal: Callable[[WorkspaceDocument, ProposalState, str], None]
 
 
@@ -78,12 +78,14 @@ class DocumentModelCommands:
             if type(value) is not PreparedMeshDisplay:
                 raise TypeError("mesh generation must return PreparedMeshDisplay")
             delta = session.accept_generated_model(task.token, value.model)
+            value = self._retain_accepted_display(document, session, delta, value)
             return session_task_outcome(delta, value)
 
         def project(value: object) -> None:
             delta, prepared = value
             self._project_model(document, delta, prepared, self._mesh_label(prepared))
-            self.presentation.mesh_completed(True)
+            if self.tasks.is_active(document):
+                self.presentation.mesh_completed(True)
 
         return self._start_session_task(
             document, session, task.token,
@@ -122,12 +124,14 @@ class DocumentModelCommands:
             if type(value) is not PreparedImportedModel:
                 raise TypeError("INP reload must return PreparedImportedModel")
             delta = session.accept_imported_model_transfer(task.token, value.model_transfer)
+            value = self._retain_accepted_display(document, session, delta, value)
             return session_task_outcome(delta, value)
 
         def project(value: object) -> None:
             delta, prepared = value
             self._project_model(document, delta, prepared, task.source_path.name)
-            self.presentation.import_completed(prepared.notices)
+            if self.tasks.is_active(document):
+                self.presentation.import_completed(document)
 
         return self._start_session_task(
             document, session, task.token, prepare, apply, project,
@@ -146,12 +150,15 @@ class DocumentModelCommands:
         def apply(value: object) -> TaskApplyOutcome:
             if type(value) is not PreparedMeshDisplay:
                 raise TypeError("Agent mesh generation must return PreparedMeshDisplay")
-            return session_task_outcome(lifecycle.accept_model(value.model), value)
+            delta = lifecycle.accept_model(value.model)
+            value = self._retain_accepted_display(document, session, delta, value)
+            return session_task_outcome(delta, value)
 
         def project(value: object) -> None:
             delta, prepared = value
             self._project_model(document, delta, prepared, self._mesh_label(prepared))
-            self.presentation.mesh_completed(False)
+            if self.tasks.is_active(document):
+                self.presentation.mesh_completed(False)
 
         def terminal(record: TaskCompletion) -> None:
             state = {
@@ -175,6 +182,7 @@ class DocumentModelCommands:
             "Agent mesh generation failed", lambda _message: None,
             context=document, controller=document.task_controller,
             task_name="Agent Mesh Generation", apply_result=apply, on_terminal=terminal,
+            on_inactive_success=project,
         )
 
     def _start_session_task(
@@ -212,6 +220,7 @@ class DocumentModelCommands:
                 context=document, controller=document.task_controller,
                 task_name=task_name, apply_result=apply, completion=completion,
                 on_terminal=terminal,
+                on_inactive_success=project,
             )
         except Exception as error:
             finish(BackgroundTaskState.FAILED, str(error).strip() or type(error).__name__, present=False)
@@ -219,6 +228,37 @@ class DocumentModelCommands:
         if not started:
             finish(BackgroundTaskState.FAILED, f"the {task_name} task could not be started", present=False)
         return started
+
+    def _retain_accepted_display(
+        self, document: WorkspaceDocument, session: ModelSession, delta: SessionDelta,
+        prepared: PreparedMeshDisplay | PreparedImportedModel,
+    ) -> PreparedMeshDisplay | PreparedImportedModel:
+        """Keep shallow adapters before UI work, only for this accepted model."""
+
+        if not delta.accepted or not self.tasks.is_live(document) or document.session is not session:
+            return prepared
+        snapshot = session.projection_snapshot()
+        artifact = snapshot.artifact
+        if (
+            snapshot.session_revision != delta.session_revision
+            or artifact is None
+            or artifact.session_id != snapshot.session_id
+            or artifact.model_revision != snapshot.model_revision
+        ):
+            return prepared
+        geometry = prepared.geometry
+        if geometry.artifact_id != artifact.artifact_id:
+            geometry = replace(geometry, artifact_id=artifact.artifact_id)
+            prepared = replace(prepared, geometry=geometry)
+        cache = document.presentation_cache
+        if cache.artifact_id != artifact.artifact_id:
+            cache.invalidate_model()
+        cache.artifact_id = artifact.artifact_id
+        cache.model_geometry = geometry
+        document.presentation_state.import_notices = (
+            prepared.notices if type(prepared) is PreparedImportedModel else ()
+        )
+        return prepared
 
     def _project_model(
         self, document: WorkspaceDocument, delta: SessionDelta,

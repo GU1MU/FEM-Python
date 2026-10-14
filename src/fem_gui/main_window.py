@@ -613,7 +613,7 @@ class FEMMainWindow(QMainWindow):
             DocumentModelPresentation(
                 project_model=self._project_document_model,
                 mesh_completed=self._present_completed_mesh,
-                import_completed=self._install_import_notices,
+                import_completed=self._present_import_notices,
                 agent_terminal=self._present_agent_mesh_terminal,
             ),
         )
@@ -622,7 +622,6 @@ class FEMMainWindow(QMainWindow):
             DocumentOpenPresentation(
                 refresh_document=lambda context: self._refresh_open_document(context),
                 activate_document=lambda context: self._activate_workspace_context(context),
-                install_notices=lambda notices: self._install_import_notices(notices),
                 result_opened=lambda path: self._present_opened_result(path),
                 shutting_down=lambda: self._closing or self._exit_pending,
             ),
@@ -718,7 +717,6 @@ class FEMMainWindow(QMainWindow):
             )
         )
         self._applied_session_revision = self.document.session_revision
-        self._import_notices: tuple[object, ...] = ()
         # Keep the extension compatibility decision explicit in the GUI.  A
         # legacy ``.femproj`` document must be routed through Save As so the
         # old file is never silently replaced by a new-schema writer.
@@ -1097,6 +1095,8 @@ class FEMMainWindow(QMainWindow):
             )
         else:
             self.status_panel.set_state("Ready")
+            if context is not None:
+                self._present_import_notices(context)
 
     def _restore_workspace_checkpoint(
         self,
@@ -1440,7 +1440,8 @@ class FEMMainWindow(QMainWindow):
     def import_notices(self) -> tuple[object, ...]:
         """Return detached, non-authoritative notices for the current import."""
 
-        return deepcopy(self._import_notices)
+        context = self.workspace.active_document()
+        return () if context is None else deepcopy(context.presentation_state.import_notices)
 
     @property
     def legacy_project_extension(self) -> bool:
@@ -1547,6 +1548,9 @@ class FEMMainWindow(QMainWindow):
                 body_name=command.body_name,
                 expected_session_revision=command.expected_session_revision,
             )
+            context = self.workspace.active_document()
+            if context is not None:
+                context.presentation_state.import_notices = ()
             receipt = self._accepted_command(command_id, delta)
         except (RevisionConflictError, TypeError, ValueError) as error:
             return self._rejected_command(
@@ -1554,7 +1558,6 @@ class FEMMainWindow(QMainWindow):
                 "session.new_native.rejected",
                 error,
             )
-        self._import_notices = ()
         return receipt
 
     def close_session(
@@ -1591,6 +1594,7 @@ class FEMMainWindow(QMainWindow):
             delta = target_context.session.close(
                 expected_session_revision=command.expected_session_revision
             )
+            target_context.presentation_state.import_notices = ()
             receipt = self._accepted_command(
                 command_id,
                 delta,
@@ -1602,7 +1606,6 @@ class FEMMainWindow(QMainWindow):
                 "session.close.rejected",
                 error,
             )
-        self._import_notices = ()
         return receipt
 
     def open_project_path(self, path: str | Path) -> GuiCommandReceipt:
@@ -2452,7 +2455,6 @@ class FEMMainWindow(QMainWindow):
             if revision <= target_context.projection.session_revision:
                 return False
             previous_snapshot = target_context.projection
-            previous_target_artifact = previous_snapshot.artifact
             snapshot = self._snapshot_for_delta(
                 delta,
                 revision,
@@ -2467,6 +2469,8 @@ class FEMMainWindow(QMainWindow):
             )
             if plan is None:
                 return False
+            if snapshot.session_revision != requested_revision:
+                model_geometry = None
             self.workspace.update_projection(target_context, snapshot)
             self.native_geometry.synchronize(target_context, snapshot)
             if geometry_preview is not None and snapshot.session_revision == requested_revision:
@@ -2475,12 +2479,15 @@ class FEMMainWindow(QMainWindow):
                 self._refresh_session_tree_metadata(target_context, plan.changed)
                 return True
             next_artifact = snapshot.artifact
-            if (
-                previous_target_artifact is None
-                or next_artifact is None
-                or previous_target_artifact.artifact_id != next_artifact.artifact_id
-            ):
-                target_context.presentation_cache.invalidate_model()
+            target_cache = target_context.presentation_cache
+            next_artifact_id = None if next_artifact is None else next_artifact.artifact_id
+            if target_cache.artifact_id != next_artifact_id:
+                target_cache.invalidate_model()
+            if next_artifact is not None and model_geometry is not None:
+                if model_geometry.artifact_id != next_artifact_id:
+                    model_geometry = replace(model_geometry, artifact_id=next_artifact_id)
+                target_cache.artifact_id = next_artifact_id
+                target_cache.model_geometry = model_geometry
             next_target_result = target_context.session.current_result_identity()
             if next_target_result is None or not target_context.presentation_cache.matches_result(
                 *next_target_result
@@ -2507,6 +2514,11 @@ class FEMMainWindow(QMainWindow):
         )
         if plan is None:
             return False
+        if snapshot.session_revision != requested_revision:
+            model_geometry = None
+            result_model_view = None
+            timings = None
+            source_label = None
         revision = plan.session_revision
         if plan.scope == "definitions" and (
             self.geometry is None
@@ -2538,8 +2550,13 @@ class FEMMainWindow(QMainWindow):
             else None
         )
         target_cache = target_context.presentation_cache
-        if previous_artifact_id != next_artifact_id:
+        if target_cache.artifact_id != next_artifact_id:
             target_cache.invalidate_model()
+        if snapshot.artifact is not None and model_geometry is not None:
+            if model_geometry.artifact_id != next_artifact_id:
+                model_geometry = replace(model_geometry, artifact_id=next_artifact_id)
+            target_cache.artifact_id = next_artifact_id
+            target_cache.model_geometry = model_geometry
         self.document = snapshot
         self.native_geometry.synchronize(target_context, snapshot)
         self._legacy_project_extension = bool(
@@ -6201,7 +6218,6 @@ class FEMMainWindow(QMainWindow):
         )
 
     def _present_completed_mesh(self, manual: bool) -> None:
-        self._import_notices = ()
         if manual:
             self.ribbon.set_current("Model")
 
@@ -6743,6 +6759,9 @@ class FEMMainWindow(QMainWindow):
         task = self.session.prepare_import(path) if token is None else None
         active_token = token or task.token
         delta = self.session.accept_imported_model(active_token, model)
+        context = self.workspace.active_document()
+        if delta.accepted:
+            context.presentation_state.import_notices = tuple(notices)
         accepted = self._apply_session_delta(
             delta,
             model_geometry=geometry,
@@ -6755,7 +6774,7 @@ class FEMMainWindow(QMainWindow):
                 5000,
             )
             return
-        self._install_import_notices(notices)
+        self._present_import_notices(context)
 
     def _generated_model_loaded(
         self,
@@ -6768,6 +6787,8 @@ class FEMMainWindow(QMainWindow):
         task = self.session.prepare_mesh_generation() if token is None else None
         active_token = token or task.token
         delta = self.session.accept_generated_model(active_token, model)
+        if delta.accepted:
+            self.workspace.active_document().presentation_state.import_notices = ()
         accepted = self._apply_session_delta(
             delta,
             model_geometry=geometry,
@@ -6780,7 +6801,6 @@ class FEMMainWindow(QMainWindow):
                 5000,
             )
             return
-        self._import_notices = ()
 
     @staticmethod
     def _unpack_model_load(
@@ -6808,19 +6828,19 @@ class FEMMainWindow(QMainWindow):
             )
         return model, geometry, dict(timings), tuple(notices)
 
-    def _install_import_notices(
+    def _present_import_notices(
         self,
-        notices: tuple[object, ...],
+        context: WorkspaceDocument,
     ) -> None:
-        """Replace notices only after the imported Session CAS was projected."""
+        """Display the active document's accepted lightweight notices."""
 
-        self._import_notices = tuple(notices)
-        if not self._import_notices:
+        notices = context.presentation_state.import_notices
+        if not self.document_tasks.is_active(context) or not notices:
             return
         self.status_panel.set_state(
             "; ".join(
                 str(getattr(notice, "message", notice))
-                for notice in self._import_notices
+                for notice in notices
             ),
             12000,
         )

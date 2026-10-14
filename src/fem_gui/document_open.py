@@ -79,7 +79,6 @@ class DocumentOpenPresentation:
 
     refresh_document: Callable[[WorkspaceDocument], None]
     activate_document: Callable[[WorkspaceDocument], bool]
-    install_notices: Callable[[tuple[OpenNotice, ...]], None]
     result_opened: Callable[[Path], None]
     shutting_down: Callable[[], bool]
 
@@ -167,8 +166,6 @@ class DocumentOpenCommands:
                     )
                 if kind == "result":
                     self.presentation.result_opened(target)
-                else:
-                    self.presentation.install_notices(value.notices)
 
             def rebuild_registration() -> None:
                 if accepted is not None and self.tasks.is_live(accepted.document):
@@ -246,8 +243,6 @@ class DocumentOpenCommands:
         }[kind]
         if kind == "result":
             self.presentation.result_opened(target)
-        else:
-            self.presentation.install_notices(document.presentation_state.import_notices)
         return GuiCommandReceipt.accepted(
             command_id, outcome=GuiCommandOutcome(output_path=target, diagnostic_summary=summary),
         )
