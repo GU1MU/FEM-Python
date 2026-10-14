@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -157,10 +157,23 @@ class RibbonWidget(QWidget):
         self.stack.addWidget(page)
         return page
 
-    def set_current(self, name: str) -> None:
+    @property
+    def current_module(self) -> str:
+        """Return the current module, or an empty name before pages exist."""
+        index = self.tab_bar.currentIndex()
+        return "" if index < 0 else self.tab_bar.tabText(index)
+
+    def set_current(self, name: str, *, emit_module_changed: bool = True) -> None:
+        """Select a module, optionally suppressing its business notification."""
         for index in range(self.tab_bar.count()):
             if self.tab_bar.tabText(index) == name:
-                self.tab_bar.setCurrentIndex(index)
+                if self.tab_bar.currentIndex() == index:
+                    self.stack.setCurrentIndex(index)
+                elif emit_module_changed:
+                    self.tab_bar.setCurrentIndex(index)
+                else:
+                    with QSignalBlocker(self):
+                        self.tab_bar.setCurrentIndex(index)
                 return
 
     def _change_page(self, index: int) -> None:

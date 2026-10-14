@@ -47,12 +47,13 @@ def build_actions(owner: Any) -> dict[str, QAction]:
 
 def _callback(owner: Any, descriptor: GuiActionDescriptor) -> Callable[..., Any]:
     if descriptor.argument is None:
-        handler = _resolve_handler(owner, descriptor.handler)
         if descriptor.checkable:
-            return handler
+            return lambda checked=False: _resolve_handler(
+                owner, descriptor.handler,
+            )(checked)
         # QAction.triggered always emits ``checked``; plain commands do not
         # own that value, even when their handler has an optional argument.
-        return lambda _checked=False: handler()
+        return lambda _checked=False: _resolve_handler(owner, descriptor.handler)()
     if descriptor.checked_only:
         return lambda checked=False: (
             _resolve_handler(owner, descriptor.handler)(descriptor.argument)

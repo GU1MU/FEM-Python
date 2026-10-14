@@ -307,6 +307,7 @@ from .visualization.selection import (
 )
 from .visualization.scene import DisplayState
 from .visualization.symbols import SymbolSettings
+from .widgets.exact_data_combo import ExactDataComboBox
 from .widgets.navigation_panel import NavigationPanel
 from .widgets.model_tree import (
     native_feature_kind_label,
@@ -510,58 +511,6 @@ def initial_display_policy(
         "show_labels": False,
         "simplified": simplified,
     }
-
-
-class _ExactDataComboBox(QComboBox):
-    """Keep typed Python user data from being coerced by QVariant."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._exact_user_data: list[object] = []
-
-    def addItem(self, text: str, user_data: object = None) -> None:
-        super().addItem(text)
-        self._exact_user_data.append(user_data)
-
-    def clear(self) -> None:
-        super().clear()
-        self._exact_user_data.clear()
-
-    def itemData(
-        self,
-        index: int,
-        role: int = Qt.ItemDataRole.UserRole,
-    ) -> object:
-        if role == Qt.ItemDataRole.UserRole:
-            if 0 <= index < len(self._exact_user_data):
-                return self._exact_user_data[index]
-            return None
-        return super().itemData(index, role)
-
-    def currentData(
-        self,
-        role: int = Qt.ItemDataRole.UserRole,
-    ) -> object:
-        return self.itemData(self.currentIndex(), role)
-
-    def findData(
-        self,
-        data: object,
-        role: int = Qt.ItemDataRole.UserRole,
-        flags: Qt.MatchFlag = (
-            Qt.MatchFlag.MatchExactly | Qt.MatchFlag.MatchCaseSensitive
-        ),
-    ) -> int:
-        if role == Qt.ItemDataRole.UserRole:
-            return next(
-                (
-                    index
-                    for index, candidate in enumerate(self._exact_user_data)
-                    if type(candidate) is type(data) and candidate == data
-                ),
-                -1,
-            )
-        return super().findData(data, role, flags)
 
 
 class AgentExportFacade:
@@ -1114,7 +1063,7 @@ class FEMMainWindow(QMainWindow):
             module_name, render=False, reset_camera=False, retry_native=True,
         )
         self._restore_document_presentation(context, render=False)
-        self._set_ribbon_module_silent(module_name)
+        self.ribbon.set_current(module_name, emit_module_changed=False)
         self._apply_module_symbol_policy(module_name, render=False)
         camera_state = context.presentation_state.camera_state
         if camera_state is None or not self.viewport.restore_camera_state(camera_state, render=False):
@@ -1182,7 +1131,7 @@ class FEMMainWindow(QMainWindow):
         for name in ("edges", "nodes", "node_labels", "element_labels", "symbols"):
             with QSignalBlocker(self.actions[name]):
                 self.actions[name].setChecked(getattr(checkpoint.scene_controls, name))
-        self._set_ribbon_module_silent(checkpoint.module_name)
+        self.ribbon.set_current(checkpoint.module_name, emit_module_changed=False)
 
     def _restore_failed_workspace_activation(
         self,
@@ -1406,17 +1355,6 @@ class FEMMainWindow(QMainWindow):
                 self.viewport.clear_selection(render=False)
             except TypeError:
                 self.viewport.clear_selection()
-
-    def _set_ribbon_module_silent(self, module_name: str | None) -> None:
-        if not module_name or not hasattr(self, "ribbon"):
-            return
-        tab_bar = self.ribbon.tab_bar
-        for index in range(tab_bar.count()):
-            if tab_bar.tabText(index) == module_name:
-                with QSignalBlocker(tab_bar):
-                    tab_bar.setCurrentIndex(index)
-                self.ribbon.stack.setCurrentIndex(index)
-                return
 
     @property
     def session(self) -> ModelSession:
@@ -2716,7 +2654,6 @@ class FEMMainWindow(QMainWindow):
                     # gates aligned with it even when the optional renderer
                     # cannot display the preview.
                     self._update_action_states()
-                self.viewport_panel.set_geometry_context(True)
                 active = snapshot.active_part
                 self.status_panel.set_object(
                     "—"
@@ -2725,10 +2662,8 @@ class FEMMainWindow(QMainWindow):
                 )
             elif snapshot.source_kind == "native":
                 self.viewport.clear_model()
-                self.viewport_panel.set_geometry_context(True)
                 self.status_panel.set_object("No parts created")
             else:
-                self.viewport_panel.set_geometry_context(False)
                 self.status_panel.set_object()
         elif (
             plan.scope == "definitions"
@@ -3216,11 +3151,11 @@ class FEMMainWindow(QMainWindow):
         field_layout.setContentsMargins(4, 0, 4, 0)
         field_layout.setHorizontalSpacing(5)
         field_layout.setVerticalSpacing(4)
-        self.result_variable_combo = _ExactDataComboBox(field_host)
+        self.result_variable_combo = ExactDataComboBox(field_host)
         self.result_variable_combo.setObjectName("resultVariableCombo")
-        self.result_component_combo = _ExactDataComboBox(field_host)
+        self.result_component_combo = ExactDataComboBox(field_host)
         self.result_component_combo.setObjectName("resultComponentCombo")
-        self.result_position_combo = _ExactDataComboBox(field_host)
+        self.result_position_combo = ExactDataComboBox(field_host)
         self.result_position_combo.setObjectName("resultPositionCombo")
         self.result_averaging_threshold = CompactDoubleSpinBox(
             field_host,
@@ -3689,10 +3624,8 @@ class FEMMainWindow(QMainWindow):
         self.viewport.set_symbols_visible(visible, render=render)
 
     def _current_module_name(self) -> str:
-        tab_bar = getattr(getattr(self, "ribbon", None), "tab_bar", None)
-        if tab_bar is None or tab_bar.currentIndex() < 0:
-            return ""
-        return tab_bar.tabText(tab_bar.currentIndex())
+        ribbon = getattr(self, "ribbon", None)
+        return "" if ribbon is None else ribbon.current_module
 
     def _project_viewport_for_module(
         self,
@@ -5207,7 +5140,6 @@ class FEMMainWindow(QMainWindow):
             return
         self.selection_references.geometry.clear()
         self.selection_references.mesh.clear()
-        self.viewport_panel.set_geometry_context(False)
         self.status_panel.set_state("Current part deleted", 5000)
 
     def _set_native_geometry(
@@ -6669,7 +6601,6 @@ class FEMMainWindow(QMainWindow):
             context,
             from_agent_tool=from_agent_tool,
         )
-        self.viewport_panel.set_geometry_context(True)
         self.status_panel.set_state(
             "Model created; create a part",
             5000,
@@ -9681,18 +9612,6 @@ class FEMMainWindow(QMainWindow):
         if current is not None:
             self.viewport.show_geometry_preview(current)
 
-    def _toggle_nodes(self, checked: bool) -> None:
-        self.viewport.set_nodes_visible(checked)
-
-    def _toggle_node_labels(self, checked: bool) -> None:
-        self.viewport.set_node_labels_visible(checked)
-
-    def _toggle_element_labels(self, checked: bool) -> None:
-        self.viewport.set_element_labels_visible(checked)
-
-    def _toggle_symbols(self, checked: bool) -> None:
-        self.viewport.set_symbols_visible(checked)
-
     def _canonical_geometry_selection(
         self,
     ) -> tuple[LogicalEntityRef, ...]:
@@ -9794,14 +9713,9 @@ class FEMMainWindow(QMainWindow):
             self.selection.clear()
             self.selection_references.clear()
             self.viewport.clear_selection()
-        module_name = ""
-        ribbon = getattr(self, "ribbon", None)
-        tab_bar = None if ribbon is None else ribbon.tab_bar
-        if tab_bar is not None and tab_bar.currentIndex() >= 0:
-            module_name = tab_bar.tabText(tab_bar.currentIndex())
+        module_name = self._current_module_name()
         saved.set_space("geometry" if module_name == "Geometry" else "mesh")
         self._selection_context = saved
-        self.viewport_panel.set_geometry_context(saved.space == "geometry")
         self._set_selection_filter(saved.active_filter, force=True)
         self.status_panel.set_object()
         self.actions["selected_info"].setEnabled(False)
@@ -9817,7 +9731,6 @@ class FEMMainWindow(QMainWindow):
             self.viewport.clear_selection()
             self.status_panel.set_object()
             self.actions["selected_info"].setEnabled(False)
-        self.viewport_panel.set_geometry_context(normalized == "geometry")
         self._set_selection_filter(selection_filter, force=True)
 
     def _set_selection_filter(

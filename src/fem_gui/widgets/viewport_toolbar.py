@@ -90,9 +90,6 @@ class ViewportToolBar(QToolBar):
                     button.setIconSize(QSize(36, 36))
                     button.setMinimumWidth(40)
 
-    def set_geometry_context(self, enabled: bool) -> None:
-        """Compatibility hook; semantic selection buttons are always shared."""
-
 
 class ScopeCreationBar(QWidget):
     """Persistent completion controls for one guided scope selection."""
@@ -250,6 +247,3 @@ class ViewportPanel(QWidget):
         elif self._active_bottom_overlay is overlay:
             self._active_bottom_overlay = None
             self.overlay_host.set_bottom_overlay_visible(False)
-
-    def set_geometry_context(self, enabled: bool) -> None:
-        self.toolbar.set_geometry_context(enabled)
