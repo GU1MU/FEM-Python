@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import logging
@@ -277,6 +278,12 @@ from .workspace import (
     FEMWorkspace,
     WorkspaceDocument,
     canonical_path,
+)
+from .workspace_activation import (
+    WorkspaceActivationCoordinator,
+    WorkspaceActivationPresentation,
+    WorkspacePresentationCheckpoint,
+    WorkspaceSceneControls,
 )
 from .viewport_background import (
     ViewportBackgroundSettings,
@@ -844,6 +851,27 @@ class FEMMainWindow(QMainWindow):
         self._build_ribbon()
         self._build_central_area()
         self._build_status_bar()
+        self.workspace_activation = WorkspaceActivationCoordinator(
+            self.workspace,
+            WorkspaceActivationPresentation(
+                visible_document=lambda: self._active_context,
+                editor_active=self._active_editor,
+                capture_window=self._capture_workspace_checkpoint,
+                capture_document=lambda context: self._capture_document_presentation(context),
+                bind_agent=lambda context, from_tool: self._bind_agent_document(
+                    context, from_agent_tool=from_tool,
+                ),
+                restore_agent=self._restore_workspace_agent_binding,
+                scene_updates=self._batch_workspace_activation,
+                clear_transients=self._clear_workspace_transients,
+                prepare_document=self._prepare_workspace_activation,
+                install_document=self._install_workspace_document,
+                restore_window=self._restore_workspace_checkpoint,
+                restore_scene=self._restore_failed_workspace_activation,
+                synchronize_active=self._synchronize_workspace_active,
+                render=lambda: self.viewport.render(),
+            ),
+        )
         self._bind_task_controller(self._active_context)
         self._bind_agent_document(self._active_context)
         self._refresh_result_controls()
@@ -897,17 +925,20 @@ class FEMMainWindow(QMainWindow):
             binder = getattr(port, "bind_session", None)
             if callable(binder):
                 binder(context.session, idle=idle)
-        # Document switches intentionally do not preserve unfinished Agent
-        # workflow state.  Reset before observing the new typed binding so the
-        # controller becomes usable for the target instead of remaining stale.
+        self._observe_agent_document(context)
+
+    def _observe_agent_document(self, context: WorkspaceDocument | None) -> None:
+        """Publish the binding without reviving unfinished Agent workflows."""
+
         self.agent_authoring_controller.reset_for_binding()
-        if context.is_result:
-            self.agent_authoring_bridge.unbind_context(
-                "Read-only result documents do not support Agent modeling operations"
+        if context is None or context.is_result:
+            reason = (
+                "No active model document"
+                if context is None
+                else "Read-only result documents do not support Agent modeling operations"
             )
-            self.agent_authoring_controller.invalidate_binding(
-                "Read-only result documents do not support Agent modeling operations"
-            )
+            self.agent_authoring_bridge.unbind_context(reason)
+            self.agent_authoring_controller.invalidate_binding(reason)
         else:
             self.agent_authoring_bridge.bind_snapshot(
                 context.projection,
@@ -917,8 +948,56 @@ class FEMMainWindow(QMainWindow):
             current = self.agent_authoring_bridge.context
             if current is not None:
                 self.agent_authoring_controller.observe_binding(current)
-        if drawer is not None:
-            drawer.refresh_authoring_binding()
+        self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
+
+    def _restore_workspace_agent_binding(
+        self,
+        context: WorkspaceDocument | None,
+        from_agent_tool: bool,
+    ) -> None:
+        """Restore each binding independently after an interrupted partial bind."""
+
+        runtime = self.viewport_panel.agent_chat_drawer.agent_runtime
+        session = context.session if context is not None else self._session_alias
+        target_identity = (
+            None if context is None else (str(context.document_id), session.session_id)
+        )
+        bridge_context = self.agent_authoring_bridge.context
+        context_matches = (
+            bridge_context is None
+            if context is None or context.is_result
+            else bridge_context is not None
+            and bridge_context.binding.document_id == str(context.document_id)
+            and bridge_context.binding.session_id == session.session_id
+        )
+        # A runtime that rejected rebinding before mutation leaves the original
+        # authoring workflow usable; do not reset it just to repeat its binding.
+        if (
+            runtime.target_identity == target_identity
+            and self.agent_authoring_bridge.port.session is session
+            and self.agent_result_query_bridge.port.session is session
+            and context_matches
+        ):
+            return
+        runtime_binding = (
+            (lambda: runtime.clear_target(from_authoring_tool=from_agent_tool))
+            if context is None
+            else (lambda: (
+                runtime.bind_target_from_authoring_tool
+                if from_agent_tool else runtime.bind_target
+            )(context.document_id, session.session_id))
+        )
+        idle = None if from_agent_tool else (lambda: not runtime.busy)
+        for operation in (
+            runtime_binding,
+            lambda: self.agent_authoring_bridge.port.bind_session(session, idle=idle),
+            lambda: self.agent_result_query_bridge.port.bind_session(session, idle=idle),
+            lambda: self._observe_agent_document(context),
+        ):
+            try:
+                operation()
+            except Exception:
+                logging.exception("failed to restore one Agent document binding")
 
     def _active_workspace_context(self) -> WorkspaceDocument | None:
         """Return the cached active context, refreshing after workspace moves."""
@@ -944,298 +1023,219 @@ class FEMMainWindow(QMainWindow):
         *,
         from_agent_tool: bool = False,
     ) -> bool:
-        """Activate one context while reusing its presentation adapters.
+        """Install a registered document through the shared activation transaction."""
 
-        The workspace owns the long-lived geometry/inspection references.  The
-        window only installs those references into its single viewport; VTK
-        actors are consequently rebuilt for the active document and never
-        retained by an inactive context.
-        """
+        return self.workspace_activation.activate(context, from_agent_tool=from_agent_tool)
 
-        previous_context = getattr(self, "_active_context", None)
-        previous_active_id = self.workspace.active_document_id
-        previous_active_kind = self.workspace.active_kind
-        previous_revision = self._applied_session_revision
-        if (
-            previous_context is context
-            and previous_active_id == context.document_id
-        ):
-            self.model_tree.set_active_document(context.document_id)
-            self.result_tree.set_active_document(context.document_id)
-            self._task_busy_changed(context.task_controller.busy)
-            if context.task_controller.cancel_requested:
-                self._task_cancelling_changed(True)
-            return True
-        # Embedded editors own transient geometry and cannot be detached from
-        # the current viewport safely.  Keep the current context active.
-        if self._active_editor():
-            return False
-        try:
-            self._bind_agent_document(
-                context,
-                from_agent_tool=from_agent_tool,
-            )
-        except (RuntimeError, TypeError, ValueError):
-            if previous_context is not None:
-                try:
-                    self._bind_agent_document(
-                        previous_context,
-                        from_agent_tool=from_agent_tool,
-                    )
-                except (RuntimeError, TypeError, ValueError):
-                    logging.exception(
-                        "failed to restore Agent binding after partial bind"
-                    )
-            return False
+    def _capture_workspace_checkpoint(self) -> WorkspacePresentationCheckpoint:
+        """Read the original visible aliases without following registry changes."""
 
-        if previous_context is not None:
-            self._capture_document_presentation(previous_context)
-        previous_presentation = (
-            replace(
-                previous_context.presentation_state,
-                result_display=previous_context.presentation_state.result_display.copy(),
-            )
-            if previous_context is not None
-            else None
+        context = self._active_context
+        if context is not None and not self.document_tasks.is_live(context):
+            context = None
+        temporary_selection = self._temporary_selection_context is not None
+        selection_context = self._temporary_selection_context or self._selection_context
+        module_name = self._current_module_name()
+        transient_preview = temporary_selection or self._agent_proposal_preview_id is not None
+        scene_module_name = (
+            "Geometry" if module_name == "Geometry" else "Results" if module_name == "Results" else "Model"
+        ) if transient_preview else (
+            "Results" if self.viewport.result_render_payload is not None
+            else "Geometry" if self.viewport.geometry_preview is not None
+            else "Model"
         )
-        target_preferences = context.presentation_state.result_display.copy()
-        target_rendering_cache = replace(context.presentation_cache.result_rendering)
-        previous_aliases = {
-            "document": self.document,
-            "geometry": self.geometry,
-            "inspection_service": self.inspection_service,
-            "result_provider": self.result_provider,
-            "result_selection": self.result_selection,
-            "step_name": self._current_step_name,
-            "legacy_project_extension": self._legacy_project_extension,
-            "result_archive_geometry": self._result_archive_geometry,
-            "result_archive_model_view": self._result_archive_model_view,
-            "model_edges_visible": self._model_edges_visible,
-            "symbol_settings": self._symbol_settings,
-            "selection_context": replace(self._selection_context),
-            "geometry_selection_mode": self._geometry_selection_mode,
-            "selection_mode": self.selection.mode,
-            "selection_node_id": self.selection.node_id,
-            "selection_element_id": self.selection.element_id,
-            "selected_geometry_refs": set(self.selection_references.geometry),
-            "selected_mesh_scope_refs": set(self.selection_references.mesh),
-        }
+        return WorkspacePresentationCheckpoint(
+            session=self._session_alias,
+            document=context.projection if context is not None else self._document_alias,
+            task_controller=self._task_controller_alias,
+            visible_document_id=None if context is None else context.document_id,
+            applied_revision=self._applied_session_revision,
+            module_name=module_name,
+            scene_module_name=scene_module_name,
+            window_title=self.windowTitle(),
+            result_navigation_visible=self.navigation.tabs.currentWidget() is self.result_tree,
+            scene_controls=WorkspaceSceneControls(**{
+                name: self.actions[name].isChecked()
+                for name in ("edges", "nodes", "node_labels", "element_labels", "symbols")
+            }),
+            geometry=self.geometry,
+            inspection_service=self.inspection_service,
+            result_provider=self.result_provider,
+            result_selection=self.result_selection,
+            step_name=self._current_step_name,
+            legacy_project_extension=self._legacy_project_extension,
+            result_archive_geometry=self._result_archive_geometry,
+            result_archive_model_view=self._result_archive_model_view,
+            model_edges_visible=self._model_edges_visible,
+            symbol_settings=self._symbol_settings,
+            selection_context=replace(selection_context),
+            geometry_selection_mode=(
+                selection_context.geometry_filter if temporary_selection
+                else self._geometry_selection_mode
+            ),
+            selection=(SelectionState(mode=self.selection.mode) if temporary_selection else replace(self.selection)),
+            geometry_selection=(frozenset() if temporary_selection else frozenset(self.selection_references.geometry)),
+            mesh_selection=(frozenset() if temporary_selection else frozenset(self.selection_references.mesh)),
+            blank_result_preferences=self._blank_result_preferences.copy(),
+        )
 
+    @contextmanager
+    def _batch_workspace_activation(self):
+        self._workspace_activation = True
         try:
             with self.viewport.batch_scene_updates():
-                self._clear_workspace_transients()
-                self.workspace.activate(context)
-                self._active_context = context
-                self._applied_session_revision = -1
-                self._legacy_project_extension = bool(
-                    context.projection.project_path is not None
-                    and context.projection.project_path.suffix.casefold()
-                    in LEGACY_MODEL_FILE_SUFFIXES
-                )
-                self._prepare_document_presentation(context)
-                cache = context.presentation_cache
-                artifact = context.projection.artifact
-                artifact_id = None if artifact is None else artifact.artifact_id
-                model_geometry = (
-                    cache.model_geometry
-                    if cache.matches_artifact(artifact_id)
-                    else None
-                )
-                result_identity = context.session.current_result_identity()
-                result_model_view = None
-                if result_identity is not None and cache.matches_result(*result_identity):
-                    result_model_view = cache.result_model_view
-
-                self._workspace_activation = True
-                delta = SessionDelta(
-                    session_revision=int(context.session.session_revision),
-                    reason="workspace document activated",
-                )
-                applied = self._apply_session_delta(
-                    delta,
-                    context=context,
-                    model_geometry=model_geometry,
-                    result_model_view=result_model_view,
-                )
-                if not applied:
-                    raise RuntimeError("target context projection could not be installed")
-                self._project_viewport_for_module(
-                    context.presentation_state.module_name
-                    or self._current_module_name(),
-                    render=False,
-                    reset_camera=False,
-                    retry_native=True,
-                )
-                self._restore_document_presentation(context, render=False)
-                self._set_ribbon_module_silent(
-                    context.presentation_state.module_name
-                    or self._current_module_name()
-                )
-                self._apply_module_symbol_policy(
-                    context.presentation_state.module_name
-                    or self._current_module_name(),
-                    render=False,
-                )
-                # Warm displays restore framing; the first display fits once.
-                camera_state = context.presentation_state.camera_state
-                if camera_state is None or not self.viewport.restore_camera_state(
-                    camera_state,
-                    render=False,
-                ):
-                    self.viewport.fit(render=False)
-            self.viewport.render()
-            self.model_tree.set_active_document(context.document_id)
-            self.result_tree.set_active_document(context.document_id)
-            self._task_busy_changed(context.task_controller.busy)
-            if context.task_controller.cancel_requested:
-                self._task_cancelling_changed(True)
-            return True
-        except Exception:
-            logging.exception("workspace document activation failed")
-            applied = False
+                yield
         finally:
             self._workspace_activation = False
 
-        context.presentation_state.result_display = target_preferences
-        context.presentation_cache.result_rendering = target_rendering_cache
-        # Activation can fail after the workspace registry has already moved.
-        # Restore the previous pair so aliases and registries stay in lockstep.
-        previous_still_registered = False
-        if previous_context is not None:
-            try:
-                previous_still_registered = (
-                    self.workspace.document(previous_context.document_id)
-                    is previous_context
-                )
-            except (KeyError, TypeError, ValueError):
-                previous_still_registered = False
-        if previous_still_registered:
-            try:
-                self.workspace.activate(previous_context)
-            except (KeyError, TypeError, ValueError):
-                self.workspace.active_document_id = previous_active_id
-                self.workspace.active_kind = previous_active_kind
-        else:
-            fallback = self.workspace.active_document()
-            if fallback is not None:
-                previous_context = fallback
-            else:
-                self.workspace.active_document_id = previous_active_id
-                self.workspace.active_kind = previous_active_kind
-        self._active_context = previous_context
-        self._applied_session_revision = previous_revision
-        if previous_context is not None:
-            try:
-                self._bind_agent_document(previous_context)
-            except (RuntimeError, TypeError, ValueError):
-                logging.exception("failed to restore Agent document binding")
-        if previous_context is not None:
-            previous_context.presentation_state = previous_presentation
-        self._restore_failed_workspace_activation(
-            previous_context,
-            previous_aliases,
+    def _prepare_workspace_activation(self, context: WorkspaceDocument) -> None:
+        self._active_context = context
+        self._applied_session_revision = -1
+        self._legacy_project_extension = bool(
+            context.projection.project_path is not None
+            and context.projection.project_path.suffix.casefold() in LEGACY_MODEL_FILE_SUFFIXES
         )
-        if previous_context is None:
-            self.model_tree.set_active_document(None)
-            self.result_tree.set_active_document(None)
-        elif self.workspace.active_document_id == previous_context.document_id:
-            self.model_tree.set_active_document(previous_context.document_id)
-            self.result_tree.set_active_document(previous_context.document_id)
-        return applied
+        self._prepare_document_presentation(context)
+
+    def _install_workspace_document(self, context: WorkspaceDocument) -> None:
+        """Project Session state and install the target's concrete Qt/VTK display."""
+
+        cache = context.presentation_cache
+        artifact = context.projection.artifact
+        artifact_id = None if artifact is None else artifact.artifact_id
+        model_geometry = cache.model_geometry if cache.matches_artifact(artifact_id) else None
+        identity = context.session.current_result_identity()
+        result_model_view = (
+            cache.result_model_view
+            if identity is not None and cache.matches_result(*identity)
+            else None
+        )
+        applied = self._apply_session_delta(
+            SessionDelta(
+                session_revision=int(context.session.session_revision),
+                reason="workspace document activated",
+            ),
+            context=context,
+            model_geometry=model_geometry,
+            result_model_view=result_model_view,
+        )
+        if not applied:
+            raise RuntimeError("target context projection could not be installed")
+        module_name = context.presentation_state.module_name or self._current_module_name()
+        self._project_viewport_for_module(
+            module_name, render=False, reset_camera=False, retry_native=True,
+        )
+        self._restore_document_presentation(context, render=False)
+        self._set_ribbon_module_silent(module_name)
+        self._apply_module_symbol_policy(module_name, render=False)
+        camera_state = context.presentation_state.camera_state
+        if camera_state is None or not self.viewport.restore_camera_state(camera_state, render=False):
+            self.viewport.fit(render=False)
+
+    def _synchronize_workspace_active(self, context: WorkspaceDocument | None) -> None:
+        document_id = None if context is None else context.document_id
+        self.model_tree.set_active_document(document_id)
+        self.result_tree.set_active_document(document_id)
+        busy = context is not None and context.task_controller.busy
+        self._task_busy_changed(busy)
+        if busy and context.task_controller.cancel_requested:
+            self._task_cancelling_changed(True)
+        elif busy:
+            self.status_panel.set_state(
+                f"Task running: {context.task_controller.current_task_name or 'Background Task'}"
+            )
+        else:
+            self.status_panel.set_state("Ready")
+
+    def _restore_workspace_checkpoint(
+        self,
+        previous_context: WorkspaceDocument | None,
+        checkpoint: WorkspacePresentationCheckpoint,
+    ) -> None:
+        """Restore lightweight visible values without resurrecting UI intentions."""
+
+        self._active_context = previous_context
+        self._applied_session_revision = checkpoint.applied_revision
+        self._session_alias = checkpoint.session
+        self._document_alias = checkpoint.document
+        self._task_controller_alias = checkpoint.task_controller
+        self.geometry = checkpoint.geometry
+        self.inspection_service = checkpoint.inspection_service
+        self.result_provider = checkpoint.result_provider
+        self.result_selection = checkpoint.result_selection
+        self._current_step_name = checkpoint.step_name
+        self._legacy_project_extension = checkpoint.legacy_project_extension
+        self._result_archive_geometry = checkpoint.result_archive_geometry
+        self._result_archive_model_view = checkpoint.result_archive_model_view
+        self._model_edges_visible = checkpoint.model_edges_visible
+        self._symbol_settings = checkpoint.symbol_settings
+        self._selection_context = replace(checkpoint.selection_context)
+        self._geometry_selection_mode = checkpoint.geometry_selection_mode
+        self.selection = replace(checkpoint.selection)
+        self.selection_references.geometry = set(checkpoint.geometry_selection)
+        self.selection_references.mesh = set(checkpoint.mesh_selection)
+        self._blank_result_preferences = checkpoint.blank_result_preferences
+        if previous_context is None and checkpoint.visible_document_id is not None:
+            # A formerly visible document may have been removed by a callback;
+            # never reinstall its disposed controller or stale model as empty UI.
+            self._session_alias = ModelSession()
+            self._document_alias = self._session_alias.projection_snapshot()
+            self.geometry = None
+            self.inspection_service = None
+            self.result_provider = None
+            self.result_selection = None
+            self._result_archive_geometry = None
+            self._result_archive_model_view = None
+            self._current_step_name = None
+            self.selection.clear()
+            self.selection_references.clear()
+            self._applied_session_revision = self._document_alias.session_revision
+        self.setWindowTitle(checkpoint.window_title)
+        for name in ("edges", "nodes", "node_labels", "element_labels", "symbols"):
+            with QSignalBlocker(self.actions[name]):
+                self.actions[name].setChecked(getattr(checkpoint.scene_controls, name))
+        self._set_ribbon_module_silent(checkpoint.module_name)
 
     def _restore_failed_workspace_activation(
         self,
         previous_context: WorkspaceDocument | None,
-        previous_aliases: dict[str, object],
+        checkpoint: WorkspacePresentationCheckpoint,
     ) -> None:
-        """Restore aliases and the previous scene after a failed activation."""
+        """Restore the previous module's scene and controls inside one silent batch."""
 
-        self.document = previous_aliases["document"]
-        self.geometry = previous_aliases["geometry"]
-        self.inspection_service = previous_aliases["inspection_service"]
-        self.result_provider = previous_aliases["result_provider"]
-        self.result_selection = previous_aliases["result_selection"]
-        self._current_step_name = previous_aliases["step_name"]
-        self._legacy_project_extension = previous_aliases[
-            "legacy_project_extension"
-        ]
-        self._result_archive_geometry = previous_aliases[
-            "result_archive_geometry"
-        ]
-        self._result_archive_model_view = previous_aliases[
-            "result_archive_model_view"
-        ]
-        self._model_edges_visible = previous_aliases["model_edges_visible"]
-        self._symbol_settings = previous_aliases["symbol_settings"]
-        self._selection_context = previous_aliases["selection_context"]
-        self._geometry_selection_mode = previous_aliases[
-            "geometry_selection_mode"
-        ]
-        self.selection.mode = previous_aliases["selection_mode"]
-        self.selection.node_id = previous_aliases["selection_node_id"]
-        self.selection.element_id = previous_aliases["selection_element_id"]
-        self.selection_references.geometry = set(
-            previous_aliases["selected_geometry_refs"]
-        )
-        self.selection_references.mesh = set(
-            previous_aliases["selected_mesh_scope_refs"]
-        )
-
-        # Rebuild only the shared viewport scene.  All actor and display
-        # mutations remain render-suppressed until the final explicit repaint.
         try:
-            with self.viewport.batch_scene_updates():
-                if previous_context is None:
-                    FEMViewport.clear_model(self.viewport)
-                elif self.document.artifact is not None and self.geometry is not None:
-                    self._restore_viewport_model_scene(
-                        render=False,
-                        reset_camera=False,
-                    )
-                else:
-                    preview = self._current_native_geometry_preview()
-                    if preview is not None:
-                        self.viewport.show_geometry_preview(
-                            preview,
-                            render=False,
-                            reset_camera=False,
-                        )
-                    else:
-                        FEMViewport.clear_model(self.viewport)
-                if self.result_provider is not None and self.result_selection is not None:
-                    try:
-                        self._apply_display(render=False)
-                    except Exception:
-                        logging.exception(
-                            "failed to restore previous result display after activation"
-                        )
-                if previous_context is not None:
-                    self._restore_document_presentation(previous_context, render=False)
-                else:
-                    self._sync_step_combos()
-                    self._refresh_result_controls()
-                    self.status_panel.set_step(self._current_step_name)
-                    self._update_action_states()
-        except Exception:
-            logging.exception(
-                "failed to restore previous viewport after activation failure"
-            )
-        camera_state = (
-            previous_context.presentation_state.camera_state
-            if previous_context is not None
-            else None
-        )
-        if camera_state is not None:
-            try:
-                self.viewport.restore_camera_state(camera_state, render=False)
-            except Exception:
-                logging.exception(
-                    "failed to restore previous camera after activation failure"
+            if previous_context is None:
+                FEMViewport.clear_model(self.viewport)
+            else:
+                self._project_viewport_for_module(
+                    checkpoint.scene_module_name, render=False, reset_camera=False,
                 )
-        try:
-            self.viewport.render()
-        except Exception:
-            logging.exception("failed to repaint previous viewport after activation failure")
+                self._restore_document_presentation(previous_context, render=False)
+                self.viewport.set_symbols_visible(checkpoint.scene_controls.symbols, render=False)
+                if checkpoint.result_navigation_visible:
+                    self.navigation.show_result()
+                else:
+                    self.navigation.show_model()
+                if self.selection_references.geometry:
+                    self._refresh_geometry_scope_selection(
+                        next(iter(self.selection_references.geometry)).kind,
+                    )
+                elif self.selection_references.mesh:
+                    self._refresh_mesh_scope_selection(self._selection_context.active_filter)
+                elif self.selection.node_id is not None:
+                    self.viewport.highlight_node(self.selection.node_id)
+                elif self.selection.element_id is not None:
+                    self.viewport.highlight_element(self.selection.element_id)
+        finally:
+            if previous_context is None:
+                self._sync_step_combos()
+                self._refresh_result_controls()
+                self.status_panel.reset_document()
+                self._update_action_states()
+            else:
+                camera_state = previous_context.presentation_state.camera_state
+                if camera_state is not None:
+                    self.viewport.restore_camera_state(camera_state, render=False)
 
     def _capture_document_presentation(
         self,
@@ -1243,13 +1243,25 @@ class FEMMainWindow(QMainWindow):
     ) -> None:
         """Save the lightweight visible state before leaving ``context``."""
 
-        if context is not self._active_workspace_context():
+        if context is not self._active_context:
             return
         state = context.presentation_state
         state.module_name = self._current_module_name() or None
         state.step_name = self._current_step_name
         state.result_selection = self.result_selection
-        state.selection_mode = self.viewport.selection_mode
+        selection_context = self._temporary_selection_context
+        state.selection_mode = (
+            (
+                "geometry_" + selection_context.geometry_filter
+                if selection_context.space == "geometry"
+                else "mesh_" + (
+                    "node" if selection_context.mesh_filter == "point"
+                    else selection_context.mesh_filter
+                )
+            )
+            if selection_context is not None
+            else self.viewport.selection_mode
+        )
         state.camera_state = self.viewport.capture_camera_state()
 
         cache = context.presentation_cache
@@ -1264,7 +1276,7 @@ class FEMMainWindow(QMainWindow):
             cache.artifact_id = artifact_id
             cache.model_geometry = self.geometry
             cache.inspection_service = self.inspection_service
-        identity = self.session.current_result_identity()
+        identity = context.session.current_result_identity()
         provider = self.result_provider
         if identity is None or provider is None:
             cache.invalidate_result()
@@ -1376,6 +1388,17 @@ class FEMMainWindow(QMainWindow):
         self._sync_step_combos()
         self._refresh_result_controls()
         self.status_panel.set_step(self._current_step_name)
+        self.status_panel.set_result(self._result_status_text())
+        self.status_panel.set_selection_mode(self.viewport.selection_mode)
+        active_part = context.projection.active_part
+        self.status_panel.set_object(
+            active_part.name if active_part is not None else "—",
+        )
+        module_name = state.module_name or self._current_module_name()
+        if module_name == "Results":
+            self.navigation.show_result()
+        elif module_name in {"Project", "Geometry", "Mesh", "Model", "Analysis"}:
+            self.navigation.show_model()
         self._update_action_states()
 
     def _clear_workspace_transients(self) -> None:

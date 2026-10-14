@@ -435,9 +435,17 @@ class FEMWorkspace:
             if isinstance(document_id, WorkspaceDocument)
             else self.document(document_id)
         )
+        if self.document(context.document_id) is not context:
+            raise ValueError("Activation target must be a live workspace document")
         self.active_kind = self._kind_for(context.document_id)
         self.active_document_id = context.document_id
         return context
+
+    def deactivate(self) -> None:
+        """Leave registered documents available without a visible active document."""
+
+        self.active_document_id = None
+        self.active_kind = None
 
     def remove(
         self,

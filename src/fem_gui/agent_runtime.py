@@ -581,6 +581,24 @@ class QtAgentRuntime(QObject):
             self._target_document_id = normalized_document
             self._target_session_id = normalized_session
 
+    def clear_target(self, *, from_authoring_tool: bool = False) -> None:
+        """Release a target when the visible workspace returns to an empty state."""
+
+        if from_authoring_tool:
+            self._require_owner_thread()
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Agent runtime is shut down")
+            if from_authoring_tool:
+                if self._owner_authoring_dispatch_depth != 1:
+                    raise RuntimeError(
+                        "Agent target may clear only during an owner-thread authoring tool"
+                    )
+            elif self._busy or self._authoring_workers:
+                raise RuntimeError("Agent runtime must be idle before clearing its target")
+            self._target_document_id = None
+            self._target_session_id = None
+
     @property
     def authoring_turn_snapshot(self) -> AuthoringTurnSnapshot:
         """Return the immutable owner-thread projection used by the provider."""
