@@ -171,6 +171,7 @@ from .analysis_definition_dialogs import (
     OutputRequestDialog,
     StaticStepDialog,
 )
+from .command_surfaces import build_command_menus, build_command_ribbon
 from .commands import (
     CloseSessionCommand,
     GuiCommandCompletion,
@@ -312,7 +313,6 @@ from .widgets.model_tree import (
     native_feature_label,
 )
 from .widgets.planar_boolean_panel import PlanarBooleanPanel
-from .widgets.ribbon import RibbonPage, RibbonWidget
 from .widgets.sketch_editor_panel import SketchEditorPanel
 from .widgets.wire_editor_panel import WireEditorPanel
 from .widgets.status_bar import CAEStatusBar
@@ -3192,201 +3192,20 @@ class FEMMainWindow(QMainWindow):
         self.actions = build_actions(self)
 
     def _build_menus(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
-        file_menu.setObjectName("menuFile")
-        file_menu.addActions([
-            self.actions[name]
-            for name in (
-                "new_native",
-                "open_project",
-                "save_project",
-                "save_project_as",
-                "open",
-                "save_result",
-                "save_result_as",
-                "open_result",
-            )
-        ])
-        file_menu.addSeparator()
-        file_menu.addAction(self.actions["exit"])
-        edit_menu = self.menuBar().addMenu("Edit")
-        edit_menu.setObjectName("menuEdit")
-        edit_menu.addActions([
-            self.actions[name]
-            for name in (
-                "select_point", "select_element", "select_edge", "select_face", "select_body",
-            )
-        ])
-        view_menu = self.menuBar().addMenu("View")
-        view_menu.setObjectName("menuView")
-        view_menu.addActions([self.actions[name] for name in (
-            "fit", "front", "back", "top", "bottom", "left", "right", "iso",
-        )])
-        view_menu.addSeparator()
-        view_menu.addActions([self.actions[name] for name in ("orthographic", "perspective")])
-        view_menu.addSeparator()
-        view_menu.addActions([self.actions[name] for name in ("edges", "nodes", "node_labels", "element_labels", "symbols")])
-        view_menu.addSeparator()
-        view_menu.addActions([
-            self.actions["symbol_settings"],
-            self.actions["viewport_background"],
-            self.actions["suppressed_part_ghosts"],
-        ])
-        analysis_menu = self.menuBar().addMenu("Analysis")
-        analysis_menu.setObjectName("menuAnalysis")
-        analysis_menu.addAction(self.actions["step_info"])
-        analysis_menu.addSeparator()
-        analysis_menu.addAction(self.actions["check_model"])
-        analysis_menu.addSeparator()
-        analysis_menu.addActions([
-            self.actions["submit_job"], self.actions["resubmit_job"],
-            self.actions["job_manager"],
-        ])
-        result_menu = self.menuBar().addMenu("Results")
-        result_menu.setObjectName("menuResult")
-        result_menu.addActions([self.actions[name] for name in ("undeformed", "deformed", "contour")])
-        result_menu.addSeparator()
-        result_menu.addActions([
-            self.actions[name]
-            for name in (
-                "overlay",
-                "display_settings",
-                "scale",
-                "contour_options",
-                "query",
-                "export_csv",
-                "export_vtk",
-                "screenshot",
-            )
-        ])
-        help_menu = self.menuBar().addMenu("Help")
-        help_menu.setObjectName("menuHelp")
-        help_menu.addAction(self.actions["about"])
+        build_command_menus(self.menuBar(), self.actions)
 
     def _build_ribbon(self) -> None:
-        self.ribbon = RibbonWidget(self)
-        scope_group = (
-            "Scope",
-            ("geometry_region", "geometry_regions"),
-            (),
+        self.ribbon = build_command_ribbon(
+            self,
+            self.actions,
+            analysis_step_control=self._create_step_combo("Analysis"),
+            result_field_control=self._create_result_field_control(),
+            result_scale_control=self._create_result_scale_control(),
         )
-        self._add_ribbon_page("Project", (
-            (
-                "File",
-                (
-                    "new_native",
-                    "delete_model",
-                    "open_project",
-                    "save_project",
-                    "open",
-                    "save_result",
-                    "open_result",
-                    "model_info",
-                ),
-                ("new_native", "delete_model", "open"),
-            ),
-            ("Output", ("export_csv", "screenshot"), ()),
-        ))
-        self._add_ribbon_page("Geometry", (
-            (
-                "Create",
-                ("geometry_create",),
-                ("geometry_create",),
-            ),
-            (
-                "Features",
-                (
-                    "geometry_extrude",
-                    "geometry_sweep",
-                    "geometry_move",
-                    "geometry_rotate",
-                    "geometry_fuse",
-                    "geometry_cut",
-                ),
-                ("geometry_extrude", "geometry_sweep"),
-            ),
-            (
-                "Selection",
-                (
-                    "select_point", "select_edge", "select_face", "select_body",
-                ),
-                (),
-            ),
-        ))
-        self._add_ribbon_page("Mesh", (
-            (
-                "Settings",
-                ("mesh_settings", "mesh_local_control", "mesh_controls"),
-                ("mesh_settings",),
-            ),
-            ("Generate", ("mesh_generate", "mesh_clear"), ("mesh_generate",)),
-            scope_group,
-            (
-                "Inspect",
-                ("mesh_verify", "mesh_statistics"),
-                (),
-            ),
-        ))
-        self._add_ribbon_page("Model", (
-            ("Definitions", ("material_manager", "section_manager", "section_assign"), ("material_manager",)),
-            scope_group,
-            (
-                "Selection",
-                (
-                    "select_point", "select_element", "select_edge",
-                    "select_face", "select_body",
-                ),
-                (),
-            ),
-            ("Display", ("nodes", "edges", "node_labels", "element_labels"), ()),
-            ("Symbols", ("symbols", "symbol_settings"), ()),
-        ))
-        self._build_analysis_ribbon_page()
-        self._build_result_ribbon_page()
-        self._add_ribbon_page("View", (
-            ("Views", ("front", "back", "top", "bottom", "left", "right", "iso"),
-             ("front", "back", "top", "bottom", "left", "right", "iso")),
-            ("Camera", ("fit", "orthographic", "perspective", "viewport_background"), ()),
-            ("Labels", ("nodes", "edges", "node_labels", "element_labels", "symbols"), ()),
-        ))
         self.ribbon.moduleChanged.connect(self._on_module_changed)
 
-    def _build_analysis_ribbon_page(self) -> None:
-        page = self.ribbon.add_page("Analysis")
-
-        step_group = page.add_group("Step")
-        for name in ("step_create", "step_info"):
-            step_group.add_action(self.actions[name])
-        step_group.add_widget(self._create_step_combo("Analysis"))
-        step_group.add_action(self.actions["output_create"], compact=True)
-
-        scope_group = page.add_group("Scope")
-        for name in ("geometry_region", "geometry_regions"):
-            scope_group.add_action(self.actions[name])
-
-        boundary_group = page.add_group("Boundary Conditions")
-        for name in ("boundary_create", "load_create"):
-            boundary_group.add_action(self.actions[name])
-
-        job_group = page.add_group("Jobs")
-        for name in (
-            "check_model",
-            "submit_job",
-            "analysis_manager",
-            "job_manager",
-        ):
-            job_group.add_action(self.actions[name])
-
-    def _build_result_ribbon_page(self) -> None:
-        page = self.ribbon.add_page("Results")
-        shape_group = page.add_group("Shape")
-        for name in ("undeformed", "deformed"):
-            shape_group.add_action(self.actions[name])
-        contour_group = page.add_group("Contour")
-        contour_group.add_action(self.actions["contour"], large=True)
-
-        field_group = page.add_group("Primary Variable")
-        field_host = QWidget(field_group)
+    def _create_result_field_control(self) -> QWidget:
+        field_host = QWidget(self)
         field_host.setObjectName("resultFieldControls")
         field_host.setMaximumWidth(390)
         field_host.setSizePolicy(
@@ -3484,7 +3303,6 @@ class FEMMainWindow(QMainWindow):
         field_layout.addWidget(position_host, 1, 1, 1, 3)
         field_layout.setColumnStretch(1, 1)
         field_layout.setColumnStretch(3, 2)
-        field_group.add_widget(field_host)
         self.result_variable_combo.activated.connect(self._result_variable_changed)
         self.result_component_combo.activated.connect(self._result_component_changed)
         self.result_position_combo.activated.connect(self._result_position_changed)
@@ -3492,9 +3310,10 @@ class FEMMainWindow(QMainWindow):
             self._result_averaging_threshold_changed
         )
         self._sync_result_averaging_threshold_control()
+        return field_host
 
-        deformation_group = page.add_group("Deformation")
-        scale_host = QWidget(deformation_group)
+    def _create_result_scale_control(self) -> QWidget:
+        scale_host = QWidget(self)
         scale_layout = QGridLayout(scale_host)
         scale_layout.setContentsMargins(0, 0, 0, 0)
         scale_layout.setHorizontalSpacing(3)
@@ -3515,39 +3334,9 @@ class FEMMainWindow(QMainWindow):
         self.result_scale_value.setEnabled(False)
         scale_layout.addWidget(self.result_scale_combo, 0, 0)
         scale_layout.addWidget(self.result_scale_value, 1, 0)
-        deformation_group.add_widget(scale_host)
-        deformation_group.add_action(self.actions["overlay"], large=True)
         self.result_scale_combo.activated.connect(self._result_scale_mode_changed)
         self.result_scale_value.valueChanged.connect(self._result_scale_value_changed)
-
-        display_group = page.add_group("Settings")
-        display_group.add_action(self.actions["display_settings"])
-        display_group.add_action(self.actions["contour_options"])
-        output_group = page.add_group("Query and Export")
-        output_group.add_action(self.actions["query"], large=True)
-        for name in ("export_csv", "screenshot"):
-            output_group.add_action(self.actions[name])
-
-    def _add_ribbon_page(
-        self,
-        name: str,
-        groups: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...],
-        *,
-        step_group: str | None = None,
-    ) -> RibbonPage:
-        page = self.ribbon.add_page(name)
-        for title, action_names, large_names in groups:
-            group = page.add_group(title)
-            if title == step_group:
-                group.add_widget(self._create_step_combo(name))
-            for action_name in action_names:
-                large = action_name in large_names
-                group.add_action(
-                    self.actions[action_name],
-                    large=large,
-                    compact=not large and len(action_names) == 1,
-                )
-        return page
+        return scale_host
 
     def _create_step_combo(self, module_name: str) -> QComboBox:
         combo = QComboBox(self)

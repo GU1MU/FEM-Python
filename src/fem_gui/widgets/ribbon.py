@@ -75,6 +75,8 @@ class RibbonGroup(QFrame):
             if compact:
                 button.setObjectName("ribbonCompactButton")
                 self._content.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
+                self._small_grid = None
+                self._small_count = 0
                 return button
             if self._small_grid is None:
                 host = QWidget(self)
@@ -92,6 +94,8 @@ class RibbonGroup(QFrame):
     def add_widget(self, widget: QWidget) -> None:
         """Add contextual controls such as the analysis step selector."""
         self._content.addWidget(widget)
+        self._small_grid = None
+        self._small_count = 0
 
 
 class RibbonPage(QWidget):
