@@ -106,6 +106,7 @@ class DocumentTaskRouter:
         completion: GuiCommandCompletion | None = None,
         on_progress: Callable[[str], None] | None = None,
         on_terminal: Callable[[TaskCompletion], None] | None = None,
+        rebuild_projection: Callable[[], None] | None = None,
     ) -> bool:
         if context is not None:
             if controller is not context.task_controller:
@@ -196,7 +197,10 @@ class DocumentTaskRouter:
 
         def rebuild() -> None:
             if live() and visible():
-                self.presentation.rebuild()
+                if rebuild_projection is None:
+                    self.presentation.rebuild()
+                else:
+                    rebuild_projection()
 
         def projection_failed(message: str) -> None:
             if live() and visible():

@@ -1,11 +1,7 @@
-"""Minimal document ownership for the FEM GUI workspace.
+"""Own workspace documents, file paths and their shallow presentation state.
 
-The first workspace phase deliberately keeps the visible application single
-document.  ``FEMWorkspace`` owns document identity and the active context so
-later phases can add incremental trees without changing the Session API.
-The objects in this module are intentionally shallow: Session projections and
-all model/result payloads remain owned by ``ModelSession`` and are never
-deep-copied here.
+Sessions retain authority over model and result data. Workspace projections and
+display adapters are references to that data and are never deep-copied here.
 """
 
 from __future__ import annotations
@@ -14,6 +10,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject
 
@@ -24,6 +21,10 @@ from .result_command_state import DocumentResultCommandState
 from .result_display_state import ResultDisplayPreferences, ResultRenderingCache
 from .native_geometry_state import NativeGeometryCache
 from .viewport_camera import ViewportCameraState
+
+if TYPE_CHECKING:
+    from fem.io.inp import InpImportNotice
+    from fem.io.project import ProjectMigrationNotice
 
 
 def canonical_path(path: str | os.PathLike[str] | Path) -> str:
@@ -41,12 +42,7 @@ def canonical_path(path: str | os.PathLike[str] | Path) -> str:
 
 @dataclass(slots=True)
 class DocumentPresentationState:
-    """Small, GUI-only state retained per document.
-
-    Phase 1 does not install this state into the viewport yet.  Keeping the
-    fields here gives later phases a stable owner without putting presentation
-    data on ``ModelSession``.
-    """
+    """Retain one document's GUI preferences and lightweight opening notices."""
 
     module_name: str | None = None
     step_name: str | None = None
@@ -54,6 +50,7 @@ class DocumentPresentationState:
     result_display: ResultDisplayPreferences = field(default_factory=ResultDisplayPreferences)
     camera_state: ViewportCameraState | None = None
     selection_mode: str | None = None
+    import_notices: tuple[InpImportNotice | ProjectMigrationNotice, ...] = ()
 
 
 @dataclass(slots=True)
@@ -211,7 +208,7 @@ class WorkspacePathReservation:
 
 
 class FEMWorkspace:
-    """Own document contexts while preserving the single-document GUI path."""
+    """Own document registries, active identity and in-flight file claims."""
 
     def __init__(
         self,
@@ -236,9 +233,7 @@ class FEMWorkspace:
         self._next_result_number = 1
         self._next_job_number = 1
         self._job_names: set[str] = set()
-        # Detached file decoding and its controller belong to a later phase;
-        # retaining an injection point avoids creating a second controller in
-        # the Phase 1 single-document startup path.
+        # Detached file reads share one workspace-owned controller.
         self.open_controller = open_controller
 
     @property
@@ -342,6 +337,9 @@ class FEMWorkspace:
         task_controller: BackgroundTaskController | None = None,
         lineage: DocumentLineage | None = None,
         path_reservation: WorkspacePathReservation | None = None,
+        activate: bool = True,
+        presentation_cache: DocumentPresentationCache | None = None,
+        presentation_state: DocumentPresentationState | None = None,
     ) -> WorkspaceDocument:
         """Add or return a model context without copying Session data."""
 
@@ -354,6 +352,9 @@ class FEMWorkspace:
             task_controller=task_controller,
             lineage=lineage,
             path_reservation=path_reservation,
+            activate=activate,
+            presentation_cache=presentation_cache,
+            presentation_state=presentation_state,
         )
 
     def add_result(
@@ -365,6 +366,9 @@ class FEMWorkspace:
         source_path: str | os.PathLike[str] | Path | None = None,
         task_controller: BackgroundTaskController | None = None,
         path_reservation: WorkspacePathReservation | None = None,
+        activate: bool = True,
+        presentation_cache: DocumentPresentationCache | None = None,
+        presentation_state: DocumentPresentationState | None = None,
     ) -> WorkspaceDocument:
         """Add or return an external result context."""
 
@@ -377,6 +381,9 @@ class FEMWorkspace:
             task_controller=task_controller,
             lineage=None,
             path_reservation=path_reservation,
+            activate=activate,
+            presentation_cache=presentation_cache,
+            presentation_state=presentation_state,
         )
 
     def reserve_path(
@@ -591,6 +598,9 @@ class FEMWorkspace:
         task_controller: BackgroundTaskController | None,
         lineage: DocumentLineage | None,
         path_reservation: WorkspacePathReservation | None,
+        activate: bool,
+        presentation_cache: DocumentPresentationCache | None,
+        presentation_state: DocumentPresentationState | None,
     ) -> WorkspaceDocument:
         if kind not in {"model", "result"}:
             raise ValueError("workspace document kind must be model or result")
@@ -617,7 +627,8 @@ class FEMWorkspace:
             existing_id = path_index.get(key)
             if existing_id is not None:
                 existing = registry[existing_id]
-                self.activate(existing)
+                if activate:
+                    self.activate(existing)
                 return existing
 
         document_id = self._next_document_id
@@ -641,6 +652,9 @@ class FEMWorkspace:
         ):
             self._next_model_number += 1
         name = self._unique_display_name(kind, name)
+        source_paths = [path]
+        source_paths.extend(state.path for state in projection.result_file_states.values())
+        path_keys = {canonical_path(source) for source in source_paths if source is not None}
         controller = task_controller or self._new_controller()
         context = WorkspaceDocument(
             document_id=document_id,
@@ -651,14 +665,38 @@ class FEMWorkspace:
             task_controller=controller,
             kind=kind,
             lineage=lineage,
+            presentation_cache=presentation_cache or DocumentPresentationCache(),
+            presentation_state=presentation_state or DocumentPresentationState(),
         )
-        registry[document_id] = context
-        self._remember_projection_job_names(projection)
-        if path is not None:
-            path_index[canonical_path(path)] = document_id
-        self._index_document_paths(context)
-        if self.active_document_id is None:
-            self.activate(context)
+        previous_job_names = self._job_names.copy()
+        previous_job_number = self._next_job_number
+        previous_active = self.active_kind, self.active_document_id
+        try:
+            registry[document_id] = context
+            self._remember_projection_job_names(projection)
+            if path is not None:
+                path_index[key] = document_id
+            self._index_document_paths(context, path_keys=path_keys)
+            if activate and self.active_document_id is None:
+                self.activate(context)
+        except Exception:
+            registry.pop(document_id, None)
+            if path is not None and path_index.get(key) == document_id:
+                path_index.pop(key)
+            for owned_key in self._document_paths.pop(document_id, set()):
+                owners = self._path_documents.get(owned_key)
+                if owners is not None:
+                    owners.discard(document_id)
+                    if not owners:
+                        self._path_documents.pop(owned_key)
+            self._job_names = previous_job_names
+            self._next_job_number = previous_job_number
+            self.active_kind, self.active_document_id = previous_active
+            if task_controller is None:
+                QObject.disconnect(controller, None, None, None)
+                controller.setParent(None)
+                controller.deleteLater()
+            raise
         return context
 
     def _check_source_path(
@@ -687,13 +725,16 @@ class FEMWorkspace:
             if not owners:
                 self._path_documents.pop(key)
 
-    def _index_document_paths(self, context: WorkspaceDocument) -> None:
+    def _index_document_paths(
+        self, context: WorkspaceDocument, *, path_keys: set[str] | None = None,
+    ) -> None:
+        if path_keys is None:
+            paths = [context.source_path]
+            paths.extend(state.path for state in context.projection.result_file_states.values())
+            path_keys = {canonical_path(path) for path in paths if path is not None}
         self._remove_path_ownership(context.document_id)
-        paths = [context.source_path]
-        paths.extend(state.path for state in context.projection.result_file_states.values())
-        keys = {canonical_path(path) for path in paths if path is not None}
-        self._document_paths[context.document_id] = keys
-        for key in keys:
+        self._document_paths[context.document_id] = path_keys
+        for key in path_keys:
             self._path_documents.setdefault(key, set()).add(context.document_id)
 
     def _unique_display_name(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import replace
 import logging
 from pathlib import Path
 from threading import Event
@@ -132,8 +132,6 @@ from fem.geometry.part_namespace import part_id_sort_key
 from fem.io.project import (
     LEGACY_MODEL_FILE_SUFFIXES,
     MODEL_FILE_SUFFIX,
-    LoadedProject,
-    load_project,
 )
 from fem_agent.export_authoring import (
     DISPLAY_SETTING_KEYS,
@@ -142,9 +140,7 @@ from fem_agent.export_authoring import (
     ResultDisplayField,
 )
 from fem.io.result_archive import (
-    LoadedResultArchive,
     RESULT_FILE_SUFFIX,
-    load_result_archive,
 )
 from fem.mesh.quality import analyze_mesh
 from fem.mesh.settings import MeshSettings
@@ -186,7 +182,6 @@ from .commands import (
     NativeGeometryEdit,
     NewNativeProjectCommand,
     ResultCsvExportSpec,
-    ResultArchiveOpenSpec,
     ResultArchiveSaveSpec,
     ResultVtkExportSpec,
 )
@@ -326,6 +321,7 @@ from .widgets.viewport_toolbar import ViewportPanel
 from .workers import TaskContext
 from .document_tasks import DocumentTaskPresentation, DocumentTaskRouter, session_task_outcome
 from .document_files import DocumentFileCommands
+from .document_open import DocumentOpenCommands, DocumentOpenPresentation
 from .document_analysis import (
     DocumentAnalysisCommands,
     DocumentAnalysisPresentation,
@@ -568,24 +564,6 @@ class _ExactDataComboBox(QComboBox):
         return super().findData(data, role, flags)
 
 
-@dataclass(frozen=True, slots=True)
-class _ResultArchiveDisplayPayload:
-    """Worker-owned decoded archive plus display-only structural adapters."""
-
-    loaded: LoadedResultArchive
-    geometry: ModelGeometry
-    model_view: ArchiveModelView
-    timings: dict[str, float]
-
-
-@dataclass(frozen=True, slots=True)
-class _LoadedProjectDisplayPayload:
-    """Worker-decoded project and optional mesh display geometry."""
-
-    loaded: LoadedProject
-    geometry: ModelGeometry | None
-
-
 class AgentExportFacade:
     """A small facade exposed to the Agent export port.
 
@@ -676,6 +654,16 @@ class FEMMainWindow(QMainWindow):
             ),
         )
         self.document_files = DocumentFileCommands(self.document_tasks)
+        self.document_open = DocumentOpenCommands(
+            self.document_tasks,
+            DocumentOpenPresentation(
+                refresh_document=lambda context: self._refresh_open_document(context),
+                activate_document=lambda context: self._activate_workspace_context(context),
+                install_notices=lambda notices: self._install_import_notices(notices),
+                result_opened=lambda path: self._present_opened_result(path),
+                shutting_down=lambda: self._closing or self._exit_pending,
+            ),
+        )
         self.document_analysis = DocumentAnalysisCommands(
             self.document_tasks,
             DocumentAnalysisPresentation(
@@ -1667,309 +1655,21 @@ class FEMMainWindow(QMainWindow):
 
     def open_project_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
-        if (
-            self.geometry_edits.active
-        ):
+        if self.geometry_edits.active:
             return self._rejected_command(
-                command_id,
-                "sketch_editor.active",
+                command_id, "sketch_editor.active",
                 "Finish or cancel the current sketch before opening a project",
             )
-        target = Path(path)
-        existing_id = self.workspace.model_paths.get(canonical_path(target))
-        if existing_id is not None:
-            existing = self.workspace.models[existing_id]
-            if not self._activate_workspace_context(existing):
-                return self._rejected_command(
-                    command_id,
-                    "workspace.activate.rejected",
-                    "the already-open project could not be activated",
-                )
-            return GuiCommandReceipt.accepted(
-                command_id,
-                outcome=GuiCommandOutcome(
-                    output_path=target,
-                    diagnostic_summary="Activated the already open model",
-                ),
-            )
-        open_controller = self.workspace.ensure_open_controller()
-        if open_controller.busy:
-            return self._rejected_command(
-                command_id,
-                "task.busy",
-                "a project open task is already running",
-            )
-        try:
-            path_reservation = self.workspace.reserve_path(
-                target, controller=open_controller,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(command_id, "project.open.rejected", error)
-        completion = GuiCommandCompletion(command_id)
-        accepted_context: WorkspaceDocument | None = None
-
-        def workload(context: TaskContext) -> _LoadedProjectDisplayPayload:
-            context.report("Reading and validating native project...")
-            context.checkpoint()
-            loaded = load_project(target)
-            context.checkpoint()
-            model = loaded.snapshot.model
-            display_geometry = (
-                None
-                if model is None
-                else build_model_geometry(model)
-            )
-            context.checkpoint()
-            return _LoadedProjectDisplayPayload(loaded, display_geometry)
-
-        def apply_result(payload: object) -> TaskApplyOutcome:
-            nonlocal accepted_context
-            if type(payload) is not _LoadedProjectDisplayPayload:
-                raise TypeError(
-                    "project loader worker must return project display payload"
-                )
-            loaded = payload.loaded
-            try:
-                # Decode remains detached from every existing Session.  Only
-                # after successful validation do we create a new context and
-                # install the snapshot into its own writer.
-                session = ModelSession()
-                accepted_context = self.workspace.add_model(
-                    session=session,
-                    display_name=(
-                        str(loaded.snapshot.model_name or "").strip()
-                        or target.stem
-                    ),
-                    source_path=loaded.path or target,
-                    path_reservation=path_reservation,
-                )
-                delta = session.replace_from_snapshot(loaded.snapshot)
-            except (RevisionConflictError, TypeError, ValueError) as error:
-                if accepted_context is not None:
-                    self.workspace.remove(accepted_context)
-                    accepted_context = None
-                return TaskApplyOutcome.rejected(str(error))
-            return TaskApplyOutcome.accepted(
-                (loaded, accepted_context, delta, payload.geometry)
-            )
-
-        def on_success(value: object) -> None:
-            if (
-                type(value) is not tuple
-                or len(value) != 4
-                or type(value[0]) is not LoadedProject
-                or not isinstance(value[1], WorkspaceDocument)
-                or type(value[2]) is not SessionDelta
-                or (
-                    value[3] is not None
-                    and type(value[3]) is not ModelGeometry
-                )
-            ):
-                raise RuntimeError(
-                    "accepted project load has no detached project or delta"
-                )
-            payload, context, delta, model_geometry = value
-            self._apply_session_delta(delta, context=context)
-            artifact = context.projection.artifact
-            if artifact is not None and model_geometry is not None:
-                if model_geometry.artifact_id != artifact.artifact_id:
-                    model_geometry = replace(
-                        model_geometry,
-                        artifact_id=artifact.artifact_id,
-                    )
-                context.presentation_cache.artifact_id = artifact.artifact_id
-                context.presentation_cache.model_geometry = model_geometry
-            if not self._activate_workspace_context(context):
-                raise RuntimeError("opened project context could not be activated")
-            self._import_notices = deepcopy(tuple(payload.notices))
-            if payload.notices:
-                self.status_panel.set_state(
-                    "; ".join(notice.message for notice in payload.notices),
-                    12000,
-                )
-
-        try:
-            started = self._start_task(
-                workload,
-                on_success,
-                "Failed to open native project",
-                task_name="Open Native Project",
-                apply_result=apply_result,
-                completion=completion,
-                controller=open_controller,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "project.open.rejected",
-                error,
-                "Check the project file version and contents.",
-            )
-        finally:
-            if not open_controller.busy:
-                self.workspace.release_path(path_reservation)
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the project open task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+        return self.document_open.open_project(command_id, path)
 
     def open_inp_path(self, path: str | Path) -> GuiCommandReceipt:
         command_id = self._next_command_id()
         if self._active_editor():
             return self._rejected_command(
-                command_id,
-                "editor.active",
+                command_id, "editor.active",
                 "Finish or cancel the current edit before opening an INP",
             )
-        path_reservation = None
-        try:
-            target = Path(path)
-            existing_id = self.workspace.model_paths.get(canonical_path(target))
-            if existing_id is not None:
-                existing = self.workspace.models[existing_id]
-                if not self._activate_workspace_context(existing):
-                    return self._rejected_command(
-                        command_id,
-                        "workspace.activate.rejected",
-                        "the already-open INP model could not be activated",
-                    )
-                return GuiCommandReceipt.accepted(
-                    command_id,
-                    outcome=GuiCommandOutcome(
-                        output_path=target,
-                        diagnostic_summary="Activated the already open INP model",
-                    ),
-                )
-            open_controller = self.workspace.ensure_open_controller()
-            if open_controller.busy:
-                return self._rejected_command(
-                    command_id,
-                    "task.busy",
-                    "a model open task is already running",
-                )
-            path_reservation = self.workspace.reserve_path(
-                target, controller=open_controller,
-            )
-            session = ModelSession()
-            task = session.prepare_import(target)
-            completion = GuiCommandCompletion(command_id)
-            accepted_context: WorkspaceDocument | None = None
-
-            def workload(context: TaskContext):
-                timings: dict[str, float] = {}
-                context.report("Parsing and building INP...")
-                started_at = perf_counter()
-                import_result = read_inp_with_report(target)
-                timings["INP parsing and building"] = perf_counter() - started_at
-                model = import_result.model
-                context.report("Generating display mesh...")
-                started_at = perf_counter()
-                geometry = build_model_geometry(model)
-                timings["VTK display geometry construction"] = perf_counter() - started_at
-                context.report("Preparing an independent model document...")
-                started_at = perf_counter()
-                prepared = session.prepare_owned_imported_model_transfer(model)
-                timings["Session model ownership preparation"] = perf_counter() - started_at
-                context.checkpoint()
-                return prepared, geometry, timings, import_result.notices
-
-            def apply_result(value: object) -> TaskApplyOutcome:
-                nonlocal accepted_context
-                prepared, _geometry, _timings, _notices = self._unpack_model_load(
-                    value
-                )
-                try:
-                    accepted_context = self.workspace.add_model(
-                        session=session,
-                        display_name=target.stem,
-                        source_path=target,
-                        path_reservation=path_reservation,
-                    )
-                    delta = session.accept_imported_model_transfer(
-                        task.token,
-                        prepared,
-                    )
-                    if not delta.accepted:
-                        raise RuntimeError(delta.reason or "INP import was rejected")
-                except (RevisionConflictError, RuntimeError, TypeError, ValueError) as error:
-                    if accepted_context is not None:
-                        self.workspace.remove(accepted_context)
-                        accepted_context = None
-                    return TaskApplyOutcome.rejected(str(error))
-                return TaskApplyOutcome.accepted(
-                    (accepted_context, delta, value)
-                )
-
-            def remove_failed_context(context: WorkspaceDocument) -> None:
-                self.model_tree.remove_document(context.document_id)
-                self.result_tree.remove_model_runs(context.document_id)
-                self.workspace.remove(context)
-
-            def project_result(value: object) -> None:
-                if (
-                    type(value) is not tuple
-                    or len(value) != 3
-                    or not isinstance(value[0], WorkspaceDocument)
-                    or type(value[1]) is not SessionDelta
-                ):
-                    raise RuntimeError(
-                        "accepted INP import has no detached document and delta"
-                    )
-                context, delta, payload = value
-                _model, geometry, timings, notices = self._unpack_model_load(
-                    payload
-                )
-                if not self._apply_session_delta(
-                    delta,
-                    context=context,
-                    model_geometry=geometry,
-                    timings=timings,
-                    source_label=target.name,
-                ):
-                    remove_failed_context(context)
-                    raise RuntimeError("Cannot project the accepted INP model")
-                artifact = context.projection.artifact
-                if artifact is None:
-                    remove_failed_context(context)
-                    raise RuntimeError("The accepted INP model is missing its model artifact")
-                if geometry.artifact_id != artifact.artifact_id:
-                    geometry = replace(geometry, artifact_id=artifact.artifact_id)
-                context.presentation_cache.artifact_id = artifact.artifact_id
-                context.presentation_cache.model_geometry = geometry
-                if not self._activate_workspace_context(context):
-                    remove_failed_context(context)
-                    raise RuntimeError("Cannot activate the INP model document")
-                self._install_import_notices(notices)
-
-            self.status_panel.set_state("Importing new model...")
-            started = self._start_task(
-                workload,
-                project_result,
-                "Failed to load model",
-                task_name="INP Import",
-                apply_result=apply_result,
-                completion=completion,
-                controller=open_controller,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(
-                command_id,
-                "import.open.rejected",
-                error,
-            )
-        finally:
-            if path_reservation is not None and not open_controller.busy:
-                self.workspace.release_path(path_reservation)
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the import task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+        return self.document_open.open_inp(command_id, path)
 
     def reload_imported_source(self) -> GuiCommandReceipt:
         command_id = self._next_command_id()
@@ -7228,7 +6928,10 @@ class FEMMainWindow(QMainWindow):
         completion = receipt.completion
         if completion is not None:
             def project_opened(record: TaskCompletion) -> None:
-                if record.state is not BackgroundTaskState.SUCCEEDED:
+                if (
+                    record.state is not BackgroundTaskState.SUCCEEDED
+                    or record.projection_error is not None
+                ):
                     return
                 self.ribbon.set_current("Geometry")
                 if not self.import_notices:
@@ -7738,142 +7441,18 @@ class FEMMainWindow(QMainWindow):
         command_id = self._next_command_id()
         if self._active_editor():
             return self._rejected_command(
-                command_id,
-                "editor.active",
+                command_id, "editor.active",
                 "active editor must be completed before opening a result",
             )
-        path_reservation = None
-        try:
-            spec = ResultArchiveOpenSpec(Path(path))
-            existing_id = self.workspace.result_paths.get(canonical_path(spec.path))
-            if existing_id is not None:
-                context = self.workspace.document(existing_id)
-                if not self._activate_workspace_context(context):
-                    return self._rejected_command(
-                        command_id,
-                        "result.activate.rejected",
-                        "the existing result document could not be activated",
-                    )
-                self.ribbon.set_current("Results")
-                return GuiCommandReceipt.accepted(
-                    command_id,
-                    outcome=GuiCommandOutcome(output_path=spec.path),
-                )
-            open_controller = self.workspace.ensure_open_controller()
-            if open_controller.busy:
-                return self._rejected_command(
-                    command_id,
-                    "task.busy",
-                    "a result archive is already being opened",
-                )
-            path_reservation = self.workspace.reserve_path(
-                spec.path, controller=open_controller,
-            )
-            completion = GuiCommandCompletion(command_id)
+        return self.document_open.open_result(command_id, path)
 
-            def workload(task_context: TaskContext):
-                task_context.report("reading and validating result archive")
-                task_context.checkpoint()
-                loaded = load_result_archive(spec.path)
-                task_context.checkpoint()
-                started = perf_counter()
-                model_view = build_result_archive_model_view(
-                    loaded.snapshot.model_projection,
-                    loaded.snapshot.profile,
-                    name=str(loaded.snapshot.origin.model_name or "Result"),
-                )
-                geometry = build_result_archive_geometry(
-                    loaded.snapshot.model_projection,
-                )
-                timings = {"result display adapters": perf_counter() - started}
-                task_context.checkpoint()
-                return _ResultArchiveDisplayPayload(
-                    loaded=loaded,
-                    geometry=geometry,
-                    model_view=model_view,
-                    timings=timings,
-                )
+    def _refresh_open_document(self, context: WorkspaceDocument) -> None:
+        self._refresh_model_tree_for_context(context)
+        self._refresh_result_tree_for_context(context)
 
-            def on_success(value: object) -> None:
-                if type(value) is not _ResultArchiveDisplayPayload:
-                    raise TypeError("result open worker must return display payload")
-                payload = value
-                session = ModelSession()
-                delta = session.replace_from_result_archive(
-                    payload.loaded,
-                    path=spec.path,
-                )
-                if not delta.accepted:
-                    raise RuntimeError(delta.reason or "result archive was rejected")
-                projection = session.projection_snapshot()
-                display_name = spec.path.stem
-                previous_context = self.workspace.active_document()
-                context = self.workspace.add_result(
-                    session=session,
-                    projection=projection,
-                    display_name=display_name,
-                    source_path=spec.path,
-                    path_reservation=path_reservation,
-                )
-                context.presentation_state.module_name = "Results"
-                artifact = projection.artifact
-                context.presentation_cache.artifact_id = (
-                    None if artifact is None else artifact.artifact_id
-                )
-                context.presentation_cache.model_geometry = payload.geometry
-                context.presentation_cache.result_model_view = payload.model_view
-                identity = session.current_result_identity()
-                if identity is not None:
-                    context.presentation_cache.result_source = identity[0]
-                    context.presentation_cache.result_generation = identity[1]
-                try:
-                    self._refresh_result_tree_for_context(context)
-                    if not self._activate_workspace_context(context):
-                        raise RuntimeError(
-                            "result document could not be activated"
-                        )
-                    result_module_was_current = (
-                        self._current_module_name() == "Results"
-                    )
-                    self.ribbon.set_current("Results")
-                    if result_module_was_current:
-                        self._on_module_changed("Results")
-                    self.status_panel.set_state(
-                        f"Result file opened: {spec.path.name}",
-                        6000,
-                    )
-                except Exception:
-                    self.result_tree.remove_archive(context.document_id)
-                    self.workspace.remove(context)
-                    if previous_context is not None:
-                        try:
-                            self._activate_workspace_context(previous_context)
-                        except Exception:
-                            logging.exception(
-                                "failed to restore prior context after result open rollback"
-                            )
-                    raise
-
-            started = self._start_task(
-                workload,
-                on_success,
-                "Failed to open analysis results",
-                task_name="Open Analysis Results",
-                completion=completion,
-                controller=open_controller,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
-            return self._rejected_command(command_id, "result.open.rejected", error)
-        finally:
-            if path_reservation is not None and not open_controller.busy:
-                self.workspace.release_path(path_reservation)
-        if not started:
-            return self._rejected_command(
-                command_id,
-                "task.start.rejected",
-                "the result open task could not be started",
-            )
-        return GuiCommandReceipt.pending(command_id, completion)
+    def _present_opened_result(self, path: Path) -> None:
+        self.ribbon.set_current("Results")
+        self.status_panel.set_state(f"Result file opened: {path.name}", 6000)
 
     def _install_model(
         self,
