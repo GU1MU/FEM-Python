@@ -123,6 +123,13 @@ def result_model_fingerprint(
     coordinate_digest = hashlib.sha256()
     coordinate_digest.update(memoryview(coordinates).cast("B"))
 
+    encoded_region_keys: dict[ResultRegionKey, str] = {}
+    element_region_keys = []
+    for region_key in topology.element_region_keys:
+        if region_key not in encoded_region_keys:
+            encoded_region_keys[region_key] = encode_result_region_key(region_key)
+        element_region_keys.append(encoded_region_keys[region_key])
+
     payload = {
         "node_ids": list(topology.node_ids),
         "node_coordinates": {
@@ -133,10 +140,7 @@ def result_model_fingerprint(
         "element_ids": list(topology.element_ids),
         "element_types": list(topology.element_types),
         "connectivity": [list(row) for row in topology.connectivity],
-        "element_region_keys": [
-            encode_result_region_key(item)
-            for item in topology.element_region_keys
-        ],
+        "element_region_keys": element_region_keys,
         "step_name": step_name,
         "profile": {
             "family": profile.family.value,
