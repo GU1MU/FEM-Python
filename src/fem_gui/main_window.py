@@ -6583,11 +6583,6 @@ class FEMMainWindow(QMainWindow):
             if receipt.diagnostic is not None:
                 self._show_command_rejection("Reload failed", receipt)
 
-    def _load_path(self, path: Path) -> None:
-        receipt = self.open_inp_path(path)
-        if receipt.diagnostic is not None:
-            self._show_command_rejection("Failed to load model", receipt)
-
     def _begin_import(
         self,
         path: Path,
