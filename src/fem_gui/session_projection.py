@@ -1,4 +1,4 @@
-"""Decide whether an ordered Session transition needs scene projection."""
+"""Plan incremental Session, model and result projections from identities."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from fem.application import ChangeKind, SessionDelta, SessionSnapshot
+from fem.application.results import ResultCatalog, ResultProvider, ResultSourceKey, ScalarFieldSelection
 
 
 _METADATA_CHANGES = frozenset(
@@ -70,6 +71,87 @@ class SessionProjectionPlan:
         return self.scope == "metadata" and self.changed == frozenset(
             {ChangeKind.SESSION}
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProjectionPlan:
+    """The concrete model action allowed by the installed artifact identities."""
+
+    scope: Literal["definitions", "scene"]
+    action: Literal["clear", "keep", "rebind", "install"]
+    invalidate_selection_topology: bool
+
+
+def plan_model_projection(
+    previous: SessionSnapshot,
+    current: SessionSnapshot,
+    *,
+    scope: Literal["metadata", "definitions", "scene"],
+    geometry_artifact_id: str | None,
+    viewport_artifact_id: str | None,
+) -> ModelProjectionPlan:
+    """Require an actually installed old mesh before retaining its topology."""
+
+    previous_id = None if previous.artifact is None else previous.artifact.artifact_id
+    current_id = None if current.artifact is None else current.artifact.artifact_id
+    definitions = (
+        scope == "definitions"
+        and previous_id is not None
+        and geometry_artifact_id == viewport_artifact_id == previous_id
+    )
+    effective_scope = "definitions" if definitions else "scene"
+    if current_id is None:
+        action = "clear"
+    elif definitions:
+        action = "rebind"
+    elif (
+        previous_id != current_id
+        or geometry_artifact_id != current_id
+        or viewport_artifact_id != current_id
+    ):
+        action = "install"
+    else:
+        action = "keep"
+    return ModelProjectionPlan(
+        effective_scope, action,
+        not definitions and (current_id is None or previous_id != current_id),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ResultProjectionConsumers:
+    """Only identities observed from the installed result consumers."""
+
+    provider: ResultProvider | None
+    selection: ScalarFieldSelection | None
+    viewport_identity: tuple[ResultSourceKey, int, ScalarFieldSelection, str | None] | None
+    catalog: ResultCatalog | None
+    tree_has_selection: bool
+    has_inspection: bool
+    inspection_provider: ResultProvider | None
+
+
+def result_consumers_are_current(
+    provider: ResultProvider, consumers: ResultProjectionConsumers,
+) -> bool:
+    """Require the same provider, field and generation in every consumer."""
+
+    if consumers.provider is not provider or type(consumers.selection) is not ScalarFieldSelection:
+        return False
+    selection = consumers.selection
+    try:
+        availability = provider.field_status(selection.field_key)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        selection.component in availability.descriptor.columns
+        and consumers.viewport_identity == (
+            provider.source, provider.snapshot.generation, selection, provider.source.run_id,
+        )
+        and consumers.catalog is provider.catalog()
+        and consumers.tree_has_selection
+        and (not consumers.has_inspection or consumers.inspection_provider is provider)
+    )
 
 
 def plan_session_projection(

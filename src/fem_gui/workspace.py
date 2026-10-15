@@ -85,7 +85,16 @@ class DocumentPresentationCache:
         source: object | None,
         generation: int | None,
     ) -> bool:
-        """Return whether the cached result adapters match one identity."""
+        """Require a complete archive model view for one result identity."""
+
+        return self.matches_result_identity(source, generation) and self.result_model_view is not None
+
+    def matches_result_identity(
+        self,
+        source: object | None,
+        generation: int | None,
+    ) -> bool:
+        """Match result data independently of an archive-only model adapter."""
 
         return (
             source is not None
@@ -93,7 +102,6 @@ class DocumentPresentationCache:
             and self.result_generation is not None
             and generation is not None
             and int(self.result_generation) == int(generation)
-            and self.result_model_view is not None
         )
 
     def invalidate_model(self) -> None:

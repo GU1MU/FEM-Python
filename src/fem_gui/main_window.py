@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from threading import Event
 from time import perf_counter, sleep
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import numpy as np
 from PySide6.QtCore import QSignalBlocker, QSettings, Qt, QTimer, Signal
@@ -242,8 +242,13 @@ from .result_presentation import (
     visible_result_fields,
 )
 from .result_csv_export_dialog import ResultCsvExportDialog
-from .session_projection import authoring_facts_key
-from .document_projection import DocumentSessionProjection
+from .session_projection import (
+    ModelProjectionPlan, ResultProjectionConsumers, authoring_facts_key,
+    plan_model_projection, result_consumers_are_current,
+)
+from .document_projection import (
+    DocumentProjectionUpdate, DocumentSessionProjection, PreparedModelProjection,
+)
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -294,7 +299,6 @@ from .visualization.contour_rendering import (
 )
 from .visualization.model_adapter import (
     ModelGeometry,
-    build_model_geometry,
     build_result_archive_geometry,
     build_result_archive_model_view,
     ArchiveModelView,
@@ -1236,7 +1240,7 @@ class FEMMainWindow(QMainWindow):
         elif provider.source == identity[0]:
             cache.result_source = identity[0]
             cache.result_generation = identity[1]
-            cache.result_model_view = self._result_archive_model_view
+            cache.result_model_view = self._result_archive_model_view if context.is_result else None
 
     def _prepare_document_presentation(self, context: WorkspaceDocument) -> None:
         """Seed window aliases from ``context`` before projection callbacks run."""
@@ -2480,27 +2484,29 @@ class FEMMainWindow(QMainWindow):
             self._refresh_model_tree_for_context(target_context)
             self._refresh_result_tree_for_context(target_context)
             return True
-        previous_snapshot = update.previous
-        snapshot = update.snapshot
-        model_geometry = update.model_geometry
-        result_model_view = update.result_model_view
-        timings = update.timings
-        source_label = update.source_label
-        revision = plan.session_revision
-        if plan.scope == "definitions" and (
-            self.geometry is None
-            or previous_snapshot.artifact is None
-            or self.geometry.artifact_id != previous_snapshot.artifact.artifact_id
-            or self.viewport.artifact_id != previous_snapshot.artifact.artifact_id
-        ):
-            plan = replace(plan, scope="scene")
-
-        previous_artifact_id = (
-            previous_snapshot.artifact.artifact_id
-            if previous_snapshot.artifact is not None
-            else None
+        self._observe_session_projection(update)
+        if plan.scope == "metadata":
+            self._refresh_session_tree_metadata(target_context, plan.changed)
+            if ChangeKind.RUNS in plan.changed:
+                self._refresh_job_manager()
+            self._update_action_states()
+            self._applied_session_revision = plan.session_revision
+            return True
+        model_plan = plan_model_projection(
+            update.previous, update.snapshot,
+            scope=plan.scope,
+            geometry_artifact_id=None if self.geometry is None else self.geometry.artifact_id,
+            viewport_artifact_id=self.viewport.artifact_id,
         )
-        target_cache = target_context.presentation_cache
+        self._project_session_model(update, model_plan)
+        self._project_session_result(update, model_plan.scope)
+        self._finish_session_projection(update, model_plan.scope)
+        return True
+
+    def _observe_session_projection(self, update: DocumentProjectionUpdate) -> None:
+        """Publish the accepted active document to the Agent UI binding."""
+
+        snapshot, plan, target_context = update.snapshot, update.plan, update.document
         self._legacy_project_extension = bool(
             snapshot.source_kind == "native"
             and snapshot.project_path is not None
@@ -2531,31 +2537,25 @@ class FEMMainWindow(QMainWindow):
             )
         if hasattr(self, "viewport_panel"):
             self.viewport_panel.agent_chat_drawer.refresh_authoring_binding()
-        if plan.scope == "metadata":
-            self._refresh_session_tree_metadata(target_context, plan.changed)
-            if ChangeKind.RUNS in plan.changed:
-                self._refresh_job_manager()
-            self._update_action_states()
-            self._applied_session_revision = revision
-            return True
-        if plan.scope != "definitions" and (
-            snapshot.artifact is None
-            or previous_artifact_id
-            != snapshot.artifact.artifact_id
-        ):
+
+    def _project_session_model(
+        self, update: DocumentProjectionUpdate, model_plan: ModelProjectionPlan,
+    ) -> None:
+        """Apply the chosen model action through concrete window and viewport UI."""
+
+        snapshot, target_context = update.snapshot, update.document
+        if snapshot.source_kind != "result":
+            self._result_archive_geometry = None
+            self._result_archive_model_view = None
+        if model_plan.invalidate_selection_topology:
             self._scope_selection_topology_cache = None
             self._mesh_selection_topology_cache = None
-
-        step_names = self.session.runnable_step_names()
+        step_names = update.session.runnable_step_names()
         if self._current_step_name not in step_names:
-            self._current_step_name = self.session.default_step_name()
-        self._symbol_settings = replace(
-            self._symbol_settings,
-            step_name=self._current_step_name,
-        )
+            self._current_step_name = update.session.default_step_name()
+        self._symbol_settings = replace(self._symbol_settings, step_name=self._current_step_name)
 
-        artifact = snapshot.artifact
-        if artifact is None:
+        if model_plan.action == "clear":
             self._clear_model_projection(clear_tree=False)
             self._refresh_model_tree_for_context(target_context)
             recipe = snapshot.geometry_recipe
@@ -2638,149 +2638,89 @@ class FEMMainWindow(QMainWindow):
                 self.status_panel.set_object("No parts created")
             else:
                 self.status_panel.set_object()
-        elif (
-            plan.scope == "definitions"
-            and self.geometry is not None
-            and self.viewport.artifact_id == previous_artifact_id
-        ):
-            self._rebind_definition_model(snapshot)
-            self.session_projection.record_model_display(
-                update, self.geometry, self.inspection_service,
-            )
+        elif model_plan.action == "keep":
             self._refresh_model_tree_for_context(target_context)
-        elif (
-            previous_artifact_id != artifact.artifact_id
-            or self.geometry is None
-            or self.geometry.artifact_id != artifact.artifact_id
-            or self.viewport.artifact_id != artifact.artifact_id
-        ):
-            if snapshot.source_kind == "result":
-                if result_model_view is not None:
-                    self._result_archive_model_view = result_model_view
-                if model_geometry is not None:
-                    self._result_archive_geometry = model_geometry
-                geometry = (
-                    model_geometry
-                    or self._result_archive_geometry
-                )
-                model_for_view = (
-                    result_model_view
-                    or self._result_archive_model_view
-                )
-                if geometry is None or model_for_view is None:
-                    raise RuntimeError(
-                        "result-only projection requires worker display payload"
-                    )
-            else:
-                if model_geometry is None and target_cache.matches_artifact(
-                    artifact.artifact_id
-                ):
-                    model_geometry = target_cache.model_geometry
-                geometry = model_geometry or build_model_geometry(artifact.model)
-            if geometry.artifact_id != artifact.artifact_id:
-                geometry = replace(geometry, artifact_id=artifact.artifact_id)
-            if snapshot.source_kind != "result":
-                model_for_view = artifact.model
-            cached_inspection = (
-                target_cache.inspection_service
-                if target_cache.matches_artifact(artifact.artifact_id)
-                else None
-            )
-            self._install_model(
-                model_for_view,
-                geometry,
-                dict(timings or {}),
-                source_label=source_label or self._session_source_label(),
-                inspection_service=cached_inspection,
-                render=not self._workspace_activation,
-                reset_camera=not self._workspace_activation,
-                preserve_display=self._workspace_activation,
-            )
-            self.session_projection.record_model_display(
-                update, geometry, self.inspection_service,
-            )
         else:
-            # The model is already installed; update only this document's
-            # tree root for definition/result metadata changes.
-            self._refresh_model_tree_for_context(target_context)
+            binding = self.session_projection.prepare_model(update, model_plan.action, self.geometry)
+            if snapshot.source_kind == "result":
+                self._result_archive_geometry = binding.geometry
+                self._result_archive_model_view = binding.model
+            if model_plan.action == "rebind":
+                self._rebind_definition_model(binding)
+            else:
+                self._install_model(
+                    binding,
+                    source_label=update.source_label or self._session_source_label(),
+                    render=not self._workspace_activation,
+                    reset_camera=not self._workspace_activation,
+                    preserve_display=self._workspace_activation,
+                )
+            self.session_projection.record_model_display(update, binding.geometry, self.inspection_service)
+            if model_plan.action == "rebind":
+                self._refresh_model_tree_for_context(target_context)
 
-        result_identity = self.session.current_result_identity()
-        if result_identity is None:
+    def _project_session_result(
+        self, update: DocumentProjectionUpdate, scope: Literal["definitions", "scene"],
+    ) -> None:
+        """Read actual consumers after the model action and synchronize results."""
+
+        provider = self.session_projection.result_provider(update, self.result_provider)
+        if provider is None:
             had_result_projection = not (
-                self.result_provider is None
-                and self.viewport.result_render_payload is None
+                self.result_provider is None and self.viewport.result_render_payload is None
             )
             self._clear_result_projection()
             self.session_projection.record_result_display(update, None)
-            if plan.scope == "definitions" and not had_result_projection:
+            if scope == "definitions" and not had_result_projection:
                 self.viewport.show_boundary_and_loads()
-        else:
-            source, generation = result_identity
-            provider = self.result_provider
-            provider_changed = (
-                type(provider) is not ResultProvider
-                or provider.source != source
-                or provider.snapshot.generation != generation
-            )
-            if provider_changed:
-                provider = self.session.current_result_provider()
-                if provider is None:
-                    raise RuntimeError(
-                        "current result identity has no provider"
-                    )
-
-            selection_is_current = self._selection_belongs_to_catalog(
-                provider,
-                self.result_selection,
-            )
-            viewport_payload = self.viewport.result_render_payload
-            viewport_is_current = (
-                type(viewport_payload) is ResultRenderPayload
-                and viewport_payload.topology.source == provider.source
-                and viewport_payload.topology.materialization_generation
-                == provider.snapshot.generation
-                and viewport_payload.topology.selection
-                == self.result_selection
-                and self.viewport.run_id == provider.source.run_id
-            )
-            consumers_are_current = (
-                self.result_provider is provider
-                and selection_is_current
-                and viewport_is_current
-                and self.result_tree.catalog is provider.catalog()
+            return
+        payload = self.viewport.result_render_payload
+        consumers = ResultProjectionConsumers(
+            provider=self.result_provider,
+            selection=self.result_selection,
+            viewport_identity=(
+                (
+                    payload.topology.source, payload.topology.materialization_generation,
+                    payload.topology.selection, self.viewport.run_id,
+                ) if type(payload) is ResultRenderPayload else None
+            ),
+            catalog=self.result_tree.catalog,
+            tree_has_selection=(
+                type(self.result_selection) is ScalarFieldSelection
                 and self.result_tree.has_selection(
-                    self.result_selection,
-                    document_id=target_context.document_id,
-                    source=(None if provider is None else provider.source),
+                    self.result_selection, document_id=update.document.document_id, source=provider.source,
                 )
-                and (
-                    self.inspection_service is None
-                    or self.inspection_service.result_provider is provider
-                )
-            )
-            if (
-                provider_changed
-                or not consumers_are_current
-            ):
-                self._install_result_provider_projection(provider)
-            self.session_projection.record_result_display(
-                update, result_identity, self._result_archive_model_view, self.inspection_service,
-            )
+            ),
+            has_inspection=self.inspection_service is not None,
+            inspection_provider=(
+                None if self.inspection_service is None else self.inspection_service.result_provider
+            ),
+        )
+        if not result_consumers_are_current(provider, consumers):
+            self._install_result_provider_projection(provider)
+        self.session_projection.record_result_display(
+            update, (provider.source, provider.snapshot.generation),
+            self._result_archive_model_view, self.inspection_service,
+        )
+
+    def _finish_session_projection(
+        self, update: DocumentProjectionUpdate, scope: Literal["definitions", "scene"],
+    ) -> None:
+        """Finish visible controls before advancing the shared scene revision."""
 
         self._sync_step_combos()
         self._refresh_result_controls()
-        if plan.changed & {
+        if update.plan.changed & {
             ChangeKind.DEFINITIONS, ChangeKind.NAMED_REGIONS, ChangeKind.RUNS
         }:
             self._refresh_job_manager()
         self._update_action_states()
-        self._refresh_result_tree_for_context(target_context)
-        if not self._workspace_activation and plan.scope != "definitions":
+        self._refresh_result_tree_for_context(update.document)
+        if not self._workspace_activation and scope != "definitions":
             self._project_viewport_for_module(self._current_module_name())
-        if plan.scope != "definitions":
-            self.model_tree.set_active_document(target_context.document_id)
-        self._applied_session_revision = revision
-        return True
+        if scope != "definitions":
+            self.model_tree.set_active_document(update.document.document_id)
+        self._applied_session_revision = update.plan.session_revision
 
     def _refresh_session_tree_metadata(
         self,
@@ -6943,16 +6883,14 @@ class FEMMainWindow(QMainWindow):
 
     def _install_model(
         self,
-        model: object,
-        geometry: ModelGeometry,
-        timings: dict[str, float],
+        binding: PreparedModelProjection,
         *,
         source_label: str,
-        inspection_service: InspectionService | None = None,
         render: bool = True,
         reset_camera: bool = True,
         preserve_display: bool = False,
     ) -> None:
+        model, geometry, timings = binding.model, binding.geometry, binding.timings
         self.status_panel.set_state("Initializing viewport...")
         self._scope_selection_topology_cache = None
         self._mesh_selection_topology_cache = None
@@ -6977,20 +6915,8 @@ class FEMMainWindow(QMainWindow):
             self._symbol_settings,
             step_name=self._current_step_name,
         )
-        frame_query = None
-        if self.document.source_kind != "result":
-            def frame_query(target: RegionRef | int) -> BeamFrameReport:
-                return resolve_effective_beam_frames(model, target)
-        if inspection_service is not None:
-            self.inspection_service = inspection_service
-        else:
-            started = perf_counter()
-            self.inspection_service = InspectionService(
-                model,
-                definitions=self.document,
-                effective_frame_query=frame_query,
-            )
-            timings["InspectionService initialization"] = perf_counter() - started
+        frame_query = binding.effective_frame_query
+        self.inspection_service = binding.inspection_service
         started = perf_counter()
         active_context = self.workspace.active_document()
         if active_context is not None:
@@ -9208,30 +9134,16 @@ class FEMMainWindow(QMainWindow):
 
         self._apply_session_delta(delta, preserve_mesh_topology=True)
 
-    def _rebind_definition_model(self, snapshot: SessionSnapshot) -> None:
+    def _rebind_definition_model(self, binding: PreparedModelProjection) -> None:
         """Refresh definition consumers while retaining installed mesh actors."""
 
         self._close_inspection_windows()
-        model = snapshot.artifact.model
-
-        def frame_query(target: RegionRef | int) -> BeamFrameReport:
-            return resolve_effective_beam_frames(model, target)
-
-        self.geometry = replace(
-            self.geometry,
-            artifact_id=snapshot.artifact.artifact_id,
-        )
+        self.geometry = binding.geometry
         self.viewport.rebind_model_artifact(
-            model,
-            self.geometry,
-            effective_frame_query=frame_query,
+            binding.model, binding.geometry,
+            effective_frame_query=binding.effective_frame_query,
         )
-
-        self.inspection_service = InspectionService(
-            model,
-            definitions=snapshot,
-            effective_frame_query=frame_query,
-        )
+        self.inspection_service = binding.inspection_service
 
     def cancel_current_task(
         self,
