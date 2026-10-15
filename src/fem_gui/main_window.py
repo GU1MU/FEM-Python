@@ -242,7 +242,8 @@ from .result_presentation import (
     visible_result_fields,
 )
 from .result_csv_export_dialog import ResultCsvExportDialog
-from .session_projection import authoring_facts_key, plan_session_projection
+from .session_projection import authoring_facts_key
+from .document_projection import DocumentSessionProjection
 from .preprocessing_dialogs import (
     BasicSolidCreationDialog,
     BoxGeometryDialog,
@@ -675,6 +676,7 @@ class FEMMainWindow(QMainWindow):
                 shutting_down=lambda: self._closing or self._exit_pending,
             ),
         )
+        self.session_projection = DocumentSessionProjection(self.workspace, self.native_geometry)
         self.agent_result_query_bridge = AgentResultQueryBridge(
             SessionResultQueryPort(self.session, self.workspace)
         )
@@ -2448,77 +2450,42 @@ class FEMMainWindow(QMainWindow):
             target_context = self.workspace.active_document()
         if target_context is None:
             return False
-        revision = int(getattr(delta, "session_revision"))
-        requested_revision = revision
         active_context = self.workspace.active_document()
-        if target_context is not active_context:
-            if revision <= target_context.projection.session_revision:
-                return False
-            previous_snapshot = target_context.projection
-            snapshot = self._snapshot_for_delta(
+        try:
+            update = self.session_projection.project(
+                target_context,
                 delta,
-                revision,
-                context=target_context,
+                visible_revision=(
+                    self._applied_session_revision if target_context is active_context else None
+                ),
+                model_geometry=model_geometry,
+                result_model_view=result_model_view,
+                geometry_preview=geometry_preview,
+                timings=timings,
+                source_label=source_label,
+                preserve_mesh_topology=preserve_mesh_topology,
             )
-            plan = plan_session_projection(
-                previous_snapshot,
-                snapshot,
-                requested_revision=requested_revision,
-                applied_revision=previous_snapshot.session_revision,
-                delta=delta if isinstance(delta, SessionDelta) else None,
-            )
-            if plan is None:
-                return False
-            if snapshot.session_revision != requested_revision:
-                model_geometry = None
-            self.workspace.update_projection(target_context, snapshot)
-            self.native_geometry.synchronize(target_context, snapshot)
-            if geometry_preview is not None and snapshot.session_revision == requested_revision:
-                self.native_geometry.seed_exact(target_context, snapshot, geometry_preview)
+        finally:
+            if target_context is active_context:
+                # The owner may have updated the document before a later
+                # cache operation failed. Keep the fallback alias in sync.
+                self._document_alias = target_context.projection
+        if update is None:
+            return False
+        plan = update.plan
+        if target_context is not active_context:
             if plan.scope == "metadata":
                 self._refresh_session_tree_metadata(target_context, plan.changed)
                 return True
-            next_artifact = snapshot.artifact
-            target_cache = target_context.presentation_cache
-            next_artifact_id = None if next_artifact is None else next_artifact.artifact_id
-            if target_cache.artifact_id != next_artifact_id:
-                target_cache.invalidate_model()
-            if next_artifact is not None and model_geometry is not None:
-                if model_geometry.artifact_id != next_artifact_id:
-                    model_geometry = replace(model_geometry, artifact_id=next_artifact_id)
-                target_cache.artifact_id = next_artifact_id
-                target_cache.model_geometry = model_geometry
-            next_target_result = target_context.session.current_result_identity()
-            if next_target_result is None or not target_context.presentation_cache.matches_result(
-                *next_target_result
-            ):
-                target_context.presentation_cache.invalidate_result()
             self._refresh_model_tree_for_context(target_context)
             self._refresh_result_tree_for_context(target_context)
             return True
-        if revision <= self._applied_session_revision:
-            return False
-        previous_snapshot = self.document
-        snapshot = self._snapshot_for_delta(
-            delta,
-            revision,
-            context=target_context,
-        )
-        plan = plan_session_projection(
-            previous_snapshot,
-            snapshot,
-            requested_revision=requested_revision,
-            applied_revision=self._applied_session_revision,
-            delta=delta if isinstance(delta, SessionDelta) else None,
-            preserve_mesh_topology=preserve_mesh_topology,
-        )
-        if plan is None:
-            return False
-        if snapshot.session_revision != requested_revision:
-            model_geometry = None
-            result_model_view = None
-            timings = None
-            source_label = None
+        previous_snapshot = update.previous
+        snapshot = update.snapshot
+        model_geometry = update.model_geometry
+        result_model_view = update.result_model_view
+        timings = update.timings
+        source_label = update.source_label
         revision = plan.session_revision
         if plan.scope == "definitions" and (
             self.geometry is None
@@ -2528,37 +2495,12 @@ class FEMMainWindow(QMainWindow):
         ):
             plan = replace(plan, scope="scene")
 
-        if geometry_preview is not None:
-            if type(geometry_preview) is not GeometryPreview:
-                raise TypeError("geometry_preview must be a GeometryPreview")
-            if (
-                snapshot.session_revision == requested_revision
-                and snapshot.source_kind == "native"
-                and snapshot.artifact is None
-                and snapshot.active_part_id is not None
-            ):
-                self.native_geometry.seed_exact(target_context, snapshot, geometry_preview)
-
         previous_artifact_id = (
-            self.document.artifact.artifact_id
-            if self.document.artifact is not None
-            else None
-        )
-        next_artifact_id = (
-            snapshot.artifact.artifact_id
-            if snapshot.artifact is not None
+            previous_snapshot.artifact.artifact_id
+            if previous_snapshot.artifact is not None
             else None
         )
         target_cache = target_context.presentation_cache
-        if target_cache.artifact_id != next_artifact_id:
-            target_cache.invalidate_model()
-        if snapshot.artifact is not None and model_geometry is not None:
-            if model_geometry.artifact_id != next_artifact_id:
-                model_geometry = replace(model_geometry, artifact_id=next_artifact_id)
-            target_cache.artifact_id = next_artifact_id
-            target_cache.model_geometry = model_geometry
-        self.document = snapshot
-        self.native_geometry.synchronize(target_context, snapshot)
         self._legacy_project_extension = bool(
             snapshot.source_kind == "native"
             and snapshot.project_path is not None
@@ -2702,9 +2644,9 @@ class FEMMainWindow(QMainWindow):
             and self.viewport.artifact_id == previous_artifact_id
         ):
             self._rebind_definition_model(snapshot)
-            target_cache.artifact_id = artifact.artifact_id
-            target_cache.model_geometry = self.geometry
-            target_cache.inspection_service = self.inspection_service
+            self.session_projection.record_model_display(
+                update, self.geometry, self.inspection_service,
+            )
             self._refresh_model_tree_for_context(target_context)
         elif (
             previous_artifact_id != artifact.artifact_id
@@ -2754,9 +2696,9 @@ class FEMMainWindow(QMainWindow):
                 reset_camera=not self._workspace_activation,
                 preserve_display=self._workspace_activation,
             )
-            target_cache.artifact_id = artifact.artifact_id
-            target_cache.model_geometry = geometry
-            target_cache.inspection_service = self.inspection_service
+            self.session_projection.record_model_display(
+                update, geometry, self.inspection_service,
+            )
         else:
             # The model is already installed; update only this document's
             # tree root for definition/result metadata changes.
@@ -2769,7 +2711,7 @@ class FEMMainWindow(QMainWindow):
                 and self.viewport.result_render_payload is None
             )
             self._clear_result_projection()
-            target_cache.invalidate_result()
+            self.session_projection.record_result_display(update, None)
             if plan.scope == "definitions" and not had_result_projection:
                 self.viewport.show_boundary_and_loads()
         else:
@@ -2821,10 +2763,9 @@ class FEMMainWindow(QMainWindow):
                 or not consumers_are_current
             ):
                 self._install_result_provider_projection(provider)
-            target_cache.result_source = source
-            target_cache.result_generation = generation
-            target_cache.result_model_view = self._result_archive_model_view
-            target_cache.inspection_service = self.inspection_service
+            self.session_projection.record_result_display(
+                update, result_identity, self._result_archive_model_view, self.inspection_service,
+            )
 
         self._sync_step_combos()
         self._refresh_result_controls()
@@ -2859,33 +2800,6 @@ class FEMMainWindow(QMainWindow):
                 self._refresh_model_tree_for_context(context)
         if changed & {ChangeKind.SAVED_STATE, ChangeKind.RUNS}:
             self._refresh_result_tree_for_context(context)
-
-    def _snapshot_for_delta(
-        self,
-        delta: object,
-        revision: int,
-        *,
-        context: WorkspaceDocument | None = None,
-    ) -> object:
-        """Project one ordered delta without detaching full model/results."""
-
-        target_context = (
-            context
-            if context is not None
-            else self.workspace.active_document()
-        )
-        if target_context is None:
-            return self.session.projection_snapshot()
-
-        if (
-            isinstance(delta, SessionDelta)
-            and target_context.session.session_revision == revision
-        ):
-            return target_context.session.projection_snapshot(
-                target_context.projection,
-                delta.changed,
-            )
-        return target_context.session.projection_snapshot()
 
     def _apply_revision_neutral_task_receipt(
         self,
