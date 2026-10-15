@@ -121,8 +121,7 @@ def build_shaded_contour_surface(
     )
     normals = np.asarray(normal_surface.point_data.active_normals)
     normal_points = np.asarray(normal_surface.points)
-    render_points: list[np.ndarray] = []
-    render_normals: list[np.ndarray] = []
+    render_normal_point_ids: list[int] = []
     render_source_points: list[int] = []
     render_source_cells: list[int] = []
     render_faces: list[int] = []
@@ -136,7 +135,7 @@ def build_shaded_contour_surface(
         source_cell_id = int(normal_source_cells[cell_index])
         canonical_cell = canonical_cells[source_cell_id]
         result_cell = cells[source_cell_id]
-        first_render_point = len(render_points)
+        first_render_point = len(render_normal_point_ids)
         render_faces.extend(
             (point_count, *range(first_render_point, first_render_point + point_count))
         )
@@ -145,18 +144,20 @@ def build_shaded_contour_surface(
             canonical_point_id = int(normal_source_points[normal_index])
             local_node = canonical_cell.index(canonical_point_id)
             result_point_id = result_cell[local_node]
-            render_points.append(normal_points[normal_index])
-            render_normals.append(normals[normal_index])
+            render_normal_point_ids.append(normal_index)
             render_source_points.append(result_point_id)
         render_source_cells.append(source_cell_id)
         cursor += point_count + 1
         cell_index += 1
 
+    normal_point_indices = np.asarray(render_normal_point_ids, dtype=np.int64)
     rendered = type(surface)(
-        np.asarray(render_points, dtype=float),
+        np.asarray(normal_points[normal_point_indices], dtype=float),
         faces=np.asarray(render_faces, dtype=np.int64),
     )
-    rendered.point_data["Normals"] = np.asarray(render_normals, dtype=float)
+    rendered.point_data["Normals"] = np.asarray(
+        normals[normal_point_indices], dtype=float,
+    )
     rendered.GetPointData().SetNormals(
         rendered.GetPointData().GetArray("Normals")
     )
