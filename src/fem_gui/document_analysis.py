@@ -174,20 +174,35 @@ class DocumentAnalysisCommands:
             delta, report = value
             if not self.presentation.project_delta(document, delta):
                 raise RuntimeError("Cannot project the accepted model check")
-            self.presentation.checked(report)
+            if document.session is session and self.tasks.is_active(document):
+                self.presentation.checked(report)
 
         def failed(message: str, *, present: bool = True) -> None:
             delta = session.accept_task_failed(task.token, message)
-            if not delta.accepted:
+            if not delta.accepted or not self.tasks.is_live(document) or document.session is not session:
                 return
             self.presentation.project_delta(document, delta)
-            if present and self.tasks.is_active(document):
+            if present and document.session is session and self.tasks.is_active(document):
                 self.tasks.presentation.show_error("Model check failed", message)
 
         def cancelled() -> None:
             delta = session.accept_task_cancelled(task.token)
-            if delta.accepted:
+            if delta.accepted and self.tasks.is_live(document) and document.session is session:
                 self.presentation.project_delta(document, delta)
+
+        def terminal(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                return
+            delta = (
+                session.accept_task_cancelled(task.token)
+                if record.state in {BackgroundTaskState.CANCELLED, BackgroundTaskState.DISCARDED}
+                else session.accept_task_failed(task.token, record.message or record.state.value)
+            )
+            if delta.accepted and self.tasks.is_live(document) and document.session is session:
+                try:
+                    self.presentation.project_delta(document, delta)
+                except Exception:
+                    logging.exception("Cannot project model-check task cleanup")
 
         try:
             started = self.tasks.start(
@@ -203,9 +218,13 @@ class DocumentAnalysisCommands:
                 on_inactive_cancelled=cancelled,
                 apply_result=apply,
                 completion=completion,
+                on_terminal=terminal,
             )
         except Exception as error:
-            failed(str(error).strip() or type(error).__name__, present=False)
+            try:
+                failed(str(error).strip() or type(error).__name__, present=False)
+            except Exception:
+                logging.exception("Cannot project model-check startup cleanup")
             raise
         if not started:
             failed("the model-check task could not be started", present=False)

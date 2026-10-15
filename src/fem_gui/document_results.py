@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Callable
 
@@ -35,7 +36,7 @@ from .commands import (
 from .document_tasks import DocumentTaskRouter, session_task_outcome
 from .result_command_state import PendingResultMaterialization
 from .result_presentation import result_field_is_beam_section, visible_result_fields
-from .task_controller import TaskApplyOutcome, TaskCompletion
+from .task_controller import BackgroundTaskState, TaskApplyOutcome, TaskCompletion
 from .workers import TaskContext
 from .workspace import WorkspaceDocument
 
@@ -140,6 +141,7 @@ class DocumentResultCommands:
         """Share the token and task lifetime for field display and queries."""
 
         session = document.session
+        command_state = document.result_command_state
         is_query = type(request) is ResultQuery
         title = "Result query failed" if is_query else "Failed to load result fields on demand"
         task_name = "Result Query" if is_query else "Load Result Fields on Demand"
@@ -148,27 +150,60 @@ class DocumentResultCommands:
         accepted_delta: SessionDelta | None = None
         accepted_query: ResultQueryResult | None = None
 
+        def target_matches() -> bool:
+            return self.tasks.is_live(document) and document.session is session
+
+        def request_matches() -> bool:
+            return (
+                target_matches() and document.result_command_state is command_state
+                and pending is not None and command_state.materialization is pending
+            )
+
+        def project_delta(delta: SessionDelta) -> bool:
+            return target_matches() and self._project_delta(document, delta)
+
         def clear_pending() -> None:
-            if document.result_command_state.materialization is pending:
-                document.result_command_state.materialization = None
+            notify = request_matches()
+            if pending is not None and command_state.materialization is pending:
+                command_state.materialization = None
+            if notify:
                 self.presentation.state_changed(document)
 
         def finished(terminal: TaskCompletion) -> None:
-            if document.result_command_state.materialization is not pending:
-                return
-            document.result_command_state.materialization = None
             try:
-                if not is_query and self.tasks.is_active(document):
-                    self.presentation.field_finished(document, pending, terminal)
+                if accepted_delta is None and terminal.state is not BackgroundTaskState.SUCCEEDED:
+                    delta = (
+                        session.accept_task_cancelled(task.token)
+                        if terminal.state in {BackgroundTaskState.CANCELLED, BackgroundTaskState.DISCARDED}
+                        else session.accept_task_failed(task.token, terminal.message or terminal.state.value)
+                    )
+                    project_delta(delta)
             finally:
-                self.presentation.state_changed(document)
+                notify = request_matches()
+                if pending is not None and command_state.materialization is pending:
+                    command_state.materialization = None
+                if notify:
+                    try:
+                        if not is_query and self.tasks.is_active(document):
+                            self.presentation.field_finished(document, pending, terminal)
+                    finally:
+                        if (
+                            target_matches() and document.result_command_state is command_state
+                            and command_state.materialization is None
+                        ):
+                            self.presentation.state_changed(document)
 
         def failed(message: str) -> None:
             if accepted_delta is None:
-                self._failed(document, task.token, title, message)
-            elif self.tasks.is_active(document):
+                delta = session.accept_task_failed(task.token, message)
+                if project_delta(delta) and request_matches() and self.tasks.is_active(document):
+                    self.tasks.presentation.show_error(title, message)
+            elif request_matches() and self.tasks.is_active(document):
                 # Materialization consumed the token before the query failed.
                 self.tasks.presentation.show_error(title, message)
+
+        def cancelled() -> None:
+            project_delta(session.accept_task_cancelled(task.token))
 
         try:
             task = session.prepare_result_materialization(provider.source.run_id, field_keys)
@@ -176,7 +211,7 @@ class DocumentResultCommands:
             pending = PendingResultMaterialization(
                 task.materialization.source, task.materialization.generation, request,
             )
-            document.result_command_state.materialization = pending
+            command_state.materialization = pending
             self.presentation.state_changed(document)
 
             def workload(context: TaskContext) -> ResultMaterializationPatch:
@@ -188,6 +223,8 @@ class DocumentResultCommands:
 
             def apply_result(value: object) -> TaskApplyOutcome:
                 nonlocal accepted_delta, accepted_query
+                if not target_matches():
+                    return TaskApplyOutcome.stale("Target document closed or replaced")
                 if type(value) is not ResultMaterializationPatch:
                     raise TypeError("result materialization worker must return ResultMaterializationPatch")
                 delta = session.accept_result_materialization(task.token, value)
@@ -202,7 +239,10 @@ class DocumentResultCommands:
                         self._validate_query_result(accepted_provider, request, accepted_query)
                     except Exception:
                         # The accepted patch remains committed even if querying fails.
-                        self._project_delta(document, delta)
+                        try:
+                            project_delta(delta)
+                        except Exception:
+                            logging.exception("Cannot project materialization after query failure")
                         raise
                     outcome = self._query_outcome(accepted_query)
                 else:
@@ -220,8 +260,10 @@ class DocumentResultCommands:
             def succeeded(value: object) -> None:
                 if type(value) is not GuiCommandOutcome or accepted_delta is None:
                     raise RuntimeError("accepted result materialization has no typed outcome")
-                if not self._project_delta(document, accepted_delta):
+                if not project_delta(accepted_delta):
                     raise RuntimeError("accepted result materialization could not be projected")
+                if not request_matches():
+                    return
                 current = self.presentation.current_provider(document)
                 if (
                     current is not None and current.source == value.source
@@ -231,25 +273,30 @@ class DocumentResultCommands:
                         self.presentation.query_completed(document, accepted_query)
                     else:
                         self.presentation.install_selection(document, current, request)
-                self.presentation.state_changed(document)
-                self.tasks.presentation.set_status(
-                    "Result query complete" if is_query else "Result fields loaded on demand", 4000,
-                )
+                if request_matches():
+                    self.presentation.state_changed(document)
+                if request_matches() and self.tasks.is_active(document):
+                    self.tasks.presentation.set_status(
+                        "Result query complete" if is_query else "Result fields loaded on demand", 4000,
+                    )
 
             started = self.tasks.start(
                 workload, succeeded, title,
                 failed,
                 context=document, controller=document.task_controller,
                 task_name=task_name,
-                on_cancelled=lambda: self._cancelled(document, task.token),
+                on_cancelled=cancelled,
                 on_inactive_failure=failed,
-                on_inactive_cancelled=lambda: self._cancelled(document, task.token),
-                on_inactive_success=lambda _value: self._project_delta(document, accepted_delta),
+                on_inactive_cancelled=cancelled,
+                on_inactive_success=lambda _value: project_delta(accepted_delta),
                 apply_result=apply_result, completion=completion, on_terminal=finished,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as error:
             if task is not None:
-                self._project_delta(document, session.accept_task_failed(task.token, error))
+                try:
+                    project_delta(session.accept_task_failed(task.token, error))
+                except Exception:
+                    logging.exception("Cannot project result materialization startup cleanup")
             clear_pending()
             return self._rejected(
                 command_id,
@@ -257,7 +304,7 @@ class DocumentResultCommands:
                 error,
             )
         if not started:
-            self._cancelled(document, task.token)
+            cancelled()
             clear_pending()
             return self._rejected(
                 command_id, "task.start.rejected",
@@ -377,14 +424,6 @@ class DocumentResultCommands:
         if delta.changed or delta.invalidated:
             return self.tasks.presentation.project_delta(document, delta)
         return True
-
-    def _failed(self, document: WorkspaceDocument, token: object, title: str, message: str) -> None:
-        delta = document.session.accept_task_failed(token, message)
-        if self._project_delta(document, delta) and self.tasks.is_active(document):
-            self.tasks.presentation.show_error(title, message)
-
-    def _cancelled(self, document: WorkspaceDocument, token: object) -> None:
-        self._project_delta(document, document.session.accept_task_cancelled(token))
 
     @staticmethod
     def _export_path(path: str | Path, kind: str) -> Path:

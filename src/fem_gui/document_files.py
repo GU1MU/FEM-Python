@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Literal
@@ -19,7 +20,7 @@ from .commands import (
     ResultArchiveSaveSpec,
 )
 from .document_tasks import DocumentTaskRouter, session_task_outcome
-from .task_controller import TaskApplyOutcome, TaskCompletion
+from .task_controller import BackgroundTaskState, TaskApplyOutcome, TaskCompletion
 from .workers import TaskContext
 from .workspace import WorkspaceDocument
 
@@ -70,7 +71,10 @@ class DocumentFileCommands:
         )
 
         def project_receipt(delta: SessionDelta) -> None:
-            if delta.accepted and (delta.changed or delta.invalidated):
+            if (
+                delta.accepted and (delta.changed or delta.invalidated)
+                and self.tasks.is_live(document) and document.session is session
+            ):
                 self.tasks.presentation.project_delta(document, delta)
 
         def cancelled() -> None:
@@ -79,8 +83,21 @@ class DocumentFileCommands:
         def failed(message: str) -> None:
             delta = session.accept_task_failed(snapshot.token, message)
             project_receipt(delta)
-            if delta.accepted and self.tasks.is_active(document):
+            if delta.accepted and document.session is session and self.tasks.is_active(document):
                 self.tasks.presentation.show_error(error_title, message)
+
+        def terminal(record: TaskCompletion) -> None:
+            if record.state is BackgroundTaskState.SUCCEEDED:
+                return
+            delta = (
+                session.accept_task_cancelled(snapshot.token)
+                if record.state in {BackgroundTaskState.CANCELLED, BackgroundTaskState.DISCARDED}
+                else session.accept_task_failed(snapshot.token, record.message or record.state.value)
+            )
+            try:
+                project_receipt(delta)
+            except Exception:
+                logging.exception("Cannot project save task cleanup")
 
         try:
             reservation = self.tasks.workspace.reserve_path(
@@ -128,10 +145,14 @@ class DocumentFileCommands:
                 on_inactive_cancelled=cancelled,
                 apply_result=apply_result,
                 completion=completion,
+                on_terminal=terminal,
             )
         except Exception as error:
             if snapshot is not None and not controller.busy:
-                cancelled()
+                try:
+                    cancelled()
+                except Exception:
+                    logging.exception("Cannot project save startup cleanup")
             return self._rejected(command_id, f"{kind}.save.rejected", error)
         finally:
             if reservation is not None and not controller.busy:
