@@ -23,8 +23,12 @@ from .native_geometry_state import NativeGeometryCache
 from .viewport_camera import ViewportCameraState
 
 if TYPE_CHECKING:
+    from fem.application.results import ResultSourceKey, ScalarFieldSelection
     from fem.io.inp import InpImportNotice
     from fem.io.project import ProjectMigrationNotice
+
+    from .inspection_service import InspectionService
+    from .visualization.model_adapter import ArchiveModelView, ModelGeometry
 
 
 def canonical_path(path: str | os.PathLike[str] | Path) -> str:
@@ -46,7 +50,7 @@ class DocumentPresentationState:
 
     module_name: str | None = None
     step_name: str | None = None
-    result_selection: object | None = None
+    result_selection: ScalarFieldSelection | None = None
     result_display: ResultDisplayPreferences = field(default_factory=ResultDisplayPreferences)
     camera_state: ViewportCameraState | None = None
     selection_mode: str | None = None
@@ -62,11 +66,11 @@ class DocumentPresentationCache:
     """
 
     artifact_id: str | None = None
-    result_source: object | None = None
+    result_source: ResultSourceKey | None = None
     result_generation: int | None = None
-    model_geometry: object | None = None
-    result_model_view: object | None = None
-    inspection_service: object | None = None
+    model_geometry: ModelGeometry | None = None
+    result_model_view: ArchiveModelView | None = None
+    inspection_service: InspectionService | None = None
     result_rendering: ResultRenderingCache = field(default_factory=ResultRenderingCache)
     native_geometry: NativeGeometryCache = field(default_factory=NativeGeometryCache)
 
